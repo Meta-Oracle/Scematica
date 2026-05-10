@@ -2,7 +2,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 
 /// A token with its mint address and decimals
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,7 +106,7 @@ impl std::fmt::Display for DexKind {
 /// A trade record (executed or pending)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trade {
-    pub id: Uuid,
+    pub id: String,
     pub timestamp: DateTime<Utc>,
     pub direction: SwapDirection,
     pub input_token: TokenInfo,

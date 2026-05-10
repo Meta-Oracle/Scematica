@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount};
 
-declare_id!("ScemSwap1111111111111111111111111111111111");
+declare_id!("6yX8P7v1zH3A5r4v8p9B7vN8P7v1zH3A5r4v8p9B7vN8");
 
 /// Scematica on-chain swap program.
 ///
@@ -23,9 +23,11 @@ pub mod scematica_swap {
         swap_state.swap_input = swap_input;
         swap_state.expected_output = min_expected_output;
         swap_state.authority = ctx.accounts.authority.key();
+        swap_state.src_mint = ctx.accounts.src.mint;
 
         msg!(
-            "StartSwap: input={} min_output={} from {}",
+            "StartSwap: mint={} input={} min_output={} from {}",
+            swap_state.src_mint,
             swap_input,
             min_expected_output,
             ctx.accounts.src.key()
@@ -43,10 +45,18 @@ pub mod scematica_swap {
         let min_output = swap_state.expected_output;
 
         msg!(
-            "ProfitOrRevert: initial={} final={} min_required={}",
+            "ProfitOrRevert: mint={} initial={} final={} min_required={}",
+            swap_state.src_mint,
             initial_input,
             final_balance,
             min_output
+        );
+
+        // Security: ensure we are checking the same mint as StartSwap
+        require_keys_eq!(
+            ctx.accounts.src.mint,
+            swap_state.src_mint,
+            ScematicaError::InvalidTokenAccount
         );
 
         // Check absolute profit
@@ -74,6 +84,8 @@ pub mod scematica_swap {
 pub struct SwapState {
     /// The authority (wallet) that initiated the swap
     pub authority: Pubkey,
+    /// The mint of the token being swapped
+    pub src_mint: Pubkey,
     /// Input amount at the start of the swap
     pub swap_input: u64,
     /// Expected minimum output (set by client, verified by profit_or_revert)
@@ -83,7 +95,7 @@ pub struct SwapState {
 }
 
 impl SwapState {
-    pub const LEN: usize = 8 + 32 + 8 + 8 + 1; // discriminator + fields
+    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 1; // discriminator + fields
 }
 
 /// Accounts for start_swap

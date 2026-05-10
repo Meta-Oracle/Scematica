@@ -5,9 +5,9 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
-    signature::{Keypair, Signature, Signer},
-    transaction::VersionedTransaction,
-    message::{v0, VersionedMessage},
+    signature::{Keypair, Signer},
+    transaction::{Transaction, VersionedTransaction},
+    message::{v0, VersionedMessage, Message},
 };
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -70,22 +70,16 @@ impl TxExecutor for DefaultExecutor {
         all_ixs.extend(instructions);
 
         let blockhash = rpc.get_latest_blockhash().await?;
-        let msg = v0::Message::try_compile(
-            &wallet.pubkey(),
-            &all_ixs,
-            &[],
-            blockhash,
-        )?;
-        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
+        // Build a legacy transaction (compatible with all RPC nodes)
+        let msg = Message::new_with_blockhash(&all_ixs, Some(&wallet.pubkey()), &blockhash);
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.sign(&[wallet], blockhash);
 
         for attempt in 0..self.max_retries {
             debug!("Sending transaction attempt {}/{}", attempt + 1, self.max_retries);
             match rpc
                 .send_and_confirm_transaction_with_spinner_and_config(
-                    // Use legacy send for now
-                    &tx.into_legacy_transaction().unwrap_or_else(|| {
-                        panic!("Failed to convert to legacy tx")
-                    }),
+                    &tx,
                     CommitmentConfig::confirmed(),
                     solana_client::rpc_config::RpcSendTransactionConfig {
                         skip_preflight: self.skip_preflight,
@@ -167,8 +161,9 @@ impl TxExecutor for JitoExecutor {
         ));
 
         let blockhash = rpc.get_latest_blockhash().await?;
-        let msg = v0::Message::try_compile(&wallet.pubkey(), &all_ixs, &[], blockhash)?;
-        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
+        let msg = Message::new_with_blockhash(&all_ixs, Some(&wallet.pubkey()), &blockhash);
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.sign(&[wallet], blockhash);
 
         // Serialize and base64-encode
         let tx_bytes = bincode::serialize(&tx)?;

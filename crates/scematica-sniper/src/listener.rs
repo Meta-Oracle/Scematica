@@ -136,7 +136,8 @@ impl PoolListener {
         let data = &params["value"]["account"]["data"];
 
         if let Some(b64) = data[0].as_str() {
-            let bytes = base64::decode(b64)?;
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64)?;
             if bytes.len() >= 752 {
                 if let Some(pool) = decode_raydium_v4_pool(pubkey_str, &bytes) {
                     debug!(pool = %pool.id, base = %pool.base_mint, "New pool detected");

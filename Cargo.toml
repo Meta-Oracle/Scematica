@@ -5,6 +5,9 @@ members = [
     "crates/scematica-arb",
     "crates/scematica-executor",
     "crates/scematica-dashboard",
+]
+# The on-chain program uses Anchor and must be built separately with `anchor build`
+exclude = [
     "programs/scematica-swap",
 ]
 resolver = "2"
@@ -19,10 +22,6 @@ license = "MIT"
 # Solana
 solana-sdk = "1.18"
 solana-client = "1.18"
-solana-program = "1.18"
-anchor-lang = "0.29"
-anchor-client = "0.29"
-anchor-spl = "0.29"
 spl-token = { version = "4.0", features = ["no-entrypoint"] }
 spl-associated-token-account = { version = "2.3", features = ["no-entrypoint"] }
 
@@ -65,7 +64,7 @@ crossterm = "0.27"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.7", features = ["v4"] }
+uuid = { version = "1.7", features = ["v4", "serde"] }
 dashmap = "5.5"
 parking_lot = "0.12"
 base64 = "0.21"

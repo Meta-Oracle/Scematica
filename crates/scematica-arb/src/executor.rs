@@ -5,10 +5,10 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
-    message::{v0, VersionedMessage},
+    message::Message,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
-    transaction::VersionedTransaction,
+    transaction::Transaction,
 };
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -72,19 +72,11 @@ impl ArbExecutor {
         let ixs = self.build_arb_instructions(path)?;
 
         let blockhash = self.rpc.get_latest_blockhash().await?;
-        let msg = v0::Message::try_compile(
-            &self.wallet.pubkey(),
-            &ixs,
-            &[],
-            blockhash,
-        )?;
-        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[&*self.wallet])?;
+        let msg = Message::new_with_blockhash(&ixs, Some(&self.wallet.pubkey()), &blockhash);
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.sign(&[&*self.wallet], blockhash);
 
-        match self
-            .rpc
-            .send_and_confirm_transaction_with_spinner(&tx.into_legacy_transaction().unwrap())
-            .await
-        {
+        match self.rpc.send_and_confirm_transaction_with_spinner(&tx).await {
             Ok(sig) => {
                 info!("Arb confirmed: {}", sig);
                 self.metrics.record_arb_executed();
@@ -111,8 +103,12 @@ impl ArbExecutor {
             ComputeBudgetInstruction::set_compute_unit_price(self.compute_unit_price),
         ];
 
+        let start_mint = path.mint_path.first()
+            .copied()
+            .unwrap_or(scematica_core::types::known_tokens::USDC_MINT);
+
         // StartSwap instruction
-        ixs.push(self.build_start_swap_ix(path.input_amount as u64)?);
+        ixs.push(self.build_start_swap_ix(path.input_amount as u64, &start_mint)?);
 
         // Per-hop swap instructions
         for (i, edge) in path.pool_path.iter().enumerate() {
@@ -122,12 +118,12 @@ impl ArbExecutor {
         }
 
         // ProfitOrRevert instruction
-        ixs.push(self.build_profit_or_revert_ix(path.input_amount as u64)?);
+        ixs.push(self.build_profit_or_revert_ix(path.input_amount as u64, &start_mint)?);
 
         Ok(ixs)
     }
 
-    fn build_start_swap_ix(&self, input_amount: u64) -> Result<Instruction> {
+    fn build_start_swap_ix(&self, input_amount: u64, start_mint: &Pubkey) -> Result<Instruction> {
         // Calls scematica-swap::start_swap(input_amount)
         // Stores input_amount in swap_state PDA for later comparison
         let (swap_state_pda, _) = Pubkey::find_program_address(
@@ -137,7 +133,7 @@ impl ArbExecutor {
 
         let src_ata = spl_associated_token_account::get_associated_token_address(
             &self.wallet.pubkey(),
-            &path_start_mint_placeholder(),
+            start_mint,
         );
 
         // Instruction data: discriminator (8 bytes) + input_amount (8 bytes)
@@ -221,7 +217,7 @@ impl ArbExecutor {
         })
     }
 
-    fn build_profit_or_revert_ix(&self, min_output: u64) -> Result<Instruction> {
+    fn build_profit_or_revert_ix(&self, min_output: u64, start_mint: &Pubkey) -> Result<Instruction> {
         let (swap_state_pda, _) = Pubkey::find_program_address(
             &[b"swap_state", self.wallet.pubkey().as_ref()],
             &self.swap_program_id,
@@ -229,7 +225,7 @@ impl ArbExecutor {
 
         let src_ata = spl_associated_token_account::get_associated_token_address(
             &self.wallet.pubkey(),
-            &path_start_mint_placeholder(),
+            start_mint,
         );
 
         let mut data = vec![0u8; 8];
@@ -256,8 +252,4 @@ fn anchor_discriminator(name: &str) -> [u8; 8] {
     format!("global:{}", name).hash(&mut hasher);
     let h = hasher.finish();
     h.to_le_bytes()
-}
-
-fn path_start_mint_placeholder() -> Pubkey {
-    scematica_core::types::known_tokens::USDC_MINT
 }

@@ -49,6 +49,10 @@ impl BotMetrics {
     }
 
     pub fn snapshot(&self) -> MetricsSnapshot {
+        let uptime_secs = self.start_time.read()
+            .map(|t| (Utc::now() - t).num_seconds() as u64)
+            .unwrap_or(0);
+
         MetricsSnapshot {
             trades_attempted: self.trades_attempted.load(Ordering::Relaxed),
             trades_confirmed: self.trades_confirmed.load(Ordering::Relaxed),
@@ -57,9 +61,7 @@ impl BotMetrics {
             arb_executed: self.arb_executed.load(Ordering::Relaxed),
             total_pnl_lamports: self.total_pnl_lamports.load(Ordering::Relaxed),
             pools_tracked: self.pools_tracked.load(Ordering::Relaxed),
-            uptime_secs: self.start_time.read().map(|t| {
-                (Utc::now() - t).num_seconds() as u64
-            }).unwrap_or(0),
+            uptime_secs,
         }
     }
 }

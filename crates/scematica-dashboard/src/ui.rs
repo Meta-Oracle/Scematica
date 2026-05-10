@@ -100,36 +100,36 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let metrics = state.metrics.read().clone();
 
-    let rows = if let Some(m) = metrics {
+    let rows: Vec<Row> = if let Some(m) = metrics {
         vec![
-            Row::new(vec!["Trades Attempted", &m.trades_attempted.to_string()]),
-            Row::new(vec!["Trades Confirmed", &m.trades_confirmed.to_string()]),
-            Row::new(vec!["Trades Failed", &m.trades_failed.to_string()]),
-            Row::new(vec!["Win Rate", &format!("{:.1}%", m.win_rate())]),
-            Row::new(vec!["Arbs Found", &m.arb_opportunities_found.to_string()]),
-            Row::new(vec!["Arbs Executed", &m.arb_executed.to_string()]),
-            Row::new(vec!["Total PnL", &format!("{:.6} SOL", m.total_pnl_sol())]),
-            Row::new(vec!["Pools Tracked", &m.pools_tracked.to_string()]),
-            Row::new(vec!["Uptime", &format!("{}s", m.uptime_secs)]),
+            Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
+            Row::new(vec![Cell::from("Trades Confirmed"), Cell::from(m.trades_confirmed.to_string())]),
+            Row::new(vec![Cell::from("Trades Failed"), Cell::from(m.trades_failed.to_string())]),
+            Row::new(vec![Cell::from("Win Rate"), Cell::from(format!("{:.1}%", m.win_rate()))]),
+            Row::new(vec![Cell::from("Arbs Found"), Cell::from(m.arb_opportunities_found.to_string())]),
+            Row::new(vec![Cell::from("Arbs Executed"), Cell::from(m.arb_executed.to_string())]),
+            Row::new(vec![Cell::from("Total PnL"), Cell::from(format!("{:.6} SOL", m.total_pnl_sol()))]),
+            Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
+            Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
         ]
     } else {
-        vec![Row::new(vec!["No data yet", "—"])]
+        vec![Row::new(vec![Cell::from("No data yet"), Cell::from("—")])]
     };
 
-    let table = Table::new(
-        rows,
-        [Constraint::Percentage(50), Constraint::Percentage(50)],
-    )
-    .header(
-        Row::new(vec!["Metric", "Value"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    )
-    .block(
-        Block::default()
-            .title(" 📊 Metrics ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Green)),
-    );
+    let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from("Metric").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Value").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+        )
+        .block(
+            Block::default()
+                .title(" 📊 Metrics ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        );
 
     f.render_widget(table, area);
 }
@@ -169,40 +169,45 @@ fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .map(|t| {
             let color = if t.pnl >= 0.0 { Color::Green } else { Color::Red };
             Row::new(vec![
-                t.timestamp.format("%H:%M:%S").to_string(),
-                t.status.clone(),
-                t.kind.clone(),
-                t.mint[..8.min(t.mint.len())].to_string(),
-                format!("{:.6}", t.amount),
-                format!("{:.6}", t.pnl),
-                t.signature[..12.min(t.signature.len())].to_string(),
+                Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
+                Cell::from(t.status.clone()),
+                Cell::from(t.kind.clone()),
+                Cell::from(t.mint[..8.min(t.mint.len())].to_string()),
+                Cell::from(format!("{:.6}", t.amount)),
+                Cell::from(format!("{:.6}", t.pnl)),
+                Cell::from(t.signature[..12.min(t.signature.len())].to_string()),
             ])
             .style(Style::default().fg(color))
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Length(3),
-            Constraint::Length(6),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Min(0),
-        ],
-    )
-    .header(
-        Row::new(vec!["Time", "St", "Type", "Mint", "Amount", "PnL", "Signature"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    )
-    .block(
-        Block::default()
-            .title(" 📋 Trade History ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Blue)),
-    );
+    let widths = [
+        Constraint::Length(10),
+        Constraint::Length(3),
+        Constraint::Length(6),
+        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Min(0),
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from("Time").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("St").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Type").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Mint").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Amount").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("PnL").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Signature").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]),
+        )
+        .block(
+            Block::default()
+                .title(" 📋 Trade History ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Blue)),
+        );
 
     f.render_widget(table, area);
 }

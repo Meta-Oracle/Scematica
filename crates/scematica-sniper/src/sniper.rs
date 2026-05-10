@@ -203,9 +203,9 @@ impl Sniper {
                     // Schedule auto-sell if enabled
                     if self.config.auto_sell {
                         let pool_clone = pool.clone();
-                        let self_clone = self.clone_for_sell();
+                        let monitor = self.clone_for_sell();
                         tokio::spawn(async move {
-                            self_clone.monitor_and_sell(pool_clone, base_ata).await;
+                            monitor.monitor_and_sell(pool_clone, base_ata).await;
                         });
                     }
                     return;
@@ -442,9 +442,106 @@ struct SellMonitor {
 
 impl SellMonitor {
     async fn monitor_and_sell(&self, pool: CachedPool, base_ata: Pubkey) {
-        // Delegate to the same logic — reuse Sniper's monitor_and_sell
-        // by constructing a temporary Sniper-like context
-        // (In production, refactor to a shared trait)
-        info!(mint = %pool.base_mint, "Sell monitor started");
+        if self.config.auto_sell_delay_ms > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                self.config.auto_sell_delay_ms,
+            ))
+            .await;
+        }
+
+        let interval = tokio::time::Duration::from_millis(self.config.price_check_interval_ms);
+        let max_checks = if self.config.price_check_interval_ms > 0 {
+            self.config.price_check_duration_ms / self.config.price_check_interval_ms
+        } else {
+            1
+        };
+
+        let take_profit_factor = 1.0 + self.config.take_profit_pct / 100.0;
+        let stop_loss_factor = 1.0 - self.config.stop_loss_pct / 100.0;
+        let target_profit = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
+        let stop_loss_amount = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
+
+        let mut checks = 0u64;
+        loop {
+            match self.rpc.get_token_account_balance(&base_ata).await {
+                Ok(balance) => {
+                    let amount: u64 = balance.amount.parse().unwrap_or(0);
+                    if amount == 0 {
+                        break;
+                    }
+
+                    if let (Ok(qb), Ok(bb)) = (
+                        self.rpc.get_token_account_balance(&pool.quote_vault).await,
+                        self.rpc.get_token_account_balance(&pool.base_vault).await,
+                    ) {
+                        let q: u64 = qb.amount.parse().unwrap_or(1);
+                        let b: u64 = bb.amount.parse().unwrap_or(1);
+                        let current_value = (amount as u128 * q as u128 / b as u128) as u64;
+
+                        if current_value >= target_profit || current_value <= stop_loss_amount {
+                            self.do_sell(&pool, &base_ata, amount).await;
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+
+            checks += 1;
+            if checks >= max_checks {
+                if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
+                    let amount: u64 = balance.amount.parse().unwrap_or(0);
+                    if amount > 0 {
+                        self.do_sell(&pool, &base_ata, amount).await;
+                    }
+                }
+                break;
+            }
+            tokio::time::sleep(interval).await;
+        }
+
+        if self.config.one_token_at_a_time {
+            *self.processing_lock.lock() = false;
+        }
+    }
+
+    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
+        use scematica_core::token::apply_slippage;
+        use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
+
+        self.metrics.record_trade_attempt();
+        let wallet_pubkey = self.wallet.pubkey();
+        let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
+
+        let min_out = apply_slippage(
+            (amount as f64 * 0.99) as u64,
+            self.config.sell_slippage_pct,
+        );
+
+        let mut ixs = vec![create_associated_token_account_idempotent(
+            &wallet_pubkey,
+            &wallet_pubkey,
+            &self.quote_mint,
+            &spl_token::id(),
+        )];
+
+        tracing::debug!(pool = %pool.id, amount, min_out, "Sell ix (full impl in scematica-executor)");
+
+        for attempt in 0..self.config.max_sell_retries {
+            match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
+                Ok(result) if result.confirmed => {
+                    tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
+                    self.metrics.record_trade_confirmed(0);
+                    return;
+                }
+                Ok(result) => {
+                    tracing::warn!(error = ?result.error, "Sell attempt {} failed", attempt + 1);
+                }
+                Err(e) => {
+                    tracing::error!("Sell error: {}", e);
+                }
+            }
+        }
+        self.metrics.record_trade_failed();
     }
 }

@@ -1041,6 +1041,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4c78c047431fee22c1a7bb92e00ad095a02a983affe4d8a72e2a2c62c1b94f3"
 
 [[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1314,7 +1320,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6919815d73839e7ad218de758883aae3a257ba6759ce7a9992501efbb53d705c"
 dependencies = [
- "const-oid",
+ "const-oid 0.7.1",
 ]
 
 [[package]]
@@ -1396,6 +1402,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.0",
+ "const-oid 0.10.2",
  "crypto-common 0.2.1",
  "ctutils",
 ]
@@ -3732,6 +3739,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "scematica-ai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "dotenv",
+ "parking_lot",
+ "reqwest",
+ "scematica-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "scematica-arb"
 version = "0.1.0"
 dependencies = [
@@ -3749,9 +3775,11 @@ dependencies = [
  "parking_lot",
  "reqwest",
  "rust_decimal",
+ "scematica-ai",
  "scematica-core",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "solana-client",
  "solana-sdk",
  "spl-associated-token-account",
@@ -3824,6 +3852,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.7",
  "bincode",
+ "reqwest",
  "scematica-core",
  "serde",
  "serde_json",
@@ -3843,6 +3872,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.21.7",
+ "bincode",
  "bs58 0.5.1",
  "chrono",
  "clap 4.6.1",
@@ -3853,7 +3883,9 @@ dependencies = [
  "parking_lot",
  "reqwest",
  "rust_decimal",
+ "scematica-ai",
  "scematica-core",
+ "scematica-executor",
  "serde",
  "serde_json",
  "solana-client",
@@ -4092,6 +4124,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -5965,6 +6008,7 @@ checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

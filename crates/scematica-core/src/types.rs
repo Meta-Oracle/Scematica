@@ -2,6 +2,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 /// A token with its mint address and decimals
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -1,0 +1,6 @@
+/target
+.env
+*.exe
+*.pdb
+debug/
+release/

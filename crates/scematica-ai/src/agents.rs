@@ -1,7 +1,7 @@
 use crate::{
     client::AiClient,
     prompts,
-    types::{ArbScore, MarketReport, StrategyAdjustment, TokenRiskScore},
+    types::{ArbScore, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment, TokenRiskScore},
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -73,7 +73,7 @@ impl RiskAgent {
         }
     }
 
-    fn default_skip(mint: &str, reason: &str) -> TokenRiskScore {
+    fn default_skip(_mint: &str, reason: &str) -> TokenRiskScore {
         TokenRiskScore {
             score: 0,
             recommendation: "skip".into(),
@@ -304,6 +304,64 @@ impl ReportAgent {
     }
 }
 
+// ─── Debate Agent ─────────────────────────────────────────────────────────────
+
+/// Simulates a debate between Bull and Bear personas
+pub struct DebateAgent {
+    client: AiClient,
+}
+
+impl DebateAgent {
+    pub fn new(client: AiClient) -> Self {
+        Self { client }
+    }
+
+    pub async fn debate(&self, trade_type: &str, details: &str) -> DebateResult {
+        let prompt = prompts::build_debate_prompt(trade_type, details);
+
+        match self.client.ask_json(prompts::DEBATE_AGENT_SYSTEM, &prompt).await {
+            Ok(json_str) => {
+                match serde_json::from_str::<DebateResult>(&json_str) {
+                    Ok(result) => {
+                        debug!(
+                            consensus = result.consensus_score,
+                            recommendation = %result.final_recommendation,
+                            "AI trade debate finished"
+                        );
+                        result
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse AI debate response: {}", e);
+                        Self::fallback_result("AI parse failed")
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("AI debate agent error: {}", e);
+                Self::fallback_result(&e.to_string())
+            }
+        }
+    }
+
+    fn fallback_result(reason: &str) -> DebateResult {
+        DebateResult {
+            bull_opinion: DebateOpinion {
+                stance: "neutral".into(),
+                reasoning: format!("Debate failed: {}", reason),
+                confidence: 50,
+            },
+            bear_opinion: DebateOpinion {
+                stance: "neutral".into(),
+                reasoning: format!("Debate failed: {}", reason),
+                confidence: 50,
+            },
+            consensus_score: 50,
+            final_recommendation: "skip".into(),
+            summary: "AI debate unavailable — defaulting to safety".into(),
+        }
+    }
+}
+
 // ─── Coordinator ─────────────────────────────────────────────────────────────
 
 /// Coordinates all AI agents — single entry point for the rest of the system
@@ -312,6 +370,7 @@ pub struct AiCoordinator {
     pub arb: ArbAgent,
     pub strategy: StrategyAgent,
     pub report: ReportAgent,
+    pub debate: DebateAgent,
 }
 
 impl AiCoordinator {
@@ -320,7 +379,8 @@ impl AiCoordinator {
             risk: RiskAgent::new(client.clone()),
             arb: ArbAgent::new(client.clone()),
             strategy: StrategyAgent::new(client.clone()),
-            report: ReportAgent::new(client),
+            report: ReportAgent::new(client.clone()),
+            debate: DebateAgent::new(client),
         }
     }
 

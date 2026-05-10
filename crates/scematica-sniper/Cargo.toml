@@ -1,0 +1,49 @@
+[package]
+name = "scematica-sniper"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "New pool sniper engine for Scematica"
+
+[[bin]]
+name = "sniper"
+path = "src/main.rs"
+
+[dependencies]
+scematica-core = { path = "../scematica-core" }
+
+solana-sdk.workspace = true
+solana-client.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
+
+tokio.workspace = true
+futures.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+rust_decimal.workspace = true
+num-traits.workspace = true
+
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+
+dotenv.workspace = true
+clap.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+base64.workspace = true
+bs58.workspace = true
+
+async-trait = "0.1"
+tokio-stream = "0.1"

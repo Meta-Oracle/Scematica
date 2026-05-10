@@ -1,0 +1,25 @@
+[package]
+name = "scematica-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DEX-specific swap instruction builders for Scematica"
+
+[dependencies]
+scematica-core = { path = "../scematica-core" }
+
+solana-sdk.workspace = true
+solana-client.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+bincode = "1.3"
+base64.workspace = true

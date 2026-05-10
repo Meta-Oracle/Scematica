@@ -1,0 +1,45 @@
+[package]
+name = "scematica-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core types, traits, and shared utilities for Scematica"
+
+[dependencies]
+solana-sdk.workspace = true
+solana-client.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
+
+tokio.workspace = true
+futures.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+borsh.workspace = true
+
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+rust_decimal.workspace = true
+num-traits.workspace = true
+
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+
+config.workspace = true
+dotenv.workspace = true
+
+chrono.workspace = true
+uuid.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+base64.workspace = true
+bs58.workspace = true
+
+async-trait = "0.1"
+shellexpand = "3.1"
+toml = "0.8"

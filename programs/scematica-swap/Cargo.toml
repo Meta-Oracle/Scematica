@@ -1,0 +1,26 @@
+[package]
+name = "scematica-swap"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "On-chain atomic swap program for Scematica arbitrage"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "scematica_swap"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang.workspace = true
+anchor-spl.workspace = true
+solana-program.workspace = true
+
+[dev-dependencies]
+anchor-client.workspace = true

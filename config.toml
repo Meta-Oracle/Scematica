@@ -1,0 +1,69 @@
+# ============================================================
+# Scematica Bot Configuration
+# ============================================================
+
+[rpc]
+endpoint = "https://api.mainnet-beta.solana.com"
+ws_endpoint = "wss://api.mainnet-beta.solana.com"
+commitment = "confirmed"
+
+[wallet]
+keypair_path = "~/.config/solana/id.json"
+
+# ============================================================
+# Sniper Configuration
+# ============================================================
+[sniper]
+enabled = true
+quote_mint = "WSOL"       # WSOL or USDC
+quote_amount = 0.1        # Amount to spend per snipe (in SOL)
+buy_delay_ms = 0
+max_buy_retries = 3
+max_sell_retries = 3
+auto_sell = true
+auto_sell_delay_ms = 0
+take_profit_pct = 50.0    # Sell when up 50%
+stop_loss_pct = 20.0      # Sell when down 20%
+buy_slippage_pct = 1.0
+sell_slippage_pct = 1.0
+price_check_interval_ms = 1000
+price_check_duration_ms = 60000
+one_token_at_a_time = true
+use_snipe_list = false
+snipe_list_path = "snipe-list.txt"
+
+[sniper.filters]
+check_interval_ms = 2000
+check_duration_ms = 20000
+consecutive_matches = 2
+check_mint_renounced = true
+check_freezable = true
+check_burned = true
+check_mutable = true
+check_socials = false
+min_pool_size = 5.0       # Minimum pool size in SOL
+max_pool_size = 0.0       # 0 = disabled
+
+# ============================================================
+# Arbitrage Configuration
+# ============================================================
+[arb]
+enabled = true
+start_mint = "USDC"
+start_amount = 100.0      # Starting capital in USDC
+min_profit_lamports = 10000
+max_hops = 3
+dexes = ["Raydium", "Orca", "Meteora"]
+pool_dir = "pools"
+amount_levels = 4         # Try 4 sizes: 100, 50, 25, 12.5 USDC
+
+# ============================================================
+# Execution Configuration
+# ============================================================
+[execution]
+executor = "default"      # default | jito
+custom_fee_sol = 0.006
+compute_unit_limit = 200000
+compute_unit_price = 100000
+skip_preflight = true
+jito_url = "https://mainnet.block-engine.jito.wtf"

@@ -1,0 +1,28 @@
+[package]
+name = "scematica-dashboard"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Terminal dashboard for Scematica bot monitoring"
+
+[[bin]]
+name = "dashboard"
+path = "src/main.rs"
+
+[dependencies]
+scematica-core = { path = "../scematica-core" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+clap.workspace = true
+
+ratatui.workspace = true
+crossterm.workspace = true

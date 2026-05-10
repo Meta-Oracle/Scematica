@@ -1,6 +1,5 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -131,7 +130,7 @@ impl PoolListener {
 
     async fn handle_pool_notification(&self, value: &Value) -> Result<()> {
         let params = &value["params"]["result"];
-        let account_id = params["context"]["slot"].as_u64().unwrap_or(0);
+        let _account_id = params["context"]["slot"].as_u64().unwrap_or(0);
         let pubkey_str = params["value"]["pubkey"].as_str().unwrap_or("");
         let data = &params["value"]["account"]["data"];
 

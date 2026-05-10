@@ -6,7 +6,7 @@ use scematica_sniper::{
     sniper::Sniper,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::{commitment_config::CommitmentConfig, signer::Signer};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};

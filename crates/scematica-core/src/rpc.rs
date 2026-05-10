@@ -1,7 +1,7 @@
 use anyhow::Result;
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
-    rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig},
+    rpc_config::RpcSendTransactionConfig,
 };
 use solana_sdk::{
     commitment_config::CommitmentConfig,

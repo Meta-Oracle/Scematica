@@ -1,7 +1,6 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// A pool edge in the arbitrage graph

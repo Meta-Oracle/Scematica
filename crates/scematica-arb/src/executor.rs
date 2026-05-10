@@ -1,5 +1,6 @@
 use crate::opportunity::ArbPath;
 use anyhow::Result;
+use scematica_ai::agents::AiCoordinator;
 use scematica_core::metrics::BotMetrics;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -11,7 +12,7 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Executes an arbitrage path atomically.
 /// The on-chain program (scematica-swap) enforces profit-or-revert:
@@ -20,8 +21,10 @@ pub struct ArbExecutor {
     rpc: Arc<RpcClient>,
     wallet: Arc<Keypair>,
     metrics: Arc<BotMetrics>,
+    ai: Option<Arc<AiCoordinator>>,
     compute_unit_limit: u32,
     compute_unit_price: u64,
+    #[allow(dead_code)]
     skip_preflight: bool,
     min_profit_lamports: u64,
     /// Program ID of the on-chain scematica-swap program
@@ -33,6 +36,7 @@ impl ArbExecutor {
         rpc: Arc<RpcClient>,
         wallet: Arc<Keypair>,
         metrics: Arc<BotMetrics>,
+        ai: Option<Arc<AiCoordinator>>,
         swap_program_id: Pubkey,
         min_profit_lamports: u64,
     ) -> Self {
@@ -40,6 +44,7 @@ impl ArbExecutor {
             rpc,
             wallet,
             metrics,
+            ai,
             compute_unit_limit: 400_000,
             compute_unit_price: 100_000,
             skip_preflight: true,
@@ -57,6 +62,33 @@ impl ArbExecutor {
                 path.profit, self.min_profit_lamports
             );
             return Ok(None);
+        }
+
+        // AI evaluation
+        if let Some(ai) = &self.ai {
+            let dex_names: Vec<String> = path.pool_path.iter().map(|e| format!("{:?}", e.dex)).collect();
+            let pool_reserves: Vec<(u64, u64)> = path.pool_path.iter().map(|e| (e.reserve_a, e.reserve_b)).collect();
+
+            let score = ai.arb.score_arb(
+                path.hops(),
+                &dex_names,
+                path.input_amount as u64,
+                path.profit as i64,
+                path.profit_pct,
+                &pool_reserves,
+            ).await;
+
+            info!(
+                confidence = score.confidence,
+                recommendation = %score.recommendation,
+                reasoning = %score.reasoning,
+                "AI arb evaluation"
+            );
+
+            if !score.should_execute() {
+                info!("AI rejected arb — skipping execution");
+                return Ok(None);
+            }
         }
 
         info!(
@@ -176,9 +208,9 @@ impl ArbExecutor {
 
     fn build_raydium_swap_ix(
         &self,
-        edge: &crate::graph::PoolEdge,
-        in_mint: &Pubkey,
-        out_mint: &Pubkey,
+        _edge: &crate::graph::PoolEdge,
+        _in_mint: &Pubkey,
+        _out_mint: &Pubkey,
     ) -> Result<Instruction> {
         // Raydium V4 swap instruction
         // Full account list required: amm, authority, open_orders, target_orders,
@@ -193,9 +225,9 @@ impl ArbExecutor {
 
     fn build_orca_swap_ix(
         &self,
-        edge: &crate::graph::PoolEdge,
-        in_mint: &Pubkey,
-        out_mint: &Pubkey,
+        _edge: &crate::graph::PoolEdge,
+        _in_mint: &Pubkey,
+        _out_mint: &Pubkey,
     ) -> Result<Instruction> {
         Ok(Instruction {
             program_id: scematica_core::dex::program_ids::ORCA_WHIRLPOOL,
@@ -206,9 +238,9 @@ impl ArbExecutor {
 
     fn build_meteora_swap_ix(
         &self,
-        edge: &crate::graph::PoolEdge,
-        in_mint: &Pubkey,
-        out_mint: &Pubkey,
+        _edge: &crate::graph::PoolEdge,
+        _in_mint: &Pubkey,
+        _out_mint: &Pubkey,
     ) -> Result<Instruction> {
         Ok(Instruction {
             program_id: scematica_core::dex::program_ids::METEORA_DLMM,
@@ -217,7 +249,7 @@ impl ArbExecutor {
         })
     }
 
-    fn build_profit_or_revert_ix(&self, min_output: u64, start_mint: &Pubkey) -> Result<Instruction> {
+    fn build_profit_or_revert_ix(&self, _min_output: u64, start_mint: &Pubkey) -> Result<Instruction> {
         let (swap_state_pda, _) = Pubkey::find_program_address(
             &[b"swap_state", self.wallet.pubkey().as_ref()],
             &self.swap_program_id,
@@ -245,11 +277,11 @@ impl ArbExecutor {
 
 /// Compute Anchor instruction discriminator: sha256("global:<name>")[0..8]
 fn anchor_discriminator(name: &str) -> [u8; 8] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    // Simplified: in production use sha256("global:<name>")[0..8]
-    let mut hasher = DefaultHasher::new();
-    format!("global:{}", name).hash(&mut hasher);
-    let h = hasher.finish();
-    h.to_le_bytes()
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("global:{}", name).as_bytes());
+    let result = hasher.finalize();
+    let mut discriminator = [0u8; 8];
+    discriminator.copy_from_slice(&result[..8]);
+    discriminator
 }

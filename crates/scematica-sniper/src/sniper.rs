@@ -1,5 +1,5 @@
-use anyhow::Result;
 use parking_lot::Mutex;
+use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::SniperConfig,
     metrics::BotMetrics,
@@ -8,15 +8,16 @@ use scematica_core::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    instruction::Instruction,
     pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
 };
-use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
-use spl_token::instruction as token_ix;
+
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+use anyhow::Result;
+use scematica_executor::{get_builder, SwapInstructionBuilder};
+use scematica_core::types::DexKind;
 
 use crate::{
     cache::{CachedPool, MarketCache, PoolCache, SnipeListCache},
@@ -36,11 +37,15 @@ pub struct Sniper {
     filter_pipeline: FilterPipeline,
     executor: Arc<dyn TxExecutor>,
     metrics: Arc<BotMetrics>,
+    /// AI coordinator — None if no API key is configured
+    ai: Option<Arc<AiCoordinator>>,
     /// Mutex to enforce one-token-at-a-time
     processing_lock: Arc<Mutex<bool>>,
     quote_mint: Pubkey,
     quote_decimals: u8,
     quote_amount_raw: u64,
+    /// Raydium swap instruction builder
+    raydium_builder: Arc<dyn SwapInstructionBuilder>,
 }
 
 impl Sniper {
@@ -86,10 +91,13 @@ impl Sniper {
             filter_pipeline,
             executor,
             metrics,
+            ai: AiCoordinator::from_env_optional().map(Arc::new),
             processing_lock: Arc::new(Mutex::new(false)),
             quote_mint,
             quote_decimals,
             quote_amount_raw,
+            raydium_builder: Arc::from(get_builder(DexKind::Raydium)
+                .expect("Raydium builder not found")),
         }
     }
 
@@ -156,11 +164,57 @@ impl Sniper {
             }
         }
 
+        // AI risk assessment (if available)
+        if let Some(ai) = &self.ai {
+            let pool_size_sol = scematica_core::token::raw_to_ui(
+                // rough estimate from quote vault — 0 if unavailable
+                self.rpc.get_token_account_balance(&pool.quote_vault).await
+                    .ok()
+                    .and_then(|b| b.amount.parse::<u64>().ok())
+                    .unwrap_or(0),
+                pool.quote_decimals,
+            );
+
+            // UTC hour from open_time (unix timestamp)
+            let open_hour = (pool.open_time % 86400 / 3600) as u8;
+
+            let risk = ai.risk.score_token(
+                &pool.base_mint.to_string(),
+                "UNKNOWN", // symbol fetched on-demand in production
+                "UNKNOWN", // name fetched on-demand in production
+                pool_size_sol,
+                !self.config.filters.check_mint_renounced, // simplified
+                self.config.filters.check_freezable,
+                self.config.filters.check_burned,
+                self.config.filters.check_mutable,
+                self.config.filters.check_socials,
+                open_hour,
+            ).await;
+
+            info!(
+                mint = %pool.base_mint,
+                score = risk.score,
+                recommendation = %risk.recommendation,
+                reasoning = %risk.reasoning,
+                "AI risk assessment"
+            );
+
+            if !risk.should_buy() {
+                info!(
+                    mint = %pool.base_mint,
+                    score = risk.score,
+                    flags = ?risk.red_flags,
+                    "AI rejected token — skipping buy"
+                );
+                return;
+            }
+        }
+
         // Execute buy
         self.buy(&pool).await;
     }
 
-    async fn buy(&self, pool: &CachedPool) {
+    async fn buy(&self, pool: &CachedPool) -> Result<()> {
         info!(
             mint = %pool.base_mint,
             amount = self.config.quote_amount,
@@ -180,14 +234,17 @@ impl Sniper {
         let base_ata = get_ata(&wallet_pubkey, &pool.base_mint);
 
         // Build swap instructions
-        let ixs = self.build_raydium_swap_ixs(
-            pool,
+        let ixs = self.raydium_builder.build_swap(
+            &pool.id,
+            &wallet_pubkey,
+            &self.quote_mint,
+            &pool.base_mint,
             &quote_ata,
             &base_ata,
             self.quote_amount_raw,
             0, // min_out: 0 for now, slippage applied in swap
-            true,
-        );
+        ).await?;
+
 
         for attempt in 0..self.config.max_buy_retries {
             info!("Buy attempt {}/{}", attempt + 1, self.config.max_buy_retries);
@@ -208,7 +265,7 @@ impl Sniper {
                             monitor.monitor_and_sell(pool_clone, base_ata).await;
                         });
                     }
-                    return;
+                    return Ok(());
                 }
                 Ok(result) => {
                     warn!(
@@ -227,6 +284,8 @@ impl Sniper {
         if self.config.one_token_at_a_time {
             *self.processing_lock.lock() = false;
         }
+
+        Ok(())
     }
 
     async fn monitor_and_sell(&self, pool: CachedPool, base_ata: Pubkey) {
@@ -332,14 +391,22 @@ impl Sniper {
             self.config.sell_slippage_pct,
         );
 
-        let ixs = self.build_raydium_swap_ixs(
-            pool,
+        let ixs = match self.raydium_builder.build_swap(
+            &pool.id,
+            &wallet_pubkey,
+            &pool.base_mint,
+            &self.quote_mint,
             base_ata,
             &quote_ata,
             amount,
             min_out,
-            false,
-        );
+        ).await {
+            Ok(ixs) => ixs,
+            Err(e) => {
+                error!("Failed to build sell instructions: {}", e);
+                return;
+            }
+        };
 
         for attempt in 0..self.config.max_sell_retries {
             info!("Sell attempt {}/{}", attempt + 1, self.config.max_sell_retries);
@@ -371,47 +438,6 @@ impl Sniper {
         debug!(account = %account, mint = %mint, amount, "Wallet update");
     }
 
-    /// Build Raydium V4 swap instructions
-    /// This is a simplified version — full implementation requires
-    /// the Raydium SDK accounts (market, open orders, etc.)
-    fn build_raydium_swap_ixs(
-        &self,
-        pool: &CachedPool,
-        ata_in: &Pubkey,
-        ata_out: &Pubkey,
-        amount_in: u64,
-        min_amount_out: u64,
-        is_buy: bool,
-    ) -> Vec<Instruction> {
-        let wallet_pubkey = self.wallet.pubkey();
-        let mut ixs = vec![];
-
-        // Create output ATA if needed (idempotent)
-        let out_mint = if is_buy { pool.base_mint } else { self.quote_mint };
-        ixs.push(create_associated_token_account_idempotent(
-            &wallet_pubkey,
-            &wallet_pubkey,
-            &out_mint,
-            &spl_token::id(),
-        ));
-
-        // NOTE: Full Raydium V4 swap instruction requires:
-        // amm_id, amm_authority, amm_open_orders, amm_target_orders,
-        // pool_coin_token_account, pool_pc_token_account,
-        // serum_program_id, serum_market, serum_bids, serum_asks,
-        // serum_event_queue, serum_coin_vault, serum_pc_vault, serum_vault_signer
-        // This is built in the scematica-executor crate with full account resolution.
-        // Placeholder instruction added here for compilation.
-        tracing::debug!(
-            pool = %pool.id,
-            amount_in,
-            min_amount_out,
-            is_buy,
-            "Raydium swap ix (full impl in scematica-executor)"
-        );
-
-        ixs
-    }
 
     /// Clone the parts needed for the sell monitor task
     fn clone_for_sell(&self) -> SellMonitor {
@@ -424,6 +450,7 @@ impl Sniper {
             processing_lock: self.processing_lock.clone(),
             quote_mint: self.quote_mint,
             quote_amount_raw: self.quote_amount_raw,
+            raydium_builder: self.raydium_builder.clone(),
         }
     }
 }
@@ -438,6 +465,8 @@ struct SellMonitor {
     processing_lock: Arc<Mutex<bool>>,
     quote_mint: Pubkey,
     quote_amount_raw: u64,
+    /// Raydium swap instruction builder
+    raydium_builder: Arc<dyn SwapInstructionBuilder>,
 }
 
 impl SellMonitor {
@@ -505,34 +534,36 @@ impl SellMonitor {
         }
     }
 
-    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
+    async fn do_sell(&self, pool: &CachedPool, _base_ata: &Pubkey, amount: u64) -> Result<()> {
         use scematica_core::token::apply_slippage;
-        use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 
         self.metrics.record_trade_attempt();
         let wallet_pubkey = self.wallet.pubkey();
-        let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
+        let _quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
 
         let min_out = apply_slippage(
             (amount as f64 * 0.99) as u64,
             self.config.sell_slippage_pct,
         );
 
-        let mut ixs = vec![create_associated_token_account_idempotent(
+        let ixs = self.raydium_builder.build_swap(
+            &pool.id,
             &wallet_pubkey,
-            &wallet_pubkey,
+            &pool.base_mint,
             &self.quote_mint,
-            &spl_token::id(),
-        )];
+            _base_ata,
+            &_quote_ata,
+            amount,
+            min_out,
+        ).await?;
 
-        tracing::debug!(pool = %pool.id, amount, min_out, "Sell ix (full impl in scematica-executor)");
 
         for attempt in 0..self.config.max_sell_retries {
             match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
                     self.metrics.record_trade_confirmed(0);
-                    return;
+                    return Ok(());
                 }
                 Ok(result) => {
                     tracing::warn!(error = ?result.error, "Sell attempt {} failed", attempt + 1);
@@ -543,5 +574,6 @@ impl SellMonitor {
             }
         }
         self.metrics.record_trade_failed();
+        Ok(())
     }
 }

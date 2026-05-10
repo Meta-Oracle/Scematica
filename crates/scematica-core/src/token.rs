@@ -1,4 +1,3 @@
-use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address;
 use crate::types::known_tokens;

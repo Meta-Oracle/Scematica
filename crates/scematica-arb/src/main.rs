@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use scematica_ai::agents::AiCoordinator;
 use scematica_arb::{
     executor::ArbExecutor,
     graph::ArbGraph,
@@ -14,7 +15,7 @@ use scematica_core::{
     wallet::Wallet,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -70,6 +71,9 @@ async fn main() -> Result<()> {
 
     let metrics = BotMetrics::new();
 
+    // AI coordinator
+    let ai = AiCoordinator::from_env_optional().map(Arc::new);
+
     // Build pool graph
     let graph = Arc::new(ArbGraph::new());
     let pool_count = load_pools_from_dir(&config.arb.pool_dir, &graph, &rpc).await?;
@@ -99,6 +103,7 @@ async fn main() -> Result<()> {
         rpc.clone(),
         wallet_kp.clone(),
         metrics.clone(),
+        ai,
         swap_program_id,
         config.arb.min_profit_lamports,
     ));

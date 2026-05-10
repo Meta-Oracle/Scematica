@@ -2,7 +2,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 /// Cached pool state (Raydium V4 layout decoded)
 #[derive(Debug, Clone, Serialize, Deserialize)]

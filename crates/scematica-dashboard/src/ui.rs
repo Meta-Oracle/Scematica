@@ -1,8 +1,8 @@
-use crate::app::{AppState, BotMode};
+use crate::app::AppState;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{
         Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
     },
@@ -10,6 +10,7 @@ use ratatui::{
 };
 use std::sync::Arc;
 
+#[allow(dead_code)]
 const SCEMATICA_LOGO: &str = r#"
  ███████╗ ██████╗███████╗███╗   ███╗ █████╗ ████████╗██╗ ██████╗ █████╗
  ██╔════╝██╔════╝██╔════╝████╗ ████║██╔══██╗╚══██╔══╝██║██╔════╝██╔══██╗

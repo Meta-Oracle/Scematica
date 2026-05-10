@@ -117,7 +117,7 @@ async fn fetch_reserves(
 /// Refresh all pool reserves in the graph by re-fetching vaults
 /// Called periodically to keep quotes accurate
 pub async fn refresh_graph_reserves(
-    graph: &ArbGraph,
+    _graph: &ArbGraph,
     pool_vaults: &[(Pubkey, Pubkey, Pubkey)], // (pool_addr, vault_a, vault_b)
     rpc: &Arc<RpcClient>,
 ) -> Result<()> {

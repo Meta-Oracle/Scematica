@@ -108,7 +108,7 @@ impl ArbSearcher {
                 if next_idx == start_idx {
                     // Closed the loop — check profitability
                     if out_amount > init_amount {
-                        let start_mint = self.graph.get_mint(start_idx).unwrap_or_default();
+                        let _start_mint = self.graph.get_mint(start_idx).unwrap_or_default();
                         let mint_pubkeys: Vec<Pubkey> = new_mint_path
                             .iter()
                             .filter_map(|&idx| self.graph.get_mint(idx))

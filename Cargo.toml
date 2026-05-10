@@ -5,6 +5,7 @@ members = [
     "crates/scematica-arb",
     "crates/scematica-executor",
     "crates/scematica-dashboard",
+    "crates/scematica-ai",
 ]
 # The on-chain program uses Anchor and must be built separately with `anchor build`
 exclude = [

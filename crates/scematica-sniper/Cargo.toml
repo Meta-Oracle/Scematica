@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 scematica-core = { path = "../scematica-core" }
+scematica-ai = { path = "../scematica-ai" }
+scematica-executor = { path = "../scematica-executor" }
 
 solana-sdk.workspace = true
 solana-client.workspace = true
@@ -47,3 +49,4 @@ bs58.workspace = true
 
 async-trait = "0.1"
 tokio-stream = "0.1"
+bincode = "1.3"

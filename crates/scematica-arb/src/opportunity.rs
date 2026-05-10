@@ -2,8 +2,6 @@ use crate::graph::PoolEdge;
 use scematica_core::types::DexKind;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
-use uuid::Uuid;
-use chrono::Utc;
 
 /// A discovered arbitrage path
 #[derive(Debug, Clone, Serialize, Deserialize)]

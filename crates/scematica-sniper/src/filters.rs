@@ -1,8 +1,6 @@
-use anyhow::Result;
 use async_trait::async_trait;
 use scematica_core::config::FilterConfig;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
 use tracing::{debug, warn};
 

@@ -23,6 +23,10 @@ license = "MIT"
 # Solana
 solana-sdk = "1.18"
 solana-client = "1.18"
+solana-program = "1.18"
+anchor-lang = "0.29"
+anchor-spl = "0.29"
+anchor-client = "0.29"
 spl-token = { version = "4.0", features = ["no-entrypoint"] }
 spl-associated-token-account = { version = "2.3", features = ["no-entrypoint"] }
 

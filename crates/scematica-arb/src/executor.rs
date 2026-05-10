@@ -2,6 +2,7 @@ use crate::opportunity::ArbPath;
 use anyhow::Result;
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::metrics::BotMetrics;
+use scematica_executor::{get_builder, SwapInstructionBuilder};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
@@ -29,6 +30,8 @@ pub struct ArbExecutor {
     min_profit_lamports: u64,
     /// Program ID of the on-chain scematica-swap program
     swap_program_id: Pubkey,
+    /// DEX builders for generating swap instructions
+    builders: std::collections::HashMap<scematica_core::types::DexKind, Box<dyn SwapInstructionBuilder>>,
 }
 
 impl ArbExecutor {
@@ -40,6 +43,18 @@ impl ArbExecutor {
         swap_program_id: Pubkey,
         min_profit_lamports: u64,
     ) -> Self {
+        let mut builders = std::collections::HashMap::new();
+        for dex in [
+            scematica_core::types::DexKind::Raydium,
+            scematica_core::types::DexKind::Orca,
+            scematica_core::types::DexKind::Meteora,
+            scematica_core::types::DexKind::Jupiter,
+        ] {
+            if let Some(builder) = get_builder(dex) {
+                builders.insert(dex, builder);
+            }
+        }
+
         Self {
             rpc,
             wallet,
@@ -50,11 +65,13 @@ impl ArbExecutor {
             skip_preflight: true,
             min_profit_lamports,
             swap_program_id,
+            builders,
         }
     }
 
     /// Execute an arbitrage path. Returns the transaction signature if successful.
     pub async fn execute(&self, path: &ArbPath) -> Result<Option<String>> {
+        // ... (rest of execute method remains the same)
         // Sanity check: minimum profit threshold
         if path.profit < self.min_profit_lamports as i128 {
             warn!(
@@ -101,7 +118,7 @@ impl ArbExecutor {
         self.metrics.record_arb_found();
         self.metrics.record_trade_attempt();
 
-        let ixs = self.build_arb_instructions(path)?;
+        let ixs = self.build_arb_instructions(path).await?;
 
         let blockhash = self.rpc.get_latest_blockhash().await?;
         let msg = Message::new_with_blockhash(&ixs, Some(&self.wallet.pubkey()), &blockhash);
@@ -129,7 +146,7 @@ impl ArbExecutor {
     /// 2. StartSwap (initialize swap state PDA with input amount)
     /// 3. N swap instructions (one per hop)
     /// 4. ProfitOrRevert (assert output >= input, else revert)
-    fn build_arb_instructions(&self, path: &ArbPath) -> Result<Vec<Instruction>> {
+    async fn build_arb_instructions(&self, path: &ArbPath) -> Result<Vec<Instruction>> {
         let mut ixs = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
             ComputeBudgetInstruction::set_compute_unit_price(self.compute_unit_price),
@@ -140,13 +157,42 @@ impl ArbExecutor {
             .unwrap_or(scematica_core::types::known_tokens::USDC_MINT);
 
         // StartSwap instruction
-        ixs.push(self.build_start_swap_ix(path.input_amount as u64, &start_mint)?);
+        // We set min_output to input_amount + 1 lamport to ensure some profit
+        let min_output = (path.input_amount as u64) + 1;
+        ixs.push(self.build_start_swap_ix(path.input_amount as u64, min_output, &start_mint)?);
 
         // Per-hop swap instructions
         for (i, edge) in path.pool_path.iter().enumerate() {
             let in_mint = path.mint_path[i];
             let out_mint = path.mint_path[i + 1];
-            ixs.push(self.build_swap_ix(edge, &in_mint, &out_mint)?);
+            
+            let builder = self.builders.get(&edge.dex)
+                .ok_or_else(|| anyhow::anyhow!("No builder for DEX {:?}", edge.dex))?;
+
+            let ata_in = spl_associated_token_account::get_associated_token_address(
+                &self.wallet.pubkey(),
+                &in_mint,
+            );
+            let ata_out = spl_associated_token_account::get_associated_token_address(
+                &self.wallet.pubkey(),
+                &out_mint,
+            );
+
+            // In a real bot, we would calculate min_amount_out per hop.
+            // For the wrapper pattern, we often use 1 or 0 here and let the final
+            // ProfitOrRevert instruction handle the safety.
+            let hop_ixs = builder.build_swap(
+                &edge.pool_id,
+                &self.wallet.pubkey(),
+                &in_mint,
+                &out_mint,
+                &ata_in,
+                &ata_out,
+                0, // amount_in is handled by previous hop's output
+                0, // min_amount_out handled by ProfitOrRevert
+            ).await?;
+
+            ixs.extend(hop_ixs);
         }
 
         // ProfitOrRevert instruction
@@ -155,9 +201,9 @@ impl ArbExecutor {
         Ok(ixs)
     }
 
-    fn build_start_swap_ix(&self, input_amount: u64, start_mint: &Pubkey) -> Result<Instruction> {
-        // Calls scematica-swap::start_swap(input_amount)
-        // Stores input_amount in swap_state PDA for later comparison
+    fn build_start_swap_ix(&self, input_amount: u64, min_output: u64, start_mint: &Pubkey) -> Result<Instruction> {
+        // Calls scematica-swap::start_swap(input_amount, min_output)
+        // Stores input_amount and min_output in swap_state PDA for later comparison
         let (swap_state_pda, _) = Pubkey::find_program_address(
             &[b"swap_state", self.wallet.pubkey().as_ref()],
             &self.swap_program_id,
@@ -168,84 +214,28 @@ impl ArbExecutor {
             start_mint,
         );
 
-        // Instruction data: discriminator (8 bytes) + input_amount (8 bytes)
-        let mut data = vec![0u8; 16];
+        // Instruction data: discriminator (8 bytes) + input_amount (8 bytes) + min_output (8 bytes)
+        let mut data = vec![0u8; 24];
         data[0..8].copy_from_slice(&anchor_discriminator("start_swap"));
         data[8..16].copy_from_slice(&input_amount.to_le_bytes());
+        data[16..24].copy_from_slice(&min_output.to_le_bytes());
 
         Ok(Instruction {
             program_id: self.swap_program_id,
             accounts: vec![
                 solana_sdk::instruction::AccountMeta::new(src_ata, false),
                 solana_sdk::instruction::AccountMeta::new(swap_state_pda, false),
-                solana_sdk::instruction::AccountMeta::new_readonly(self.wallet.pubkey(), true),
+                solana_sdk::instruction::AccountMeta::new(self.wallet.pubkey(), true),
                 solana_sdk::instruction::AccountMeta::new_readonly(
                     solana_sdk::system_program::id(),
                     false,
                 ),
+                solana_sdk::instruction::AccountMeta::new_readonly(
+                    spl_token::id(),
+                    false,
+                ),
             ],
             data,
-        })
-    }
-
-    fn build_swap_ix(
-        &self,
-        edge: &crate::graph::PoolEdge,
-        in_mint: &Pubkey,
-        out_mint: &Pubkey,
-    ) -> Result<Instruction> {
-        // Each DEX has its own swap instruction format.
-        // This dispatches to the correct builder based on edge.dex.
-        // Full implementations are in scematica-executor.
-        use scematica_core::types::DexKind;
-        match edge.dex {
-            DexKind::Raydium => self.build_raydium_swap_ix(edge, in_mint, out_mint),
-            DexKind::Orca => self.build_orca_swap_ix(edge, in_mint, out_mint),
-            DexKind::Meteora => self.build_meteora_swap_ix(edge, in_mint, out_mint),
-            _ => Err(anyhow::anyhow!("Unsupported DEX: {:?}", edge.dex)),
-        }
-    }
-
-    fn build_raydium_swap_ix(
-        &self,
-        _edge: &crate::graph::PoolEdge,
-        _in_mint: &Pubkey,
-        _out_mint: &Pubkey,
-    ) -> Result<Instruction> {
-        // Raydium V4 swap instruction
-        // Full account list required: amm, authority, open_orders, target_orders,
-        // coin_vault, pc_vault, serum_program, serum_market, etc.
-        // Placeholder — full impl in scematica-executor
-        Ok(Instruction {
-            program_id: scematica_core::dex::program_ids::RAYDIUM_AMM_V4,
-            accounts: vec![],
-            data: vec![9u8], // Raydium swap discriminator
-        })
-    }
-
-    fn build_orca_swap_ix(
-        &self,
-        _edge: &crate::graph::PoolEdge,
-        _in_mint: &Pubkey,
-        _out_mint: &Pubkey,
-    ) -> Result<Instruction> {
-        Ok(Instruction {
-            program_id: scematica_core::dex::program_ids::ORCA_WHIRLPOOL,
-            accounts: vec![],
-            data: vec![0xf8, 0xc6, 0x9e, 0x91], // Whirlpool swap discriminator
-        })
-    }
-
-    fn build_meteora_swap_ix(
-        &self,
-        _edge: &crate::graph::PoolEdge,
-        _in_mint: &Pubkey,
-        _out_mint: &Pubkey,
-    ) -> Result<Instruction> {
-        Ok(Instruction {
-            program_id: scematica_core::dex::program_ids::METEORA_DLMM,
-            accounts: vec![],
-            data: vec![0xf8, 0xc6, 0x9e, 0x91],
         })
     }
 

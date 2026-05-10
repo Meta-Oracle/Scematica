@@ -96,7 +96,35 @@ cargo run --release --bin dashboard
 
 ---
 
-## 🛡️ Security
+## ⛓️ On-Chain Program
+
+Scematica includes an Anchor program (`scematica-swap`) that ensures atomic profitability for arbitrage.
+
+### Deployment to Mainnet
+
+1. **Build the program:**
+   ```bash
+   anchor build
+   ```
+
+2. **Get your Program ID:**
+   ```bash
+   solana address -k target/deploy/scematica_swap-keypair.json
+   ```
+
+3. **Update Program IDs:**
+   - Update `declare_id!` in `programs/scematica-swap/src/lib.rs`.
+   - Update `[programs.mainnet]` in `Anchor.toml`.
+   - Update `SWAP_PROGRAM_ID` in your `.env`.
+
+4. **Deploy:**
+   ```bash
+   anchor deploy --provider.cluster mainnet
+   ```
+
+---
+
+## 💰 Funding & Testing
 
 - **Profit-or-Revert**: The on-chain `scematica-swap` program ensures that you can never lose capital due to slippage or front-running on an arb (only the transaction fee).
 - **Local Keys**: Your private keys never leave your machine.

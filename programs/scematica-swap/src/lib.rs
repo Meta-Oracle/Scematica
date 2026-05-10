@@ -18,37 +18,47 @@ pub mod scematica_swap {
 
     /// Initialize the swap state PDA and record the starting token balance.
     /// Called as the first instruction in an arb transaction.
-    pub fn start_swap(ctx: Context<StartSwap>, swap_input: u64) -> Result<()> {
+    pub fn start_swap(ctx: Context<StartSwap>, swap_input: u64, min_expected_output: u64) -> Result<()> {
         let swap_state = &mut ctx.accounts.swap_state;
         swap_state.swap_input = swap_input;
-        swap_state.expected_output = swap_input; // will be updated by profit_or_revert
+        swap_state.expected_output = min_expected_output;
         swap_state.authority = ctx.accounts.authority.key();
 
         msg!(
-            "StartSwap: input={} from {}",
+            "StartSwap: input={} min_output={} from {}",
             swap_input,
+            min_expected_output,
             ctx.accounts.src.key()
         );
         Ok(())
     }
 
-    /// Assert that the final token balance is greater than the initial balance.
+    /// Assert that the final token balance is greater than the initial balance
+    /// and meets the minimum expected output.
     /// If not, the instruction fails and the entire transaction reverts.
-    /// Called as the last instruction in an arb transaction.
     pub fn profit_or_revert(ctx: Context<ProfitOrRevert>) -> Result<()> {
         let swap_state = &ctx.accounts.swap_state;
         let final_balance = ctx.accounts.src.amount;
         let initial_input = swap_state.swap_input;
+        let min_output = swap_state.expected_output;
 
         msg!(
-            "ProfitOrRevert: initial={} final={}",
+            "ProfitOrRevert: initial={} final={} min_required={}",
             initial_input,
-            final_balance
+            final_balance,
+            min_output
         );
 
+        // Check absolute profit
         require!(
             final_balance > initial_input,
             ScematicaError::NotProfitable
+        );
+
+        // Check slippage / expected output
+        require!(
+            final_balance >= min_output,
+            ScematicaError::SlippageExceeded
         );
 
         let profit = final_balance - initial_input;
@@ -123,6 +133,9 @@ pub struct ProfitOrRevert<'info> {
 pub enum ScematicaError {
     #[msg("Swap was not profitable: final balance did not exceed initial input")]
     NotProfitable,
+
+    #[msg("Slippage exceeded: final balance was below minimum expected output")]
+    SlippageExceeded,
 
     #[msg("Unauthorized: signer does not match swap state authority")]
     Unauthorized,

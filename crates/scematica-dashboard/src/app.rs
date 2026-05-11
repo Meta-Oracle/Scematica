@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use scematica_core::metrics::BotMetrics;
+use scematica_core::rpc::RpcConnection;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub struct TradeEntry {
 #[derive(Debug)]
 pub struct AppState {
     pub metrics: Arc<BotMetrics>,
+    pub rpc: Arc<RpcConnection>,
     pub log_lines: RwLock<VecDeque<String>>,
     pub trades: RwLock<VecDeque<TradeEntry>>,
     pub wallet_address: RwLock<String>,
@@ -55,9 +57,10 @@ impl std::fmt::Display for BotMode {
 }
 
 impl AppState {
-    pub fn new(metrics: Arc<BotMetrics>) -> Arc<Self> {
+    pub fn new(metrics: Arc<BotMetrics>, rpc: Arc<RpcConnection>) -> Arc<Self> {
         Arc::new(Self {
             metrics,
+            rpc,
             log_lines: RwLock::new(VecDeque::new()),
             trades: RwLock::new(VecDeque::new()),
             wallet_address: RwLock::new(String::new()),

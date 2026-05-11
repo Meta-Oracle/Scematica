@@ -7,13 +7,13 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use scematica_core::metrics::BotMetrics;
 use scematica_dashboard::{
-    app::{AppState, BotMode},
+    app::AppState,
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
     ui::render,
 };
+use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
 use std::{io, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "scematica-dashboard", about = "Scematica Terminal Dashboard")]
@@ -34,16 +34,31 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let metrics = Arc::new(BotMetrics::new());
-    let state = AppState::new(metrics);
+    let config = scematica_core::config::BotConfig::from_env()?;
+    let wallet = scematica_core::wallet::Wallet::from_source(&config.wallet.keypair_path)?;
+    let wallet_pubkey = wallet.keypair.pubkey();
 
-    // Seed some demo data
-    *state.wallet_address.write() = "7gm6BPQrSBaTAYaJheuRevBNXcmKsgbkfBCVSjBnt9aP".into();
-    *state.sol_balance.write() = 1.234;
-    *state.active_mode.write() = BotMode::Both;
-    state.push_log("[INFO] Scematica dashboard started");
-    state.push_log("[INFO] Connecting to RPC...");
-    state.push_log("[INFO] Wallet loaded");
+    let metrics = Arc::new(BotMetrics::new());
+    let rpc = Arc::new(scematica_core::rpc::RpcConnection::new(
+        &config.rpc.endpoint,
+        CommitmentConfig::confirmed(),
+    ));
+    let state = AppState::new((*metrics).clone(), rpc);
+
+    // Live sync
+    *state.wallet_address.write() = wallet_pubkey.to_string();
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Ok(balance) = state_clone.rpc.get_sol_balance(&wallet_pubkey).await {
+                *state_clone.sol_balance.write() = balance as f64 / 1_000_000_000.0;
+            }
+        }
+    });
+
+    state.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
 
     // Event channel
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(100);

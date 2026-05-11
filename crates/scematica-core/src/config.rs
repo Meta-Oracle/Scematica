@@ -208,18 +208,18 @@ impl BotConfig {
         Ok(config)
     }
 
-    /// Load config from environment variables (dotenv)
+    /// Load config from environment variables (dotenv) and overrides from config file
     pub fn from_env() -> Result<Self> {
         dotenv::dotenv().ok();
+        
+        // Try loading from config.toml first, then fall back to env
+        let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".into());
+        if std::path::Path::new(&config_path).exists() {
+            return Self::from_file(config_path);
+        }
+
         Ok(Self {
-            rpc: RpcConfig {
-                endpoint: std::env::var("RPC_ENDPOINT")
-                    .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".into()),
-                ws_endpoint: std::env::var("RPC_WEBSOCKET_ENDPOINT")
-                    .unwrap_or_else(|_| "wss://api.mainnet-beta.solana.com".into()),
-                commitment: std::env::var("COMMITMENT_LEVEL")
-                    .unwrap_or_else(|_| "confirmed".into()),
-            },
+            rpc: RpcConfig::default(),
             wallet: WalletConfig {
                 keypair_path: std::env::var("KEYPAIR_PATH")
                     .unwrap_or_else(|_| "~/.config/solana/id.json".into()),

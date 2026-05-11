@@ -99,23 +99,19 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
-    let metrics = state.metrics.read().clone();
+    let m = state.metrics.snapshot();
 
-    let rows: Vec<Row> = if let Some(m) = metrics {
-        vec![
-            Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
-            Row::new(vec![Cell::from("Trades Confirmed"), Cell::from(m.trades_confirmed.to_string())]),
-            Row::new(vec![Cell::from("Trades Failed"), Cell::from(m.trades_failed.to_string())]),
-            Row::new(vec![Cell::from("Win Rate"), Cell::from(format!("{:.1}%", m.win_rate()))]),
-            Row::new(vec![Cell::from("Arbs Found"), Cell::from(m.arb_opportunities_found.to_string())]),
-            Row::new(vec![Cell::from("Arbs Executed"), Cell::from(m.arb_executed.to_string())]),
-            Row::new(vec![Cell::from("Total PnL"), Cell::from(format!("{:.6} SOL", m.total_pnl_sol()))]),
-            Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
-            Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
-        ]
-    } else {
-        vec![Row::new(vec![Cell::from("No data yet"), Cell::from("—")])]
-    };
+    let rows: Vec<Row> = vec![
+        Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
+        Row::new(vec![Cell::from("Trades Confirmed"), Cell::from(m.trades_confirmed.to_string())]),
+        Row::new(vec![Cell::from("Trades Failed"), Cell::from(m.trades_failed.to_string())]),
+        Row::new(vec![Cell::from("Win Rate"), Cell::from(format!("{:.1}%", m.win_rate()))]),
+        Row::new(vec![Cell::from("Arbs Found"), Cell::from(m.arb_opportunities_found.to_string())]),
+        Row::new(vec![Cell::from("Arbs Executed"), Cell::from(m.arb_executed.to_string())]),
+        Row::new(vec![Cell::from("Total PnL"), Cell::from(format!("{:.6} SOL", m.total_pnl_sol()))]),
+        Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
+        Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
+    ];
 
     let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
     let table = Table::new(rows, widths)

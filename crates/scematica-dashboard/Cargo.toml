@@ -26,3 +26,4 @@ clap.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true
+solana-sdk.workspace = true

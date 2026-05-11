@@ -19,7 +19,7 @@ pub struct PoolJson {
     pub fee_denominator: u64,
 }
 
-/// Load pool JSONs from a directory and populate the graph
+/// Load pool JSONs from a directory (and subdirectories) and populate the graph
 pub async fn load_pools_from_dir(
     dir: &str,
     graph: &ArbGraph,
@@ -38,6 +38,14 @@ pub async fn load_pools_from_dir(
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+
+        // Recurse into subdirectories (raydium/, orca/, meteora/)
+        if path.is_dir() {
+            let sub_dir = path.to_string_lossy().to_string();
+            count += Box::pin(load_pools_from_dir(&sub_dir, graph, rpc)).await?;
+            continue;
+        }
+
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }

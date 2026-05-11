@@ -99,7 +99,7 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
-    let m = state.metrics.snapshot();
+    let m = state.effective_snapshot();
 
     let rows: Vec<Row> = vec![
         Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),

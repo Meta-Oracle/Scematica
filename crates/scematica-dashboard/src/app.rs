@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use scematica_core::metrics::BotMetrics;
+use scematica_core::metrics::{BotMetrics, MetricsSnapshot, METRICS_FILE};
 use scematica_core::rpc::RpcConnection;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -34,6 +34,8 @@ pub struct AppState {
     pub active_mode: RwLock<BotMode>,
     pub should_quit: RwLock<bool>,
     pub selected_tab: RwLock<usize>,
+    /// Latest snapshot read from the metrics file (written by sniper/arb processes)
+    pub live_snapshot: RwLock<Option<MetricsSnapshot>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -69,7 +71,24 @@ impl AppState {
             active_mode: RwLock::new(BotMode::default()),
             should_quit: RwLock::new(false),
             selected_tab: RwLock::new(0),
+            live_snapshot: RwLock::new(None),
         })
+    }
+
+    /// Poll the metrics file and update live_snapshot. Called on each Tick.
+    pub fn poll_metrics_file(&self) {
+        if let Some(snap) = MetricsSnapshot::load_from_file(METRICS_FILE) {
+            *self.live_snapshot.write() = Some(snap);
+        }
+    }
+
+    /// Returns the live snapshot if available, otherwise falls back to the
+    /// in-process BotMetrics (useful when running dashboard alongside a bot).
+    pub fn effective_snapshot(&self) -> MetricsSnapshot {
+        self.live_snapshot
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.metrics.snapshot())
     }
 
     pub fn push_log(&self, line: impl Into<String>) {

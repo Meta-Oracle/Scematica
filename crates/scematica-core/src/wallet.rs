@@ -4,26 +4,14 @@ use std::path::Path;
 
 /// Load a keypair from a file path or base58-encoded private key string
 pub fn load_keypair(source: &str) -> Result<Keypair> {
-    // 1. Expand ~ to the home directory
+    // 1. Always attempt to read as a file if it looks like a path or exists
     // Resolve home directory: prefer USERPROFILE (Windows), fall back to HOME (Unix)
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-
-    // Only expand ~ if the path actually starts with it, to avoid corrupting UNC paths (\\server\...)
-    let expanded = if source.starts_with('~') {
-        let without_tilde = &source[1..];
-        // Strip a leading separator after ~ if present (e.g. ~/foo or ~\foo)
-        let rest = without_tilde.trim_start_matches('/').trim_start_matches('\\');
-        if rest.is_empty() {
-            home.clone()
-        } else {
-            format!("{}{}{}", home, std::path::MAIN_SEPARATOR, rest)
-        }
-    } else {
-        source.to_string()
-    };
-
+    let expanded = source.replace("~", &home);
+    // Normalize any double separators introduced by the substitution (e.g. "~\\.config" → "C:\Users\x\\.config")
+    let expanded = expanded.replace("\\\\", "\\").replace("//", "/");
     let path = Path::new(&expanded);
     
     if path.exists() {

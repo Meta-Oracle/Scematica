@@ -1,0 +1,21 @@
+[package]
+name = "pool-seeder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Fetches live pool metadata from Raydium, Orca, and Meteora and writes JSON files for the arb engine"
+
+[[bin]]
+name = "pool-seeder"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true

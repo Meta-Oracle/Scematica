@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 AppEvent::Tick => {
-                    // Refresh metrics from shared state (in production, read from Arc<BotMetrics>)
+                    state.poll_metrics_file();
                 }
                 AppEvent::Quit => break,
             }

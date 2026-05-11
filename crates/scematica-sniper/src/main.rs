@@ -137,6 +137,7 @@ async fn main() -> Result<()> {
                 snap.total_pnl_sol(),
                 snap.uptime_secs,
             );
+            metrics_clone.flush_to_file(scematica_core::metrics::METRICS_FILE);
         }
     });
 

@@ -3273,6 +3273,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pool-seeder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.6.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -2,6 +2,10 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+
+/// Default path for the shared metrics file
+pub const METRICS_FILE: &str = "scematica-metrics.json";
 
 /// Global bot metrics, updated atomically during operation
 #[derive(Debug, Default)]
@@ -64,9 +68,21 @@ impl BotMetrics {
             uptime_secs,
         }
     }
+
+    /// Write the current snapshot to a JSON file for the dashboard to read.
+    /// Writes atomically via a temp file to avoid partial reads.
+    pub fn flush_to_file(&self, path: &str) {
+        let snap = self.snapshot();
+        let tmp = format!("{}.tmp", path);
+        if let Ok(json) = serde_json::to_string(&snap) {
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub trades_attempted: u64,
     pub trades_confirmed: u64,
@@ -88,5 +104,12 @@ impl MetricsSnapshot {
 
     pub fn total_pnl_sol(&self) -> f64 {
         self.total_pnl_lamports as f64 / 1_000_000_000.0
+    }
+
+    /// Load a snapshot from the metrics file written by a running bot process.
+    /// Returns None if the file doesn't exist or can't be parsed.
+    pub fn load_from_file(path: &str) -> Option<Self> {
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
     }
 }

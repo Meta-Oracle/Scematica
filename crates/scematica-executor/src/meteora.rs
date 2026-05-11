@@ -40,7 +40,15 @@ mod offsets {
     pub const BIN_ARRAY_BITMAP_EXTENSION: usize = 802; // Pubkey (32 bytes)
 }
 
-/// Decode a `Pubkey` from a 32-byte slice at the given offset.
+/// Derive a Meteora DLMM bin array PDA for a given pool and bin array index.
+fn derive_bin_array_pda(pool: &Pubkey, index: i32, program_id: &Pubkey) -> Result<Pubkey> {
+    let index_bytes = index.to_le_bytes();
+    let (pda, _) = Pubkey::find_program_address(
+        &[b"bin_array", pool.as_ref(), &index_bytes],
+        program_id,
+    );
+    Ok(pda)
+}
 fn read_pubkey(data: &[u8], offset: usize) -> Result<Pubkey> {
     Pubkey::try_from(&data[offset..offset + 32])
         .map_err(|_| anyhow!("failed to read Pubkey at offset {}", offset))
@@ -97,7 +105,6 @@ impl SwapInstructionBuilder for MeteoraBuilder {
 
         // Req 6.4: extract fields from the Anchor-serialized layout (8-byte discriminator already
         // accounted for in the offset constants above)
-        // active_id is extracted here and will be used in task 4.3 for bin array PDA derivation
         let active_id = read_i32(&data, offsets::ACTIVE_ID)?;
         let _bin_step = read_u16(&data, offsets::BIN_STEP)?;
         let token_x_mint = read_pubkey(&data, offsets::TOKEN_X_MINT)?;
@@ -122,9 +129,15 @@ impl SwapInstructionBuilder for MeteoraBuilder {
             ));
         };
 
-        // Bin array PDAs are Pubkey::default() placeholders — task 4.3 will derive them.
-        let bin_array_lower = Pubkey::default();
-        let bin_array_upper = Pubkey::default();
+        // Derive bin array PDAs from active_id and bin_step.
+        // Each bin array covers BIN_ARRAY_SIZE (70) bins.
+        // lower covers the active bin, upper covers the next array in swap direction.
+        const BIN_ARRAY_SIZE: i32 = 70;
+        let lower_idx = active_id.div_euclid(BIN_ARRAY_SIZE);
+        let upper_idx = if swap_for_y { lower_idx - 1 } else { lower_idx + 1 };
+
+        let bin_array_lower = derive_bin_array_pda(pool, lower_idx, &program_ids::METEORA_DLMM)?;
+        let bin_array_upper = derive_bin_array_pda(pool, upper_idx, &program_ids::METEORA_DLMM)?;
 
         // Encode instruction data (25 bytes total per Req 7.4 / 11.3):
         //   [0..8]   METEORA_SWAP_DISCRIMINATOR

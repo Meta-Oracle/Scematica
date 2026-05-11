@@ -1,5 +1,7 @@
 # 🌌 Scematica
 
+# CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump
+
 **Next-Generation Autonomous AI Trading Infrastructure for Solana.**
 
 Scematica is a modular, multi-strategy trading bot system that unifies token sniping, multi-DEX arbitrage, and agentic market analysis into a single extensible platform. Powered by an advanced AI layer, it doesn't just execute trades—it evaluates them through a multi-agent consensus framework.

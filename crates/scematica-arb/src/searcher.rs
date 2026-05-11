@@ -54,6 +54,7 @@ impl ArbSearcher {
                 amount,
                 vec![start_idx],
                 vec![],
+                vec![],
                 &mut paths,
                 &mut seen_ids,
             );
@@ -76,6 +77,7 @@ impl ArbSearcher {
         curr_amount: u128,
         mint_path: Vec<usize>,
         pool_path: Vec<PoolEdge>,
+        hop_amounts: Vec<u64>,
         results: &mut Vec<ArbPath>,
         seen_ids: &mut HashSet<String>,
     ) {
@@ -104,6 +106,8 @@ impl ArbSearcher {
                 new_mint_path.push(next_idx);
                 let mut new_pool_path = pool_path.clone();
                 new_pool_path.push(edge.clone());
+                let mut new_hop_amounts = hop_amounts.clone();
+                new_hop_amounts.push(curr_amount as u64);
 
                 if next_idx == start_idx {
                     // Closed the loop — check profitability
@@ -119,6 +123,7 @@ impl ArbSearcher {
                             new_pool_path,
                             init_amount,
                             out_amount,
+                            new_hop_amounts,
                         );
 
                         // Dedup check
@@ -142,6 +147,7 @@ impl ArbSearcher {
                         out_amount,
                         new_mint_path,
                         new_pool_path,
+                        new_hop_amounts,
                         results,
                         seen_ids,
                     );

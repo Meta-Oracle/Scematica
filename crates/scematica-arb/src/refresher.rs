@@ -55,9 +55,8 @@ impl GraphRefresher {
         // In a full impl, we'd dispatch based on edge.dex
         for pool_addr in pools {
             match self.fetcher.fetch_raydium_pool(&pool_addr).await {
-                Ok(state) => {
-                    // Raydium reserves are in vaults
-                    match self.fetcher.fetch_reserves(&state.base_vault, &state.quote_vault).await {
+                Ok((base_vault, quote_vault)) => {
+                    match self.fetcher.fetch_reserves(&base_vault, &quote_vault).await {
                         Ok((res_a, res_b)) => {
                             self.graph.update_pool_reserves(&pool_addr, res_a, res_b);
                             debug!("Updated pool {}: {} / {}", pool_addr, res_a, res_b);
@@ -66,7 +65,6 @@ impl GraphRefresher {
                     }
                 }
                 Err(e) => {
-                    // Silent debug for now as many pools might not be Raydium V4
                     debug!("Could not fetch Raydium pool {}: {}", pool_addr, e);
                 }
             }

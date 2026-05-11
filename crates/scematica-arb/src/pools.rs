@@ -1,8 +1,7 @@
 use crate::graph::{ArbGraph, PoolEdge};
 use anyhow::Result;
-use scematica_core::types::DexKind;
+use scematica_core::{rpc::RpcConnection, types::DexKind};
 use serde::{Deserialize, Serialize};
-use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -24,7 +23,7 @@ pub struct PoolJson {
 pub async fn load_pools_from_dir(
     dir: &str,
     graph: &ArbGraph,
-    rpc: &Arc<RpcClient>,
+    rpc: &Arc<RpcConnection>,
 ) -> Result<usize> {
     let mut count = 0;
 
@@ -64,7 +63,7 @@ pub async fn load_pools_from_dir(
 }
 
 /// Convert a PoolJson + live reserves into a PoolEdge
-async fn pool_json_to_edge(pool: &PoolJson, rpc: &Arc<RpcClient>) -> Option<PoolEdge> {
+async fn pool_json_to_edge(pool: &PoolJson, rpc: &Arc<RpcConnection>) -> Option<PoolEdge> {
     let pool_address: Pubkey = pool.address.parse().ok()?;
     let vault_a: Pubkey = pool.token_a_vault.parse().ok()?;
     let vault_b: Pubkey = pool.token_b_vault.parse().ok()?;
@@ -93,13 +92,13 @@ async fn pool_json_to_edge(pool: &PoolJson, rpc: &Arc<RpcClient>) -> Option<Pool
 
 /// Fetch token vault balances in parallel
 async fn fetch_reserves(
-    rpc: &Arc<RpcClient>,
+    rpc: &Arc<RpcConnection>,
     vault_a: &Pubkey,
     vault_b: &Pubkey,
 ) -> (u64, u64) {
     let (res_a, res_b) = tokio::join!(
-        rpc.get_token_account_balance(vault_a),
-        rpc.get_token_account_balance(vault_b),
+        rpc.client.get_token_account_balance(vault_a),
+        rpc.client.get_token_account_balance(vault_b),
     );
 
     let reserve_a = res_a
@@ -118,20 +117,16 @@ async fn fetch_reserves(
 /// Called periodically to keep quotes accurate
 pub async fn refresh_graph_reserves(
     _graph: &ArbGraph,
-    pool_vaults: &[(Pubkey, Pubkey, Pubkey)], // (pool_addr, vault_a, vault_b)
-    rpc: &Arc<RpcClient>,
+    pool_vaults: &[(Pubkey, Pubkey, Pubkey)],
+    rpc: &Arc<RpcConnection>,
 ) -> Result<()> {
-    // Batch fetch all vault accounts
     let all_vaults: Vec<Pubkey> = pool_vaults
         .iter()
         .flat_map(|(_, va, vb)| [*va, *vb])
         .collect();
 
-    // Chunk into batches of 100 (RPC limit)
     for chunk in all_vaults.chunks(100) {
-        let accounts = rpc.get_multiple_accounts(chunk).await?;
-        // Process accounts and update graph reserves
-        // (simplified — full impl parses SPL token account data)
+        let accounts = rpc.client.get_multiple_accounts(chunk).await?;
         debug!("Refreshed {} vault accounts", accounts.len());
     }
 

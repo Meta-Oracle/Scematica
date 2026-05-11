@@ -9,6 +9,34 @@ use solana_sdk::{
 };
 use std::sync::Arc;
 
+/// Number of ticks per tick array in Orca Whirlpool
+const TICK_ARRAY_SIZE: i32 = 88;
+
+/// Derive a Whirlpool tick array PDA for a given start tick index.
+fn derive_tick_array_pda(whirlpool: &Pubkey, start_tick_index: i32) -> Pubkey {
+    let start_bytes = start_tick_index.to_string();
+    let (pda, _) = Pubkey::find_program_address(
+        &[b"tick_array", whirlpool.as_ref(), start_bytes.as_bytes()],
+        &program_ids::ORCA_WHIRLPOOL,
+    );
+    pda
+}
+
+/// Round a tick index down to the nearest tick array start index.
+fn tick_array_start_index(tick_index: i32, tick_spacing: u16) -> i32 {
+    let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
+    tick_index.div_euclid(ticks_in_array) * ticks_in_array
+}
+
+/// Derive the oracle PDA for a Whirlpool.
+fn derive_oracle_pda(whirlpool: &Pubkey) -> Pubkey {
+    let (pda, _) = Pubkey::find_program_address(
+        &[b"oracle", whirlpool.as_ref()],
+        &program_ids::ORCA_WHIRLPOOL,
+    );
+    pda
+}
+
 /// Orca Whirlpool swap instruction builder
 pub struct OrcaBuilder {
     rpc: Arc<RpcClient>,
@@ -76,8 +104,8 @@ impl SwapInstructionBuilder for OrcaBuilder {
         //   8+181: token_mint_b (Pubkey, 32)
         //   8+213: token_vault_b (Pubkey, 32)
         // tick_spacing and tick_current_index are used in task 3.3 for tick array PDA derivation
-        let _tick_spacing = u16::from_le_bytes([data[8 + 9], data[8 + 10]]);
-        let _tick_current_index = i32::from_le_bytes([
+        let tick_spacing = u16::from_le_bytes([data[8 + 9], data[8 + 10]]);
+        let tick_current_index = i32::from_le_bytes([
             data[8 + 37],
             data[8 + 38],
             data[8 + 39],
@@ -121,18 +149,20 @@ impl SwapInstructionBuilder for OrcaBuilder {
             (ata_out, ata_in)
         };
 
-        // ── Orca Whirlpool swap accounts (Req 4.12) ──────────────────────────
-        // 0:  token_program       (readonly)
-        // 1:  token_authority     (signer)
-        // 2:  whirlpool           (writable)
-        // 3:  token_owner_acct_a  (writable)
-        // 4:  token_vault_a       (writable)
-        // 5:  token_owner_acct_b  (writable)
-        // 6:  token_vault_b       (writable)
-        // 7:  tick_array_0        (writable) — placeholder until task 3.3
-        // 8:  tick_array_1        (writable) — placeholder until task 3.3
-        // 9:  tick_array_2        (writable) — placeholder until task 3.3
-        // 10: oracle              (readonly) — placeholder until task 3.3
+        // Derive tick arrays: 3 consecutive arrays starting from current tick, in swap direction.
+        let start_0 = tick_array_start_index(tick_current_index, tick_spacing);
+        let ticks_in_array = TICK_ARRAY_SIZE * tick_spacing as i32;
+        let (start_1, start_2) = if a_to_b {
+            (start_0 - ticks_in_array, start_0 - 2 * ticks_in_array)
+        } else {
+            (start_0 + ticks_in_array, start_0 + 2 * ticks_in_array)
+        };
+        let tick_array_0 = derive_tick_array_pda(pool, start_0);
+        let tick_array_1 = derive_tick_array_pda(pool, start_1);
+        let tick_array_2 = derive_tick_array_pda(pool, start_2);
+        let oracle = derive_oracle_pda(pool);
+
+        // Orca Whirlpool swap accounts
         let accounts = vec![
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(*owner, true),
@@ -141,10 +171,10 @@ impl SwapInstructionBuilder for OrcaBuilder {
             AccountMeta::new(token_vault_a, false),
             AccountMeta::new(*user_token_b, false),
             AccountMeta::new(token_vault_b, false),
-            AccountMeta::new(Pubkey::default(), false), // tick_array_0 — task 3.3
-            AccountMeta::new(Pubkey::default(), false), // tick_array_1 — task 3.3
-            AccountMeta::new(Pubkey::default(), false), // tick_array_2 — task 3.3
-            AccountMeta::new_readonly(Pubkey::default(), false), // oracle — task 3.3
+            AccountMeta::new(tick_array_0, false),
+            AccountMeta::new(tick_array_1, false),
+            AccountMeta::new(tick_array_2, false),
+            AccountMeta::new_readonly(oracle, false),
         ];
 
         Ok(vec![Instruction {

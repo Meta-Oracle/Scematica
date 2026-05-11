@@ -25,19 +25,44 @@ impl RaydiumBuilder {
 impl StateDecoder for RaydiumBuilder {
     fn decode_pool_state(&self, data: &[u8]) -> Result<(u64, u64)> {
         let state = RaydiumAmmV4::try_from_slice(&data[..RaydiumAmmV4::LEN])?;
-        Ok((state.lp_reserve, 0)) // Raydium reserves are in vaults
+        Ok((state.lp_reserve, 0))
     }
 }
 
-/// Raydium V4 swap instruction data layout
-/// Discriminator: 9 (swap base in)
-/// amount_in: u64
-/// min_amount_out: u64
+/// Raydium V4 swap instruction data: discriminator 9 + amount_in + min_amount_out
 fn raydium_swap_data(amount_in: u64, min_amount_out: u64) -> Vec<u8> {
-    let mut data = vec![9u8]; // swap instruction discriminator
+    let mut data = vec![9u8];
     data.extend_from_slice(&amount_in.to_le_bytes());
     data.extend_from_slice(&min_amount_out.to_le_bytes());
     data
+}
+
+/// Serum/OpenBook market state layout offsets (little-endian, after 5-byte header).
+/// Reference: https://github.com/openbook-dex/openbook-v1/blob/master/dex/src/state.rs
+mod serum_offsets {
+    pub const HEADER: usize = 5;          // "serum" magic prefix
+    pub const BIDS: usize = 5 + 5 * 8 + 32 * 5;      // offset 197
+    pub const ASKS: usize = BIDS + 32;                 // offset 229
+    pub const EVENT_QUEUE: usize = ASKS + 32;          // offset 261
+    pub const BASE_VAULT: usize = EVENT_QUEUE + 32;    // offset 293
+    pub const PC_VAULT: usize = BASE_VAULT + 32;       // offset 325
+    pub const VAULT_SIGNER_NONCE: usize = HEADER + 8; // offset 13 (u64)
+}
+
+/// Parse a Pubkey from a byte slice at the given offset.
+fn read_pubkey(data: &[u8], offset: usize) -> Result<Pubkey> {
+    Pubkey::try_from(&data[offset..offset + 32])
+        .map_err(|_| anyhow::anyhow!("failed to read Pubkey at serum offset {}", offset))
+}
+
+/// Derive the Serum vault signer PDA from the market address and nonce.
+fn derive_vault_signer(market: &Pubkey, nonce: u64, market_program: &Pubkey) -> Result<Pubkey> {
+    let nonce_bytes = nonce.to_le_bytes();
+    // Serum vault signer uses create_program_address (not find), nonce is the bump
+    Pubkey::create_program_address(
+        &[market.as_ref(), &nonce_bytes],
+        market_program,
+    ).map_err(|e| anyhow::anyhow!("vault signer derivation failed: {}", e))
 }
 
 #[async_trait]
@@ -50,70 +75,55 @@ impl SwapInstructionBuilder for RaydiumBuilder {
         &self,
         pool: &Pubkey,
         owner: &Pubkey,
-        token_in: &Pubkey,
-        token_out: &Pubkey,
+        _token_in: &Pubkey,
+        _token_out: &Pubkey,
         ata_in: &Pubkey,
         ata_out: &Pubkey,
         amount_in: u64,
         min_amount_out: u64,
     ) -> Result<Vec<Instruction>> {
-        // ── Step 1: Fetch and decode pool state (Req 2.1, 2.2, 2.3, 2.4, 2.5) ──
-
-        // Req 2.4: fetch pool account data; propagate RPC error with pool pubkey context
-        let data = self
-            .rpc
-            .get_account_data(pool)
-            .await
+        // Fetch and decode pool state
+        let pool_data = self.rpc.get_account_data(pool).await
             .map_err(|e| anyhow::anyhow!("RPC error fetching pool {}: {}", pool, e))?;
 
-        // Req 2.3: guard against truncated data
-        if data.len() < RaydiumAmmV4::LEN {
-            anyhow::bail!(
-                "pool data too short: {} < {} bytes for pool {}",
-                data.len(),
-                RaydiumAmmV4::LEN,
-                pool
-            );
+        if pool_data.len() < RaydiumAmmV4::LEN {
+            anyhow::bail!("pool data too short: {} < {} for pool {}", pool_data.len(), RaydiumAmmV4::LEN, pool);
         }
 
-        // Req 2.2: Borsh-deserialize the pool state
-        let state = RaydiumAmmV4::try_from_slice(&data[..RaydiumAmmV4::LEN])?;
+        let state = RaydiumAmmV4::try_from_slice(&pool_data[..RaydiumAmmV4::LEN])?;
 
-        // Req 2.5: reject uninitialized pools (status == 0)
         if state.status == 0 {
             anyhow::bail!("pool {} is uninitialized (status == 0)", pool);
         }
 
-        // Raydium V4 requires many accounts. In production these are fetched
-        // from the pool state account and the associated Serum/OpenBook market.
-        // The full account list:
-        // 0: token_program
-        // 1: amm_id (pool)
-        // 2: amm_authority (PDA)
-        // 3: amm_open_orders
-        // 4: amm_target_orders
-        // 5: pool_coin_token_account (base vault)
-        // 6: pool_pc_token_account (quote vault)
-        // 7: serum_program_id
-        // 8: serum_market
-        // 9: serum_bids
-        // 10: serum_asks
-        // 11: serum_event_queue
-        // 12: serum_coin_vault_account
-        // 13: serum_pc_vault_account
-        // 14: serum_vault_signer
-        // 15: user_source_token_account (ata_in)
-        // 16: user_destination_token_account (ata_out)
-        // 17: user_source_owner (owner)
+        // Fetch and decode Serum market state to get bids/asks/event_queue/vaults/vault_signer
+        let market_data = self.rpc.get_account_data(&state.market_id).await
+            .map_err(|e| anyhow::anyhow!("RPC error fetching market {}: {}", state.market_id, e))?;
 
-        // Derive AMM authority PDA
+        const MIN_MARKET_LEN: usize = serum_offsets::PC_VAULT + 32;
+        if market_data.len() < MIN_MARKET_LEN {
+            anyhow::bail!("market data too short: {} < {}", market_data.len(), MIN_MARKET_LEN);
+        }
+
+        let bids          = read_pubkey(&market_data, serum_offsets::BIDS)?;
+        let asks          = read_pubkey(&market_data, serum_offsets::ASKS)?;
+        let event_queue   = read_pubkey(&market_data, serum_offsets::EVENT_QUEUE)?;
+        let base_vault    = read_pubkey(&market_data, serum_offsets::BASE_VAULT)?;
+        let pc_vault      = read_pubkey(&market_data, serum_offsets::PC_VAULT)?;
+
+        // Vault signer nonce is a u64 at offset 13 (after 5-byte header + 8-byte account flags)
+        let nonce_bytes: [u8; 8] = market_data[serum_offsets::VAULT_SIGNER_NONCE
+            ..serum_offsets::VAULT_SIGNER_NONCE + 8]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("failed to read vault signer nonce"))?;
+        let vault_signer_nonce = u64::from_le_bytes(nonce_bytes);
+        let vault_signer = derive_vault_signer(&state.market_id, vault_signer_nonce, &state.market_program_id)?;
+
         let (amm_authority, _) = Pubkey::find_program_address(
             &[b"amm authority"],
             &program_ids::RAYDIUM_AMM_V4,
         );
 
-        // NOTE: serum bids/asks/event_queue/vaults/vault_signer must be
-        // fetched from the Serum market state (task 2.3). Placeholders used here.
         let accounts = vec![
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new(*pool, false),
@@ -124,12 +134,12 @@ impl SwapInstructionBuilder for RaydiumBuilder {
             AccountMeta::new(state.quote_vault, false),
             AccountMeta::new_readonly(state.market_program_id, false),
             AccountMeta::new(state.market_id, false),
-            AccountMeta::new(Pubkey::default(), false), // serum_bids — fetch from market state (task 2.3)
-            AccountMeta::new(Pubkey::default(), false), // serum_asks
-            AccountMeta::new(Pubkey::default(), false), // serum_event_queue
-            AccountMeta::new(Pubkey::default(), false), // serum_coin_vault
-            AccountMeta::new(Pubkey::default(), false), // serum_pc_vault
-            AccountMeta::new_readonly(Pubkey::default(), false), // serum_vault_signer
+            AccountMeta::new(bids, false),
+            AccountMeta::new(asks, false),
+            AccountMeta::new(event_queue, false),
+            AccountMeta::new(base_vault, false),
+            AccountMeta::new(pc_vault, false),
+            AccountMeta::new_readonly(vault_signer, false),
             AccountMeta::new(*ata_in, false),
             AccountMeta::new(*ata_out, false),
             AccountMeta::new_readonly(*owner, true),

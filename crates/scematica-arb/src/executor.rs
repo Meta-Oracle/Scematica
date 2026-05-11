@@ -185,9 +185,11 @@ impl ArbExecutor {
                 &out_mint,
             );
 
-            // In a real bot, we would calculate min_amount_out per hop.
-            // For the wrapper pattern, we often use 1 or 0 here and let the final
-            // ProfitOrRevert instruction handle the safety.
+            let hop_amount_in = path.hop_amounts.get(i).copied().unwrap_or(0);
+            // min_amount_out for intermediate hops: use next hop's input as floor, or 1 for last hop
+            // (final safety is enforced by ProfitOrRevert on-chain)
+            let hop_min_out = path.hop_amounts.get(i + 1).copied().unwrap_or(1);
+
             let hop_ixs = builder.build_swap(
                 &edge.pool_address,
                 &self.wallet.pubkey(),
@@ -195,8 +197,8 @@ impl ArbExecutor {
                 &out_mint,
                 &ata_in,
                 &ata_out,
-                0, // amount_in is handled by previous hop's output
-                0, // min_amount_out handled by ProfitOrRevert
+                hop_amount_in,
+                hop_min_out,
             ).await?;
 
             ixs.extend(hop_ixs);

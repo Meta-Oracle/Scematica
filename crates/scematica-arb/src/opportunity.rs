@@ -16,6 +16,8 @@ pub struct ArbPath {
     pub input_amount: u128,
     /// Expected output amount after all swaps
     pub output_amount: u128,
+    /// Per-hop input amounts: hop_amounts[i] is the input to pool_path[i]
+    pub hop_amounts: Vec<u64>,
     /// Profit = output - input
     pub profit: i128,
     /// Profit as a percentage of input
@@ -28,6 +30,7 @@ impl ArbPath {
         pool_path: Vec<PoolEdge>,
         input_amount: u128,
         output_amount: u128,
+        hop_amounts: Vec<u64>,
     ) -> Self {
         let profit = output_amount as i128 - input_amount as i128;
         let profit_pct = if input_amount > 0 {
@@ -47,6 +50,7 @@ impl ArbPath {
             pool_path,
             input_amount,
             output_amount,
+            hop_amounts,
             profit,
             profit_pct,
         }

@@ -7,9 +7,7 @@ pub fn load_keypair(source: &str) -> Result<Keypair> {
     // Try as a file path first
     let expanded = shellexpand::tilde(source).to_string();
     let path = Path::new(&expanded);
-    
-    // Check if it's a file that exists or if it looks like a path
-    if path.exists() || source.contains(std::path::MAIN_SEPARATOR) || source.contains(':') {
+    if path.exists() {
         return read_keypair_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to read keypair file {}: {}", source, e));
     }

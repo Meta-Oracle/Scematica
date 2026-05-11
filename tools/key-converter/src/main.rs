@@ -21,16 +21,16 @@ fn main() -> Result<()> {
     let keypair = Keypair::from_seed(&seed_bytes[..32])
         .map_err(|e| anyhow!("Failed to derive keypair: {}", e))?;
     
-    // 4. Save to file
-    let path = "id.json";
-    let mut file = File::create(path)?;
+    // 5. Save to file
+    let path = std::env::current_dir()?.join("id.json");
+    let mut file = File::create(&path)?;
     // Convert [u8; 64] to Vec<u8> so it can be serialized as JSON array
     let bytes = keypair.to_bytes().to_vec();
     file.write_all(serde_json::to_string(&bytes)?.as_bytes())?;
 
-    println!("\n✅ Successfully created {}!", path);
+    println!("\n✅ Successfully created file at: {}", path.display());
     println!("Public Key: {}", keypair.pubkey());
-    println!("Keep this file safe and move it to: /home/deadsg/.config/solana/id.json");
+    println!("Move this file to: /home/deadsg/.config/solana/id.json");
 
     Ok(())
-}
+    }

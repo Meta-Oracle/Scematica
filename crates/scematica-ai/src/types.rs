@@ -36,20 +36,37 @@ impl AiProvider {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String, // "function"
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
 /// A chat message for the AI API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,   // "system" | "user" | "assistant"
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallResponse>>,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self { role: "system".into(), content: Some(content.into()), tool_calls: None }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self { role: "user".into(), content: Some(content.into()), tool_calls: None }
     }
 }
 
@@ -63,6 +80,10 @@ pub struct AiRequest {
     /// Request JSON output
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +100,8 @@ impl AiRequest {
             temperature: 0.1, // low temp for consistent structured output
             max_tokens: 512,
             response_format: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 
@@ -114,7 +137,10 @@ pub struct AiChoice {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiMessage {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallResponse>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

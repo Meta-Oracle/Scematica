@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 scematica-core = { path = "../scematica-core" }
+scematica-ai = { path = "../scematica-ai" }
 
 tokio.workspace = true
 serde.workspace = true
@@ -25,5 +26,7 @@ parking_lot.workspace = true
 clap.workspace = true
 
 ratatui.workspace = true
+ratatui-macros = "0.7.0-beta.1"
 crossterm.workspace = true
 solana-sdk.workspace = true
+proptest = "1.0"

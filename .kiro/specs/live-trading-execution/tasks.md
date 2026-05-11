@@ -62,7 +62,7 @@ Fix the four broken DEX execution paths by injecting a real `Arc<RpcClient>` int
     - Set `sqrt_price_limit` to `MIN_SQRT_PRICE` (4295048016u128) when `a_to_b`, else `MAX_SQRT_PRICE` (79226673515401279992447579055u128)
     - _Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8_
 
-  - [~] 3.3 Implement tick array PDA derivation and oracle PDA derivation
+  - [-] 3.3 Implement tick array PDA derivation and oracle PDA derivation
     - Extract `derive_tick_array_pda` helper: `Pubkey::find_program_address(&[b"tick_array", pool.as_ref(), start_tick.to_string().as_bytes()], &ORCA_WHIRLPOOL).0`
     - Compute `start_tick_index(tick_current_index, tick_spacing, offset)` using `div_euclid` as specified in design
     - Derive 3 tick arrays at offsets `0`, `±1`, `±2` based on `a_to_b` direction
@@ -97,7 +97,7 @@ Fix the four broken DEX execution paths by injecting a real `Arc<RpcClient>` int
     - Set `swap_for_y = (token_in == token_x_mint)`; return `Err` if `token_in` matches neither mint (Req 6.6)
     - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6_
 
-  - [~] 4.3 Implement bin array PDA derivation
+  - [-] 4.3 Implement bin array PDA derivation
     - Compute `bin_array_index = active_id.div_euclid(70)`
     - Derive 2 bin array PDAs: `Pubkey::find_program_address(&[b"bin_array", pool.as_ref(), &(index as i64).to_le_bytes()], &METEORA_DLMM).0` for `index` and `index + 1`
     - _Requirements: 6.7_

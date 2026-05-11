@@ -121,6 +121,18 @@ pub struct Trade {
     pub pnl_lamports: Option<i64>,
 }
 
+/// A simplified trade entry for UI/Dashboard display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeEntry {
+    pub timestamp: DateTime<Utc>,
+    pub kind: String,       // "BUY" | "SELL" | "ARB"
+    pub mint: String,
+    pub amount: f64,
+    pub pnl: f64,
+    pub status: String,     // "✓" | "✗"
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradeStatus {
     Pending,

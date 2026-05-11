@@ -8,9 +8,9 @@ ws_endpoint = "wss://api.mainnet-beta.solana.com"
 commitment = "confirmed"
 
 [wallet]
-keypair_path = "/home/deadsg/.config/solana/id.json"
+keypair_path = "\\\\wsl$\\Ubuntu-22.04\\home\\deadsg\\.config\\solana\\id.json"
 
-# ============================================================
+# ===========0=================================================
 # Sniper Configuration
 # ============================================================
 [sniper]

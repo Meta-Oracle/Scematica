@@ -1,21 +1,46 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
 use std::path::Path;
 
 /// Load a keypair from a file path or base58-encoded private key string
 pub fn load_keypair(source: &str) -> Result<Keypair> {
-    // Try as a file path first
-    let expanded = shellexpand::tilde(source).to_string();
+    // 1. Expand ~ to the home directory
+    // Resolve home directory: prefer USERPROFILE (Windows), fall back to HOME (Unix)
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    // Only expand ~ if the path actually starts with it, to avoid corrupting UNC paths (\\server\...)
+    let expanded = if source.starts_with('~') {
+        let without_tilde = &source[1..];
+        // Strip a leading separator after ~ if present (e.g. ~/foo or ~\foo)
+        let rest = without_tilde.trim_start_matches('/').trim_start_matches('\\');
+        if rest.is_empty() {
+            home.clone()
+        } else {
+            format!("{}{}{}", home, std::path::MAIN_SEPARATOR, rest)
+        }
+    } else {
+        source.to_string()
+    };
+
     let path = Path::new(&expanded);
+    
     if path.exists() {
         return read_keypair_file(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read keypair file {}: {}", source, e));
+            .map_err(|e| anyhow::anyhow!("Failed to read existing keypair file {}: {}", expanded, e));
     }
 
-    // Try as base58-encoded private key
+    // 2. Explicitly handle paths that don't exist but are clearly paths
+    if source.starts_with('/') || source.starts_with('~') || source.starts_with("./") || source.contains(std::path::MAIN_SEPARATOR) {
+        return Err(anyhow::anyhow!("Keypair file path specified but not found: {}", expanded));
+    }
+
+    // 3. Try as base58-encoded private key
     let bytes = bs58::decode(source)
         .into_vec()
-        .context("Failed to decode base58 private key")?;
+        .map_err(|e| anyhow::anyhow!("Failed to decode base58 key (input: '{}'): {}", source, e))?;
+    
     Keypair::from_bytes(&bytes)
         .map_err(|e| anyhow::anyhow!("Invalid keypair bytes: {}", e))
 }

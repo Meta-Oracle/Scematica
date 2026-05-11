@@ -10,7 +10,6 @@ use solana_sdk::{
     message::Message,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
-    transaction::Transaction,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -50,7 +49,7 @@ impl ArbExecutor {
             scematica_core::types::DexKind::Meteora,
             scematica_core::types::DexKind::Jupiter,
         ] {
-            if let Some(builder) = get_builder(dex) {
+            if let Some(builder) = get_builder(dex, rpc.client.clone()) {
                 builders.insert(dex, builder);
             }
         }
@@ -190,7 +189,7 @@ impl ArbExecutor {
             // For the wrapper pattern, we often use 1 or 0 here and let the final
             // ProfitOrRevert instruction handle the safety.
             let hop_ixs = builder.build_swap(
-                &edge.pool_id,
+                &edge.pool_address,
                 &self.wallet.pubkey(),
                 &in_mint,
                 &out_mint,

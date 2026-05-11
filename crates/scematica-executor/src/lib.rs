@@ -7,7 +7,9 @@ pub mod raydium_state;
 use anyhow::Result;
 use async_trait::async_trait;
 use scematica_core::types::DexKind;
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use std::sync::Arc;
 
 /// Trait for decoding on-chain pool state
 pub trait StateDecoder: Send + Sync {
@@ -33,12 +35,13 @@ pub trait SwapInstructionBuilder: Send + Sync {
     ) -> Result<Vec<Instruction>>;
 }
 
-/// Factory: get the right builder for a DEX
-pub fn get_builder(dex: DexKind) -> Option<Box<dyn SwapInstructionBuilder>> {
+/// Factory: get the right builder for a DEX.
+/// `rpc` will be forwarded to each builder once they accept `Arc<RpcClient>` (tasks 2–4).
+pub fn get_builder(dex: DexKind, rpc: Arc<RpcClient>) -> Option<Box<dyn SwapInstructionBuilder>> {
     match dex {
-        DexKind::Raydium => Some(Box::new(raydium::RaydiumBuilder::new())),
-        DexKind::Orca => Some(Box::new(orca::OrcaBuilder::new())),
-        DexKind::Meteora => Some(Box::new(meteora::MeteoraBuilder::new())),
+        DexKind::Raydium => Some(Box::new(raydium::RaydiumBuilder::new(rpc.clone()))),
+        DexKind::Orca => Some(Box::new(orca::OrcaBuilder::new(rpc.clone()))),
+        DexKind::Meteora => Some(Box::new(meteora::MeteoraBuilder::new(rpc.clone()))),
         DexKind::Jupiter => Some(Box::new(jupiter::JupiterBuilder::new())),
         _ => None,
     }

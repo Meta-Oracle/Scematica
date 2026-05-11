@@ -84,7 +84,7 @@ impl Sniper {
         Self {
             config,
             wallet,
-            rpc,
+            rpc: rpc.clone(),
             pool_cache: PoolCache::new(),
             market_cache: MarketCache::new(),
             snipe_list,
@@ -96,7 +96,7 @@ impl Sniper {
             quote_mint,
             quote_decimals,
             quote_amount_raw,
-            raydium_builder: Arc::from(get_builder(DexKind::Raydium)
+            raydium_builder: Arc::from(get_builder(DexKind::Raydium, rpc.clone())
                 .expect("Raydium builder not found")),
         }
     }

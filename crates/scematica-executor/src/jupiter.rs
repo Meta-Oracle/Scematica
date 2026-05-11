@@ -2,7 +2,7 @@ use crate::SwapInstructionBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
 use scematica_core::types::DexKind;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey, transaction::VersionedTransaction};
 
 /// Jupiter V6 aggregator swap builder
 /// Uses Jupiter's REST API to get the optimal route and swap transaction
@@ -49,20 +49,37 @@ impl JupiterBuilder {
             "prioritizationFeeLamports": "auto"
         });
 
-        let resp: serde_json::Value = self
+        let response = self
             .http_client
             .post(format!("{}/swap", self.api_url))
             .json(&payload)
             .send()
-            .await?
-            .json()
             .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Jupiter /swap returned HTTP {}: {}",
+                status.as_u16(),
+                body
+            );
+        }
+
+        let resp: serde_json::Value = response.json().await?;
 
         let tx_b64 = resp["swapTransaction"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No swapTransaction in Jupiter response"))?;
 
         Ok(base64::decode(tx_b64)?)
+    }
+
+    /// Deserialize a bincode-encoded `VersionedTransaction` from raw bytes.
+    ///
+    /// Returns `Err` on empty input, malformed bytes, or any bincode decode failure (Req 8.3).
+    pub fn deserialize_transaction(&self, tx_bytes: &[u8]) -> Result<VersionedTransaction> {
+        bincode::deserialize::<VersionedTransaction>(tx_bytes).map_err(Into::into)
     }
 }
 

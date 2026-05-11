@@ -43,3 +43,6 @@ bs58.workspace = true
 async-trait = "0.1"
 shellexpand = "3.1"
 toml = "0.8"
+
+[dev-dependencies]
+proptest = "1"

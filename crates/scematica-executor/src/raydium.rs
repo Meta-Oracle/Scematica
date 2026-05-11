@@ -4,17 +4,21 @@ use async_trait::async_trait;
 use borsh::BorshDeserialize;
 use crate::raydium_state::RaydiumAmmV4;
 use scematica_core::{dex::program_ids, types::DexKind};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
 };
+use std::sync::Arc;
 
 /// Raydium AMM V4 swap instruction builder
-pub struct RaydiumBuilder;
+pub struct RaydiumBuilder {
+    rpc: Arc<RpcClient>,
+}
 
 impl RaydiumBuilder {
-    pub fn new() -> Self {
-        Self
+    pub fn new(rpc: Arc<RpcClient>) -> Self {
+        Self { rpc }
     }
 }
 
@@ -53,6 +57,33 @@ impl SwapInstructionBuilder for RaydiumBuilder {
         amount_in: u64,
         min_amount_out: u64,
     ) -> Result<Vec<Instruction>> {
+        // ── Step 1: Fetch and decode pool state (Req 2.1, 2.2, 2.3, 2.4, 2.5) ──
+
+        // Req 2.4: fetch pool account data; propagate RPC error with pool pubkey context
+        let data = self
+            .rpc
+            .get_account_data(pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("RPC error fetching pool {}: {}", pool, e))?;
+
+        // Req 2.3: guard against truncated data
+        if data.len() < RaydiumAmmV4::LEN {
+            anyhow::bail!(
+                "pool data too short: {} < {} bytes for pool {}",
+                data.len(),
+                RaydiumAmmV4::LEN,
+                pool
+            );
+        }
+
+        // Req 2.2: Borsh-deserialize the pool state
+        let state = RaydiumAmmV4::try_from_slice(&data[..RaydiumAmmV4::LEN])?;
+
+        // Req 2.5: reject uninitialized pools (status == 0)
+        if state.status == 0 {
+            anyhow::bail!("pool {} is uninitialized (status == 0)", pool);
+        }
+
         // Raydium V4 requires many accounts. In production these are fetched
         // from the pool state account and the associated Serum/OpenBook market.
         // The full account list:
@@ -81,19 +112,19 @@ impl SwapInstructionBuilder for RaydiumBuilder {
             &program_ids::RAYDIUM_AMM_V4,
         );
 
-        // NOTE: open_orders, target_orders, vaults, serum accounts must be
-        // fetched from the pool state. Placeholders used here.
+        // NOTE: serum bids/asks/event_queue/vaults/vault_signer must be
+        // fetched from the Serum market state (task 2.3). Placeholders used here.
         let accounts = vec![
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new(*pool, false),
             AccountMeta::new_readonly(amm_authority, false),
-            AccountMeta::new(Pubkey::default(), false), // open_orders — fetch from pool state
-            AccountMeta::new(Pubkey::default(), false), // target_orders
-            AccountMeta::new(Pubkey::default(), false), // base_vault
-            AccountMeta::new(Pubkey::default(), false), // quote_vault
-            AccountMeta::new_readonly(Pubkey::default(), false), // serum_program
-            AccountMeta::new(Pubkey::default(), false), // serum_market
-            AccountMeta::new(Pubkey::default(), false), // serum_bids
+            AccountMeta::new(state.open_orders, false),
+            AccountMeta::new(state.target_orders, false),
+            AccountMeta::new(state.base_vault, false),
+            AccountMeta::new(state.quote_vault, false),
+            AccountMeta::new_readonly(state.market_program_id, false),
+            AccountMeta::new(state.market_id, false),
+            AccountMeta::new(Pubkey::default(), false), // serum_bids — fetch from market state (task 2.3)
             AccountMeta::new(Pubkey::default(), false), // serum_asks
             AccountMeta::new(Pubkey::default(), false), // serum_event_queue
             AccountMeta::new(Pubkey::default(), false), // serum_coin_vault

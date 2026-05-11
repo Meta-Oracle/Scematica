@@ -64,8 +64,8 @@ async fn main() -> Result<()> {
     info!("Wallet: {}", wallet_kp.pubkey());
 
     let commitment = CommitmentConfig::confirmed();
-    let rpc = Arc::new(RpcClient::new_with_commitment(
-        config.rpc.endpoint.clone(),
+    let rpc = Arc::new(scematica_core::rpc::RpcConnection::new(
+        &config.rpc.endpoint,
         commitment,
     ));
 
@@ -78,6 +78,17 @@ async fn main() -> Result<()> {
     let graph = Arc::new(ArbGraph::new());
     let pool_count = load_pools_from_dir(&config.arb.pool_dir, &graph, &rpc).await?;
     info!("Graph built: {} pools, {} mints", pool_count, graph.mint_count());
+
+    // Graph refresher
+    let fetcher = Arc::new(scematica_core::rpc::DexFetcher::new(rpc.clone()));
+    let refresher = scematica_arb::refresher::GraphRefresher::new(
+        graph.clone(),
+        fetcher,
+        5000, // 5s refresh
+    );
+    tokio::spawn(async move {
+        refresher.run().await;
+    });
 
     // Resolve start mint
     let start_mint = resolve_mint(&config.arb.start_mint)

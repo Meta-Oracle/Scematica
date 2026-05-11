@@ -1,6 +1,8 @@
-use crate::SwapInstructionBuilder;
+use crate::{SwapInstructionBuilder, StateDecoder};
 use anyhow::Result;
 use async_trait::async_trait;
+use borsh::BorshDeserialize;
+use crate::raydium_state::RaydiumAmmV4;
 use scematica_core::{dex::program_ids, types::DexKind};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -13,6 +15,13 @@ pub struct RaydiumBuilder;
 impl RaydiumBuilder {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl StateDecoder for RaydiumBuilder {
+    fn decode_pool_state(&self, data: &[u8]) -> Result<(u64, u64)> {
+        let state = RaydiumAmmV4::try_from_slice(&data[..RaydiumAmmV4::LEN])?;
+        Ok((state.lp_reserve, 0)) // Raydium reserves are in vaults
     }
 }
 

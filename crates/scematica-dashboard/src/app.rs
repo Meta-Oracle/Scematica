@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use scematica_core::metrics::MetricsSnapshot;
+use scematica_core::metrics::BotMetrics;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -21,9 +21,9 @@ pub struct TradeEntry {
 }
 
 /// Shared application state for the dashboard
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AppState {
-    pub metrics: RwLock<Option<MetricsSnapshot>>,
+    pub metrics: Arc<BotMetrics>,
     pub log_lines: RwLock<VecDeque<String>>,
     pub trades: RwLock<VecDeque<TradeEntry>>,
     pub wallet_address: RwLock<String>,
@@ -55,8 +55,18 @@ impl std::fmt::Display for BotMode {
 }
 
 impl AppState {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn new(metrics: Arc<BotMetrics>) -> Arc<Self> {
+        Arc::new(Self {
+            metrics,
+            log_lines: RwLock::new(VecDeque::new()),
+            trades: RwLock::new(VecDeque::new()),
+            wallet_address: RwLock::new(String::new()),
+            sol_balance: RwLock::new(0.0),
+            quote_balance: RwLock::new(0.0),
+            active_mode: RwLock::new(BotMode::default()),
+            should_quit: RwLock::new(false),
+            selected_tab: RwLock::new(0),
+        })
     }
 
     pub fn push_log(&self, line: impl Into<String>) {
@@ -73,10 +83,6 @@ impl AppState {
         while trades.len() > MAX_TRADES {
             trades.pop_back();
         }
-    }
-
-    pub fn update_metrics(&self, snap: MetricsSnapshot) {
-        *self.metrics.write() = Some(snap);
     }
 
     pub fn quit(&self) {

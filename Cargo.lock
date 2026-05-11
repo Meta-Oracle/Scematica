@@ -3853,6 +3853,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.7",
  "bincode",
+ "borsh 1.6.1",
  "reqwest",
  "scematica-core",
  "serde",

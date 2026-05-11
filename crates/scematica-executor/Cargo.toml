@@ -8,6 +8,7 @@ description = "DEX-specific swap instruction builders for Scematica"
 
 [dependencies]
 scematica-core = { path = "../scematica-core" }
+borsh = { version = "1.0", features = ["derive"] }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

@@ -2,8 +2,8 @@ use crate::opportunity::ArbPath;
 use anyhow::Result;
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::metrics::BotMetrics;
+use scematica_core::rpc::RpcConnection;
 use scematica_executor::{get_builder, SwapInstructionBuilder};
-use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
@@ -19,7 +19,7 @@ use tracing::{info, warn};
 /// The on-chain program (scematica-swap) enforces profit-or-revert:
 /// if the final output < initial input, the transaction reverts.
 pub struct ArbExecutor {
-    rpc: Arc<RpcClient>,
+    rpc: Arc<RpcConnection>,
     wallet: Arc<Keypair>,
     metrics: Arc<BotMetrics>,
     ai: Option<Arc<AiCoordinator>>,
@@ -36,7 +36,7 @@ pub struct ArbExecutor {
 
 impl ArbExecutor {
     pub fn new(
-        rpc: Arc<RpcClient>,
+        rpc: Arc<RpcConnection>,
         wallet: Arc<Keypair>,
         metrics: Arc<BotMetrics>,
         ai: Option<Arc<AiCoordinator>>,
@@ -71,7 +71,7 @@ impl ArbExecutor {
 
     /// Execute an arbitrage path. Returns the transaction signature if successful.
     pub async fn execute(&self, path: &ArbPath) -> Result<Option<String>> {
-        // ... (rest of execute method remains the same)
+        // ... (rest of execute method)
         // Sanity check: minimum profit threshold
         if path.profit < self.min_profit_lamports as i128 {
             warn!(
@@ -120,17 +120,25 @@ impl ArbExecutor {
 
         let ixs = self.build_arb_instructions(path).await?;
 
-        let blockhash = self.rpc.get_latest_blockhash().await?;
+        let blockhash = self.rpc.client.get_latest_blockhash().await?;
         let msg = Message::new_with_blockhash(&ixs, Some(&self.wallet.pubkey()), &blockhash);
-        let mut tx = Transaction::new_unsigned(msg);
-        tx.sign(&[&*self.wallet], blockhash);
+        let tx = solana_sdk::transaction::VersionedTransaction::from(
+            solana_sdk::transaction::Transaction::new(&[&*self.wallet], msg, blockhash)
+        );
 
-        match self.rpc.send_and_confirm_transaction_with_spinner(&tx).await {
+        match self.rpc.send_transaction(&tx, self.skip_preflight).await {
             Ok(sig) => {
-                info!("Arb confirmed: {}", sig);
-                self.metrics.record_arb_executed();
-                self.metrics.record_trade_confirmed(path.profit as i64);
-                Ok(Some(sig.to_string()))
+                info!("Arb submitted: {}", sig);
+                if self.rpc.confirm_transaction(&sig, 10).await? {
+                    info!("Arb confirmed: {}", sig);
+                    self.metrics.record_arb_executed();
+                    self.metrics.record_trade_confirmed(path.profit as i64);
+                    Ok(Some(sig.to_string()))
+                } else {
+                    warn!("Arb confirmation timeout: {}", sig);
+                    self.metrics.record_trade_failed();
+                    Ok(None)
+                }
             }
             Err(e) => {
                 // Expected: profit-or-revert will cause many txs to fail

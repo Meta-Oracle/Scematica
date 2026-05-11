@@ -2,11 +2,17 @@ pub mod raydium;
 pub mod orca;
 pub mod meteora;
 pub mod jupiter;
+pub mod raydium_state;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use scematica_core::types::DexKind;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+
+/// Trait for decoding on-chain pool state
+pub trait StateDecoder: Send + Sync {
+    fn decode_pool_state(&self, data: &[u8]) -> Result<(u64, u64)>;
+}
 
 /// Trait for building DEX-specific swap instructions
 #[async_trait]

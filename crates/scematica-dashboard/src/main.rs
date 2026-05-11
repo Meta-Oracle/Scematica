@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use scematica_core::metrics::BotMetrics;
 use scematica_dashboard::{
     app::{AppState, BotMode},
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
@@ -33,7 +34,8 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let state = AppState::new();
+    let metrics = Arc::new(BotMetrics::new());
+    let state = AppState::new(metrics);
 
     // Seed some demo data
     *state.wallet_address.write() = "7gm6BPQrSBaTAYaJheuRevBNXcmKsgbkfBCVSjBnt9aP".into();

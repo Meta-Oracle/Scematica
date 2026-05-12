@@ -5,10 +5,10 @@ seeds = false
 skip-lint = false
 
 [programs.mainnet]
-scematica_swap = "ScemSwap1111111111111111111111111111111111"
+scematica_swap = "11111111111111111111111111111111"
 
 [programs.localnet]
-scematica_swap = "ScemSwap1111111111111111111111111111111111"
+scematica_swap = "11111111111111111111111111111111"
 
 [registry]
 url = "https://api.apr.dev"

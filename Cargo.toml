@@ -79,3 +79,10 @@ bs58 = "0.5"
 hex = "0.4"
 async-trait = "0.1"
 shellexpand = "3.1"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+

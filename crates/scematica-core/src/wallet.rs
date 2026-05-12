@@ -11,7 +11,13 @@ pub fn load_keypair(source: &str) -> Result<Keypair> {
         .unwrap_or_else(|_| ".".to_string());
     let expanded = source.replace("~", &home);
     // Normalize any double separators introduced by the substitution (e.g. "~\\.config" → "C:\Users\x\\.config")
-    let expanded = expanded.replace("\\\\", "\\").replace("//", "/");
+    // but preserve leading double backslashes for UNC paths on Windows.
+    let expanded = if expanded.starts_with("\\\\") {
+        "\\\\".to_string() + &expanded[2..].replace("\\\\", "\\")
+    } else {
+        expanded.replace("\\\\", "\\")
+    };
+    let expanded = expanded.replace("//", "/");
     let path = Path::new(&expanded);
     
     if path.exists() {

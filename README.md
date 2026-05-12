@@ -59,8 +59,8 @@ Scematica is built as a highly modular Rust workspace:
 
 2. **Setup environment variables:**
    ```bash
-   cp .env.example .env
-   # Edit .env with your RPC URL and API keys
+   # Copy example env if available, or create one
+   # .env is used for sensitive keys
    ```
 
 3. **Install dependencies and build:**
@@ -71,27 +71,47 @@ Scematica is built as a highly modular Rust workspace:
 ### Configuration
 
 Scematica uses a dual-layer configuration system:
-- **`.env`**: For sensitive keys (RPC URLs, Wallet paths, AI API keys).
-- **`config.toml`**: For strategy parameters (TP/SL, amounts, filters).
+- **`.env`**: For sensitive keys (RPC URLs, AI API keys).
+- **`config.toml`**: For strategy parameters and paths.
+
+#### Keypair Configuration
+You can specify your wallet in `config.toml` or via the `KEYPAIR_PATH` environment variable. Scematica supports:
+- **Local Files**: `C:\Users\name\.config\solana\id.json` or `~/.config/solana/id.json`
+- **WSL UNC Paths**: `\\wsl$\Ubuntu\home\user\.config\solana\id.json` (Supported on Windows)
+- **Base58 Strings**: Paste your private key directly as a string.
+
+Example `config.toml`:
+```toml
+[wallet]
+keypair_path = "\\\\wsl$\\Ubuntu-22.04\\home\\deadsg\\.config\\solana\\id.json"
+```
+*Note: Use double backslashes in TOML for Windows paths.*
 
 ---
 
-## 🏃 Running the Bot
+## 🏃 Getting Fully Functional
 
-### 1. Token Sniper
-Detect and buy new tokens based on strict filters and AI risk scoring.
-```bash
-cargo run --release --bin sniper -- --config config.toml
-```
+To get Scematica fully operational, follow these steps:
 
-### 2. Arbitrage Engine
-Search and execute cross-DEX arbitrage opportunities.
-```bash
-cargo run --release --bin arb -- --config config.toml
-```
+### 1. Wallet Setup
+Ensure you have a Solana keypair. If you are on Windows but keep your keys in WSL, use the UNC path format as shown above. Ensure the wallet has at least 0.1 - 0.5 SOL for trading and transaction fees.
 
-### 3. Dashboard
-Monitor all bot activities in a real-time TUI.
+### 2. RPC Nodes
+High-performance trading requires fast RPCs.
+- Edit `config.toml` and set `rpc.endpoint` and `rpc.ws_endpoint`.
+- **Recommended**: Use a private provider like Helius, QuickNode, or Triton. Public nodes will likely be rate-limited.
+
+### 3. AI Integration (Optional but Recommended)
+For AI-scored trades:
+- Get a Groq API key from [console.groq.com](https://console.groq.com).
+- Add `GROQ_API_KEY=your_key_here` to your `.env` file.
+
+### 4. On-Chain Program (For Arbitrage)
+The arbitrage engine requires the `scematica-swap` program to be deployed for profit-or-revert protection.
+- If using mainnet, ensure you have updated the `SWAP_PROGRAM_ID` in your config to match the deployed program.
+
+### 5. Running the Application
+Launch the dashboard to monitor everything in one place:
 ```bash
 cargo run --release --bin dashboard
 ```

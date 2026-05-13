@@ -25,6 +25,7 @@ use crate::{
     filters::FilterPipeline,
     listener::ListenerEvent,
 };
+use scematica_core::metrics::{TradeEvent, TRADES_FILE};
 
 /// Core sniper bot: receives pool events and executes buy/sell
 pub struct Sniper {
@@ -257,6 +258,22 @@ impl Sniper {
                     );
                     self.metrics.record_trade_confirmed(0);
 
+                    // Emit trade event for the dashboard
+                    TradeEvent {
+                        timestamp: chrono::Utc::now(),
+                        kind: "BUY".into(),
+                        mint: pool.base_mint.to_string(),
+                        symbol: String::new(),
+                        amount: scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+                        pnl: 0.0,
+                        status: "✓".into(),
+                        signature: result.signature
+                            .map(|s| s.to_string())
+                            .unwrap_or_default(),
+                        dex: "Raydium".into(),
+                        hops: 1,
+                    }.append_to_file(TRADES_FILE);
+
                     // Schedule auto-sell if enabled
                     if self.config.auto_sell {
                         let pool_clone = pool.clone();
@@ -281,6 +298,19 @@ impl Sniper {
         }
 
         self.metrics.record_trade_failed();
+        // Emit failed trade event
+        TradeEvent {
+            timestamp: chrono::Utc::now(),
+            kind: "BUY".into(),
+            mint: pool.base_mint.to_string(),
+            symbol: String::new(),
+            amount: scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+            pnl: 0.0,
+            status: "✗".into(),
+            signature: String::new(),
+            dex: "Raydium".into(),
+            hops: 1,
+        }.append_to_file(TRADES_FILE);
         if self.config.one_token_at_a_time {
             *self.processing_lock.lock() = false;
         }
@@ -418,6 +448,22 @@ impl Sniper {
                         "Sell confirmed"
                     );
                     self.metrics.record_trade_confirmed(0);
+
+                    // Emit trade event for the dashboard
+                    TradeEvent {
+                        timestamp: chrono::Utc::now(),
+                        kind: "SELL".into(),
+                        mint: pool.base_mint.to_string(),
+                        symbol: String::new(),
+                        amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+                        pnl: 0.0, // PnL calculated post-confirmation in production
+                        status: "✓".into(),
+                        signature: result.signature
+                            .map(|s| s.to_string())
+                            .unwrap_or_default(),
+                        dex: "Raydium".into(),
+                        hops: 1,
+                    }.append_to_file(TRADES_FILE);
                     return;
                 }
                 Ok(result) => {
@@ -430,6 +476,18 @@ impl Sniper {
         }
 
         self.metrics.record_trade_failed();
+        TradeEvent {
+            timestamp: chrono::Utc::now(),
+            kind: "SELL".into(),
+            mint: pool.base_mint.to_string(),
+            symbol: String::new(),
+            amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+            pnl: 0.0,
+            status: "✗".into(),
+            signature: String::new(),
+            dex: "Raydium".into(),
+            hops: 1,
+        }.append_to_file(TRADES_FILE);
     }
 
     async fn on_wallet_update(&self, account: Pubkey, mint: Pubkey, amount: u64) {

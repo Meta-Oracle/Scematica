@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use scematica_core::metrics::{BotMetrics, MetricsSnapshot, METRICS_FILE};
+use scematica_core::metrics::{BotMetrics, MetricsSnapshot, TradeEvent, METRICS_FILE, TRADES_FILE};
 use scematica_core::rpc::RpcConnection;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -36,6 +36,8 @@ pub struct AppState {
     pub selected_tab: RwLock<usize>,
     /// Latest snapshot read from the metrics file (written by sniper/arb processes)
     pub live_snapshot: RwLock<Option<MetricsSnapshot>>,
+    /// Byte offset into the trade event log — tracks how far we've read
+    pub trade_file_offset: RwLock<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -72,6 +74,7 @@ impl AppState {
             should_quit: RwLock::new(false),
             selected_tab: RwLock::new(0),
             live_snapshot: RwLock::new(None),
+            trade_file_offset: RwLock::new(0),
         })
     }
 
@@ -79,6 +82,38 @@ impl AppState {
     pub fn poll_metrics_file(&self) {
         if let Some(snap) = MetricsSnapshot::load_from_file(METRICS_FILE) {
             *self.live_snapshot.write() = Some(snap);
+        }
+    }
+
+    /// Tail the trade event log file and push any new events into the trades deque.
+    /// Uses a byte offset so only new lines are read on each call — O(new data) not O(file size).
+    pub fn poll_trade_file(&self) {
+        let offset = *self.trade_file_offset.read();
+        let (events, new_offset) = TradeEvent::read_new_events(TRADES_FILE, offset);
+        if events.is_empty() {
+            return;
+        }
+        *self.trade_file_offset.write() = new_offset;
+        for event in events {
+            let log_line = format!(
+                "[TRADE] {} {} | amount: {:.4} | pnl: {:.4} | {}",
+                event.kind,
+                &event.mint[..8.min(event.mint.len())],
+                event.amount,
+                event.pnl,
+                event.status,
+            );
+            let entry = TradeEntry {
+                timestamp: event.timestamp,
+                kind: event.kind,
+                mint: event.mint,
+                amount: event.amount,
+                pnl: event.pnl,
+                status: event.status,
+                signature: event.signature,
+            };
+            self.push_trade(entry);
+            self.push_log(log_line);
         }
     }
 

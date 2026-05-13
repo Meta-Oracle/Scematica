@@ -7,6 +7,76 @@ use serde::{Deserialize, Serialize};
 /// Default path for the shared metrics file
 pub const METRICS_FILE: &str = "scematica-metrics.json";
 
+/// Default path for the append-only trade event log
+pub const TRADES_FILE: &str = "scematica-trades.jsonl";
+
+/// A single trade event written by the sniper or arb engine.
+/// Serialised as one JSON object per line (JSONL) for cheap append + tail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeEvent {
+    /// ISO-8601 timestamp
+    pub timestamp: DateTime<Utc>,
+    /// "BUY" | "SELL" | "ARB"
+    pub kind: String,
+    /// Base token mint address
+    pub mint: String,
+    /// Human-readable token symbol if known, otherwise empty
+    pub symbol: String,
+    /// Amount of quote token spent / received (UI units, e.g. SOL)
+    pub amount: f64,
+    /// Realised PnL in SOL (0.0 for buys, positive/negative for sells/arbs)
+    pub pnl: f64,
+    /// "✓" confirmed | "✗" failed
+    pub status: String,
+    /// Transaction signature (empty string if unavailable)
+    pub signature: String,
+    /// DEX name(s) involved, e.g. "Raydium" or "Raydium→Orca"
+    pub dex: String,
+    /// Number of hops (1 for sniper trades, 2+ for arb)
+    pub hops: u8,
+}
+
+impl TradeEvent {
+    /// Append this event as a single JSON line to the trades file.
+    /// Creates the file if it doesn't exist. Never truncates.
+    pub fn append_to_file(&self, path: &str) {
+        use std::io::Write;
+        if let Ok(mut json) = serde_json::to_string(self) {
+            json.push('\n');
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = file.write_all(json.as_bytes());
+            }
+        }
+    }
+
+    /// Read all trade events written after `byte_offset` in the file.
+    /// Returns the new events and the updated byte offset for the next call.
+    pub fn read_new_events(path: &str, byte_offset: u64) -> (Vec<TradeEvent>, u64) {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return (vec![], byte_offset),
+        };
+        if file.seek(SeekFrom::Start(byte_offset)).is_err() {
+            return (vec![], byte_offset);
+        }
+        let mut new_offset = byte_offset;
+        let mut events = vec![];
+        let reader = BufReader::new(&mut file);
+        for line in reader.lines().map_while(Result::ok) {
+            new_offset += line.len() as u64 + 1; // +1 for '\n'
+            if let Ok(event) = serde_json::from_str::<TradeEvent>(&line) {
+                events.push(event);
+            }
+        }
+        (events, new_offset)
+    }
+}
+
 /// Global bot metrics, updated atomically during operation
 #[derive(Debug, Default)]
 pub struct BotMetrics {

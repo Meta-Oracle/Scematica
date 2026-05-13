@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
                 }
                 AppEvent::Tick => {
                     state.poll_metrics_file();
+                    state.poll_trade_file();
                 }
                 AppEvent::Quit => break,
             }

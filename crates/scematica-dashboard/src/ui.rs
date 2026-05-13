@@ -8,6 +8,7 @@ use ratatui::{
     },
     Frame,
 };
+use scematica_core::types::known_tokens;
 use std::sync::Arc;
 
 #[allow(dead_code)]
@@ -53,20 +54,28 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mode = *state.active_mode.read();
     let wallet = state.wallet_address.read().clone();
     let sol = *state.sol_balance.read();
+    let scema = *state.scematica_balance.read();
+
+    // Color the mode indicator: green when active, yellow when idle
+    let mode_color = match mode {
+        crate::app::BotMode::Idle => Color::Yellow,
+        _ => Color::Green,
+    };
 
     let header_text = format!(
-        " SCEMATICA  │  Mode: {}  │  Wallet: {}  │  SOL: {:.4}",
+        " SCEMATICA  │  Mode: {}  │  Wallet: {}  │  SOL: {:.4}  │  SCEMA: {:.2}",
         mode,
         if wallet.len() > 12 { &wallet[..12] } else { &wallet },
-        sol
+        sol,
+        scema,
     );
 
     let header = Paragraph::new(header_text)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(mode_color)),
         );
     f.render_widget(header, area);
 }
@@ -100,6 +109,8 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let m = state.effective_snapshot();
+    let scema = *state.scematica_balance.read();
+    let sol = *state.sol_balance.read();
 
     let rows: Vec<Row> = vec![
         Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
@@ -111,6 +122,16 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Row::new(vec![Cell::from("Total PnL"), Cell::from(format!("{:.6} SOL", m.total_pnl_sol()))]),
         Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
         Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
+        Row::new(vec![
+            Cell::from("SOL Balance"),
+            Cell::from(format!("{:.4} SOL", sol))
+                .style(Style::default().fg(Color::Cyan)),
+        ]),
+        Row::new(vec![
+            Cell::from("SCEMA Balance"),
+            Cell::from(format!("{:.2} SCEMA", scema))
+                .style(Style::default().fg(if scema > 0.0 { Color::Green } else { Color::DarkGray })),
+        ]),
     ];
 
     let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
@@ -161,15 +182,32 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let trades = state.trades.read();
+    let scema_mint = known_tokens::SCEMATICA_MINT.to_string();
+
     let rows: Vec<Row> = trades
         .iter()
         .map(|t| {
-            let color = if t.pnl >= 0.0 { Color::Green } else { Color::Red };
+            // SCEMATICA trades get a special gold highlight
+            let color = if t.mint == scema_mint {
+                Color::Yellow
+            } else if t.pnl >= 0.0 {
+                Color::Green
+            } else {
+                Color::Red
+            };
+
+            // Show "SCEMA" symbol instead of raw mint prefix for the project token
+            let mint_display = if t.mint == scema_mint {
+                "SCEMA   ".to_string()
+            } else {
+                t.mint[..8.min(t.mint.len())].to_string()
+            };
+
             Row::new(vec![
                 Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
                 Cell::from(t.status.clone()),
                 Cell::from(t.kind.clone()),
-                Cell::from(t.mint[..8.min(t.mint.len())].to_string()),
+                Cell::from(mint_display),
                 Cell::from(format!("{:.6}", t.amount)),
                 Cell::from(format!("{:.6}", t.pnl)),
                 Cell::from(t.signature[..12.min(t.signature.len())].to_string()),
@@ -239,15 +277,101 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let scema = *state.scematica_balance.read();
+    let wallet = state.wallet_address.read().clone();
+    let tp = *state.strategy_tp_pct.read();
+    let sl = *state.strategy_sl_pct.read();
+    let mult = *state.strategy_multiplier.read();
+    let regime = state.strategy_regime.read().clone();
+
+    // Regime color: green = aggressive, yellow = neutral, red = conservative
+    let regime_color = match regime.as_str() {
+        "aggressive" => Color::Green,
+        "conservative" => Color::Red,
+        _ => Color::Yellow,
+    };
+
     let text = vec![
         Line::from(vec![
             Span::styled("Mode: ", Style::default().fg(Color::Yellow)),
             Span::raw(state.active_mode.read().to_string()),
         ]),
         Line::from(""),
+        // ── Strategy Agent ──────────────────────────────────────────────────
+        Line::from(vec![
+            Span::styled("AI Strategy Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Regime:     ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                regime.to_uppercase(),
+                Style::default().fg(regime_color).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Take Profit:", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(" {:.1}%", tp),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Stop Loss:  ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(" {:.1}%", sl),
+                Style::default().fg(Color::Red),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Size Mult:  ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(" {:.2}x", mult),
+                Style::default().fg(if mult >= 1.0 { Color::Green } else { Color::Red }),
+            ),
+        ]),
+        Line::from(""),
+        // ── SCEMATICA Token ─────────────────────────────────────────────────
+        Line::from(vec![
+            Span::styled("SCEMATICA Token", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Mint:    ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump",
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Symbol:  ", Style::default().fg(Color::Yellow)),
+            Span::styled("SCEMA", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Decimals:", Style::default().fg(Color::Yellow)),
+            Span::raw(" 6  (PumpFun standard)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Balance: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{:.2} SCEMA", scema),
+                Style::default()
+                    .fg(if scema > 0.0 { Color::Green } else { Color::Red })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if scema >= 1000.0 { "  ✓ Gate passed" } else { "  ✗ Need 1000 SCEMA to run bot" },
+                Style::default().fg(if scema >= 1000.0 { Color::Green } else { Color::Red }),
+            ),
+        ]),
+        Line::from(""),
+        // ── Wallet ──────────────────────────────────────────────────────────
+        Line::from(vec![
+            Span::styled("Wallet: ", Style::default().fg(Color::Yellow)),
+            Span::raw(wallet),
+        ]),
+        Line::from(""),
         Line::from(vec![Span::styled(
             "Edit config.toml and restart to change settings.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::DarkGray),
         )]),
     ];
 

@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::SniperConfig,
@@ -26,6 +26,30 @@ use crate::{
     listener::ListenerEvent,
 };
 use scematica_core::metrics::{TradeEvent, TRADES_FILE};
+use scematica_core::metrics::{StrategySnapshot, STRATEGY_FILE};
+
+/// Live-adjustable trading parameters — updated by the Strategy Agent at runtime.
+/// Wrapped in RwLock so the strategy loop can write while the sniper reads.
+#[derive(Debug, Clone)]
+pub struct LiveParams {
+    pub take_profit_pct: f64,
+    pub stop_loss_pct: f64,
+    /// Multiplier applied to the base quote_amount_raw from config
+    pub amount_multiplier: f64,
+    /// Human-readable market regime label from the AI
+    pub market_regime: String,
+}
+
+impl LiveParams {
+    pub fn from_config(config: &SniperConfig) -> Self {
+        Self {
+            take_profit_pct: config.take_profit_pct,
+            stop_loss_pct: config.stop_loss_pct,
+            amount_multiplier: 1.0,
+            market_regime: "neutral".into(),
+        }
+    }
+}
 
 /// Core sniper bot: receives pool events and executes buy/sell
 pub struct Sniper {
@@ -47,6 +71,10 @@ pub struct Sniper {
     quote_amount_raw: u64,
     /// Raydium swap instruction builder
     raydium_builder: Arc<dyn SwapInstructionBuilder>,
+    /// Live-adjustable parameters updated by the Strategy Agent
+    pub live_params: Arc<RwLock<LiveParams>>,
+    /// Recent trade outcomes for strategy agent input: (was_profitable, pnl_sol)
+    trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
 }
 
 impl Sniper {
@@ -82,6 +110,8 @@ impl Sniper {
             None
         };
 
+        let live_params = Arc::new(RwLock::new(LiveParams::from_config(&config)));
+
         Self {
             config,
             wallet,
@@ -99,6 +129,89 @@ impl Sniper {
             quote_amount_raw,
             raydium_builder: Arc::from(get_builder(DexKind::Raydium, rpc.clone())
                 .expect("Raydium builder not found")),
+            live_params,
+            trade_history: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Run the Strategy Agent adjustment loop.
+    /// Call this in a background task after constructing the Sniper.
+    /// Evaluates recent trade history every `interval_secs` and updates live_params.
+    pub async fn run_strategy_loop(self: Arc<Self>, interval_secs: u64) {
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+        info!("Strategy agent loop started (interval: {}s)", interval_secs);
+        loop {
+            ticker.tick().await;
+
+            let ai = match &self.ai {
+                Some(ai) => ai.clone(),
+                None => continue, // no AI configured
+            };
+
+            let history = self.trade_history.lock().clone();
+            if history.len() < 5 {
+                debug!("Strategy agent: not enough trades yet ({}/5)", history.len());
+                continue;
+            }
+
+            let params = self.live_params.read().clone();
+            let snap = self.metrics.snapshot();
+            let total_pnl = snap.total_pnl_sol();
+            let win_rate = snap.win_rate();
+
+            let adjustment = ai.strategy.get_adjustment(
+                &history,
+                total_pnl,
+                params.take_profit_pct,
+                params.stop_loss_pct,
+                scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+                win_rate,
+            ).await;
+
+            // Apply the adjustment
+            let mut live = self.live_params.write();
+            if let Some(tp) = adjustment.take_profit_pct {
+                info!(
+                    "Strategy agent: take_profit {} → {:.1}% ({})",
+                    live.take_profit_pct, tp, adjustment.market_regime
+                );
+                live.take_profit_pct = tp;
+            }
+            if let Some(sl) = adjustment.stop_loss_pct {
+                info!(
+                    "Strategy agent: stop_loss {} → {:.1}% ({})",
+                    live.stop_loss_pct, sl, adjustment.market_regime
+                );
+                live.stop_loss_pct = sl;
+            }
+            if (adjustment.amount_multiplier - 1.0).abs() > 0.01 {
+                info!(
+                    "Strategy agent: amount_multiplier → {:.2}x ({})",
+                    adjustment.amount_multiplier, adjustment.reasoning
+                );
+                live.amount_multiplier = adjustment.amount_multiplier;
+            }
+            live.market_regime = adjustment.market_regime.clone();
+
+            // Persist snapshot so the dashboard can display live params
+            StrategySnapshot {
+                take_profit_pct: live.take_profit_pct,
+                stop_loss_pct: live.stop_loss_pct,
+                amount_multiplier: live.amount_multiplier,
+                market_regime: live.market_regime.clone(),
+                last_updated: chrono::Utc::now(),
+            }
+            .write_to_file(STRATEGY_FILE);
+        }
+    }
+
+    /// Record a completed trade outcome for the strategy agent.
+    fn record_trade_outcome(&self, profitable: bool, pnl_sol: f64) {
+        let mut history = self.trade_history.lock();
+        history.push((profitable, pnl_sol));
+        // Keep last 20 trades
+        if history.len() > 20 {
+            history.remove(0);
         }
     }
 
@@ -333,8 +446,13 @@ impl Sniper {
             1
         };
 
-        let take_profit_factor = 1.0 + self.config.take_profit_pct / 100.0;
-        let stop_loss_factor = 1.0 - self.config.stop_loss_pct / 100.0;
+        // Use live_params so Strategy Agent adjustments take effect immediately
+        let (take_profit_pct, stop_loss_pct) = {
+            let p = self.live_params.read();
+            (p.take_profit_pct, p.stop_loss_pct)
+        };
+        let take_profit_factor = 1.0 + take_profit_pct / 100.0;
+        let stop_loss_factor = 1.0 - stop_loss_pct / 100.0;
         let target_profit = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
         let stop_loss = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
 
@@ -373,11 +491,17 @@ impl Sniper {
                             if current_value >= target_profit {
                                 info!(mint = %pool.base_mint, "Take profit triggered");
                                 self.sell(&pool, &base_ata, amount).await;
+                                let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
+                                    / 1_000_000_000.0;
+                                self.record_trade_outcome(true, pnl_sol);
                                 break;
                             }
                             if current_value <= stop_loss {
                                 info!(mint = %pool.base_mint, "Stop loss triggered");
                                 self.sell(&pool, &base_ata, amount).await;
+                                let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
+                                    / 1_000_000_000.0;
+                                self.record_trade_outcome(false, pnl_sol);
                                 break;
                             }
                         }
@@ -509,6 +633,8 @@ impl Sniper {
             quote_mint: self.quote_mint,
             quote_amount_raw: self.quote_amount_raw,
             raydium_builder: self.raydium_builder.clone(),
+            live_params: self.live_params.clone(),
+            trade_history: self.trade_history.clone(),
         }
     }
 }
@@ -525,6 +651,10 @@ struct SellMonitor {
     quote_amount_raw: u64,
     /// Raydium swap instruction builder
     raydium_builder: Arc<dyn SwapInstructionBuilder>,
+    /// Shared live params — reads latest TP/SL from strategy agent
+    live_params: Arc<RwLock<LiveParams>>,
+    /// Shared trade history for strategy agent feedback
+    trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
 }
 
 impl SellMonitor {
@@ -543,8 +673,13 @@ impl SellMonitor {
             1
         };
 
-        let take_profit_factor = 1.0 + self.config.take_profit_pct / 100.0;
-        let stop_loss_factor = 1.0 - self.config.stop_loss_pct / 100.0;
+        // Use live_params so Strategy Agent adjustments apply to the sell monitor too
+        let (take_profit_pct, stop_loss_pct) = {
+            let p = self.live_params.read();
+            (p.take_profit_pct, p.stop_loss_pct)
+        };
+        let take_profit_factor = 1.0 + take_profit_pct / 100.0;
+        let stop_loss_factor = 1.0 - stop_loss_pct / 100.0;
         let target_profit = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
         let stop_loss_amount = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
 
@@ -566,7 +701,16 @@ impl SellMonitor {
                         let current_value = (amount as u128 * q as u128 / b as u128) as u64;
 
                         if current_value >= target_profit || current_value <= stop_loss_amount {
+                            let profitable = current_value >= target_profit;
+                            let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
+                                / 1_000_000_000.0;
                             self.do_sell(&pool, &base_ata, amount).await;
+                            // Record outcome for strategy agent
+                            {
+                                let mut history = self.trade_history.lock();
+                                history.push((profitable, pnl_sol));
+                                if history.len() > 20 { history.remove(0); }
+                            }
                             break;
                         }
                     }

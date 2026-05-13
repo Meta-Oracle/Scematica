@@ -1,7 +1,7 @@
 use crate::opportunity::ArbPath;
 use anyhow::Result;
 use scematica_ai::agents::AiCoordinator;
-use scematica_core::metrics::BotMetrics;
+use scematica_core::metrics::{BotMetrics, TradeEvent, TRADES_FILE};
 use scematica_core::rpc::RpcConnection;
 use scematica_executor::{get_builder, SwapInstructionBuilder};
 use solana_sdk::{
@@ -132,10 +132,52 @@ impl ArbExecutor {
                     info!("Arb confirmed: {}", sig);
                     self.metrics.record_arb_executed();
                     self.metrics.record_trade_confirmed(path.profit as i64);
+
+                    // Emit trade event so the dashboard picks it up in real time
+                    let dex_label = path.pool_path
+                        .iter()
+                        .map(|e| format!("{}", e.dex))
+                        .collect::<Vec<_>>()
+                        .join("→");
+                    TradeEvent {
+                        timestamp: chrono::Utc::now(),
+                        kind: "ARB".into(),
+                        mint: path.mint_path
+                            .first()
+                            .map(|m| m.to_string())
+                            .unwrap_or_default(),
+                        symbol: String::new(),
+                        amount: scematica_core::token::raw_to_ui(
+                            path.input_amount as u64,
+                            6, // USDC default; fine for display
+                        ),
+                        pnl: path.profit as f64 / 1_000_000_000.0,
+                        status: "✓".into(),
+                        signature: sig.to_string(),
+                        dex: dex_label,
+                        hops: path.hops() as u8,
+                    }
+                    .append_to_file(TRADES_FILE);
+
                     Ok(Some(sig.to_string()))
                 } else {
                     warn!("Arb confirmation timeout: {}", sig);
                     self.metrics.record_trade_failed();
+
+                    TradeEvent {
+                        timestamp: chrono::Utc::now(),
+                        kind: "ARB".into(),
+                        mint: path.mint_path.first().map(|m| m.to_string()).unwrap_or_default(),
+                        symbol: String::new(),
+                        amount: scematica_core::token::raw_to_ui(path.input_amount as u64, 6),
+                        pnl: 0.0,
+                        status: "✗".into(),
+                        signature: sig.to_string(),
+                        dex: path.pool_path.iter().map(|e| format!("{}", e.dex)).collect::<Vec<_>>().join("→"),
+                        hops: path.hops() as u8,
+                    }
+                    .append_to_file(TRADES_FILE);
+
                     Ok(None)
                 }
             }

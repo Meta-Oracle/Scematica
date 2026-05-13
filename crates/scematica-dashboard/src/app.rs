@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use scematica_core::metrics::{BotMetrics, MetricsSnapshot, TradeEvent, METRICS_FILE, TRADES_FILE};
+use scematica_core::metrics::{BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE, TRADES_FILE};
 use scematica_core::rpc::RpcConnection;
+use scematica_core::token::get_ata;
+use scematica_core::types::known_tokens;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -31,6 +33,8 @@ pub struct AppState {
     pub wallet_address: RwLock<String>,
     pub sol_balance: RwLock<f64>,
     pub quote_balance: RwLock<f64>,
+    /// SCEMATICA token balance (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump)
+    pub scematica_balance: RwLock<f64>,
     pub active_mode: RwLock<BotMode>,
     pub should_quit: RwLock<bool>,
     pub selected_tab: RwLock<usize>,
@@ -38,6 +42,11 @@ pub struct AppState {
     pub live_snapshot: RwLock<Option<MetricsSnapshot>>,
     /// Byte offset into the trade event log — tracks how far we've read
     pub trade_file_offset: RwLock<u64>,
+    /// Latest strategy agent params — displayed in the Config tab
+    pub strategy_tp_pct: RwLock<f64>,
+    pub strategy_sl_pct: RwLock<f64>,
+    pub strategy_multiplier: RwLock<f64>,
+    pub strategy_regime: RwLock<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -70,11 +79,16 @@ impl AppState {
             wallet_address: RwLock::new(String::new()),
             sol_balance: RwLock::new(0.0),
             quote_balance: RwLock::new(0.0),
+            scematica_balance: RwLock::new(0.0),
             active_mode: RwLock::new(BotMode::default()),
             should_quit: RwLock::new(false),
             selected_tab: RwLock::new(0),
             live_snapshot: RwLock::new(None),
             trade_file_offset: RwLock::new(0),
+            strategy_tp_pct: RwLock::new(50.0),
+            strategy_sl_pct: RwLock::new(20.0),
+            strategy_multiplier: RwLock::new(1.0),
+            strategy_regime: RwLock::new("neutral".into()),
         })
     }
 
@@ -117,8 +131,15 @@ impl AppState {
         }
     }
 
-    /// Returns the live snapshot if available, otherwise falls back to the
-    /// in-process BotMetrics (useful when running dashboard alongside a bot).
+    /// Poll the strategy snapshot file and update live strategy params.
+    pub fn poll_strategy_file(&self) {
+        if let Some(snap) = StrategySnapshot::load_from_file(STRATEGY_FILE) {
+            *self.strategy_tp_pct.write() = snap.take_profit_pct;
+            *self.strategy_sl_pct.write() = snap.stop_loss_pct;
+            *self.strategy_multiplier.write() = snap.amount_multiplier;
+            *self.strategy_regime.write() = snap.market_regime;
+        }
+    }
     pub fn effective_snapshot(&self) -> MetricsSnapshot {
         self.live_snapshot
             .read()

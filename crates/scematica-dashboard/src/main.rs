@@ -6,6 +6,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use scematica_core::metrics::BotMetrics;
+use scematica_core::token::{get_ata, raw_to_ui};
+use scematica_core::types::known_tokens;
 use scematica_dashboard::{
     app::AppState,
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
@@ -45,15 +47,24 @@ async fn main() -> Result<()> {
     ));
     let state = AppState::new((*metrics).clone(), rpc);
 
-    // Live sync
+    // Live sync — SOL balance + SCEMATICA token balance every 5s
     *state.wallet_address.write() = wallet_pubkey.to_string();
     let state_clone = state.clone();
     tokio::spawn(async move {
+        let scematica_ata = get_ata(&wallet_pubkey, &known_tokens::SCEMATICA_MINT);
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
             interval.tick().await;
+
+            // SOL balance
             if let Ok(balance) = state_clone.rpc.get_sol_balance(&wallet_pubkey).await {
                 *state_clone.sol_balance.write() = balance as f64 / 1_000_000_000.0;
+            }
+
+            // SCEMATICA token balance via ATA
+            if let Ok(raw) = state_clone.rpc.get_token_balance(&scematica_ata).await {
+                *state_clone.scematica_balance.write() =
+                    raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
             }
         }
     });
@@ -82,6 +93,7 @@ async fn main() -> Result<()> {
                 AppEvent::Tick => {
                     state.poll_metrics_file();
                     state.poll_trade_file();
+                    state.poll_strategy_file();
                 }
                 AppEvent::Quit => break,
             }

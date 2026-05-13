@@ -1,6 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use scematica_core::{config::BotConfig, metrics::BotMetrics, wallet::Wallet};
+use scematica_core::{
+    config::BotConfig,
+    metrics::BotMetrics,
+    token::{get_ata, raw_to_ui},
+    types::known_tokens,
+    wallet::Wallet,
+};
 use scematica_sniper::{
     listener::{ListenerEvent, PoolListener},
     sniper::Sniper,
@@ -9,8 +15,12 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, signer::Signer};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
+
+/// Minimum SCEMA balance required to run the sniper.
+/// Set to 0 to disable the gate entirely.
+const MIN_SCEMA_REQUIRED: f64 = 1000.0;
 
 #[derive(Parser, Debug)]
 #[command(name = "scematica-sniper", about = "Scematica Solana Sniper Bot")]
@@ -92,6 +102,38 @@ async fn main() -> Result<()> {
     // Init metrics
     let metrics = BotMetrics::new();
 
+    // ── SCEMA balance gate ────────────────────────────────────────────────────
+    // Require a minimum SCEMA holding to run the bot.
+    if MIN_SCEMA_REQUIRED > 0.0 {
+        let scema_ata = get_ata(&wallet_kp.pubkey(), &known_tokens::SCEMATICA_MINT);
+        match rpc.get_token_account_balance(&scema_ata).await {
+            Ok(balance) => {
+                let raw: u64 = balance.amount.parse().unwrap_or(0);
+                let held = raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
+                if held < MIN_SCEMA_REQUIRED {
+                    error!(
+                        "Insufficient SCEMA balance: {:.2} held, {:.2} required. \
+                         Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the bot.",
+                        held, MIN_SCEMA_REQUIRED
+                    );
+                    return Err(anyhow::anyhow!(
+                        "SCEMA balance gate: need {:.0} SCEMA, have {:.2}",
+                        MIN_SCEMA_REQUIRED, held
+                    ));
+                }
+                info!("✅ SCEMA gate passed: {:.2} SCEMA held (required: {:.0})", held, MIN_SCEMA_REQUIRED);
+            }
+            Err(_) => {
+                warn!(
+                    "No SCEMA token account found for this wallet. \
+                     Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the bot."
+                );
+                return Err(anyhow::anyhow!("SCEMA balance gate: no token account found"));
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Create sniper
     let sniper = Arc::new(Sniper::new(
         config.sniper.clone(),
@@ -99,6 +141,14 @@ async fn main() -> Result<()> {
         rpc.clone(),
         metrics.clone(),
     ));
+
+    // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
+    {
+        let sniper_clone = sniper.clone();
+        tokio::spawn(async move {
+            sniper_clone.run_strategy_loop(300).await;
+        });
+    }
 
     // Event channel
     let (event_tx, mut event_rx) = mpsc::channel::<ListenerEvent>(1000);

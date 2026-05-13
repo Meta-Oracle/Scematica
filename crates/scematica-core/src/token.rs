@@ -15,6 +15,7 @@ pub fn resolve_mint(symbol: &str) -> Option<Pubkey> {
         "USDT" => Some(known_tokens::USDT_MINT),
         "RAY" => Some(known_tokens::RAY_MINT),
         "BONK" => Some(known_tokens::BONK_MINT),
+        "SCEMA" | "SCEMATICA" => Some(known_tokens::SCEMATICA_MINT),
         _ => None,
     }
 }
@@ -27,7 +28,23 @@ pub fn resolve_decimals(symbol: &str) -> Option<u8> {
         "USDT" => Some(6),
         "RAY" => Some(6),
         "BONK" => Some(5),
+        "SCEMA" | "SCEMATICA" => Some(known_tokens::SCEMATICA_DECIMALS),
         _ => None,
+    }
+}
+
+/// Resolve a raw mint pubkey string to a human-readable symbol.
+/// Returns the symbol if the mint is a known token, otherwise returns a
+/// truncated version of the mint address (first 8 chars).
+pub fn mint_to_symbol(mint: &str) -> String {
+    match mint {
+        m if m == known_tokens::WSOL_MINT.to_string() => "WSOL".into(),
+        m if m == known_tokens::USDC_MINT.to_string() => "USDC".into(),
+        m if m == known_tokens::USDT_MINT.to_string() => "USDT".into(),
+        m if m == known_tokens::RAY_MINT.to_string() => "RAY".into(),
+        m if m == known_tokens::BONK_MINT.to_string() => "BONK".into(),
+        m if m == known_tokens::SCEMATICA_MINT.to_string() => known_tokens::SCEMATICA_SYMBOL.into(),
+        m => m[..8.min(m.len())].into(),
     }
 }
 

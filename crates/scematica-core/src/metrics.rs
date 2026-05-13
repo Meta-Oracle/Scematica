@@ -10,6 +10,36 @@ pub const METRICS_FILE: &str = "scematica-metrics.json";
 /// Default path for the append-only trade event log
 pub const TRADES_FILE: &str = "scematica-trades.jsonl";
 
+/// Default path for the strategy agent snapshot file
+pub const STRATEGY_FILE: &str = "scematica-strategy.json";
+
+/// Snapshot of the current live strategy parameters — written by the sniper,
+/// read by the dashboard on each tick.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategySnapshot {
+    pub take_profit_pct: f64,
+    pub stop_loss_pct: f64,
+    pub amount_multiplier: f64,
+    pub market_regime: String,
+    pub last_updated: chrono::DateTime<chrono::Utc>,
+}
+
+impl StrategySnapshot {
+    pub fn write_to_file(&self, path: &str) {
+        let tmp = format!("{}.tmp", path);
+        if let Ok(json) = serde_json::to_string(self) {
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
+        }
+    }
+
+    pub fn load_from_file(path: &str) -> Option<Self> {
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+}
+
 /// A single trade event written by the sniper or arb engine.
 /// Serialised as one JSON object per line (JSONL) for cheap append + tail.
 #[derive(Debug, Clone, Serialize, Deserialize)]

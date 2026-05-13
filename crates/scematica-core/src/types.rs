@@ -44,6 +44,18 @@ pub mod known_tokens {
     pub const USDT_MINT: Pubkey = pubkey!("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
     pub const RAY_MINT: Pubkey = pubkey!("4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R");
     pub const BONK_MINT: Pubkey = pubkey!("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263");
+
+    /// SCEMATICA token — the native project token (PumpFun launch)
+    pub const SCEMATICA_MINT: Pubkey = pubkey!("AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump");
+    /// SCEMATICA token decimals (PumpFun standard: 6)
+    pub const SCEMATICA_DECIMALS: u8 = 6;
+    /// SCEMATICA token symbol
+    pub const SCEMATICA_SYMBOL: &str = "SCEMA";
+
+    /// Returns a `TokenInfo` for the SCEMATICA token
+    pub fn scematica_token_info() -> super::TokenInfo {
+        super::TokenInfo::new(SCEMATICA_MINT, SCEMATICA_SYMBOL, SCEMATICA_DECIMALS)
+    }
 }
 
 /// Direction of a swap

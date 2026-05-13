@@ -10,15 +10,17 @@ use scematica_arb::{
 use scematica_core::{
     config::BotConfig,
     metrics::BotMetrics,
-    token::{resolve_mint, ui_to_raw},
+    token::{get_ata, raw_to_ui, resolve_mint, ui_to_raw},
     types::known_tokens,
     wallet::Wallet,
 };
-use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+/// Minimum SCEMA balance required to run the arb engine.
+const MIN_SCEMA_REQUIRED: f64 = 1000.0;
 
 #[derive(Parser, Debug)]
 #[command(name = "scematica-arb", about = "Scematica Cross-DEX Arbitrage Bot")]
@@ -70,6 +72,41 @@ async fn main() -> Result<()> {
     ));
 
     let metrics = BotMetrics::new();
+
+    // ── SCEMA balance gate ────────────────────────────────────────────────────
+    if MIN_SCEMA_REQUIRED > 0.0 {
+        let rpc_client = solana_client::nonblocking::rpc_client::RpcClient::new_with_commitment(
+            config.rpc.endpoint.clone(),
+            CommitmentConfig::confirmed(),
+        );
+        let scema_ata = get_ata(&wallet_kp.pubkey(), &known_tokens::SCEMATICA_MINT);
+        match rpc_client.get_token_account_balance(&scema_ata).await {
+            Ok(balance) => {
+                let raw: u64 = balance.amount.parse().unwrap_or(0);
+                let held = raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
+                if held < MIN_SCEMA_REQUIRED {
+                    error!(
+                        "Insufficient SCEMA balance: {:.2} held, {:.2} required. \
+                         Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the arb engine.",
+                        held, MIN_SCEMA_REQUIRED
+                    );
+                    return Err(anyhow::anyhow!(
+                        "SCEMA balance gate: need {:.0} SCEMA, have {:.2}",
+                        MIN_SCEMA_REQUIRED, held
+                    ));
+                }
+                info!("✅ SCEMA gate passed: {:.2} SCEMA held (required: {:.0})", held, MIN_SCEMA_REQUIRED);
+            }
+            Err(_) => {
+                warn!(
+                    "No SCEMA token account found. \
+                     Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the arb engine."
+                );
+                return Err(anyhow::anyhow!("SCEMA balance gate: no token account found"));
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // AI coordinator
     let ai = AiCoordinator::from_env_optional().map(Arc::new);

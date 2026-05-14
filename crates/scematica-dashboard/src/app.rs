@@ -2,10 +2,9 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use scematica_core::metrics::{BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE, TRADES_FILE};
 use scematica_core::rpc::RpcConnection;
-use scematica_core::token::get_ata;
-use scematica_core::types::known_tokens;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use crate::onboarding::OnboardingManager;
 
 /// Maximum number of log lines to keep in memory
 const MAX_LOG_LINES: usize = 200;
@@ -36,6 +35,8 @@ pub struct AppState {
     /// SCEMATICA token balance (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump)
     pub scematica_balance: RwLock<f64>,
     pub active_mode: RwLock<BotMode>,
+    pub is_ai_loading: RwLock<bool>,
+    pub onboarding: RwLock<OnboardingManager>,
     pub should_quit: RwLock<bool>,
     pub selected_tab: RwLock<usize>,
     /// Latest snapshot read from the metrics file (written by sniper/arb processes)
@@ -81,6 +82,8 @@ impl AppState {
             quote_balance: RwLock::new(0.0),
             scematica_balance: RwLock::new(0.0),
             active_mode: RwLock::new(BotMode::default()),
+            is_ai_loading: RwLock::new(false),
+            onboarding: RwLock::new(OnboardingManager::new()),
             should_quit: RwLock::new(false),
             selected_tab: RwLock::new(0),
             live_snapshot: RwLock::new(None),
@@ -100,7 +103,6 @@ impl AppState {
     }
 
     /// Tail the trade event log file and push any new events into the trades deque.
-    /// Uses a byte offset so only new lines are read on each call — O(new data) not O(file size).
     pub fn poll_trade_file(&self) {
         let offset = *self.trade_file_offset.read();
         let (events, new_offset) = TradeEvent::read_new_events(TRADES_FILE, offset);

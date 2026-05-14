@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -21,10 +22,22 @@ const SCEMATICA_LOGO: &str = r#"
  ╚══════╝ ╚═════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝
 "#;
 
+static mut SPINNER: Option<LoaderSpinner> = None;
+
 pub fn render(f: &mut Frame, state: &Arc<AppState>) {
     let size = f.size();
+    
+    unsafe {
+        if SPINNER.is_none() {
+            SPINNER = Some(LoaderSpinner::new());
+        }
+    }
+    
+    // Fill background
+    let bg_block = Block::default().bg(COLOR_BG);
+    f.render_widget(bg_block, size);
 
-    // Main layout: header | tabs | content | footer
+    // Main layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -37,18 +50,84 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
 
     render_header(f, chunks[0], state);
     render_tabs(f, chunks[1], state);
-
+    
+    let content_area = chunks[2];
     let tab = *state.selected_tab.read();
     match tab {
-        0 => render_overview(f, chunks[2], state),
-        1 => render_trades(f, chunks[2], state),
-        2 => render_logs(f, chunks[2], state),
-        3 => render_config(f, chunks[2], state),
+        0 => render_overview(f, content_area, state),
+        1 => render_trades(f, content_area, state),
+        2 => render_logs(f, content_area, state),
+        3 => render_config(f, content_area, state),
         _ => {}
+    }
+
+    if *state.is_ai_loading.read() {
+        let loader_area = Rect::new(
+            content_area.x + content_area.width / 2 - 8,
+            content_area.y + content_area.height / 2 - 2,
+            16,
+            5,
+        );
+        unsafe {
+            if let Some(ref mut s) = SPINNER {
+                s.tick();
+                s.render(f, loader_area);
+            }
+        }
+    }
+
+    // Onboarding Overlay
+    let onboarding_step = state.onboarding.read().current_step;
+    if onboarding_step != crate::onboarding::OnboardingStep::Completed {
+        render_onboarding(f, size, state, onboarding_step);
     }
 
     render_footer(f, chunks[3]);
 }
+
+fn render_onboarding(f: &mut Frame, area: Rect, state: &Arc<AppState>, step: crate::onboarding::OnboardingStep) {
+    let area = Rect::new(
+        area.width / 4,
+        area.height / 4,
+        area.width / 2,
+        area.height / 2,
+    );
+
+    let (title, content) = match step {
+        crate::onboarding::OnboardingStep::Welcome => (
+            " Welcome to Scematica ",
+            "The premier high-frequency trading assistant.\n\nPress [Enter] to begin onboarding."
+        ),
+        crate::onboarding::OnboardingStep::VerifyWallet => (
+            " Step 1: Wallet Setup ",
+            "Please ensure your keypair is configured.\nUse the key-converter tool to import.\n\nPress [Enter] when ready."
+        ),
+        crate::onboarding::OnboardingStep::StrategyTuning => (
+            " Step 2: Strategy Tuning ",
+            "Let's define your risk parameters.\nAsk the AI to set your Take Profit & Stop Loss.\n\nPress [Enter] to finish."
+        ),
+        crate::onboarding::OnboardingStep::DemoSimulation => (
+            " Step 3: Demo Mode ",
+            "Simulating trades... watch the dashboard.\n\nPress [Enter] to exit demo."
+        ),
+        _ => ("", ""),
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_ACCENT))
+        .bg(COLOR_BG);
+
+    let p = Paragraph::new(content)
+        .alignment(Alignment::Center)
+        .block(block)
+        .wrap(Wrap { trim: true });
+        
+    f.render_widget(bg_block, area); // Dimmed background logic would be ideal here
+    f.render_widget(p, area);
+}
+
 
 fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mode = *state.active_mode.read();
@@ -56,10 +135,9 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sol = *state.sol_balance.read();
     let scema = *state.scematica_balance.read();
 
-    // Color the mode indicator: green when active, yellow when idle
     let mode_color = match mode {
         crate::app::BotMode::Idle => Color::Yellow,
-        _ => Color::Green,
+        _ => COLOR_ACCENT,
     };
 
     let header_text = format!(
@@ -71,11 +149,11 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     );
 
     let header = Paragraph::new(header_text)
-        .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
+        .style(Style::default().fg(mode_color).bg(COLOR_BG).add_modifier(Modifier::BOLD))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(mode_color)),
+                .border_style(Style::default().fg(COLOR_ACCENT)),
         );
     f.render_widget(header, area);
 }
@@ -85,13 +163,13 @@ fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let titles = vec!["Overview", "Trades", "Logs", "Config"];
     let tabs = Tabs::new(titles)
         .select(tab)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(COLOR_TEXT))
         .highlight_style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(COLOR_ACCENT)
                 .add_modifier(Modifier::BOLD),
         )
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
     f.render_widget(tabs, area);
 }
 
@@ -101,9 +179,7 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    // Left: metrics
     render_metrics(f, chunks[0], state);
-    // Right: recent trades summary
     render_recent_trades(f, chunks[1], state);
 }
 
@@ -138,15 +214,15 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let table = Table::new(rows, widths)
         .header(
             Row::new(vec![
-                Cell::from("Metric").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("Value").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Metric").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Value").style(Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
             ]),
         )
         .block(
             Block::default()
                 .title(" 📊 Metrics ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
+                .border_style(Style::default().fg(COLOR_ACCENT)),
         );
 
     f.render_widget(table, area);
@@ -158,7 +234,7 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .iter()
         .take(20)
         .map(|t| {
-            let color = if t.pnl >= 0.0 { Color::Green } else { Color::Red };
+            let color = if t.pnl >= 0.0 { Color::Green } else { COLOR_ACCENT };
             let line = format!(
                 "{} {} {} {:>10.4} SOL  {}",
                 t.timestamp.format("%H:%M:%S"),
@@ -175,7 +251,7 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Block::default()
             .title(" 📈 Recent Trades ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Blue)),
+            .border_style(Style::default().fg(COLOR_ACCENT)),
     );
     f.render_widget(list, area);
 }
@@ -187,16 +263,14 @@ fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let rows: Vec<Row> = trades
         .iter()
         .map(|t| {
-            // SCEMATICA trades get a special gold highlight
             let color = if t.mint == scema_mint {
                 Color::Yellow
             } else if t.pnl >= 0.0 {
                 Color::Green
             } else {
-                Color::Red
+                COLOR_ACCENT
             };
 
-            // Show "SCEMA" symbol instead of raw mint prefix for the project token
             let mint_display = if t.mint == scema_mint {
                 "SCEMA   ".to_string()
             } else {
@@ -228,20 +302,20 @@ fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let table = Table::new(rows, widths)
         .header(
             Row::new(vec![
-                Cell::from("Time").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("St").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("Type").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("Mint").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("Amount").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("PnL").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::from("Signature").style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Cell::from("Time").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("St").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Type").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Amount").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("PnL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Sig").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
             ]),
         )
         .block(
             Block::default()
                 .title(" 📋 Trade History ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Blue)),
+                .border_style(Style::default().fg(COLOR_ACCENT)),
         );
 
     f.render_widget(table, area);
@@ -255,13 +329,13 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .take(area.height as usize)
         .map(|line| {
             let color = if line.contains("ERROR") {
-                Color::Red
+                COLOR_ACCENT
             } else if line.contains("WARN") {
                 Color::Yellow
             } else if line.contains("💰") || line.contains("confirmed") {
                 Color::Green
             } else {
-                Color::White
+                COLOR_TEXT
             };
             ListItem::new(line.as_str()).style(Style::default().fg(color))
         })
@@ -271,7 +345,7 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Block::default()
             .title(" 📝 Logs (newest first) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta)),
+            .border_style(Style::default().fg(COLOR_ACCENT)),
     );
     f.render_widget(list, area);
 }
@@ -284,95 +358,78 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mult = *state.strategy_multiplier.read();
     let regime = state.strategy_regime.read().clone();
 
-    // Regime color: green = aggressive, yellow = neutral, red = conservative
     let regime_color = match regime.as_str() {
         "aggressive" => Color::Green,
-        "conservative" => Color::Red,
+        "conservative" => COLOR_ACCENT,
         _ => Color::Yellow,
     };
 
     let text = vec![
         Line::from(vec![
-            Span::styled("Mode: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Mode: ", Style::default().fg(COLOR_ACCENT)),
             Span::raw(state.active_mode.read().to_string()),
         ]),
         Line::from(""),
-        // ── Strategy Agent ──────────────────────────────────────────────────
         Line::from(vec![
             Span::styled("AI Strategy Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
-            Span::styled("  Regime:     ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Regime:     ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 regime.to_uppercase(),
                 Style::default().fg(regime_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Take Profit:", Style::default().fg(Color::Yellow)),
+            Span::styled("  Take Profit:", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!(" {:.1}%", tp),
                 Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Stop Loss:  ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Stop Loss:  ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!(" {:.1}%", sl),
-                Style::default().fg(Color::Red),
+                Style::default().fg(COLOR_ACCENT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Size Mult:  ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Size Mult:  ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!(" {:.2}x", mult),
-                Style::default().fg(if mult >= 1.0 { Color::Green } else { Color::Red }),
+                Style::default().fg(if mult >= 1.0 { Color::Green } else { COLOR_ACCENT }),
             ),
         ]),
         Line::from(""),
-        // ── SCEMATICA Token ─────────────────────────────────────────────────
         Line::from(vec![
             Span::styled("SCEMATICA Token", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
-            Span::styled("  Mint:    ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Mint:    ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 "AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump",
-                Style::default().fg(Color::White),
+                Style::default().fg(COLOR_TEXT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Symbol:  ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Symbol:  ", Style::default().fg(COLOR_ACCENT)),
             Span::styled("SCEMA", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
-            Span::styled("  Decimals:", Style::default().fg(Color::Yellow)),
-            Span::raw(" 6  (PumpFun standard)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Balance: ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Balance: ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!("{:.2} SCEMA", scema),
                 Style::default()
-                    .fg(if scema > 0.0 { Color::Green } else { Color::Red })
+                    .fg(if scema > 0.0 { Color::Green } else { COLOR_ACCENT })
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                if scema >= 1000.0 { "  ✓ Gate passed" } else { "  ✗ Need 1000 SCEMA to run bot" },
-                Style::default().fg(if scema >= 1000.0 { Color::Green } else { Color::Red }),
-            ),
         ]),
         Line::from(""),
-        // ── Wallet ──────────────────────────────────────────────────────────
         Line::from(vec![
-            Span::styled("Wallet: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Wallet: ", Style::default().fg(COLOR_ACCENT)),
             Span::raw(wallet),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Edit config.toml and restart to change settings.",
-            Style::default().fg(Color::DarkGray),
-        )]),
     ];
 
     let para = Paragraph::new(text)
@@ -380,7 +437,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             Block::default()
                 .title(" ⚙️  Configuration ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(COLOR_ACCENT)),
         )
         .wrap(Wrap { trim: true });
     f.render_widget(para, area);

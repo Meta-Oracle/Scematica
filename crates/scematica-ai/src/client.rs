@@ -24,6 +24,8 @@ impl AiClient {
         let api_key = match &provider {
             AiProvider::Groq => std::env::var("GROQ_API_KEY")
                 .context("GROQ_API_KEY not set. Get a free key at https://console.groq.com")?,
+            AiProvider::Grok => std::env::var("XAI_API_KEY")
+                .context("XAI_API_KEY not set. Get a key at https://console.x.ai")?,
             AiProvider::OpenRouter => std::env::var("OPENROUTER_API_KEY")
                 .context("OPENROUTER_API_KEY not set. Get a free key at https://openrouter.ai")?,
             AiProvider::Ollama => String::new(),
@@ -46,7 +48,11 @@ impl AiClient {
     pub fn from_env() -> Result<Self> {
         dotenv::dotenv().ok();
 
-        // Try Groq first (best free tier)
+        // Try Grok first
+        if std::env::var("XAI_API_KEY").is_ok() {
+            return Self::new(AiProvider::Grok);
+        }
+        // Try Groq
         if std::env::var("GROQ_API_KEY").is_ok() {
             return Self::new(AiProvider::Groq);
         }
@@ -60,8 +66,8 @@ impl AiClient {
         }
 
         anyhow::bail!(
-            "No AI API key found. Set GROQ_API_KEY (free at https://console.groq.com) \
-             or OPENROUTER_API_KEY (free at https://openrouter.ai)"
+            "No AI API key found. Set XAI_API_KEY (https://console.x.ai), \
+             GROQ_API_KEY (https://console.groq.com), or OPENROUTER_API_KEY (https://openrouter.ai)"
         )
     }
 
@@ -155,6 +161,7 @@ impl AiClient {
     pub fn provider_name(&self) -> &str {
         match self.provider {
             AiProvider::Groq => "Groq",
+            AiProvider::Grok => "xAI Grok",
             AiProvider::OpenRouter => "OpenRouter",
             AiProvider::Ollama => "Ollama (local)",
         }

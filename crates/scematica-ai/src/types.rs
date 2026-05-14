@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 pub enum AiProvider {
     /// Groq — free tier, 14,400 req/day, ultra-fast LPU inference
     Groq,
+    /// xAI Grok
+    Grok,
     /// OpenRouter — 50 free req/day, 200+ models
     OpenRouter,
     /// Local Ollama instance — no rate limits, requires local setup
@@ -14,7 +16,7 @@ pub enum AiProvider {
 
 impl Default for AiProvider {
     fn default() -> Self {
-        AiProvider::Groq
+        AiProvider::Grok
     }
 }
 
@@ -22,6 +24,7 @@ impl AiProvider {
     pub fn base_url(&self) -> &str {
         match self {
             AiProvider::Groq => "https://api.groq.com/openai/v1",
+            AiProvider::Grok => "https://api.x.ai/v1",
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1",
             AiProvider::Ollama => "http://localhost:11434/v1",
         }
@@ -30,6 +33,7 @@ impl AiProvider {
     pub fn default_model(&self) -> &str {
         match self {
             AiProvider::Groq => "llama-3.3-70b-versatile",
+            AiProvider::Grok => "grok-beta",
             AiProvider::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
             AiProvider::Ollama => "llama3.3",
         }

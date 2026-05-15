@@ -1,4 +1,4 @@
-use crate::graph::{ArbGraph, PoolEdge};
+use crate::graph::ArbGraph;
 use anyhow::Result;
 use scematica_core::{rpc::DexFetcher, types::DexKind};
 use solana_sdk::pubkey::Pubkey;

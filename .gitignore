@@ -1,7 +1,32 @@
+# Build artifacts
 /target
-.env
-*.exe
-*.pdb
 debug/
 release/
+*.exe
+*.pdb
+
+# Secrets and environment
+.env
+.env.*
+*.json.key
+
+# Runtime-generated data files
+scematica-metrics.json
+scematica-trades.jsonl
+scematica-strategy.json
+pools/
+
+# Operational config (may contain live addresses / paths)
+snipe-list.txt
+
+# IDE / tool directories
+.kiro/
+.vscode/
+.idea/
+*.iml
+
+# Shell scripts not needed in repo
+stress_test.sh
+
+# Misc
 tweets.md

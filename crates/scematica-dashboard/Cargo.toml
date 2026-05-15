@@ -26,7 +26,8 @@ parking_lot.workspace = true
 clap.workspace = true
 
 ratatui.workspace = true
-ratatui-macros = "0.7.0-beta.1"
 crossterm.workspace = true
 solana-sdk.workspace = true
+
+[dev-dependencies]
 proptest = "1.0"

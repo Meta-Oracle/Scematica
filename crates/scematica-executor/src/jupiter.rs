@@ -92,13 +92,13 @@ impl SwapInstructionBuilder for JupiterBuilder {
     async fn build_swap(
         &self,
         _pool: &Pubkey,
-        owner: &Pubkey,
-        token_in: &Pubkey,
-        token_out: &Pubkey,
+        _owner: &Pubkey,
+        _token_in: &Pubkey,
+        _token_out: &Pubkey,
         _ata_in: &Pubkey,
         _ata_out: &Pubkey,
-        amount_in: u64,
-        min_amount_out: u64,
+        _amount_in: u64,
+        _min_amount_out: u64,
     ) -> Result<Vec<Instruction>> {
         // Jupiter returns a full versioned transaction, not individual instructions.
         // For arb use, we prefer direct DEX instructions to avoid Jupiter's overhead.

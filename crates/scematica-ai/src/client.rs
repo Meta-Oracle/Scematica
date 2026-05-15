@@ -1,7 +1,7 @@
 use crate::types::{AiProvider, AiRequest, AiResponse};
 use anyhow::{Context, Result};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// HTTP client for OpenAI-compatible AI APIs (Groq, OpenRouter, Ollama)
 #[derive(Clone)]

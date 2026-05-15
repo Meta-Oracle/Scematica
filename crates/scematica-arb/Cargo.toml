@@ -46,4 +46,4 @@ bs58.workspace = true
 
 async-trait = "0.1"
 bincode = "1.3"
-sha2 = "0.11.0"
+sha2.workspace = true

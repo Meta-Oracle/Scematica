@@ -2,7 +2,7 @@ use crate::app::AppState;
 use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 use scematica_core::types::known_tokens;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[allow(dead_code)]
 const SCEMATICA_LOGO: &str = r#"
@@ -22,16 +22,11 @@ const SCEMATICA_LOGO: &str = r#"
  ╚══════╝ ╚═════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝
 "#;
 
-static mut SPINNER: Option<LoaderSpinner> = None;
+static SPINNER: OnceLock<Mutex<LoaderSpinner>> = OnceLock::new();
 
 pub fn render(f: &mut Frame, state: &Arc<AppState>) {
     let size = f.size();
-    
-    unsafe {
-        if SPINNER.is_none() {
-            SPINNER = Some(LoaderSpinner::new());
-        }
-    }
+    SPINNER.get_or_init(|| Mutex::new(LoaderSpinner::new()));
     
     // Fill background
     let bg_block = Block::default().bg(COLOR_BG);
@@ -68,8 +63,8 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
             16,
             5,
         );
-        unsafe {
-            if let Some(ref mut s) = SPINNER {
+        if let Some(spinner_lock) = SPINNER.get() {
+            if let Ok(mut s) = spinner_lock.lock() {
                 s.tick();
                 s.render(f, loader_area);
             }
@@ -85,7 +80,7 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
     render_footer(f, chunks[3]);
 }
 
-fn render_onboarding(f: &mut Frame, area: Rect, state: &Arc<AppState>, step: crate::onboarding::OnboardingStep) {
+fn render_onboarding(f: &mut Frame, area: Rect, _state: &Arc<AppState>, step: crate::onboarding::OnboardingStep) {
     let area = Rect::new(
         area.width / 4,
         area.height / 4,
@@ -124,7 +119,7 @@ fn render_onboarding(f: &mut Frame, area: Rect, state: &Arc<AppState>, step: cra
         .block(block)
         .wrap(Wrap { trim: true });
         
-    f.render_widget(bg_block, area); // Dimmed background logic would be ideal here
+    f.render_widget(Block::default().bg(COLOR_BG), area);
     f.render_widget(p, area);
 }
 

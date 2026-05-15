@@ -7,6 +7,7 @@ pub enum OnboardingStep {
     Completed,
 }
 
+#[derive(Debug)]
 pub struct OnboardingManager {
     pub current_step: OnboardingStep,
 }

@@ -3,7 +3,6 @@ use crate::{
     prompts,
     types::{ArbScore, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment, TokenRiskScore},
 };
-use anyhow::Result;
 use chrono::Utc;
 use tracing::{debug, warn};
 

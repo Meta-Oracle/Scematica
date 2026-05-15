@@ -1,7 +1,0 @@
-# Scematica Snipe List
-# Add token mint addresses here, one per line.
-# Lines starting with # are comments.
-# Only used when sniper.use_snipe_list = true in config.toml
-
-# Example:
-# DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263

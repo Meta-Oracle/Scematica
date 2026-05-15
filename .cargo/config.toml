@@ -1,2 +1,2 @@
 [build]
-rustflags = ["--cfg", "procmacro2_semver_exempt"]
+# Note: procmacro2_semver_exempt was removed — it breaks ark-ff-macros on Rust 1.95+ Windows

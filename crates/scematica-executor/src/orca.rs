@@ -72,7 +72,7 @@ impl SwapInstructionBuilder for OrcaBuilder {
         pool: &Pubkey,
         owner: &Pubkey,
         token_in: &Pubkey,
-        token_out: &Pubkey,
+        _token_out: &Pubkey,
         ata_in: &Pubkey,
         ata_out: &Pubkey,
         amount_in: u64,

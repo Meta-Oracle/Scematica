@@ -3,7 +3,7 @@ use crate::client::AiClient;
 use crate::conversation::ConversationHistory;
 use crate::chat_types::{AgentOutput, PendingToolCall, ChatResponse, classify_risk};
 use crate::tool_definitions::all_tools;
-use crate::types::{AiRequest, ChatMessage};
+use crate::types::AiRequest;
 use serde_json::Value;
 
 pub struct ChatAgent {

@@ -303,6 +303,23 @@ async fn main() -> Result<()> {
                                     );
                                 }
                             }
+                            DashboardAction::AutoDump => {
+                                let currently = *state.dump_mode_active.read();
+                                let next = !currently;
+                                *state.dump_mode_active.write() = next;
+                                const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
+                                if next {
+                                    let _ = std::fs::write(DUMP_MODE_FILE, r#"{"active":true}"#);
+                                    state.push_log(
+                                        "[DUMP MODE] AUTO DUMP ACTIVATED — force-selling ALL positions with zero slippage".to_string()
+                                    );
+                                } else {
+                                    let _ = std::fs::remove_file(DUMP_MODE_FILE);
+                                    state.push_log(
+                                        "[DUMP MODE] Auto dump DEACTIVATED".to_string()
+                                    );
+                                }
+                            }
                         }
                     }
                 }

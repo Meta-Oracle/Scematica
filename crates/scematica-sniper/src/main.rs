@@ -217,6 +217,33 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Dump-mode file watcher — checks for scematica-dump-mode.json every 5 s.
+    // When active: sets dump_mode flag (min_out=0 on all sells) and calls auto_dump()
+    // to immediately force-sell every token position in the wallet.
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_dm = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut was_active = false;
+            loop {
+                interval.tick().await;
+                let active = std::path::Path::new("scematica-dump-mode.json").exists();
+                sniper_dm.dump_mode.store(active, Ordering::Relaxed);
+                if active && !was_active {
+                    warn!("💥 DUMP MODE activated — force-selling ALL positions with zero slippage");
+                    let sniper_ref = sniper_dm.clone();
+                    tokio::spawn(async move {
+                        sniper_ref.auto_dump().await;
+                    });
+                } else if !active && was_active {
+                    info!("✅ Dump mode deactivated");
+                }
+                was_active = active;
+            }
+        });
+    }
+
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
     {
         let sniper_clone = sniper.clone();

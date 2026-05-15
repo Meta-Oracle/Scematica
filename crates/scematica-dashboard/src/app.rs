@@ -65,6 +65,8 @@ pub struct AppState {
     pub bot_cmd_tx: RwLock<Option<tokio::sync::mpsc::Sender<BotCommand>>>,
     /// Emergency sell mode: when true the sniper skips buys and force-sells everything
     pub sell_mode_active: RwLock<bool>,
+    /// Auto dump mode: when true the sniper immediately force-sells all positions (min_out=0)
+    pub dump_mode_active: RwLock<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -117,6 +119,7 @@ impl AppState {
             live_data: Arc::new(RwLock::new(LiveData::default())),
             bot_cmd_tx: RwLock::new(None),
             sell_mode_active: RwLock::new(false),
+            dump_mode_active: RwLock::new(false),
         })
     }
 

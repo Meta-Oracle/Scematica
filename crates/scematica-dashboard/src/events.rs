@@ -62,6 +62,8 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool) -> Optio
             KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
             // [e] on the Logs tab toggles emergency sell mode
             KeyCode::Char('e') if current_tab == 2 => Some(DashboardAction::ToggleSellMode),
+            // [d] on the Logs tab triggers auto dump — force-sells all positions immediately
+            KeyCode::Char('d') if current_tab == 2 => Some(DashboardAction::AutoDump),
             _ => None,
         }
     }
@@ -80,4 +82,5 @@ pub enum DashboardAction {
     StartBot(BotMode),
     StopBot,
     ToggleSellMode,
+    AutoDump,
 }

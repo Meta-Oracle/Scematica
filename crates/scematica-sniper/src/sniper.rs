@@ -79,6 +79,8 @@ pub struct Sniper {
     trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
     /// Set true by the sell-mode file watcher to pause buys and force-sell everything
     pub sell_mode: Arc<AtomicBool>,
+    /// Set true by the dump-mode file watcher — sells all positions immediately with min_out=0
+    pub dump_mode: Arc<AtomicBool>,
     /// Semaphore: max 2 concurrent sell transactions to avoid 429 hammering
     sell_sem: Arc<tokio::sync::Semaphore>,
 }
@@ -138,6 +140,7 @@ impl Sniper {
             live_params,
             trade_history: Arc::new(Mutex::new(Vec::new())),
             sell_mode: Arc::new(AtomicBool::new(false)),
+            dump_mode: Arc::new(AtomicBool::new(false)),
             sell_sem: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
@@ -840,6 +843,93 @@ impl Sniper {
         }
     }
 
+    /// Immediately force-sell every token position in the wallet.
+    /// Unlike scan_existing_positions (which spawns price monitors), this calls
+    /// sell_with_retry directly — with dump_mode active, min_out=0 so any price is accepted.
+    pub async fn auto_dump(&self) {
+        use solana_client::rpc_request::TokenAccountsFilter;
+        use solana_sdk::program_pack::Pack;
+
+        let wallet_pubkey = self.wallet.pubkey();
+        warn!("AUTO DUMP: scanning wallet for positions to force-sell");
+
+        let keyed_accounts = match self.rpc
+            .get_token_accounts_by_owner(
+                &wallet_pubkey,
+                TokenAccountsFilter::ProgramId(spl_token::id()),
+            )
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("Auto dump: failed to list token accounts: {}", e);
+                return;
+            }
+        };
+
+        let skip_mints: std::collections::HashSet<Pubkey> = [
+            self.quote_mint,
+            known_tokens::WSOL_MINT,
+            known_tokens::SCEMATICA_MINT,
+        ]
+        .into_iter()
+        .collect();
+
+        let mut spawned = 0u32;
+        for keyed in keyed_accounts {
+            let ata_pk = match keyed.pubkey.parse::<Pubkey>() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let raw = match self.rpc.get_account(&ata_pk).await {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let token_acct = match spl_token::state::Account::unpack(&raw.data) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            if token_acct.amount == 0 {
+                continue;
+            }
+            let mint = token_acct.mint;
+            if skip_mints.contains(&mint) {
+                continue;
+            }
+
+            warn!(
+                mint = %mint,
+                amount = token_acct.amount,
+                "AUTO DUMP: force-selling position"
+            );
+
+            let pool = match self.find_raydium_pool_for_mint(&mint).await {
+                Some(p) => p,
+                None => {
+                    warn!(mint = %mint, "AUTO DUMP: no Raydium pool — cannot sell");
+                    continue;
+                }
+            };
+
+            if pool.quote_mint != self.quote_mint {
+                continue;
+            }
+
+            let monitor = self.clone_for_sell();
+            let amount = token_acct.amount;
+            tokio::spawn(async move {
+                monitor.sell_with_retry(&pool, &ata_pk, amount).await;
+            });
+            spawned += 1;
+        }
+
+        if spawned == 0 {
+            info!("AUTO DUMP: no positions found in wallet");
+        } else {
+            warn!("AUTO DUMP: force-selling {} position(s) concurrently", spawned);
+        }
+    }
+
     /// Find a Raydium AMM V4 pool where `base_mint` is the base token.
     /// Issues a single `getProgramAccounts` call with memcmp + dataSize filters.
     async fn find_raydium_pool_for_mint(&self, base_mint: &Pubkey) -> Option<CachedPool> {
@@ -926,6 +1016,7 @@ impl Sniper {
             live_params: self.live_params.clone(),
             trade_history: self.trade_history.clone(),
             sell_mode: self.sell_mode.clone(),
+            dump_mode: self.dump_mode.clone(),
             sell_sem: self.sell_sem.clone(),
         }
     }
@@ -949,6 +1040,8 @@ struct SellMonitor {
     trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
     /// Sell mode flag — when true, all monitoring is in force-sell mode
     sell_mode: Arc<AtomicBool>,
+    /// Dump mode flag — when true, sells use min_out=0 (accept any price)
+    dump_mode: Arc<AtomicBool>,
     /// Semaphore: max 2 concurrent sell transactions to avoid 429 storms
     sell_sem: Arc<tokio::sync::Semaphore>,
 }
@@ -1099,7 +1192,10 @@ impl SellMonitor {
         } else {
             0
         };
-        let min_out = if estimated_out > 0 {
+        // Dump mode: accept any output — skip slippage check entirely
+        let min_out = if self.dump_mode.load(Ordering::Relaxed) {
+            0
+        } else if estimated_out > 0 {
             apply_slippage(estimated_out, self.config.sell_slippage_pct)
         } else {
             0

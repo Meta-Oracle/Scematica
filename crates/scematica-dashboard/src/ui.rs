@@ -320,44 +320,57 @@ fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sell_mode = *state.sell_mode_active.read();
+    let dump_mode = *state.dump_mode_active.read();
     let sol = *state.sol_balance.read();
 
-    // Split: optional sell-mode banner (2 lines) + log list
-    let chunks = if sell_mode {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(0), Constraint::Min(0)])
-            .split(area)
-    };
+    // Build vertical layout dynamically based on active banners
+    let dump_h: u16 = if dump_mode { 3 } else { 0 };
+    let sell_h: u16 = if sell_mode { 3 } else { 0 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(dump_h),
+            Constraint::Length(sell_h),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    if dump_mode {
+        let banner_text = format!(
+            " DUMP MODE ACTIVE  |  SOL: {:.4}  |  Force-selling ALL positions (zero slippage)  |  [d] to deactivate ",
+            sol
+        );
+        let banner = Paragraph::new(banner_text)
+            .style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)));
+        f.render_widget(banner, chunks[0]);
+    }
 
     if sell_mode {
         let banner_text = format!(
-            " 🚨 SELL MODE ACTIVE  |  SOL: {:.4}  |  Buying paused — selling all positions  |  [e] to deactivate ",
+            " SELL MODE ACTIVE  |  SOL: {:.4}  |  Buying paused — selling all positions  |  [e] to deactivate ",
             sol
         );
         let banner = Paragraph::new(banner_text)
             .style(Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
-        f.render_widget(banner, chunks[0]);
+        f.render_widget(banner, chunks[1]);
     }
 
-    let log_area = chunks[1];
+    let log_area = chunks[2];
     let logs = state.log_lines.read();
     let items: Vec<ListItem> = logs
         .iter()
         .rev()
         .take(log_area.height as usize)
         .map(|line| {
-            let color = if line.contains("ERROR") || line.contains("SELL MODE") {
+            let color = if line.contains("DUMP MODE") {
+                Color::Yellow
+            } else if line.contains("ERROR") || line.contains("SELL MODE") {
                 COLOR_ACCENT
             } else if line.contains("WARN") {
                 Color::Yellow
-            } else if line.contains("💰") || line.contains("confirmed") || line.contains("Sell confirmed") {
+            } else if line.contains("confirmed") || line.contains("Sell confirmed") {
                 Color::Green
             } else {
                 COLOR_TEXT
@@ -366,12 +379,15 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         })
         .collect();
 
-    let title = if sell_mode {
-        " 📝 Logs — SELL MODE (newest first) "
+    let title = if dump_mode {
+        " Logs — DUMP MODE ACTIVE (newest first) "
+    } else if sell_mode {
+        " Logs — SELL MODE (newest first) "
     } else {
-        " 📝 Logs (newest first)  [e] Emergency Sell Mode "
+        " Logs (newest first)  [e] Sell Mode  [d] Dump All "
     };
-    let border_color = if sell_mode { COLOR_ACCENT } else { COLOR_ACCENT };
+
+    let border_color = if dump_mode { Color::Yellow } else { COLOR_ACCENT };
 
     let list = List::new(items).block(
         Block::default()
@@ -489,7 +505,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
-        2 => " [e] Toggle Sell Mode  [Tab] Switch tab  [q] Quit ",
+        2 => " [e] Sell Mode  [d] DUMP ALL  [Tab] Switch tab  [q] Quit ",
         3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [Tab] Switch tab  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
         _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",

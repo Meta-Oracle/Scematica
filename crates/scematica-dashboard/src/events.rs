@@ -1,6 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use crate::app::BotMode;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -52,6 +53,11 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool) -> Optio
             KeyCode::Char('q') | KeyCode::Esc => Some(DashboardAction::Quit),
             KeyCode::Tab | KeyCode::Right => Some(DashboardAction::NextTab),
             KeyCode::BackTab | KeyCode::Left => Some(DashboardAction::PrevTab),
+            // Bot process controls — active on the Config tab (index 3)
+            KeyCode::Char('s') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Sniper)),
+            KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
+            KeyCode::Char('b') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Both)),
+            KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
             _ => None,
         }
     }
@@ -67,4 +73,6 @@ pub enum DashboardAction {
     ChatSend,
     ChatConfirm,
     ChatReject,
+    StartBot(BotMode),
+    StopBot,
 }

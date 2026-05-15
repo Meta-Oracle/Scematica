@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use crate::onboarding::OnboardingManager;
 use crate::chat::{ChatLine, ChatUpdate};
+use crate::process::BotCommand;
 use scematica_ai::tool_dispatcher::LiveData;
 use scematica_ai::chat_types::PendingToolCall;
 
@@ -58,6 +59,8 @@ pub struct AppState {
     pub chat_tx: RwLock<Option<tokio::sync::mpsc::Sender<ChatUpdate>>>,
     /// Shared live data for the AI tool dispatcher
     pub live_data: Arc<RwLock<LiveData>>,
+    /// Channel to the process manager task — send BotCommand::Start/Stop
+    pub bot_cmd_tx: RwLock<Option<tokio::sync::mpsc::Sender<BotCommand>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,6 +110,7 @@ impl AppState {
             chat_pending: RwLock::new(None),
             chat_tx: RwLock::new(None),
             live_data: Arc::new(RwLock::new(LiveData::default())),
+            bot_cmd_tx: RwLock::new(None),
         })
     }
 

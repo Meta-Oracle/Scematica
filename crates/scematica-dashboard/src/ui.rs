@@ -354,6 +354,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sl = *state.strategy_sl_pct.read();
     let mult = *state.strategy_multiplier.read();
     let regime = state.strategy_regime.read().clone();
+    let mode = *state.active_mode.read();
 
     let regime_color = match regime.as_str() {
         "aggressive" => Color::Green,
@@ -361,10 +362,30 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         _ => Color::Yellow,
     };
 
+    let (mode_dot, mode_color) = match mode {
+        crate::app::BotMode::Idle    => ("● IDLE",    Color::DarkGray),
+        crate::app::BotMode::Sniper  => ("● SNIPER",  Color::Green),
+        crate::app::BotMode::Arb     => ("● ARB",     Color::Green),
+        crate::app::BotMode::Both    => ("● BOTH",    Color::Green),
+    };
+
     let text = vec![
         Line::from(vec![
-            Span::styled("Mode: ", Style::default().fg(COLOR_ACCENT)),
-            Span::raw(state.active_mode.read().to_string()),
+            Span::styled("Bot Controls", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Status: ", Style::default().fg(COLOR_ACCENT)),
+            Span::styled(mode_dot, Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("[s] Sniper", Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("[a] Arb", Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("[b] Both", Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("[x] Stop All", Style::default().fg(COLOR_ACCENT)),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -379,17 +400,11 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         ]),
         Line::from(vec![
             Span::styled("  Take Profit:", Style::default().fg(COLOR_ACCENT)),
-            Span::styled(
-                format!(" {:.1}%", tp),
-                Style::default().fg(Color::Green),
-            ),
+            Span::styled(format!(" {:.1}%", tp), Style::default().fg(Color::Green)),
         ]),
         Line::from(vec![
             Span::styled("  Stop Loss:  ", Style::default().fg(COLOR_ACCENT)),
-            Span::styled(
-                format!(" {:.1}%", sl),
-                Style::default().fg(COLOR_ACCENT),
-            ),
+            Span::styled(format!(" {:.1}%", sl), Style::default().fg(COLOR_ACCENT)),
         ]),
         Line::from(vec![
             Span::styled("  Size Mult:  ", Style::default().fg(COLOR_ACCENT)),
@@ -404,10 +419,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         ]),
         Line::from(vec![
             Span::styled("  Mint:    ", Style::default().fg(COLOR_ACCENT)),
-            Span::styled(
-                "AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump",
-                Style::default().fg(COLOR_TEXT),
-            ),
+            Span::styled("AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump", Style::default().fg(COLOR_TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  Symbol:  ", Style::default().fg(COLOR_ACCENT)),
@@ -441,10 +453,10 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
-    let hint = if current_tab == 4 {
-        " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit "
-    } else {
-        " [Tab] Switch tab  [q] Quit  [←/→] Navigate "
+    let hint = match current_tab {
+        3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [Tab] Switch tab  [q] Quit ",
+        4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
+        _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
     };
     let footer = Paragraph::new(hint)
         .style(Style::default().fg(Color::DarkGray))

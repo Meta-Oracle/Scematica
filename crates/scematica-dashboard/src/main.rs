@@ -18,6 +18,7 @@ use scematica_dashboard::{
     chat::{ChatLine, ChatUpdate},
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
     onboarding::OnboardingStep,
+    process::{run_process_manager, BotCommand},
     ui::render,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
@@ -78,6 +79,14 @@ async fn main() -> Result<()> {
     });
 
     state.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
+
+    // Process manager — owns child process handles, responds to BotCommand via mpsc
+    let (bot_tx, bot_rx) = mpsc::channel::<BotCommand>(16);
+    *state.bot_cmd_tx.write() = Some(bot_tx);
+    let pm_state = state.clone();
+    tokio::spawn(async move {
+        run_process_manager(bot_rx, pm_state).await;
+    });
 
     // AI worker — receives ChatUpdate commands, runs the agent, writes results back to state
     let (chat_tx, mut chat_rx) = mpsc::channel::<ChatUpdate>(32);
@@ -232,6 +241,16 @@ async fn main() -> Result<()> {
                                     if let Some(tx) = state.chat_tx.read().as_ref() {
                                         let _ = tx.try_send(ChatUpdate::Reject);
                                     }
+                                }
+                            }
+                            DashboardAction::StartBot(mode) => {
+                                if let Some(tx) = state.bot_cmd_tx.read().as_ref() {
+                                    let _ = tx.try_send(BotCommand::Start(mode));
+                                }
+                            }
+                            DashboardAction::StopBot => {
+                                if let Some(tx) = state.bot_cmd_tx.read().as_ref() {
+                                    let _ = tx.try_send(BotCommand::Stop);
                                 }
                             }
                         }

@@ -24,10 +24,13 @@ chrono.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
 clap.workspace = true
+rand.workspace = true
+bs58.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true
 solana-sdk.workspace = true
+solana-client.workspace = true
 
 [dev-dependencies]
 proptest = "1.0"

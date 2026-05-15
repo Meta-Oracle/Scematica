@@ -3,12 +3,12 @@
 # ============================================================
 
 [rpc]
-endpoint = "https://api.mainnet-beta.solana.com"
-ws_endpoint = "wss://api.mainnet-beta.solana.com"
+endpoint = "https://mainnet.helius-rpc.com/?api-key=b1d54eff-a0db-4e72-84da-61def55d5d55"
+ws_endpoint = "wss://mainnet.helius-rpc.com/?api-key=b1d54eff-a0db-4e72-84da-61def55d5d55"
 commitment = "confirmed"
 
 [wallet]
-keypair_path = "\\\\wsl$\\Ubuntu-22.04\\home\\deadsg\\.config\\solana\\id.json"
+keypair_path = "C:\\Users\\deads\\.config\\solana\\id.json"
 
 # ===========0=================================================
 # Sniper Configuration
@@ -16,18 +16,18 @@ keypair_path = "\\\\wsl$\\Ubuntu-22.04\\home\\deadsg\\.config\\solana\\id.json"
 [sniper]
 enabled = true
 quote_mint = "WSOL"       # WSOL or USDC
-quote_amount = 0.1        # Amount to spend per snipe (in SOL)
+quote_amount = 0.008      # Amount to spend per snipe (in SOL) — Kelly-optimal for current capital
 buy_delay_ms = 0
 max_buy_retries = 3
 max_sell_retries = 3
 auto_sell = true
 auto_sell_delay_ms = 0
-take_profit_pct = 50.0    # Sell when up 50%
-stop_loss_pct = 20.0      # Sell when down 20%
+take_profit_pct = 100.0   # Sell when up 100% — let winners run to 2x
+stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
 buy_slippage_pct = 1.0
 sell_slippage_pct = 1.0
-price_check_interval_ms = 1000
-price_check_duration_ms = 60000
+price_check_interval_ms = 2000
+price_check_duration_ms = 300000
 one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
@@ -49,8 +49,8 @@ max_pool_size = 0.0       # 0 = disabled
 # ============================================================
 [arb]
 enabled = true
-start_mint = "USDC"
-start_amount = 100.0      # Starting capital in USDC
+start_mint = "WSOL"
+start_amount = 0.005      # Starting capital in SOL (use WSOL for arb)
 min_profit_lamports = 10000
 max_hops = 3
 dexes = ["Raydium", "Orca", "Meteora"]
@@ -62,8 +62,8 @@ amount_levels = 4         # Try 4 sizes: 100, 50, 25, 12.5 USDC
 # ============================================================
 [execution]
 executor = "default"      # default | jito
-custom_fee_sol = 0.006
-compute_unit_limit = 200000
+custom_fee_sol = 0.001
+compute_unit_limit = 400000
 compute_unit_price = 100000
 skip_preflight = true
 jito_url = "https://mainnet.block-engine.jito.wtf"

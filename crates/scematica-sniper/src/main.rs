@@ -3,7 +3,7 @@ use clap::Parser;
 use scematica_core::{
     config::BotConfig,
     metrics::BotMetrics,
-    token::{get_ata, raw_to_ui},
+    token::raw_to_ui,
     types::known_tokens,
     wallet::Wallet,
 };
@@ -20,7 +20,7 @@ use tracing_subscriber::EnvFilter;
 
 /// Minimum SCEMA balance required to run the sniper.
 /// Set to 0 to disable the gate entirely.
-const MIN_SCEMA_REQUIRED: f64 = 1000.0;
+const MIN_SCEMA_REQUIRED: f64 = 250_000.0;
 
 #[derive(Parser, Debug)]
 #[command(name = "scematica-sniper", about = "Scematica Solana Sniper Bot")]
@@ -38,13 +38,26 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Init tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&args.log_level)),
-        )
-        .init();
+    // Init tracing — write to stderr AND scematica-sniper.log so the dashboard can tail it
+    {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+        let stderr_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr);
+        let file_appender = tracing_appender::rolling::never(".", "scematica-sniper.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(non_blocking);
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+        // _guard must live for the process lifetime — bind it to a local that isn't dropped
+        std::mem::forget(_guard);
+    }
 
     info!("╔══════════════════════════════════════╗");
     info!("║     SCEMATICA SNIPER  v{}          ║", env!("CARGO_PKG_VERSION"));
@@ -103,33 +116,60 @@ async fn main() -> Result<()> {
     let metrics = BotMetrics::new();
 
     // ── SCEMA balance gate ────────────────────────────────────────────────────
-    // Require a minimum SCEMA holding to run the bot.
+    // Uses get_token_accounts_by_owner to find the SCEMA account regardless of
+    // which token program (legacy vs Token-2022) owns it — avoids ATA address
+    // derivation issues with Token-2022 mints like SCEMA.
     if MIN_SCEMA_REQUIRED > 0.0 {
-        let scema_ata = get_ata(&wallet_kp.pubkey(), &known_tokens::SCEMATICA_MINT);
-        match rpc.get_token_account_balance(&scema_ata).await {
-            Ok(balance) => {
-                let raw: u64 = balance.amount.parse().unwrap_or(0);
-                let held = raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
-                if held < MIN_SCEMA_REQUIRED {
-                    error!(
-                        "Insufficient SCEMA balance: {:.2} held, {:.2} required. \
-                         Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the bot.",
-                        held, MIN_SCEMA_REQUIRED
-                    );
-                    return Err(anyhow::anyhow!(
-                        "SCEMA balance gate: need {:.0} SCEMA, have {:.2}",
-                        MIN_SCEMA_REQUIRED, held
-                    ));
+        use solana_client::rpc_request::TokenAccountsFilter;
+
+        let mut gate_passed = false;
+        for attempt in 1..=5 {
+            match rpc.get_token_accounts_by_owner(
+                &wallet_kp.pubkey(),
+                TokenAccountsFilter::Mint(known_tokens::SCEMATICA_MINT),
+            ).await {
+                Ok(accounts) => {
+                    let mut held = 0.0f64;
+                    for keyed in &accounts {
+                        if let Ok(pk) = keyed.pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
+                            if let Ok(bal) = rpc.get_token_account_balance(&pk).await {
+                                held += raw_to_ui(
+                                    bal.amount.parse().unwrap_or(0),
+                                    known_tokens::SCEMATICA_DECIMALS,
+                                );
+                            }
+                        }
+                    }
+
+                    if held < MIN_SCEMA_REQUIRED {
+                        error!(
+                            "Insufficient SCEMA: {:.0} held, {:.0} required.",
+                            held, MIN_SCEMA_REQUIRED
+                        );
+                        return Err(anyhow::anyhow!(
+                            "SCEMA balance gate: need {:.0}, have {:.0}",
+                            MIN_SCEMA_REQUIRED, held
+                        ));
+                    }
+                    info!("✅ SCEMA gate passed: {:.0} SCEMA held (required: {:.0})", held, MIN_SCEMA_REQUIRED);
+                    gate_passed = true;
+                    break;
                 }
-                info!("✅ SCEMA gate passed: {:.2} SCEMA held (required: {:.0})", held, MIN_SCEMA_REQUIRED);
+                Err(e) => {
+                    warn!("SCEMA gate attempt {}/5 failed: {} — retrying in 3s...", attempt, e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                }
             }
-            Err(_) => {
-                warn!(
-                    "No SCEMA token account found for this wallet. \
-                     Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the bot."
-                );
-                return Err(anyhow::anyhow!("SCEMA balance gate: no token account found"));
+        }
+        if !gate_passed {
+            error!(
+                "SCEMA gate: could not verify after 5 attempts. \
+                 Set SCEMATICA_SKIP_GATE=1 to bypass if RPC is degraded."
+            );
+            if std::env::var("SCEMATICA_SKIP_GATE").as_deref() != Ok("1") {
+                return Err(anyhow::anyhow!("SCEMA gate: RPC verification failed"));
             }
+            warn!("SCEMATICA_SKIP_GATE=1 set — proceeding without SCEMA verification");
         }
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -141,6 +181,14 @@ async fn main() -> Result<()> {
         rpc.clone(),
         metrics.clone(),
     ));
+
+    // Scan for tokens already held from a previous run and spawn sell monitors
+    {
+        let sniper_scan = sniper.clone();
+        tokio::spawn(async move {
+            sniper_scan.scan_existing_positions().await;
+        });
+    }
 
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
     {
@@ -175,19 +223,23 @@ async fn main() -> Result<()> {
     // Spawn metrics reporter
     let metrics_clone = metrics.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        let mut last_log = std::time::Instant::now();
         loop {
             interval.tick().await;
-            let snap = metrics_clone.snapshot();
-            info!(
-                "📊 Metrics | Trades: {}/{} confirmed | Arbs: {} | PnL: {:.4} SOL | Uptime: {}s",
-                snap.trades_confirmed,
-                snap.trades_attempted,
-                snap.arb_executed,
-                snap.total_pnl_sol(),
-                snap.uptime_secs,
-            );
             metrics_clone.flush_to_file(scematica_core::metrics::METRICS_FILE);
+            // Log summary every 30s to avoid spam, but flush the file every 5s
+            if last_log.elapsed().as_secs() >= 30 {
+                let snap = metrics_clone.snapshot();
+                info!(
+                    "📊 Metrics | Trades: {}/{} confirmed | PnL: {:.4} SOL | Uptime: {}s",
+                    snap.trades_confirmed,
+                    snap.trades_attempted,
+                    snap.total_pnl_sol(),
+                    snap.uptime_secs,
+                );
+                last_log = std::time::Instant::now();
+            }
         }
     });
 

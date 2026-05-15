@@ -11,11 +11,12 @@ use scematica_ai::prompts::CHAT_AGENT_SYSTEM;
 use scematica_ai::tool_dispatcher::ToolDispatcher;
 use scematica_ai::types::ChatMessage;
 use scematica_core::metrics::BotMetrics;
-use scematica_core::token::{get_ata, raw_to_ui};
+use scematica_core::token::raw_to_ui;
 use scematica_core::types::known_tokens;
 use scematica_dashboard::{
     app::AppState,
     chat::{ChatLine, ChatUpdate},
+    demo::run_demo,
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
     onboarding::OnboardingStep,
     process::{run_process_manager, BotCommand},
@@ -31,6 +32,10 @@ struct Args {
     /// Tick rate in milliseconds
     #[arg(long, default_value = "250")]
     tick_rate: u64,
+
+    /// Run in demo mode — simulates trading without real RPC calls or a wallet keypair
+    #[arg(long)]
+    demo: bool,
 }
 
 #[tokio::main]
@@ -44,49 +49,77 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let config = scematica_core::config::BotConfig::from_env()?;
-    let wallet = scematica_core::wallet::Wallet::from_source(&config.wallet.keypair_path)?;
-    let wallet_pubkey = wallet.keypair.pubkey();
-
     let metrics = Arc::new(BotMetrics::new());
-    let rpc = Arc::new(scematica_core::rpc::RpcConnection::new(
-        &config.rpc.endpoint,
-        CommitmentConfig::confirmed(),
-    ));
-    let state = AppState::new((*metrics).clone(), rpc);
 
-    // Wallet loaded successfully — skip onboarding, user is already configured
-    state.onboarding.write().current_step = OnboardingStep::Completed;
+    let state = if args.demo {
+        // Demo mode: no keypair or RPC required
+        let rpc = Arc::new(scematica_core::rpc::RpcConnection::new(
+            "https://api.mainnet-beta.solana.com",
+            CommitmentConfig::confirmed(),
+        ));
+        let s = AppState::new((*metrics).clone(), rpc);
+        s.onboarding.write().current_step = OnboardingStep::Completed;
 
-    // Live sync — SOL balance + SCEMATICA token balance every 5s
-    *state.wallet_address.write() = wallet_pubkey.to_string();
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        let scematica_ata = get_ata(&wallet_pubkey, &known_tokens::SCEMATICA_MINT);
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
+        let demo_state = s.clone();
+        tokio::spawn(async move { run_demo(demo_state).await });
 
-            if let Ok(balance) = state_clone.rpc.get_sol_balance(&wallet_pubkey).await {
-                *state_clone.sol_balance.write() = balance as f64 / 1_000_000_000.0;
+        s
+    } else {
+        let config = scematica_core::config::BotConfig::from_env()?;
+        let wallet = scematica_core::wallet::Wallet::from_source(&config.wallet.keypair_path)?;
+        let wallet_pubkey = wallet.keypair.pubkey();
+
+        let rpc = Arc::new(scematica_core::rpc::RpcConnection::new(
+            &config.rpc.endpoint,
+            CommitmentConfig::confirmed(),
+        ));
+        let s = AppState::new((*metrics).clone(), rpc);
+        s.onboarding.write().current_step = OnboardingStep::Completed;
+
+        *s.wallet_address.write() = wallet_pubkey.to_string();
+        let state_clone = s.clone();
+        tokio::spawn(async move {
+            use solana_client::rpc_request::TokenAccountsFilter;
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if let Ok(balance) = state_clone.rpc.get_sol_balance(&wallet_pubkey).await {
+                    *state_clone.sol_balance.write() = balance as f64 / 1_000_000_000.0;
+                }
+                // SCEMA is Token-2022 — ATA address differs from legacy SPL.
+                // Use owner query so we find it regardless of token program.
+                if let Ok(accounts) = state_clone.rpc.client
+                    .get_token_accounts_by_owner(
+                        &wallet_pubkey,
+                        TokenAccountsFilter::Mint(known_tokens::SCEMATICA_MINT),
+                    )
+                    .await
+                {
+                    let mut total = 0.0f64;
+                    for keyed in &accounts {
+                        if let Ok(pk) = keyed.pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
+                            if let Ok(raw) = state_clone.rpc.get_token_balance(&pk).await {
+                                total += raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
+                            }
+                        }
+                    }
+                    *state_clone.scematica_balance.write() = total;
+                }
             }
+        });
 
-            if let Ok(raw) = state_clone.rpc.get_token_balance(&scematica_ata).await {
-                *state_clone.scematica_balance.write() =
-                    raw_to_ui(raw, known_tokens::SCEMATICA_DECIMALS);
-            }
-        }
-    });
+        s.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
 
-    state.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
+        // Process manager — owns child process handles, responds to BotCommand via mpsc
+        let (bot_tx, bot_rx) = mpsc::channel::<BotCommand>(16);
+        *s.bot_cmd_tx.write() = Some(bot_tx);
+        let pm_state = s.clone();
+        tokio::spawn(async move {
+            run_process_manager(bot_rx, pm_state).await;
+        });
 
-    // Process manager — owns child process handles, responds to BotCommand via mpsc
-    let (bot_tx, bot_rx) = mpsc::channel::<BotCommand>(16);
-    *state.bot_cmd_tx.write() = Some(bot_tx);
-    let pm_state = state.clone();
-    tokio::spawn(async move {
-        run_process_manager(bot_rx, pm_state).await;
-    });
+        s
+    };
 
     // AI worker — receives ChatUpdate commands, runs the agent, writes results back to state
     let (chat_tx, mut chat_rx) = mpsc::channel::<ChatUpdate>(32);
@@ -260,6 +293,7 @@ async fn main() -> Result<()> {
                     state.poll_metrics_file();
                     state.poll_trade_file();
                     state.poll_strategy_file();
+                    state.poll_log_file();
                     state.sync_live_data();
                 }
                 AppEvent::Quit => break,

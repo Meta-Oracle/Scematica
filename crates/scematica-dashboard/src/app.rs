@@ -47,6 +47,8 @@ pub struct AppState {
     pub live_snapshot: RwLock<Option<MetricsSnapshot>>,
     /// Byte offset into the trade event log — tracks how far we've read
     pub trade_file_offset: RwLock<u64>,
+    /// Byte offset into scematica-sniper.log — for external-process log tailing
+    pub sniper_log_offset: RwLock<u64>,
     /// Latest strategy agent params — displayed in the Config tab
     pub strategy_tp_pct: RwLock<f64>,
     pub strategy_sl_pct: RwLock<f64>,
@@ -101,6 +103,7 @@ impl AppState {
             selected_tab: RwLock::new(0),
             live_snapshot: RwLock::new(None),
             trade_file_offset: RwLock::new(0),
+            sniper_log_offset: RwLock::new(0),
             strategy_tp_pct: RwLock::new(50.0),
             strategy_sl_pct: RwLock::new(20.0),
             strategy_multiplier: RwLock::new(1.0),
@@ -161,6 +164,25 @@ impl AppState {
             *self.strategy_regime.write() = snap.market_regime;
         }
     }
+    /// Tail scematica-sniper.log and push new lines to the log panel.
+    /// Used when the sniper runs as a separate process (not dashboard-managed).
+    pub fn poll_log_file(&self) {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+        const LOG_FILE: &str = "scematica-sniper.log";
+        let mut offset = *self.sniper_log_offset.read();
+        let Ok(mut file) = std::fs::File::open(LOG_FILE) else { return };
+        if file.seek(SeekFrom::Start(offset)).is_err() { return }
+        let mut new_offset = offset;
+        let reader = BufReader::new(&mut file);
+        for line in reader.lines().map_while(Result::ok) {
+            new_offset += line.len() as u64 + 1;
+            self.push_log(format!("[SNIPER] {}", line));
+        }
+        if new_offset != offset {
+            *self.sniper_log_offset.write() = new_offset;
+        }
+    }
+
     pub fn effective_snapshot(&self) -> MetricsSnapshot {
         self.live_snapshot
             .read()

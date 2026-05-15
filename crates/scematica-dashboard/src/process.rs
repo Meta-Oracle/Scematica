@@ -113,10 +113,25 @@ fn sync_mode(state: &Arc<AppState>, sniper_up: bool, arb_up: bool) {
 fn launch(name: &str, state: &Arc<AppState>) -> anyhow::Result<Child> {
     let bin = find_binary(name)?;
     state.push_log(format!("[BOT] Starting {} ({:?})", name, bin));
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()?;
+
+    // Stream child stderr into the dashboard log tab in real time
+    if let Some(stderr) = child.stderr.take() {
+        let state_clone = state.clone();
+        let label = name.to_uppercase();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                state_clone.push_log(format!("[{}] {}", label, line));
+            }
+            state_clone.push_log(format!("[{}] Process ended", label));
+        });
+    }
+
     Ok(child)
 }
 

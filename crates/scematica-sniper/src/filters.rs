@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use scematica_core::config::FilterConfig;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::account::Account;
+use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::cache::CachedPool;
 
-/// Result of a filter check
 #[derive(Debug, Clone)]
 pub struct FilterResult {
     pub passed: bool,
@@ -14,106 +15,135 @@ pub struct FilterResult {
 }
 
 impl FilterResult {
-    pub fn pass() -> Self {
-        Self { passed: true, reason: None }
-    }
-
-    pub fn fail(reason: impl Into<String>) -> Self {
-        Self { passed: false, reason: Some(reason.into()) }
-    }
+    pub fn pass() -> Self { Self { passed: true, reason: None } }
+    pub fn fail(reason: impl Into<String>) -> Self { Self { passed: false, reason: Some(reason.into()) } }
 }
 
-/// Trait for pool filters
 #[async_trait]
 pub trait PoolFilter: Send + Sync {
     fn name(&self) -> &str;
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult;
 }
 
-/// Checks if the mint authority has been renounced (set to None)
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+fn is_rate_limited(e: &str) -> bool {
+    e.contains("429") || e.contains("Too Many Requests")
+}
+
+/// Fetch an account with up to `retries` attempts, backing off on 429.
+async fn get_account_retried(
+    rpc: &Arc<RpcClient>,
+    pubkey: &Pubkey,
+    retries: u32,
+) -> Option<Account> {
+    for attempt in 0..retries {
+        match rpc.get_account(pubkey).await {
+            Ok(a) => return Some(a),
+            Err(e) => {
+                let msg = e.to_string();
+                if is_rate_limited(&msg) && attempt + 1 < retries {
+                    let delay = 600 * (attempt + 1) as u64;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fetch a token account balance with up to `retries` attempts on 429.
+async fn get_token_balance_retried(
+    rpc: &Arc<RpcClient>,
+    pubkey: &Pubkey,
+    retries: u32,
+) -> Option<u64> {
+    for attempt in 0..retries {
+        match rpc.get_token_account_balance(pubkey).await {
+            Ok(b) => return b.amount.parse().ok(),
+            Err(e) => {
+                let msg = e.to_string();
+                if is_rate_limited(&msg) && attempt + 1 < retries {
+                    let delay = 600 * (attempt + 1) as u64;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+// ── individual filters ────────────────────────────────────────────────────────
+
 pub struct MintRenounceFilter;
 
 #[async_trait]
 impl PoolFilter for MintRenounceFilter {
     fn name(&self) -> &str { "MintRenounced" }
-
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        match rpc.get_account(&pool.base_mint).await {
-            Ok(account) => {
-                // SPL token mint: mint_authority is at offset 0, 4 bytes option tag + 32 bytes pubkey
-                // Option::None = [0, 0, 0, 0, ...]
-                if account.data.len() >= 4 {
-                    let is_renounced = account.data[0] == 0;
-                    if is_renounced {
-                        FilterResult::pass()
-                    } else {
-                        FilterResult::fail("Mint authority not renounced")
-                    }
+        match get_account_retried(rpc, &pool.base_mint, 3).await {
+            Some(account) if account.data.len() >= 4 => {
+                if account.data[0] == 0 {
+                    FilterResult::pass()
                 } else {
-                    FilterResult::fail("Invalid mint account data")
+                    FilterResult::fail("Mint authority not renounced")
                 }
             }
-            Err(e) => {
-                warn!("MintRenounceFilter RPC error: {}", e);
-                FilterResult::fail(format!("RPC error: {}", e))
+            Some(_) => FilterResult::fail("Invalid mint account data"),
+            None => {
+                warn!(mint = %pool.base_mint, "MintRenounceFilter: RPC unavailable after retries — skipping filter");
+                FilterResult::pass() // fail-open: don't drop pool due to RPC issues
             }
         }
     }
 }
 
-/// Checks if the token is not freezable (freeze authority is None)
 pub struct FreezableFilter;
 
 #[async_trait]
 impl PoolFilter for FreezableFilter {
     fn name(&self) -> &str { "NotFreezable" }
-
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        match rpc.get_account(&pool.base_mint).await {
-            Ok(account) => {
-                // SPL token mint: freeze_authority is at offset 46 (4 byte option + 32 byte key)
-                if account.data.len() >= 50 {
-                    let freeze_option = account.data[44]; // COption tag
-                    if freeze_option == 0 {
-                        FilterResult::pass()
-                    } else {
-                        FilterResult::fail("Token has freeze authority")
-                    }
+        match get_account_retried(rpc, &pool.base_mint, 3).await {
+            Some(account) if account.data.len() >= 82 => {
+                // Mint layout: [0..4]=mint_auth option, [4..36]=mint_auth key,
+                // [36..44]=supply, [44]=decimals, [45]=initialized, [46..50]=freeze_auth option
+                if account.data[46] == 0 {
+                    FilterResult::pass()
                 } else {
-                    FilterResult::fail("Invalid mint account data")
+                    FilterResult::fail("Token has freeze authority")
                 }
             }
-            Err(e) => FilterResult::fail(format!("RPC error: {}", e)),
+            Some(_) => FilterResult::fail("Invalid mint account data"),
+            None => {
+                warn!(mint = %pool.base_mint, "FreezableFilter: RPC unavailable — skipping filter");
+                FilterResult::pass()
+            }
         }
     }
 }
 
-/// Checks if the LP tokens are burned (vault balance near zero)
 pub struct BurnFilter;
 
 #[async_trait]
 impl PoolFilter for BurnFilter {
     fn name(&self) -> &str { "LPBurned" }
-
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        // Check if LP mint supply is near zero (burned)
-        // For Raydium V4, LP mint is derived from pool address
-        // Simplified: check if base vault has reasonable liquidity
-        match rpc.get_token_account_balance(&pool.base_vault).await {
-            Ok(balance) => {
-                let amount: u64 = balance.amount.parse().unwrap_or(0);
-                if amount > 0 {
-                    FilterResult::pass()
-                } else {
-                    FilterResult::fail("Pool vault is empty (possibly rugged)")
-                }
+        match get_token_balance_retried(rpc, &pool.base_vault, 3).await {
+            Some(amount) if amount > 0 => FilterResult::pass(),
+            Some(_) => FilterResult::fail("Pool vault is empty (possibly rugged)"),
+            None => {
+                warn!(mint = %pool.base_mint, "BurnFilter: RPC unavailable — skipping filter");
+                FilterResult::pass()
             }
-            Err(e) => FilterResult::fail(format!("RPC error: {}", e)),
         }
     }
 }
 
-/// Checks pool size is within configured bounds
 pub struct PoolSizeFilter {
     pub min_size_lamports: u64,
     pub max_size_lamports: u64,
@@ -122,31 +152,27 @@ pub struct PoolSizeFilter {
 #[async_trait]
 impl PoolFilter for PoolSizeFilter {
     fn name(&self) -> &str { "PoolSize" }
-
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        match rpc.get_token_account_balance(&pool.quote_vault).await {
-            Ok(balance) => {
-                let amount: u64 = balance.amount.parse().unwrap_or(0);
+        match get_token_balance_retried(rpc, &pool.quote_vault, 3).await {
+            Some(amount) => {
                 if self.min_size_lamports > 0 && amount < self.min_size_lamports {
-                    return FilterResult::fail(format!(
-                        "Pool too small: {} < {}",
-                        amount, self.min_size_lamports
-                    ));
+                    return FilterResult::fail(format!("Pool too small: {}", amount));
                 }
                 if self.max_size_lamports > 0 && amount > self.max_size_lamports {
-                    return FilterResult::fail(format!(
-                        "Pool too large: {} > {}",
-                        amount, self.max_size_lamports
-                    ));
+                    return FilterResult::fail(format!("Pool too large: {}", amount));
                 }
                 FilterResult::pass()
             }
-            Err(e) => FilterResult::fail(format!("RPC error: {}", e)),
+            None => {
+                warn!(mint = %pool.base_mint, "PoolSizeFilter: RPC unavailable — skipping filter");
+                FilterResult::pass()
+            }
         }
     }
 }
 
-/// Runs all configured filters against a pool, with retry logic
+// ── pipeline ──────────────────────────────────────────────────────────────────
+
 pub struct FilterPipeline {
     filters: Vec<Box<dyn PoolFilter>>,
     config: FilterConfig,
@@ -156,36 +182,20 @@ pub struct FilterPipeline {
 impl FilterPipeline {
     pub fn new(config: FilterConfig, rpc: Arc<RpcClient>) -> Self {
         let mut filters: Vec<Box<dyn PoolFilter>> = vec![];
-
-        if config.check_mint_renounced {
-            filters.push(Box::new(MintRenounceFilter));
-        }
-        if config.check_freezable {
-            filters.push(Box::new(FreezableFilter));
-        }
-        if config.check_burned {
-            filters.push(Box::new(BurnFilter));
-        }
+        if config.check_mint_renounced { filters.push(Box::new(MintRenounceFilter)); }
+        if config.check_freezable      { filters.push(Box::new(FreezableFilter)); }
+        if config.check_burned         { filters.push(Box::new(BurnFilter)); }
         if config.min_pool_size > 0.0 || config.max_pool_size > 0.0 {
-            // Convert SOL to lamports
-            let min = (config.min_pool_size * 1e9) as u64;
-            let max = (config.max_pool_size * 1e9) as u64;
             filters.push(Box::new(PoolSizeFilter {
-                min_size_lamports: min,
-                max_size_lamports: max,
+                min_size_lamports: (config.min_pool_size * 1e9) as u64,
+                max_size_lamports: (config.max_pool_size * 1e9) as u64,
             }));
         }
-
         Self { filters, config, rpc }
     }
 
-    /// Run all filters. Returns true if pool passes all filters
-    /// Retries up to check_duration / check_interval times, requiring
-    /// consecutive_matches consecutive passes.
     pub async fn execute(&self, pool: &CachedPool) -> bool {
-        if self.filters.is_empty() {
-            return true;
-        }
+        if self.filters.is_empty() { return true; }
 
         let interval = tokio::time::Duration::from_millis(self.config.check_interval_ms);
         let max_checks = if self.config.check_interval_ms > 0 {
@@ -198,14 +208,9 @@ impl FilterPipeline {
         let mut checks = 0u64;
 
         loop {
-            let all_pass = self.run_once(pool).await;
-
-            if all_pass {
+            if self.run_once(pool).await {
                 consecutive += 1;
-                debug!(
-                    mint = %pool.base_mint,
-                    "Filter pass {}/{}", consecutive, self.config.consecutive_matches
-                );
+                debug!(mint = %pool.base_mint, "Filter pass {}/{}", consecutive, self.config.consecutive_matches);
                 if consecutive >= self.config.consecutive_matches {
                     return true;
                 }
@@ -214,9 +219,7 @@ impl FilterPipeline {
             }
 
             checks += 1;
-            if checks >= max_checks {
-                return false;
-            }
+            if checks >= max_checks { return false; }
 
             tokio::time::sleep(interval).await;
         }
@@ -226,14 +229,11 @@ impl FilterPipeline {
         for filter in &self.filters {
             let result = filter.check(pool, &self.rpc).await;
             if !result.passed {
-                debug!(
-                    mint = %pool.base_mint,
-                    filter = filter.name(),
-                    reason = ?result.reason,
-                    "Filter failed"
-                );
+                debug!(mint = %pool.base_mint, filter = filter.name(), reason = ?result.reason, "Filter failed");
                 return false;
             }
+            // Small gap between sequential filter calls to avoid burst
+            tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
         }
         true
     }

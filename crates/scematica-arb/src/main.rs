@@ -10,7 +10,7 @@ use scematica_arb::{
 use scematica_core::{
     config::BotConfig,
     metrics::BotMetrics,
-    token::{get_ata, raw_to_ui, resolve_mint, ui_to_raw},
+    token::{get_scema_ata, raw_to_ui, resolve_mint, ui_to_raw},
     types::known_tokens,
     wallet::Wallet,
 };
@@ -20,7 +20,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Minimum SCEMA balance required to run the arb engine.
-const MIN_SCEMA_REQUIRED: f64 = 1000.0;
+const MIN_SCEMA_REQUIRED: f64 = 250_000.0;
 
 #[derive(Parser, Debug)]
 #[command(name = "scematica-arb", about = "Scematica Cross-DEX Arbitrage Bot")]
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
             config.rpc.endpoint.clone(),
             CommitmentConfig::confirmed(),
         );
-        let scema_ata = get_ata(&wallet_kp.pubkey(), &known_tokens::SCEMATICA_MINT);
+        let scema_ata = get_scema_ata(&wallet_kp.pubkey()); // Token-2022 ATA derivation
         match rpc_client.get_token_account_balance(&scema_ata).await {
             Ok(balance) => {
                 let raw: u64 = balance.amount.parse().unwrap_or(0);
@@ -142,10 +142,12 @@ async fn main() -> Result<()> {
     );
 
     // Swap program ID (deployed scematica-swap program)
+    let default_program_id: solana_sdk::pubkey::Pubkey =
+        "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc".parse().unwrap();
     let swap_program_id = std::env::var("SWAP_PROGRAM_ID")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(solana_sdk::pubkey::Pubkey::default());
+        .unwrap_or(default_program_id);
 
     let executor = Arc::new(ArbExecutor::new(
         rpc.clone(),

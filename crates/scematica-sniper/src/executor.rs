@@ -97,14 +97,17 @@ impl TxExecutor for DefaultExecutor {
                     });
                 }
                 Err(e) => {
-                    warn!("Transaction attempt {} failed: {}", attempt + 1, e);
+                    let msg = e.to_string();
+                    warn!("Transaction attempt {} failed: {}", attempt + 1, msg);
                     if attempt + 1 < self.max_retries {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        // Back off longer on 429 rate-limit responses
+                        let delay_ms = if msg.contains("429") { 2000 } else { 500 };
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                     } else {
                         return Ok(ExecResult {
                             signature: None,
                             confirmed: false,
-                            error: Some(e.to_string()),
+                            error: Some(msg),
                         });
                     }
                 }

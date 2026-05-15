@@ -38,16 +38,31 @@ pub fn identify_dex(program_id: &Pubkey) -> DexKind {
     }
 }
 
-/// Raydium V4 pool state layout constants
+/// Raydium AMM V4 pool state layout constants (verified against on-chain data).
+///
+/// The pre-Pubkey section is 336 bytes:
+///   16 u64s (status…sysDecimalValue)   = 128
+///   8  u64s (fees)                      =  64
+///   4  u64s (needTakePnl…totalPnl)     =  32
+///   1  u128 (poolOpenTime)              =  16
+///   3  u64s (punish×2, orderbookInit)  =  24
+///   2  u128 (swapCoinIn, swapPcOut)    =  32
+///   1  u64  (swapTakePcFee)            =   8
+///   2  u128 (swapPcIn, swapCoinOut)    =  32
+///                              total  = 336
 pub mod raydium_v4 {
     pub const POOL_STATE_SIZE: usize = 752;
     pub const STATUS_OFFSET: usize = 0;
-    pub const BASE_MINT_OFFSET: usize = 400;
-    pub const QUOTE_MINT_OFFSET: usize = 432;
-    pub const BASE_VAULT_OFFSET: usize = 336;
-    pub const QUOTE_VAULT_OFFSET: usize = 368;
-    pub const OPEN_TIME_OFFSET: usize = 200;
-    pub const MARKET_ID_OFFSET: usize = 464;
+    pub const BASE_VAULT_OFFSET: usize = 336;     // tokenCoin
+    pub const QUOTE_VAULT_OFFSET: usize = 368;    // tokenPc
+    pub const BASE_MINT_OFFSET: usize = 400;      // coinMint
+    pub const QUOTE_MINT_OFFSET: usize = 432;     // pcMint
+    pub const LP_MINT_OFFSET: usize = 464;        // lpMint
+    pub const OPEN_ORDERS_OFFSET: usize = 496;    // openOrders
+    pub const MARKET_ID_OFFSET: usize = 528;      // market (was wrong: 464)
+    pub const MARKET_PROGRAM_OFFSET: usize = 560; // marketProgram
+    pub const TARGET_ORDERS_OFFSET: usize = 592;  // targetOrders
+    pub const OPEN_TIME_OFFSET: usize = 224;      // poolOpenTime (u128 lo-bits, was wrong: 200)
 }
 
 /// Raydium V4 market state layout constants (OpenBook/Serum)

@@ -47,7 +47,8 @@ impl PoolListener {
         let (ws_stream, _) = connect_async(&self.ws_url).await?;
         let (mut write, mut read) = ws_stream.split();
 
-        // Subscribe to Raydium AMM V4 program account changes (new pools)
+        // Subscribe to Raydium AMM V4 program account changes.
+        // decode_raydium_v4_pool filters out established pools by open_time.
         let pool_sub = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -58,7 +59,7 @@ impl PoolListener {
                     "encoding": "base64",
                     "commitment": "confirmed",
                     "filters": [
-                        { "dataSize": 752 }  // Raydium V4 pool state size
+                        { "dataSize": 752 }
                     ]
                 }
             ]
@@ -130,7 +131,6 @@ impl PoolListener {
 
     async fn handle_pool_notification(&self, value: &Value) -> Result<()> {
         let params = &value["params"]["result"];
-        let _account_id = params["context"]["slot"].as_u64().unwrap_or(0);
         let pubkey_str = params["value"]["pubkey"].as_str().unwrap_or("");
         let data = &params["value"]["account"]["data"];
 
@@ -195,6 +195,31 @@ fn decode_raydium_v4_pool(pubkey_str: &str, data: &[u8]) -> Option<CachedPool> {
         data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8].try_into().ok()?
     );
 
+    // Reject partially-initialised pool accounts — all key pubkeys must be non-zero.
+    // programSubscribe fires before the pool account is fully written; reading it
+    // at that moment yields a zero base_mint, which causes ATA creation to fail with
+    // InvalidMint (0x1).
+    if base_mint == Pubkey::default()
+        || quote_mint == Pubkey::default()
+        || base_vault == Pubkey::default()
+        || quote_vault == Pubkey::default()
+        || market_id == Pubkey::default()
+    {
+        return None;
+    }
+
+    // Reject established pools — only pass pools whose open_time is within the last
+    // 5 minutes or in the future. programSubscribe fires on every pool state change
+    // (swaps, deposits, etc.); this prevents us from trying to snipe pools that have
+    // been live for hours.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if open_time > 0 && open_time + 300 < now {
+        return None; // Pool opened more than 5 minutes ago — skip
+    }
+
     Some(CachedPool {
         id: pool_id,
         base_mint,
@@ -203,7 +228,7 @@ fn decode_raydium_v4_pool(pubkey_str: &str, data: &[u8]) -> Option<CachedPool> {
         quote_vault,
         market_id,
         open_time,
-        base_decimals: 9,  // will be fetched on-demand
+        base_decimals: 9,
         quote_decimals: 9,
     })
 }

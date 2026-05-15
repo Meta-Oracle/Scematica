@@ -177,6 +177,8 @@ impl AiResponse {
 
 // ─── Agent Output Types ───────────────────────────────────────────────────────
 
+fn utc_now() -> DateTime<Utc> { Utc::now() }
+
 /// Risk assessment for a new token/pool (used by sniper)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenRiskScore {
@@ -188,7 +190,8 @@ pub struct TokenRiskScore {
     pub reasoning: String,
     /// Specific red flags detected
     pub red_flags: Vec<String>,
-    /// Timestamp of assessment
+    /// Timestamp of assessment — filled in by the parser if absent from AI response
+    #[serde(default = "utc_now")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -254,6 +257,7 @@ pub struct MarketReport {
     pub market_conditions: String,
     pub recommendations: Vec<String>,
     pub alerts: Vec<String>,
+    #[serde(default = "utc_now")]
     pub timestamp: DateTime<Utc>,
 }
 

@@ -24,7 +24,8 @@ impl RaydiumBuilder {
 
 impl StateDecoder for RaydiumBuilder {
     fn decode_pool_state(&self, data: &[u8]) -> Result<(u64, u64)> {
-        let state = RaydiumAmmV4::try_from_slice(&data[..RaydiumAmmV4::LEN])?;
+        let mut slice = data;
+        let state = RaydiumAmmV4::deserialize(&mut slice)?;
         Ok((state.lp_reserve, 0))
     }
 }
@@ -37,16 +38,37 @@ fn raydium_swap_data(amount_in: u64, min_amount_out: u64) -> Vec<u8> {
     data
 }
 
-/// Serum/OpenBook market state layout offsets (little-endian, after 5-byte header).
-/// Reference: https://github.com/openbook-dex/openbook-v1/blob/master/dex/src/state.rs
+/// Serum/OpenBook V1 market state layout (verified against openbook-dex/openbook-v1 state.rs).
+///
+/// [0..5]    padding ("serum" magic)
+/// [5..13]   accountFlags        u64
+/// [13..45]  ownAddress          Pubkey
+/// [45..53]  vaultSignerNonce    u64
+/// [53..85]  baseMint            Pubkey
+/// [85..117] quoteMint           Pubkey
+/// [117..149] baseVault          Pubkey
+/// [149..157] baseDepositsTotal  u64
+/// [157..165] baseFeesAccrued    u64
+/// [165..197] quoteVault         Pubkey
+/// [197..205] quoteDepositsTotal u64
+/// [205..213] quoteFeesAccrued   u64
+/// [213..221] quoteDustThreshold u64
+/// [221..253] requestQueue       Pubkey
+/// [253..285] eventQueue         Pubkey
+/// [285..317] bids               Pubkey
+/// [317..349] asks               Pubkey
+/// [349..357] baseLotSize        u64
+/// [357..365] quoteLotSize       u64
+/// [365..373] feeRateBps         u64
+/// [373..381] referrerRebatesAccrued u64
+/// [381..388] trailing padding (7 bytes)  — total 388 bytes
 mod serum_offsets {
-    pub const HEADER: usize = 5;          // "serum" magic prefix
-    pub const BIDS: usize = 5 + 5 * 8 + 32 * 5;      // offset 197
-    pub const ASKS: usize = BIDS + 32;                 // offset 229
-    pub const EVENT_QUEUE: usize = ASKS + 32;          // offset 261
-    pub const BASE_VAULT: usize = EVENT_QUEUE + 32;    // offset 293
-    pub const PC_VAULT: usize = BASE_VAULT + 32;       // offset 325
-    pub const VAULT_SIGNER_NONCE: usize = HEADER + 8; // offset 13 (u64)
+    pub const VAULT_SIGNER_NONCE: usize = 45;
+    pub const BASE_VAULT: usize = 117;
+    pub const PC_VAULT: usize = 165;
+    pub const EVENT_QUEUE: usize = 253;
+    pub const BIDS: usize = 285;
+    pub const ASKS: usize = 317;
 }
 
 /// Parse a Pubkey from a byte slice at the given offset.
@@ -82,42 +104,51 @@ impl SwapInstructionBuilder for RaydiumBuilder {
         amount_in: u64,
         min_amount_out: u64,
     ) -> Result<Vec<Instruction>> {
-        // Fetch and decode pool state
+        use scematica_core::dex::raydium_v4 as offsets;
+
+        // Fetch pool state — 752 bytes on-chain
         let pool_data = self.rpc.get_account_data(pool).await
             .map_err(|e| anyhow::anyhow!("RPC error fetching pool {}: {}", pool, e))?;
 
-        if pool_data.len() < RaydiumAmmV4::LEN {
-            anyhow::bail!("pool data too short: {} < {} for pool {}", pool_data.len(), RaydiumAmmV4::LEN, pool);
+        if pool_data.len() < offsets::POOL_STATE_SIZE {
+            anyhow::bail!("pool data too short: {} bytes for {}", pool_data.len(), pool);
         }
 
-        let state = RaydiumAmmV4::try_from_slice(&pool_data[..RaydiumAmmV4::LEN])?;
-
-        if state.status == 0 {
-            anyhow::bail!("pool {} is uninitialized (status == 0)", pool);
+        // Read status (u64 LE at byte 0)
+        let status = u64::from_le_bytes(pool_data[0..8].try_into()?);
+        if status == 0 {
+            anyhow::bail!("pool {} is uninitialized", pool);
         }
 
-        // Fetch and decode Serum market state to get bids/asks/event_queue/vaults/vault_signer
-        let market_data = self.rpc.get_account_data(&state.market_id).await
-            .map_err(|e| anyhow::anyhow!("RPC error fetching market {}: {}", state.market_id, e))?;
+        // Read pool accounts directly from verified byte offsets (avoids Borsh struct misalignment)
+        let pool_base_vault   = read_pubkey(&pool_data, offsets::BASE_VAULT_OFFSET)?;
+        let pool_quote_vault  = read_pubkey(&pool_data, offsets::QUOTE_VAULT_OFFSET)?;
+        let open_orders       = read_pubkey(&pool_data, offsets::OPEN_ORDERS_OFFSET)?;
+        let target_orders     = read_pubkey(&pool_data, offsets::TARGET_ORDERS_OFFSET)?;
+        let market_id         = read_pubkey(&pool_data, offsets::MARKET_ID_OFFSET)?;
+        let market_program_id = read_pubkey(&pool_data, offsets::MARKET_PROGRAM_OFFSET)?;
+
+        // Fetch OpenBook/Serum market state
+        let market_data = self.rpc.get_account_data(&market_id).await
+            .map_err(|e| anyhow::anyhow!("RPC error fetching market {}: {}", market_id, e))?;
 
         const MIN_MARKET_LEN: usize = serum_offsets::PC_VAULT + 32;
         if market_data.len() < MIN_MARKET_LEN {
-            anyhow::bail!("market data too short: {} < {}", market_data.len(), MIN_MARKET_LEN);
+            anyhow::bail!("market data too short: {} < {} for market {}", market_data.len(), MIN_MARKET_LEN, market_id);
         }
 
-        let bids          = read_pubkey(&market_data, serum_offsets::BIDS)?;
-        let asks          = read_pubkey(&market_data, serum_offsets::ASKS)?;
-        let event_queue   = read_pubkey(&market_data, serum_offsets::EVENT_QUEUE)?;
-        let base_vault    = read_pubkey(&market_data, serum_offsets::BASE_VAULT)?;
-        let pc_vault      = read_pubkey(&market_data, serum_offsets::PC_VAULT)?;
+        let bids        = read_pubkey(&market_data, serum_offsets::BIDS)?;
+        let asks        = read_pubkey(&market_data, serum_offsets::ASKS)?;
+        let event_queue = read_pubkey(&market_data, serum_offsets::EVENT_QUEUE)?;
+        let mkt_base_vault = read_pubkey(&market_data, serum_offsets::BASE_VAULT)?;
+        let mkt_pc_vault   = read_pubkey(&market_data, serum_offsets::PC_VAULT)?;
 
-        // Vault signer nonce is a u64 at offset 13 (after 5-byte header + 8-byte account flags)
         let nonce_bytes: [u8; 8] = market_data[serum_offsets::VAULT_SIGNER_NONCE
             ..serum_offsets::VAULT_SIGNER_NONCE + 8]
             .try_into()
             .map_err(|_| anyhow::anyhow!("failed to read vault signer nonce"))?;
         let vault_signer_nonce = u64::from_le_bytes(nonce_bytes);
-        let vault_signer = derive_vault_signer(&state.market_id, vault_signer_nonce, &state.market_program_id)?;
+        let vault_signer = derive_vault_signer(&market_id, vault_signer_nonce, &market_program_id)?;
 
         let (amm_authority, _) = Pubkey::find_program_address(
             &[b"amm authority"],
@@ -128,17 +159,17 @@ impl SwapInstructionBuilder for RaydiumBuilder {
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new(*pool, false),
             AccountMeta::new_readonly(amm_authority, false),
-            AccountMeta::new(state.open_orders, false),
-            AccountMeta::new(state.target_orders, false),
-            AccountMeta::new(state.base_vault, false),
-            AccountMeta::new(state.quote_vault, false),
-            AccountMeta::new_readonly(state.market_program_id, false),
-            AccountMeta::new(state.market_id, false),
+            AccountMeta::new(open_orders, false),
+            AccountMeta::new(target_orders, false),
+            AccountMeta::new(pool_base_vault, false),
+            AccountMeta::new(pool_quote_vault, false),
+            AccountMeta::new_readonly(market_program_id, false),
+            AccountMeta::new(market_id, false),
             AccountMeta::new(bids, false),
             AccountMeta::new(asks, false),
             AccountMeta::new(event_queue, false),
-            AccountMeta::new(base_vault, false),
-            AccountMeta::new(pc_vault, false),
+            AccountMeta::new(mkt_base_vault, false),
+            AccountMeta::new(mkt_pc_vault, false),
             AccountMeta::new_readonly(vault_signer, false),
             AccountMeta::new(*ata_in, false),
             AccountMeta::new(*ata_out, false),

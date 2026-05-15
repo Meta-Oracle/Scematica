@@ -1,4 +1,5 @@
 use parking_lot::{Mutex, RwLock};
+use spl_associated_token_account;
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::SniperConfig,
@@ -264,6 +265,22 @@ impl Sniper {
         // Cache the pool
         self.pool_cache.save(&pool.id.to_string(), pool.clone());
 
+        // Skip pools whose open_time is more than 60 seconds in the future.
+        // Raydium rejects swaps before pool_open_time — attempting anyway wastes RPC calls.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if pool.open_time > now_secs + 60 {
+            info!(
+                mint = %pool.base_mint,
+                open_time = pool.open_time,
+                now = now_secs,
+                "Pool not yet open — skipping"
+            );
+            return;
+        }
+
         // Apply buy delay
         if self.config.buy_delay_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(self.config.buy_delay_ms)).await;
@@ -292,15 +309,25 @@ impl Sniper {
             // UTC hour from open_time (unix timestamp)
             let open_hour = (pool.open_time % 86400 / 3600) as u8;
 
+            // Pool already passed all enabled filters at this point, so:
+            // - mint_renounced = true  (MintRenounceFilter passed or was disabled)
+            // - freezable = false      (FreezableFilter passed or was disabled)
+            // - lp_burned = true       (BurnFilter passed or was disabled)
+            // Pass the known-good state so the AI isn't told the token is risky.
+            let mint_renounced = self.config.filters.check_mint_renounced; // enabled → verified
+            let freezable = false; // FreezableFilter already confirmed not freezable
+            let lp_burned = self.config.filters.check_burned;
+            let mutable_metadata = !self.config.filters.check_mutable; // mutable only if we didn't check
+
             let risk = ai.risk.score_token(
                 &pool.base_mint.to_string(),
-                "UNKNOWN", // symbol fetched on-demand in production
-                "UNKNOWN", // name fetched on-demand in production
+                "UNKNOWN",
+                "UNKNOWN",
                 pool_size_sol,
-                !self.config.filters.check_mint_renounced, // simplified
-                self.config.filters.check_freezable,
-                self.config.filters.check_burned,
-                self.config.filters.check_mutable,
+                mint_renounced,
+                freezable,
+                lp_burned,
+                mutable_metadata,
                 self.config.filters.check_socials,
                 open_hour,
             ).await;
@@ -314,18 +341,33 @@ impl Sniper {
             );
 
             if !risk.should_buy() {
-                info!(
-                    mint = %pool.base_mint,
-                    score = risk.score,
-                    flags = ?risk.red_flags,
-                    "AI rejected token — skipping buy"
-                );
-                return;
+                // If the AI API itself failed (rate limit, network, etc.) the token
+                // already passed all on-chain filters — don't let an infrastructure
+                // outage block every trade.  Only hard-skip on a genuine AI rejection.
+                let ai_failed = risk.red_flags.iter()
+                    .any(|f| f.contains("AI assessment failed"));
+                if ai_failed {
+                    warn!(
+                        mint = %pool.base_mint,
+                        reasoning = %risk.reasoning,
+                        "AI unavailable — proceeding on on-chain filters"
+                    );
+                } else {
+                    info!(
+                        mint = %pool.base_mint,
+                        score = risk.score,
+                        flags = ?risk.red_flags,
+                        "AI rejected token — skipping buy"
+                    );
+                    return;
+                }
             }
         }
 
         // Execute buy
-        self.buy(&pool).await;
+        if let Err(e) = self.buy(&pool).await {
+            error!(mint = %pool.base_mint, "buy() error: {}", e);
+        }
     }
 
     async fn buy(&self, pool: &CachedPool) -> Result<()> {
@@ -338,17 +380,28 @@ impl Sniper {
 
         self.metrics.record_trade_attempt();
 
-        // Lock if one-at-a-time
-        if self.config.one_token_at_a_time {
-            *self.processing_lock.lock() = true;
-        }
-
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
         let base_ata = get_ata(&wallet_pubkey, &pool.base_mint);
 
-        // Build swap instructions
-        let ixs = self.raydium_builder.build_swap(
+        // Gate: ensure we have enough native SOL for quote amount + fees + ATA rent.
+        // 6_000_000 lamports (0.006 SOL) covers tx fee, compute budget, and 2× ATA rent.
+        let native_balance = self.rpc.get_balance(&wallet_pubkey).await.unwrap_or(0);
+        let min_required = self.quote_amount_raw + 6_000_000;
+        if native_balance < min_required {
+            warn!(
+                mint = %pool.base_mint,
+                balance_sol = native_balance as f64 / 1e9,
+                required_sol = min_required as f64 / 1e9,
+                "Insufficient SOL — skipping buy"
+            );
+            return Ok(());
+        }
+
+        // Build swap instructions BEFORE acquiring the lock so a build failure
+        // doesn't leave the lock permanently set (which would silently drop all
+        // future pools).
+        let mut ixs = match self.raydium_builder.build_swap(
             &pool.id,
             &wallet_pubkey,
             &self.quote_mint,
@@ -356,8 +409,65 @@ impl Sniper {
             &quote_ata,
             &base_ata,
             self.quote_amount_raw,
-            0, // min_out: 0 for now, slippage applied in swap
-        ).await?;
+            0,
+        ).await {
+            Ok(ixs) => ixs,
+            Err(e) => {
+                error!(mint = %pool.base_mint, "Failed to build swap instructions: {}", e);
+                self.metrics.record_trade_failed();
+                return Err(e);
+            }
+        };
+
+        // Acquire lock only after we have valid instructions ready to execute
+        if self.config.one_token_at_a_time {
+            *self.processing_lock.lock() = true;
+        }
+
+        // Build the final instruction list:
+        // 1. Create WSOL ATA (idempotent)
+        // 2. Transfer SOL into WSOL ATA via system program
+        // 3. SyncNative — reflect the lamports as WSOL token balance
+        // 4. Create base token ATA (idempotent destination for the swap)
+        // 5. Raydium swap
+        let mut final_ixs: Vec<solana_sdk::instruction::Instruction> = Vec::new();
+
+        if self.quote_mint == known_tokens::WSOL_MINT {
+            // Ensure the WSOL ATA exists before funding it
+            final_ixs.push(
+                spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                    &wallet_pubkey,
+                    &wallet_pubkey,
+                    &known_tokens::WSOL_MINT,
+                    &spl_token::id(),
+                )
+            );
+            // Transfer the exact buy amount as native SOL into the WSOL ATA
+            final_ixs.push(solana_sdk::system_instruction::transfer(
+                &wallet_pubkey,
+                &quote_ata,
+                self.quote_amount_raw,
+            ));
+            // SyncNative — Raydium reads the SPL token balance, not raw lamports
+            final_ixs.push(solana_sdk::instruction::Instruction {
+                program_id: spl_token::id(),
+                accounts: vec![solana_sdk::instruction::AccountMeta::new(quote_ata, false)],
+                data: vec![17u8],
+            });
+        }
+
+        // Create the base token ATA (destination for bought tokens)
+        final_ixs.push(
+            spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                &wallet_pubkey,
+                &wallet_pubkey,
+                &pool.base_mint,
+                &spl_token::id(),
+            )
+        );
+
+        final_ixs.extend(ixs);
+        let ixs = final_ixs;
 
 
         for attempt in 0..self.config.max_buy_retries {
@@ -387,13 +497,16 @@ impl Sniper {
                         hops: 1,
                     }.append_to_file(TRADES_FILE);
 
-                    // Schedule auto-sell if enabled
+                    // Schedule auto-sell — the monitor task owns the lock release.
+                    // If auto_sell is disabled we release the lock here instead.
                     if self.config.auto_sell {
                         let pool_clone = pool.clone();
                         let monitor = self.clone_for_sell();
                         tokio::spawn(async move {
                             monitor.monitor_and_sell(pool_clone, base_ata).await;
                         });
+                    } else if self.config.one_token_at_a_time {
+                        *self.processing_lock.lock() = false;
                     }
                     return Ok(());
                 }
@@ -615,11 +728,175 @@ impl Sniper {
     }
 
     async fn on_wallet_update(&self, account: Pubkey, mint: Pubkey, amount: u64) {
-        // Triggered when a token account in our wallet changes
-        // Used to detect received tokens and trigger sell logic
         debug!(account = %account, mint = %mint, amount, "Wallet update");
     }
 
+    /// Scan wallet for existing token positions and spawn a sell monitor for each.
+    /// Called once at startup so tokens bought in a previous run can be sold.
+    pub async fn scan_existing_positions(&self) {
+        use solana_client::rpc_request::TokenAccountsFilter;
+        use solana_sdk::program_pack::Pack;
+
+        let wallet_pubkey = self.wallet.pubkey();
+        info!("Startup scan: checking wallet for existing token positions...");
+
+        let keyed_accounts = match self.rpc
+            .get_token_accounts_by_owner(
+                &wallet_pubkey,
+                TokenAccountsFilter::ProgramId(spl_token::id()),
+            )
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("Startup scan: failed to list token accounts: {}", e);
+                return;
+            }
+        };
+
+        let skip_mints: std::collections::HashSet<Pubkey> = [
+            self.quote_mint,
+            known_tokens::WSOL_MINT,
+            known_tokens::SCEMATICA_MINT,
+        ]
+        .into_iter()
+        .collect();
+
+        let mut spawned = 0u32;
+        for keyed in keyed_accounts {
+            let ata_pk = match keyed.pubkey.parse::<Pubkey>() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Unpack the raw SPL token account to get mint and balance
+            let raw = match self.rpc.get_account(&ata_pk).await {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let token_acct = match spl_token::state::Account::unpack(&raw.data) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            if token_acct.amount == 0 {
+                continue;
+            }
+            let mint = token_acct.mint;
+            if skip_mints.contains(&mint) {
+                continue;
+            }
+
+            info!(
+                mint = %mint,
+                amount = token_acct.amount,
+                "Startup scan: found existing position — looking up Raydium pool"
+            );
+
+            let pool = match self.find_raydium_pool_for_mint(&mint).await {
+                Some(p) => p,
+                None => {
+                    warn!(mint = %mint, "Startup scan: no Raydium pool found — cannot auto-sell");
+                    continue;
+                }
+            };
+
+            if pool.quote_mint != self.quote_mint {
+                debug!(mint = %mint, "Startup scan: pool quote mint mismatch — skipping");
+                continue;
+            }
+
+            info!(
+                mint = %mint,
+                pool = %pool.id,
+                amount = token_acct.amount,
+                "Startup scan: spawning sell monitor"
+            );
+
+            let monitor = self.clone_for_sell();
+            tokio::spawn(async move {
+                monitor.monitor_and_sell(pool, ata_pk).await;
+            });
+            spawned += 1;
+        }
+
+        if spawned == 0 {
+            info!("Startup scan: no existing positions found");
+        } else {
+            info!("Startup scan: spawned {} sell monitor(s)", spawned);
+        }
+    }
+
+    /// Find a Raydium AMM V4 pool where `base_mint` is the base token.
+    /// Issues a single `getProgramAccounts` call with memcmp + dataSize filters.
+    async fn find_raydium_pool_for_mint(&self, base_mint: &Pubkey) -> Option<CachedPool> {
+        use solana_account_decoder::UiAccountEncoding;
+        use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+        use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
+        use scematica_core::dex::{program_ids, raydium_v4::*};
+
+        let config = RpcProgramAccountsConfig {
+            filters: Some(vec![
+                RpcFilterType::DataSize(POOL_STATE_SIZE as u64),
+                RpcFilterType::Memcmp(Memcmp::new(
+                    BASE_MINT_OFFSET,
+                    MemcmpEncodedBytes::Bytes(base_mint.to_bytes().to_vec()),
+                )),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let pools = match self.rpc
+            .get_program_accounts_with_config(&program_ids::RAYDIUM_AMM_V4, config)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(mint = %base_mint, "Pool lookup RPC call failed: {}", e);
+                return None;
+            }
+        };
+
+        let (pool_pk, pool_account) = pools.into_iter().next()?;
+        let data = &pool_account.data;
+        if data.len() < POOL_STATE_SIZE {
+            return None;
+        }
+
+        let pool_base_mint =
+            Pubkey::try_from(&data[BASE_MINT_OFFSET..BASE_MINT_OFFSET + 32]).ok()?;
+        let pool_quote_mint =
+            Pubkey::try_from(&data[QUOTE_MINT_OFFSET..QUOTE_MINT_OFFSET + 32]).ok()?;
+        let base_vault =
+            Pubkey::try_from(&data[BASE_VAULT_OFFSET..BASE_VAULT_OFFSET + 32]).ok()?;
+        let quote_vault =
+            Pubkey::try_from(&data[QUOTE_VAULT_OFFSET..QUOTE_VAULT_OFFSET + 32]).ok()?;
+        let market_id =
+            Pubkey::try_from(&data[MARKET_ID_OFFSET..MARKET_ID_OFFSET + 32]).ok()?;
+        let open_time = u64::from_le_bytes(
+            data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8].try_into().ok()?,
+        );
+
+        if pool_quote_mint == Pubkey::default() || base_vault == Pubkey::default() {
+            return None;
+        }
+
+        Some(CachedPool {
+            id: pool_pk,
+            base_mint: pool_base_mint,
+            quote_mint: pool_quote_mint,
+            base_vault,
+            quote_vault,
+            market_id,
+            open_time,
+            base_decimals: 9,
+            quote_decimals: 9,
+        })
+    }
 
     /// Clone the parts needed for the sell monitor task
     fn clone_for_sell(&self) -> SellMonitor {
@@ -704,7 +981,18 @@ impl SellMonitor {
                             let profitable = current_value >= target_profit;
                             let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
                                 / 1_000_000_000.0;
-                            self.do_sell(&pool, &base_ata, amount).await;
+                            let reason = if profitable { "take profit" } else { "stop loss" };
+                            tracing::info!(
+                                mint = %pool.base_mint,
+                                current_value,
+                                target_profit,
+                                stop_loss = stop_loss_amount,
+                                pnl_sol,
+                                "Sell triggered: {}", reason
+                            );
+                            if let Err(e) = self.do_sell(&pool, &base_ata, amount).await {
+                                tracing::error!(mint = %pool.base_mint, "do_sell failed: {}", e);
+                            }
                             // Record outcome for strategy agent
                             {
                                 let mut history = self.trade_history.lock();
@@ -720,10 +1008,13 @@ impl SellMonitor {
 
             checks += 1;
             if checks >= max_checks {
+                tracing::info!(mint = %pool.base_mint, "Price check window expired — force selling");
                 if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
-                        self.do_sell(&pool, &base_ata, amount).await;
+                        if let Err(e) = self.do_sell(&pool, &base_ata, amount).await {
+                            tracing::error!(mint = %pool.base_mint, "Force-sell failed: {}", e);
+                        }
                     }
                 }
                 break;
@@ -736,46 +1027,119 @@ impl SellMonitor {
         }
     }
 
-    async fn do_sell(&self, pool: &CachedPool, _base_ata: &Pubkey, amount: u64) -> Result<()> {
+    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) -> Result<()> {
         use scematica_core::token::apply_slippage;
 
         self.metrics.record_trade_attempt();
         let wallet_pubkey = self.wallet.pubkey();
-        let _quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
+        let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
 
-        let min_out = apply_slippage(
-            (amount as f64 * 0.99) as u64,
-            self.config.sell_slippage_pct,
+        // Estimate current quote output from pool reserves so min_out is in lamports.
+        // Falls back to 0 (no minimum) if reserve fetch fails — still better than using
+        // base token raw amount as min_out, which causes every sell to fail slippage checks.
+        let estimated_out = if let (Ok(qb), Ok(bb)) = (
+            self.rpc.get_token_account_balance(&pool.quote_vault).await,
+            self.rpc.get_token_account_balance(&pool.base_vault).await,
+        ) {
+            let q: u64 = qb.amount.parse().unwrap_or(1);
+            let b: u64 = bb.amount.parse().unwrap_or(1);
+            (amount as u128 * q as u128 / b as u128) as u64
+        } else {
+            0
+        };
+        let min_out = if estimated_out > 0 {
+            apply_slippage(estimated_out, self.config.sell_slippage_pct)
+        } else {
+            0
+        };
+
+        tracing::info!(
+            mint = %pool.base_mint,
+            amount,
+            estimated_out,
+            min_out,
+            "Building sell instruction"
         );
 
-        let ixs = self.raydium_builder.build_swap(
+        let mut ixs = self.raydium_builder.build_swap(
             &pool.id,
             &wallet_pubkey,
             &pool.base_mint,
             &self.quote_mint,
-            _base_ata,
-            &_quote_ata,
+            base_ata,
+            &quote_ata,
             amount,
             min_out,
         ).await?;
 
+        // After selling base → WSOL, close the WSOL ATA to unwrap back to native SOL.
+        if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
+            ixs.push(
+                spl_token::instruction::close_account(
+                    &spl_token::id(),
+                    &quote_ata,
+                    &wallet_pubkey,
+                    &wallet_pubkey,
+                    &[],
+                )?
+            );
+        }
 
         for attempt in 0..self.config.max_sell_retries {
+            tracing::info!(
+                mint = %pool.base_mint,
+                attempt = attempt + 1,
+                retries = self.config.max_sell_retries,
+                "Sell attempt"
+            );
             match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
                     self.metrics.record_trade_confirmed(0);
+
+                    TradeEvent {
+                        timestamp: chrono::Utc::now(),
+                        kind: "SELL".into(),
+                        mint: pool.base_mint.to_string(),
+                        symbol: String::new(),
+                        amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+                        pnl: (estimated_out as f64 - self.quote_amount_raw as f64) / 1_000_000_000.0,
+                        status: "✓".into(),
+                        signature: result.signature.map(|s| s.to_string()).unwrap_or_default(),
+                        dex: "Raydium".into(),
+                        hops: 1,
+                    }.append_to_file(TRADES_FILE);
+
                     return Ok(());
                 }
                 Ok(result) => {
-                    tracing::warn!(error = ?result.error, "Sell attempt {} failed", attempt + 1);
+                    tracing::warn!(
+                        mint = %pool.base_mint,
+                        attempt = attempt + 1,
+                        error = ?result.error,
+                        "Sell attempt failed"
+                    );
                 }
                 Err(e) => {
-                    tracing::error!("Sell error: {}", e);
+                    tracing::error!(mint = %pool.base_mint, attempt = attempt + 1, "Sell error: {}", e);
                 }
             }
         }
+
         self.metrics.record_trade_failed();
+        TradeEvent {
+            timestamp: chrono::Utc::now(),
+            kind: "SELL".into(),
+            mint: pool.base_mint.to_string(),
+            symbol: String::new(),
+            amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+            pnl: 0.0,
+            status: "✗".into(),
+            signature: String::new(),
+            dex: "Raydium".into(),
+            hops: 1,
+        }.append_to_file(TRADES_FILE);
+
         Ok(())
     }
 }

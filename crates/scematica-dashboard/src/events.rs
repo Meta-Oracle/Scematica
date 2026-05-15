@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::app::BotMode;
@@ -17,7 +17,9 @@ pub fn spawn_event_reader(tx: mpsc::Sender<AppEvent>, tick_rate_ms: u64) {
         loop {
             if event::poll(tick).unwrap_or(false) {
                 if let Ok(Event::Key(key)) = event::read() {
-                    let _ = tx.blocking_send(AppEvent::Key(key));
+                    if key.kind == KeyEventKind::Press {
+                        let _ = tx.blocking_send(AppEvent::Key(key));
+                    }
                 }
             } else {
                 let _ = tx.blocking_send(AppEvent::Tick);

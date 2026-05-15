@@ -1,10 +1,28 @@
 use solana_sdk::pubkey::Pubkey;
-use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::{get_associated_token_address, get_associated_token_address_with_program_id};
 use crate::types::known_tokens;
 
-/// Derive the associated token account address for a wallet + mint
+/// Token-2022 program ID (used by SCEMA and other modern tokens)
+pub const TOKEN_2022_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+/// Legacy SPL Token program ID
+pub const TOKEN_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+/// Derive the associated token account address for a wallet + mint (legacy SPL Token program)
 pub fn get_ata(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
     get_associated_token_address(wallet, mint)
+}
+
+/// Derive the ATA for a Token-2022 mint (different program ID → different address)
+pub fn get_ata_2022(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
+    get_associated_token_address_with_program_id(wallet, mint, &TOKEN_2022_PROGRAM_ID)
+}
+
+/// Derive the correct ATA for SCEMA (Token-2022)
+pub fn get_scema_ata(wallet: &Pubkey) -> Pubkey {
+    get_ata_2022(wallet, &known_tokens::SCEMATICA_MINT)
 }
 
 /// Resolve a token symbol to its mint pubkey

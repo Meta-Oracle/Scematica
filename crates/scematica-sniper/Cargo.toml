@@ -17,6 +17,7 @@ scematica-executor = { path = "../scematica-executor" }
 
 solana-sdk.workspace = true
 solana-client.workspace = true
+solana-account-decoder.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
 
@@ -28,6 +29,7 @@ serde_json.workspace = true
 
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 

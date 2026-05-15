@@ -5,3 +5,4 @@ pub mod onboarding;
 pub mod components;
 pub mod chat;
 pub mod process;
+pub mod demo;

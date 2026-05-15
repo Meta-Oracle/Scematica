@@ -1,5 +1,6 @@
 use parking_lot::{Mutex, RwLock};
 use spl_associated_token_account;
+use std::sync::atomic::{AtomicBool, Ordering};
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::SniperConfig,
@@ -76,6 +77,10 @@ pub struct Sniper {
     pub live_params: Arc<RwLock<LiveParams>>,
     /// Recent trade outcomes for strategy agent input: (was_profitable, pnl_sol)
     trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
+    /// Set true by the sell-mode file watcher to pause buys and force-sell everything
+    pub sell_mode: Arc<AtomicBool>,
+    /// Semaphore: max 2 concurrent sell transactions to avoid 429 hammering
+    sell_sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl Sniper {
@@ -132,6 +137,8 @@ impl Sniper {
                 .expect("Raydium builder not found")),
             live_params,
             trade_history: Arc::new(Mutex::new(Vec::new())),
+            sell_mode: Arc::new(AtomicBool::new(false)),
+            sell_sem: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -258,6 +265,12 @@ impl Sniper {
                 debug!(mint = %pool.base_mint, "Skipping: already processing a token");
                 return;
             }
+        }
+
+        // Skip all buys when sell mode is active (low SOL or manual override)
+        if self.sell_mode.load(Ordering::Relaxed) {
+            debug!(mint = %pool.base_mint, "Sell mode active — skipping buy");
+            return;
         }
 
         info!(mint = %pool.base_mint, pool = %pool.id, "New pool detected — evaluating");
@@ -912,6 +925,8 @@ impl Sniper {
             raydium_builder: self.raydium_builder.clone(),
             live_params: self.live_params.clone(),
             trade_history: self.trade_history.clone(),
+            sell_mode: self.sell_mode.clone(),
+            sell_sem: self.sell_sem.clone(),
         }
     }
 }
@@ -932,6 +947,10 @@ struct SellMonitor {
     live_params: Arc<RwLock<LiveParams>>,
     /// Shared trade history for strategy agent feedback
     trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
+    /// Sell mode flag — when true, all monitoring is in force-sell mode
+    sell_mode: Arc<AtomicBool>,
+    /// Semaphore: max 2 concurrent sell transactions to avoid 429 storms
+    sell_sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl SellMonitor {
@@ -990,9 +1009,7 @@ impl SellMonitor {
                                 pnl_sol,
                                 "Sell triggered: {}", reason
                             );
-                            if let Err(e) = self.do_sell(&pool, &base_ata, amount).await {
-                                tracing::error!(mint = %pool.base_mint, "do_sell failed: {}", e);
-                            }
+                            self.sell_with_retry(&pool, &base_ata, amount).await;
                             // Record outcome for strategy agent
                             {
                                 let mut history = self.trade_history.lock();
@@ -1012,9 +1029,7 @@ impl SellMonitor {
                 if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
-                        if let Err(e) = self.do_sell(&pool, &base_ata, amount).await {
-                            tracing::error!(mint = %pool.base_mint, "Force-sell failed: {}", e);
-                        }
+                        self.sell_with_retry(&pool, &base_ata, amount).await;
                     }
                 }
                 break;
@@ -1027,8 +1042,45 @@ impl SellMonitor {
         }
     }
 
+    /// Persistent sell wrapper: retries `do_sell` up to 3 rounds with a 30 s pause.
+    /// Refreshes the token balance before each round so stale amounts don't block later rounds.
+    async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
+        let mut current_amount = amount;
+        for round in 0..3u32 {
+            // Refresh balance — token may have been partially or fully sold already
+            if let Ok(bal) = self.rpc.get_token_account_balance(base_ata).await {
+                let fresh = bal.amount.parse::<u64>().unwrap_or(0);
+                if fresh == 0 {
+                    tracing::info!(mint = %pool.base_mint, "Token fully sold");
+                    return;
+                }
+                current_amount = fresh;
+            }
+            match self.do_sell(pool, base_ata, current_amount).await {
+                Ok(()) => return,
+                Err(e) => {
+                    let is_last = round >= 2;
+                    tracing::error!(
+                        mint = %pool.base_mint,
+                        round = round + 1,
+                        "Sell round failed: {} — {}",
+                        e,
+                        if is_last { "giving up" } else { "retrying in 30s" }
+                    );
+                    if !is_last {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    }
+                }
+            }
+        }
+    }
+
     async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) -> Result<()> {
         use scematica_core::token::apply_slippage;
+
+        // Limit concurrent sell transactions to avoid 429 RPC hammering
+        let _permit = self.sell_sem.acquire().await
+            .map_err(|_| anyhow::anyhow!("sell semaphore closed"))?;
 
         self.metrics.record_trade_attempt();
         let wallet_pubkey = self.wallet.pubkey();
@@ -1085,7 +1137,9 @@ impl SellMonitor {
             );
         }
 
-        for attempt in 0..self.config.max_sell_retries {
+        let mut attempt = 0u32;
+        let mut tried_zero_slippage = false;
+        while attempt < self.config.max_sell_retries {
             tracing::info!(
                 mint = %pool.base_mint,
                 attempt = attempt + 1,
@@ -1113,15 +1167,48 @@ impl SellMonitor {
                     return Ok(());
                 }
                 Ok(result) => {
+                    let err = result.error.as_deref().unwrap_or("").to_string();
                     tracing::warn!(
                         mint = %pool.base_mint,
                         attempt = attempt + 1,
-                        error = ?result.error,
+                        error = %err,
                         "Sell attempt failed"
                     );
+                    // 0x26 = Raydium slippage check; rebuild with min_out=0 without consuming a retry
+                    if err.contains("0x26") && !tried_zero_slippage {
+                        tried_zero_slippage = true;
+                        tracing::warn!(mint = %pool.base_mint, "0x26 slippage — rebuilding sell with min_out=0");
+                        if let Ok(mut rebuilt) = self.raydium_builder.build_swap(
+                            &pool.id,
+                            &wallet_pubkey,
+                            &pool.base_mint,
+                            &self.quote_mint,
+                            base_ata,
+                            &quote_ata,
+                            amount,
+                            0,
+                        ).await {
+                            if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
+                                if let Ok(close_ix) = spl_token::instruction::close_account(
+                                    &spl_token::id(),
+                                    &quote_ata,
+                                    &wallet_pubkey,
+                                    &wallet_pubkey,
+                                    &[],
+                                ) {
+                                    rebuilt.push(close_ix);
+                                }
+                            }
+                            ixs = rebuilt;
+                        }
+                        // retry immediately without spending a retry count
+                        continue;
+                    }
+                    attempt += 1;
                 }
                 Err(e) => {
                     tracing::error!(mint = %pool.base_mint, attempt = attempt + 1, "Sell error: {}", e);
+                    attempt += 1;
                 }
             }
         }
@@ -1140,6 +1227,6 @@ impl SellMonitor {
             hops: 1,
         }.append_to_file(TRADES_FILE);
 
-        Ok(())
+        anyhow::bail!("sell exhausted {} retries for {}", self.config.max_sell_retries, pool.base_mint)
     }
 }

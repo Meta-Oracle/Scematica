@@ -60,6 +60,8 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool) -> Optio
             KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
             KeyCode::Char('b') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Both)),
             KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
+            // [e] on the Logs tab toggles emergency sell mode
+            KeyCode::Char('e') if current_tab == 2 => Some(DashboardAction::ToggleSellMode),
             _ => None,
         }
     }
@@ -77,4 +79,5 @@ pub enum DashboardAction {
     ChatReject,
     StartBot(BotMode),
     StopBot,
+    ToggleSellMode,
 }

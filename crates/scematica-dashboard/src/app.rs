@@ -63,6 +63,8 @@ pub struct AppState {
     pub live_data: Arc<RwLock<LiveData>>,
     /// Channel to the process manager task — send BotCommand::Start/Stop
     pub bot_cmd_tx: RwLock<Option<tokio::sync::mpsc::Sender<BotCommand>>>,
+    /// Emergency sell mode: when true the sniper skips buys and force-sells everything
+    pub sell_mode_active: RwLock<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +116,7 @@ impl AppState {
             chat_tx: RwLock::new(None),
             live_data: Arc::new(RwLock::new(LiveData::default())),
             bot_cmd_tx: RwLock::new(None),
+            sell_mode_active: RwLock::new(false),
         })
     }
 

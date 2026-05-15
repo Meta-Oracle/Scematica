@@ -286,6 +286,23 @@ async fn main() -> Result<()> {
                                     let _ = tx.try_send(BotCommand::Stop);
                                 }
                             }
+                            DashboardAction::ToggleSellMode => {
+                                let currently = *state.sell_mode_active.read();
+                                let next = !currently;
+                                *state.sell_mode_active.write() = next;
+                                const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
+                                if next {
+                                    let _ = std::fs::write(SELL_MODE_FILE, r#"{"active":true}"#);
+                                    state.push_log(
+                                        "[SELL MODE] Emergency sell mode ACTIVATED — buying paused, selling all positions".to_string()
+                                    );
+                                } else {
+                                    let _ = std::fs::remove_file(SELL_MODE_FILE);
+                                    state.push_log(
+                                        "[SELL MODE] Sell mode DEACTIVATED — resuming normal operation".to_string()
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -295,6 +312,19 @@ async fn main() -> Result<()> {
                     state.poll_strategy_file();
                     state.poll_log_file();
                     state.sync_live_data();
+
+                    // Auto-enable sell mode when SOL drops below 0.015
+                    // (not enough to buy + pay fees — only selling makes sense)
+                    let sol = *state.sol_balance.read();
+                    let sell_mode = *state.sell_mode_active.read();
+                    if sol > 0.0 && sol < 0.015 && !sell_mode {
+                        *state.sell_mode_active.write() = true;
+                        let _ = std::fs::write("scematica-sell-mode.json", r#"{"active":true}"#);
+                        state.push_log(format!(
+                            "[SELL MODE] Auto-activated — SOL balance {:.4} below 0.015 threshold",
+                            sol
+                        ));
+                    }
                 }
                 AppEvent::Quit => break,
             }

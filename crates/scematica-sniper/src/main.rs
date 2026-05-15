@@ -190,6 +190,33 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Sell-mode file watcher — checks for scematica-sell-mode.json every 5 s.
+    // When the file appears (written by the dashboard or manually), pauses all buys
+    // and triggers an immediate sell scan for every token in the wallet.
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_sm = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut was_active = false;
+            loop {
+                interval.tick().await;
+                let active = std::path::Path::new("scematica-sell-mode.json").exists();
+                sniper_sm.sell_mode.store(active, Ordering::Relaxed);
+                if active && !was_active {
+                    warn!("🚨 SELL MODE activated — pausing buys and force-selling all positions");
+                    let sniper_ref = sniper_sm.clone();
+                    tokio::spawn(async move {
+                        sniper_ref.scan_existing_positions().await;
+                    });
+                } else if !active && was_active {
+                    info!("✅ Sell mode deactivated — resuming normal operation");
+                }
+                was_active = active;
+            }
+        });
+    }
+
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
     {
         let sniper_clone = sniper.clone();

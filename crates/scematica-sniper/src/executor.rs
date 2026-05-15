@@ -100,8 +100,12 @@ impl TxExecutor for DefaultExecutor {
                     let msg = e.to_string();
                     warn!("Transaction attempt {} failed: {}", attempt + 1, msg);
                     if attempt + 1 < self.max_retries {
-                        // Back off longer on 429 rate-limit responses
-                        let delay_ms = if msg.contains("429") { 2000 } else { 500 };
+                        // Exponential back-off: 429 → 2 s, 4 s, 8 s…; others → 500 ms
+                        let delay_ms: u64 = if msg.contains("429") {
+                            2000 << attempt.min(3)
+                        } else {
+                            500
+                        };
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                     } else {
                         return Ok(ExecResult {

@@ -217,27 +217,41 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Dump-mode file watcher — checks for scematica-dump-mode.json every 5 s.
-    // When active: sets dump_mode flag (min_out=0 on all sells) and calls auto_dump()
-    // to immediately force-sell every token position in the wallet.
+    // Dump-mode file watcher — checks scematica-dump-mode.json every 5 s.
+    // On activation: sets dump_mode (min_out=0) and calls auto_dump immediately.
+    // While still active: re-calls auto_dump every 30 s so positions that failed
+    // the first time (e.g. pool lookup timeout) are retried automatically.
     {
         use std::sync::atomic::Ordering;
         let sniper_dm = sniper.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
             let mut was_active = false;
+            let mut active_ticks = 0u32;
             loop {
                 interval.tick().await;
                 let active = std::path::Path::new("scematica-dump-mode.json").exists();
                 sniper_dm.dump_mode.store(active, Ordering::Relaxed);
-                if active && !was_active {
-                    warn!("💥 DUMP MODE activated — force-selling ALL positions with zero slippage");
-                    let sniper_ref = sniper_dm.clone();
-                    tokio::spawn(async move {
-                        sniper_ref.auto_dump().await;
-                    });
-                } else if !active && was_active {
-                    info!("✅ Dump mode deactivated");
+                if active {
+                    active_ticks += 1;
+                    let first = !was_active;
+                    // Fire immediately on activation, then every 6 ticks (30 s)
+                    if first || active_ticks % 6 == 0 {
+                        if first {
+                            warn!("💥 DUMP MODE activated — force-selling ALL positions with zero slippage");
+                        } else {
+                            warn!("AUTO DUMP: retrying unsold positions (tick {})", active_ticks);
+                        }
+                        let sniper_ref = sniper_dm.clone();
+                        tokio::spawn(async move {
+                            sniper_ref.auto_dump().await;
+                        });
+                    }
+                } else {
+                    if was_active {
+                        info!("✅ Dump mode deactivated");
+                    }
+                    active_ticks = 0;
                 }
                 was_active = active;
             }

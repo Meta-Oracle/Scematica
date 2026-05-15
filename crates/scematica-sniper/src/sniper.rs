@@ -846,26 +846,42 @@ impl Sniper {
     /// Immediately force-sell every token position in the wallet.
     /// Unlike scan_existing_positions (which spawns price monitors), this calls
     /// sell_with_retry directly — with dump_mode active, min_out=0 so any price is accepted.
+    ///
+    /// Scans both legacy SPL Token and Token-2022 accounts (Pump.fun mints are Token-2022).
+    /// Checks the in-memory pool_cache first before falling back to getProgramAccounts.
     pub async fn auto_dump(&self) {
         use solana_client::rpc_request::TokenAccountsFilter;
         use solana_sdk::program_pack::Pack;
+        use solana_sdk::pubkey;
+
+        // Token-2022 program — all Pump.fun meme coins use this
+        const TOKEN_2022_PROGRAM: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
         let wallet_pubkey = self.wallet.pubkey();
-        warn!("AUTO DUMP: scanning wallet for positions to force-sell");
+        warn!("AUTO DUMP: scanning wallet (SPL + Token-2022) for positions");
 
-        let keyed_accounts = match self.rpc
-            .get_token_accounts_by_owner(
-                &wallet_pubkey,
-                TokenAccountsFilter::ProgramId(spl_token::id()),
-            )
-            .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                warn!("Auto dump: failed to list token accounts: {}", e);
-                return;
+        // Scan both token programs — Pump.fun coins are Token-2022
+        let mut all_keyed = Vec::new();
+        for program_id in [spl_token::id(), TOKEN_2022_PROGRAM] {
+            match self.rpc
+                .get_token_accounts_by_owner(
+                    &wallet_pubkey,
+                    TokenAccountsFilter::ProgramId(program_id),
+                )
+                .await
+            {
+                Ok(accounts) => {
+                    info!("AUTO DUMP: found {} accounts under {}", accounts.len(), program_id);
+                    all_keyed.extend(accounts);
+                }
+                Err(e) => warn!("AUTO DUMP: scan failed for program {}: {}", program_id, e),
             }
-        };
+        }
+
+        if all_keyed.is_empty() {
+            info!("AUTO DUMP: no token accounts found");
+            return;
+        }
 
         let skip_mints: std::collections::HashSet<Pubkey> = [
             self.quote_mint,
@@ -876,7 +892,7 @@ impl Sniper {
         .collect();
 
         let mut spawned = 0u32;
-        for keyed in keyed_accounts {
+        for keyed in all_keyed {
             let ata_pk = match keyed.pubkey.parse::<Pubkey>() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -885,38 +901,56 @@ impl Sniper {
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            let token_acct = match spl_token::state::Account::unpack(&raw.data) {
-                Ok(a) => a,
-                Err(_) => continue,
+
+            // Try standard unpack; fall back to raw byte parse for Token-2022 accounts
+            // with extension data (which makes data.len() > 165 and fails unpack).
+            // SPL token account layout: [0..32]=mint, [32..64]=owner, [64..72]=amount (u64 LE)
+            let (mint, amount) = if let Ok(acct) = spl_token::state::Account::unpack(&raw.data) {
+                (acct.mint, acct.amount)
+            } else if raw.data.len() >= 72 {
+                let mint = match Pubkey::try_from(&raw.data[0..32]) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let amount = u64::from_le_bytes(
+                    raw.data[64..72].try_into().unwrap_or([0u8; 8]),
+                );
+                (mint, amount)
+            } else {
+                continue;
             };
-            if token_acct.amount == 0 {
+
+            if amount == 0 {
                 continue;
             }
-            let mint = token_acct.mint;
             if skip_mints.contains(&mint) {
                 continue;
             }
 
-            warn!(
-                mint = %mint,
-                amount = token_acct.amount,
-                "AUTO DUMP: force-selling position"
-            );
+            warn!(mint = %mint, amount, "AUTO DUMP: found position — looking up pool");
 
-            let pool = match self.find_raydium_pool_for_mint(&mint).await {
-                Some(p) => p,
-                None => {
-                    warn!(mint = %mint, "AUTO DUMP: no Raydium pool — cannot sell");
-                    continue;
+            // Check in-memory pool cache first (free, no RPC) — covers tokens bought this run.
+            // Fall back to getProgramAccounts (expensive) for tokens from a previous run.
+            let pool = if let Some(cached) = self.pool_cache.find_by_base_mint(&mint) {
+                info!(mint = %mint, pool = %cached.id, "AUTO DUMP: using cached pool");
+                cached
+            } else {
+                match self.find_raydium_pool_for_mint(&mint).await {
+                    Some(p) => p,
+                    None => {
+                        warn!(mint = %mint, "AUTO DUMP: no Raydium pool found — skipping");
+                        continue;
+                    }
                 }
             };
 
             if pool.quote_mint != self.quote_mint {
+                debug!(mint = %mint, "AUTO DUMP: pool quote mint mismatch — skipping");
                 continue;
             }
 
+            warn!(mint = %mint, pool = %pool.id, amount, "AUTO DUMP: spawning force-sell");
             let monitor = self.clone_for_sell();
-            let amount = token_acct.amount;
             tokio::spawn(async move {
                 monitor.sell_with_retry(&pool, &ata_pk, amount).await;
             });
@@ -924,9 +958,9 @@ impl Sniper {
         }
 
         if spawned == 0 {
-            info!("AUTO DUMP: no positions found in wallet");
+            info!("AUTO DUMP: no sellable positions found");
         } else {
-            warn!("AUTO DUMP: force-selling {} position(s) concurrently", spawned);
+            warn!("AUTO DUMP: force-selling {} position(s)", spawned);
         }
     }
 

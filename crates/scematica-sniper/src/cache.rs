@@ -54,6 +54,15 @@ impl PoolCache {
         self.inner.contains_key(pool_id)
     }
 
+    /// Find any cached pool whose base_mint matches. Used by auto_dump to avoid
+    /// a getProgramAccounts RPC call for tokens bought during this run.
+    pub fn find_by_base_mint(&self, base_mint: &solana_sdk::pubkey::Pubkey) -> Option<CachedPool> {
+        self.inner
+            .iter()
+            .find(|e| e.value().base_mint == *base_mint)
+            .map(|e| e.value().clone())
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }

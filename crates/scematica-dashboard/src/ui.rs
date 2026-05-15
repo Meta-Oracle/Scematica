@@ -58,13 +58,13 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
         _ => {}
     }
 
-    if *state.is_ai_loading.read() {
-        let loader_area = Rect::new(
-            content_area.x + content_area.width / 2 - 8,
-            content_area.y + content_area.height / 2 - 2,
-            16,
-            5,
-        );
+    // Only show the AI spinner on the Chat tab
+    if tab == 4 && *state.is_ai_loading.read() {
+        let spinner_w = 18u16;
+        let spinner_h = 3u16;
+        let sx = content_area.x + content_area.width.saturating_sub(spinner_w + 2);
+        let sy = content_area.y + content_area.height.saturating_sub(spinner_h + 4);
+        let loader_area = Rect::new(sx, sy, spinner_w, spinner_h);
         if let Some(spinner_lock) = SPINNER.get() {
             if let Ok(mut s) = spinner_lock.lock() {
                 s.tick();
@@ -460,9 +460,15 @@ fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let history = state.chat_history.read();
     let has_pending = state.chat_pending.read().is_some();
+    let loading = *state.is_ai_loading.read();
+
+    // Inner height minus borders — each item is 1 line
+    let max_visible = chunks[0].height.saturating_sub(2) as usize;
+    let skip = history.len().saturating_sub(max_visible);
 
     let items: Vec<ListItem> = history
         .iter()
+        .skip(skip)
         .map(|line| match line {
             ChatLine::User(s) => ListItem::new(format!("You: {}", s))
                 .style(Style::default().fg(Color::Cyan)),
@@ -480,28 +486,32 @@ fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         })
         .collect();
 
-    let title = if has_pending {
-        " 🤖 Chat — Awaiting confirmation [y/n] "
+    let title = if loading {
+        " 🤖 Chat — Thinking... "
+    } else if has_pending {
+        " 🤖 Chat — Awaiting confirmation [y] yes  [n] no "
     } else {
         " 🤖 Chat — Ask about your wallet & trades "
     };
+
+    let border_color = if has_pending { Color::Yellow } else { COLOR_ACCENT };
 
     let list = List::new(items).block(
         Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(if has_pending { Color::Yellow } else { COLOR_ACCENT })),
+            .border_style(Style::default().fg(border_color)),
     );
     f.render_widget(list, chunks[0]);
 
+    // Input box
     let input = state.chat_input.read().clone();
-    let loading = *state.is_ai_loading.read();
     let (prompt_text, prompt_color) = if loading {
         ("  Thinking...".to_string(), Color::Yellow)
     } else if has_pending {
-        (format!("  [y] confirm  [n] reject  —  {}", input), Color::Yellow)
+        (format!("  [y] confirm  [n] reject"), Color::Yellow)
     } else {
-        (format!("  > {}", input), Color::White)
+        (format!("  > {}_", input), Color::White)
     };
 
     let input_box = Paragraph::new(prompt_text)
@@ -509,7 +519,7 @@ fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if has_pending || loading { Color::Yellow } else { COLOR_ACCENT })),
+                .border_style(Style::default().fg(border_color)),
         );
     f.render_widget(input_box, chunks[1]);
 }

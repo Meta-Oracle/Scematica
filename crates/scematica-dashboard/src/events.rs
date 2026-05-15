@@ -25,8 +25,10 @@ pub fn spawn_event_reader(tx: mpsc::Sender<AppEvent>, tick_rate_ms: u64) {
     });
 }
 
-/// Handle a key event and return a dashboard action. `current_tab` routes chat-specific keys.
-pub fn handle_key(key: KeyEvent, current_tab: usize) -> Option<DashboardAction> {
+/// Handle a key event and return a dashboard action.
+/// `current_tab` routes chat-specific keys.
+/// `has_pending` controls whether `y`/`n` route to confirm/reject (vs typed into input).
+pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool) -> Option<DashboardAction> {
     // Ctrl+C always quits
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Some(DashboardAction::Quit);
@@ -39,8 +41,9 @@ pub fn handle_key(key: KeyEvent, current_tab: usize) -> Option<DashboardAction> 
             KeyCode::BackTab => Some(DashboardAction::PrevTab),
             KeyCode::Enter => Some(DashboardAction::ChatSend),
             KeyCode::Backspace => Some(DashboardAction::ChatBackspace),
-            KeyCode::Char('y') if key.modifiers.is_empty() => Some(DashboardAction::ChatConfirm),
-            KeyCode::Char('n') if key.modifiers.is_empty() => Some(DashboardAction::ChatReject),
+            // Only route y/n to confirm/reject when there is an active pending tool call
+            KeyCode::Char('y') if has_pending && key.modifiers.is_empty() => Some(DashboardAction::ChatConfirm),
+            KeyCode::Char('n') if has_pending && key.modifiers.is_empty() => Some(DashboardAction::ChatReject),
             KeyCode::Char(c) => Some(DashboardAction::ChatChar(c)),
             _ => None,
         }

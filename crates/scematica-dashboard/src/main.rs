@@ -17,6 +17,7 @@ use scematica_dashboard::{
     app::AppState,
     chat::{ChatLine, ChatUpdate},
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
+    onboarding::OnboardingStep,
     ui::render,
 };
 use solana_sdk::{commitment_config::CommitmentConfig, signature::Signer};
@@ -52,6 +53,9 @@ async fn main() -> Result<()> {
         CommitmentConfig::confirmed(),
     ));
     let state = AppState::new((*metrics).clone(), rpc);
+
+    // Wallet loaded successfully — skip onboarding, user is already configured
+    state.onboarding.write().current_step = OnboardingStep::Completed;
 
     // Live sync — SOL balance + SCEMATICA token balance every 5s
     *state.wallet_address.write() = wallet_pubkey.to_string();
@@ -173,7 +177,25 @@ async fn main() -> Result<()> {
         if let Some(event) = event_rx.recv().await {
             match event {
                 AppEvent::Key(key) => {
-                    if let Some(action) = handle_key(key, current_tab) {
+                    // If onboarding is still showing, Enter advances it and other keys are blocked
+                    let onboarding_done = state.onboarding.read().current_step == OnboardingStep::Completed;
+                    if !onboarding_done {
+                        match key.code {
+                            crossterm::event::KeyCode::Enter => {
+                                state.onboarding.write().next();
+                            }
+                            crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
+                                // Skip straight to done
+                                let mut ob = state.onboarding.write();
+                                ob.current_step = OnboardingStep::Completed;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    let has_pending = state.chat_pending.read().is_some();
+                    if let Some(action) = handle_key(key, current_tab, has_pending) {
                         match action {
                             DashboardAction::Quit => break,
                             DashboardAction::NextTab => state.next_tab(),

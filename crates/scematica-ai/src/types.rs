@@ -57,20 +57,32 @@ pub struct ToolCallFunction {
 /// A chat message for the AI API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: String,   // "system" | "user" | "assistant"
+    pub role: String,   // "system" | "user" | "assistant" | "tool"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(content.into()), tool_calls: None }
+        Self { role: "system".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(content.into()), tool_calls: None }
+        Self { role: "user".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+    }
+
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { role: "tool".into(), content: Some(content.into()), tool_calls: None, tool_call_id: Some(call_id.into()), name: None }
     }
 }
 

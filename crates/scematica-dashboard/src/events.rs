@@ -25,16 +25,32 @@ pub fn spawn_event_reader(tx: mpsc::Sender<AppEvent>, tick_rate_ms: u64) {
     });
 }
 
-/// Handle a key event and return true if the app should quit
-pub fn handle_key(key: KeyEvent) -> Option<DashboardAction> {
-    match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => Some(DashboardAction::Quit),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Some(DashboardAction::Quit)
+/// Handle a key event and return a dashboard action. `current_tab` routes chat-specific keys.
+pub fn handle_key(key: KeyEvent, current_tab: usize) -> Option<DashboardAction> {
+    // Ctrl+C always quits
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(DashboardAction::Quit);
+    }
+
+    if current_tab == 4 {
+        match key.code {
+            KeyCode::Esc => Some(DashboardAction::Quit),
+            KeyCode::Tab => Some(DashboardAction::NextTab),
+            KeyCode::BackTab => Some(DashboardAction::PrevTab),
+            KeyCode::Enter => Some(DashboardAction::ChatSend),
+            KeyCode::Backspace => Some(DashboardAction::ChatBackspace),
+            KeyCode::Char('y') if key.modifiers.is_empty() => Some(DashboardAction::ChatConfirm),
+            KeyCode::Char('n') if key.modifiers.is_empty() => Some(DashboardAction::ChatReject),
+            KeyCode::Char(c) => Some(DashboardAction::ChatChar(c)),
+            _ => None,
         }
-        KeyCode::Tab | KeyCode::Right => Some(DashboardAction::NextTab),
-        KeyCode::BackTab | KeyCode::Left => Some(DashboardAction::PrevTab),
-        _ => None,
+    } else {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => Some(DashboardAction::Quit),
+            KeyCode::Tab | KeyCode::Right => Some(DashboardAction::NextTab),
+            KeyCode::BackTab | KeyCode::Left => Some(DashboardAction::PrevTab),
+            _ => None,
+        }
     }
 }
 
@@ -43,4 +59,9 @@ pub enum DashboardAction {
     Quit,
     NextTab,
     PrevTab,
+    ChatChar(char),
+    ChatBackspace,
+    ChatSend,
+    ChatConfirm,
+    ChatReject,
 }

@@ -5,6 +5,9 @@ use scematica_core::rpc::RpcConnection;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use crate::onboarding::OnboardingManager;
+use crate::chat::{ChatLine, ChatUpdate};
+use scematica_ai::tool_dispatcher::LiveData;
+use scematica_ai::chat_types::PendingToolCall;
 
 /// Maximum number of log lines to keep in memory
 const MAX_LOG_LINES: usize = 200;
@@ -48,6 +51,13 @@ pub struct AppState {
     pub strategy_sl_pct: RwLock<f64>,
     pub strategy_multiplier: RwLock<f64>,
     pub strategy_regime: RwLock<String>,
+    /// Chat tab state
+    pub chat_history: RwLock<VecDeque<ChatLine>>,
+    pub chat_input: RwLock<String>,
+    pub chat_pending: RwLock<Option<PendingToolCall>>,
+    pub chat_tx: RwLock<Option<tokio::sync::mpsc::Sender<ChatUpdate>>>,
+    /// Shared live data for the AI tool dispatcher
+    pub live_data: Arc<RwLock<LiveData>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -92,6 +102,11 @@ impl AppState {
             strategy_sl_pct: RwLock::new(20.0),
             strategy_multiplier: RwLock::new(1.0),
             strategy_regime: RwLock::new("neutral".into()),
+            chat_history: RwLock::new(VecDeque::new()),
+            chat_input: RwLock::new(String::new()),
+            chat_pending: RwLock::new(None),
+            chat_tx: RwLock::new(None),
+            live_data: Arc::new(RwLock::new(LiveData::default())),
         })
     }
 
@@ -175,11 +190,34 @@ impl AppState {
 
     pub fn next_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = (*tab + 1) % 4;
+        *tab = (*tab + 1) % 5;
     }
 
     pub fn prev_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = tab.checked_sub(1).unwrap_or(3);
+        *tab = tab.checked_sub(1).unwrap_or(4);
+    }
+
+    pub fn push_chat_line(&self, line: ChatLine) {
+        let mut history = self.chat_history.write();
+        history.push_back(line);
+        while history.len() > 200 {
+            history.pop_front();
+        }
+    }
+
+    /// Sync live wallet/metrics data into the shared LiveData arc for the AI tool dispatcher.
+    pub fn sync_live_data(&self) {
+        let snap = self.effective_snapshot();
+        let mut ld = self.live_data.write();
+        ld.sol_balance = *self.sol_balance.read();
+        ld.scema_balance = *self.scematica_balance.read();
+        ld.wallet_address = self.wallet_address.read().clone();
+        ld.trades_attempted = snap.trades_attempted;
+        ld.trades_confirmed = snap.trades_confirmed;
+        ld.arbs_found = snap.arb_opportunities_found;
+        ld.arbs_executed = snap.arb_executed;
+        ld.total_pnl_lamports = (snap.total_pnl_sol() * 1_000_000_000.0) as i64;
+        ld.uptime_secs = snap.uptime_secs;
     }
 }

@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::chat::ChatLine;
 use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -53,6 +54,7 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
         1 => render_trades(f, content_area, state),
         2 => render_logs(f, content_area, state),
         3 => render_config(f, content_area, state),
+        4 => render_chat(f, content_area, state),
         _ => {}
     }
 
@@ -77,7 +79,7 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
         render_onboarding(f, size, state, onboarding_step);
     }
 
-    render_footer(f, chunks[3]);
+    render_footer(f, chunks[3], tab);
 }
 
 fn render_onboarding(f: &mut Frame, area: Rect, _state: &Arc<AppState>, step: crate::onboarding::OnboardingStep) {
@@ -155,7 +157,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let tab = *state.selected_tab.read();
-    let titles = vec!["Overview", "Trades", "Logs", "Config"];
+    let titles = vec!["Overview", "Trades", "Logs", "Config", "Chat"];
     let tabs = Tabs::new(titles)
         .select(tab)
         .style(Style::default().fg(COLOR_TEXT))
@@ -438,9 +440,76 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     f.render_widget(para, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect) {
-    let footer = Paragraph::new(" [Tab] Switch tab  [q] Quit  [←/→] Navigate ")
+fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
+    let hint = if current_tab == 4 {
+        " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit "
+    } else {
+        " [Tab] Switch tab  [q] Quit  [←/→] Navigate "
+    };
+    let footer = Paragraph::new(hint)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     f.render_widget(footer, area);
+}
+
+fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+
+    let history = state.chat_history.read();
+    let has_pending = state.chat_pending.read().is_some();
+
+    let items: Vec<ListItem> = history
+        .iter()
+        .map(|line| match line {
+            ChatLine::User(s) => ListItem::new(format!("You: {}", s))
+                .style(Style::default().fg(Color::Cyan)),
+            ChatLine::Bot(s) => ListItem::new(format!(" AI: {}", s))
+                .style(Style::default().fg(COLOR_TEXT)),
+            ChatLine::ToolResult(s) => ListItem::new(format!("  > {}", s))
+                .style(Style::default().fg(Color::DarkGray)),
+            ChatLine::Error(s) => ListItem::new(format!("[ERR] {}", s))
+                .style(Style::default().fg(COLOR_ACCENT)),
+            ChatLine::Pending { summary, risk } => ListItem::new(format!(
+                "[Confirm? y/n] {} (Risk: {})",
+                summary, risk
+            ))
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        })
+        .collect();
+
+    let title = if has_pending {
+        " 🤖 Chat — Awaiting confirmation [y/n] "
+    } else {
+        " 🤖 Chat — Ask about your wallet & trades "
+    };
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if has_pending { Color::Yellow } else { COLOR_ACCENT })),
+    );
+    f.render_widget(list, chunks[0]);
+
+    let input = state.chat_input.read().clone();
+    let loading = *state.is_ai_loading.read();
+    let (prompt_text, prompt_color) = if loading {
+        ("  Thinking...".to_string(), Color::Yellow)
+    } else if has_pending {
+        (format!("  [y] confirm  [n] reject  —  {}", input), Color::Yellow)
+    } else {
+        (format!("  > {}", input), Color::White)
+    };
+
+    let input_box = Paragraph::new(prompt_text)
+        .style(Style::default().fg(prompt_color))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if has_pending || loading { Color::Yellow } else { COLOR_ACCENT })),
+        );
+    f.render_widget(input_box, chunks[1]);
 }

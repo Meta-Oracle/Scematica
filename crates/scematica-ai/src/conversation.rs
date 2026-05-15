@@ -23,15 +23,16 @@ impl ConversationHistory {
     }
 
     pub fn push_assistant(&mut self, content: String) {
-        let mut msg = ChatMessage::user(""); // Using assistant role
-        msg.role = "assistant".into();
-        msg.content = Some(content);
+        self.turns.push_back(ChatMessage::assistant(content));
+        self.enforce_cap();
+    }
+
+    pub fn push_message(&mut self, msg: ChatMessage) {
         self.turns.push_back(msg);
         self.enforce_cap();
     }
 
     pub fn push_tool_call(&mut self, _call: ToolCall) {
-        // Implementation for tool calls in history
         self.enforce_cap();
     }
 

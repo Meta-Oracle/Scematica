@@ -1,43 +1,18 @@
-use proptest::prelude::*;
-use crate::chat::ChatPanel;
-use ratatui::event::KeyEvent;
-use crossterm::event::KeyCode;
+use serde::{Deserialize, Serialize};
 
-proptest! {
-    #[test]
-    fn test_handle_key_input_buffer(
-        keys: Vec<char>
-    ) {
-        let mut panel = ChatPanel::new();
-        let mut expected_buffer = String::new();
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChatLine {
+    User(String),
+    Bot(String),
+    ToolResult(String),
+    Error(String),
+    Pending { summary: String, risk: String },
+}
 
-        for key_char in keys {
-            let key_event = KeyEvent::new(KeyCode::Char(key_char), ratatui::input::KeyModifiers::NONE);
-            panel.handle_key(key_event);
-            expected_buffer.push(key_char);
-        }
-
-        assert_eq!(panel.input_buffer, expected_buffer);
-    }
-
-    #[test]
-    fn test_handle_key_backspace(
-        initial_text: String,
-        num_backspaces: u32
-    ) {
-        let mut panel = ChatPanel::new();
-        panel.input_buffer = initial_text.clone();
-        
-        let mut expected_buffer = initial_text;
-
-        for _ in 0..num_backspaces {
-            let key_event = KeyEvent::new(KeyCode::Backspace, ratatui::input::KeyModifiers::NONE);
-            panel.handle_key(key_event);
-            if !expected_buffer.is_empty() {
-                expected_buffer.pop();
-            }
-        }
-
-        assert_eq!(panel.input_buffer, expected_buffer);
-    }
+/// Commands sent from the event loop to the AI worker task
+#[derive(Debug, Clone)]
+pub enum ChatUpdate {
+    Send(String),
+    Confirm,
+    Reject,
 }

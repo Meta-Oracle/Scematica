@@ -16,33 +16,49 @@ keypair_path = "C:\\Users\\deads\\.config\\solana\\id.json"
 [sniper]
 enabled = true
 quote_mint = "WSOL"       # WSOL or USDC
-quote_amount = 0.008      # Amount to spend per snipe (in SOL) — Kelly-optimal for current capital
+quote_amount = 0.01       # Base amount per snipe (in SOL) — scaled by rate mode multiplier
 buy_delay_ms = 0
 max_buy_retries = 3
-max_sell_retries = 3
+max_sell_retries = 5       # extra retries — thin pools need more attempts
 auto_sell = true
 auto_sell_delay_ms = 0
 take_profit_pct = 100.0   # Sell when up 100% — let winners run to 2x
 stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
 buy_slippage_pct = 1.0
-sell_slippage_pct = 15.0   # 1% was too tight for thin meme pools — 15% absorbs normal volatility
-price_check_interval_ms = 2000
-price_check_duration_ms = 300000
+sell_slippage_pct = 20.0   # wider slippage — gets us out faster on thin pools
+price_check_interval_ms = 1000    # check price every 1s (was 2s) — catches TP/SL 2x faster
+price_check_duration_ms = 180000  # 3 min monitor window (was 5 min) — force-sell sooner
 one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
+max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
+trailing_stop_loss_pct = 8.0   # Trail stop 8% below peak price (0 = use fixed stop_loss_pct)
+partial_tp_pct = 50.0          # Sell 50% of position at partial TP trigger
+partial_tp_trigger = 60.0      # Trigger partial TP when up 60%
+max_concurrent_positions = 5   # Max open positions at once (0 = unlimited)
+cooldown_after_losses = 3      # Pause buying after 3 consecutive losses
+cooldown_minutes = 20          # Cooldown duration in minutes
+daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
+max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
+blacklist_path = "blacklist.txt"
+copy_wallets = []              # Wallet addresses to copy-trade (buy same tokens they buy)
 
 [sniper.filters]
-check_interval_ms = 2000
-check_duration_ms = 20000
-consecutive_matches = 2
+check_interval_ms = 1000   # poll filters every 1s (was 2s)
+check_duration_ms = 12000  # filter window 12s (was 20s) — accept good pools faster
+consecutive_matches = 1    # one confirmed pass is enough with all filters enabled
 check_mint_renounced = true
 check_freezable = true
 check_burned = true
 check_mutable = true
 check_socials = false
-min_pool_size = 5.0       # Minimum pool size in SOL
-max_pool_size = 0.0       # 0 = disabled
+min_pool_size = 5.0        # Minimum pool size in SOL
+max_pool_size = 0.0        # 0 = disabled
+check_name = true          # Reject tokens with scam/rug words in name
+check_volume = false       # Require recent transaction activity (off by default)
+min_volume_txns = 3        # Minimum transactions in last 60s
+check_liquidity_depth = true      # Check price impact before buying
+max_price_impact_pct = 5.0        # Reject if our buy causes >5% price impact
 
 # ============================================================
 # Arbitrage Configuration
@@ -64,6 +80,15 @@ amount_levels = 4         # Try 4 sizes: 100, 50, 25, 12.5 USDC
 executor = "default"      # default | jito
 custom_fee_sol = 0.001
 compute_unit_limit = 400000
-compute_unit_price = 100000
+compute_unit_price = 200000  # higher priority fee — faster block inclusion
 skip_preflight = true
 jito_url = "https://mainnet.block-engine.jito.wtf"
+
+# ============================================================
+# Alert / Notification Configuration
+# ============================================================
+[alerts]
+telegram_bot_token = ""        # Set to enable Telegram alerts
+telegram_chat_id = ""
+discord_webhook_url = ""       # Set to enable Discord alerts
+desktop_notifications = true   # Windows toast notifications on buy/sell

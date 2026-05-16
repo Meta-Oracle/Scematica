@@ -320,6 +320,26 @@ async fn main() -> Result<()> {
                                     );
                                 }
                             }
+                            DashboardAction::ExportCsv => {
+                                match state.export_trades_csv() {
+                                    Ok(path) => state.push_log(format!("[EXPORT] Trades saved to {}", path)),
+                                    Err(e) => state.push_log(format!("[EXPORT] Failed: {}", e)),
+                                }
+                            }
+                            DashboardAction::SetRateMode(mode) => {
+                                *state.rate_mode.write() = mode;
+                                let json = serde_json::json!({
+                                    "mode": mode.as_str(),
+                                    "multiplier": mode.multiplier(),
+                                    "tp_pct": mode.tp_pct(),
+                                    "sl_pct": mode.sl_pct(),
+                                });
+                                let _ = std::fs::write("scematica-rate-mode.json", json.to_string());
+                                state.push_log(format!(
+                                    "[RATE] Mode → {}  |  {:.1}x buy ({:.3} SOL/trade)  |  TP {:.0}%  SL {:.0}%",
+                                    mode.label(), mode.multiplier(), mode.buy_sol(), mode.tp_pct(), mode.sl_pct()
+                                ));
+                            }
                         }
                     }
                 }
@@ -328,6 +348,7 @@ async fn main() -> Result<()> {
                     state.poll_trade_file();
                     state.poll_strategy_file();
                     state.poll_log_file();
+                    state.poll_filter_stats_file();
                     state.sync_live_data();
 
                     // Auto-enable sell mode when SOL drops below 0.015

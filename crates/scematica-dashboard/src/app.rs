@@ -14,6 +14,8 @@ use scematica_ai::chat_types::PendingToolCall;
 const MAX_LOG_LINES: usize = 200;
 /// Maximum number of trade history entries
 const MAX_TRADES: usize = 100;
+/// Number of PnL data points to keep for the sparkline
+const SPARKLINE_CAPACITY: usize = 60;
 
 #[derive(Debug, Clone)]
 pub struct TradeEntry {
@@ -67,6 +69,18 @@ pub struct AppState {
     pub sell_mode_active: RwLock<bool>,
     /// Auto dump mode: when true the sniper immediately force-sells all positions (min_out=0)
     pub dump_mode_active: RwLock<bool>,
+    /// Current rate mode — controls buy size, TP%, and SL% presets
+    pub rate_mode: RwLock<RateMode>,
+    /// Normalized PnL samples for the sparkline (scaled to u64 for ratatui Sparkline)
+    pub pnl_sparkline: RwLock<VecDeque<u64>>,
+    /// Best confirmed trade PnL this session (SOL)
+    pub best_trade_pnl: RwLock<f64>,
+    /// Worst confirmed trade PnL this session (SOL)
+    pub worst_trade_pnl: RwLock<f64>,
+    /// Current win/loss streak (positive = wins, negative = losses)
+    pub trade_streak: RwLock<i32>,
+    /// Raw filter rejection stats read from scematica-filter-stats.json
+    pub filter_stats: RwLock<Option<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,6 +90,63 @@ pub enum BotMode {
     Sniper,
     Arb,
     Both,
+}
+
+/// Rate mode controls buy size, take-profit, and stop-loss presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RateMode {
+    Safe,
+    #[default]
+    Balanced,
+    Aggressive,
+    Degen,
+}
+
+impl RateMode {
+    pub fn multiplier(self) -> f64 {
+        match self {
+            RateMode::Safe       => 0.5,
+            RateMode::Balanced   => 1.0,
+            RateMode::Aggressive => 2.0,
+            RateMode::Degen      => 4.0,
+        }
+    }
+    pub fn tp_pct(self) -> f64 {
+        match self {
+            RateMode::Safe       =>  50.0,
+            RateMode::Balanced   => 100.0,
+            RateMode::Aggressive => 200.0,
+            RateMode::Degen      => 300.0,
+        }
+    }
+    pub fn sl_pct(self) -> f64 {
+        match self {
+            RateMode::Safe       =>  10.0,
+            RateMode::Balanced   =>  15.0,
+            RateMode::Aggressive =>  25.0,
+            RateMode::Degen      =>  40.0,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            RateMode::Safe       => "Safe",
+            RateMode::Balanced   => "Balanced",
+            RateMode::Aggressive => "Aggressive",
+            RateMode::Degen      => "Degen",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RateMode::Safe       => "safe",
+            RateMode::Balanced   => "balanced",
+            RateMode::Aggressive => "aggressive",
+            RateMode::Degen      => "degen",
+        }
+    }
+    /// SOL per trade at base quote_amount=0.01
+    pub fn buy_sol(self) -> f64 {
+        0.01 * self.multiplier()
+    }
 }
 
 impl std::fmt::Display for BotMode {
@@ -120,6 +191,12 @@ impl AppState {
             bot_cmd_tx: RwLock::new(None),
             sell_mode_active: RwLock::new(false),
             dump_mode_active: RwLock::new(false),
+            rate_mode: RwLock::new(RateMode::default()),
+            pnl_sparkline: RwLock::new(VecDeque::with_capacity(SPARKLINE_CAPACITY)),
+            best_trade_pnl: RwLock::new(0.0),
+            worst_trade_pnl: RwLock::new(0.0),
+            trade_streak: RwLock::new(0),
+            filter_stats: RwLock::new(None),
         })
     }
 
@@ -147,6 +224,35 @@ impl AppState {
                 event.pnl,
                 event.status,
             );
+            // Update session stats for confirmed SELL events
+            if event.kind == "SELL" && event.status == "✓" {
+                let pnl = event.pnl;
+                // Sparkline: encode as scaled u64 (baseline 1000, +/- pnl*500)
+                let spark_val = (1000.0 + pnl * 500.0).max(0.0) as u64;
+                {
+                    let mut sl = self.pnl_sparkline.write();
+                    sl.push_back(spark_val);
+                    while sl.len() > SPARKLINE_CAPACITY { sl.pop_front(); }
+                }
+                // Best / worst
+                {
+                    let mut best = self.best_trade_pnl.write();
+                    if pnl > *best { *best = pnl; }
+                }
+                {
+                    let mut worst = self.worst_trade_pnl.write();
+                    if pnl < *worst { *worst = pnl; }
+                }
+                // Win/loss streak
+                {
+                    let mut streak = self.trade_streak.write();
+                    if pnl >= 0.0 {
+                        *streak = if *streak >= 0 { *streak + 1 } else { 1 };
+                    } else {
+                        *streak = if *streak <= 0 { *streak - 1 } else { -1 };
+                    }
+                }
+            }
             let entry = TradeEntry {
                 timestamp: event.timestamp,
                 kind: event.kind,
@@ -187,6 +293,14 @@ impl AppState {
         if new_offset != offset {
             *self.sniper_log_offset.write() = new_offset;
         }
+    }
+
+    /// Read filter rejection stats from disk and cache them for the UI.
+    pub fn poll_filter_stats_file(&self) {
+        const STATS_FILE: &str = "scematica-filter-stats.json";
+        let Ok(data) = std::fs::read_to_string(STATS_FILE) else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
+        *self.filter_stats.write() = Some(v);
     }
 
     pub fn effective_snapshot(&self) -> MetricsSnapshot {
@@ -236,6 +350,43 @@ impl AppState {
         while history.len() > 200 {
             history.pop_front();
         }
+    }
+
+    /// Derive currently open positions from trade history.
+    /// Returns mints that have more confirmed BUYs than confirmed SELLs in the deque.
+    pub fn open_position_mints(&self) -> Vec<String> {
+        let trades = self.trades.read();
+        let mut counts: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+        for t in trades.iter() {
+            if t.status != "✓" { continue; }
+            match t.kind.as_str() {
+                "BUY"  => *counts.entry(t.mint.clone()).or_insert(0) += 1,
+                "SELL" => *counts.entry(t.mint.clone()).or_insert(0) -= 1,
+                _ => {}
+            }
+        }
+        counts.into_iter().filter(|(_, v)| *v > 0).map(|(k, _)| k).collect()
+    }
+
+    /// Export the trades deque to a CSV file. Returns the path written.
+    pub fn export_trades_csv(&self) -> anyhow::Result<String> {
+        use std::io::Write;
+        let path = format!(
+            "trades-export-{}.csv",
+            chrono::Utc::now().format("%Y%m%d-%H%M%S")
+        );
+        let mut f = std::fs::File::create(&path)?;
+        writeln!(f, "timestamp,kind,status,mint,amount,pnl,signature")?;
+        let trades = self.trades.read();
+        for t in trades.iter() {
+            writeln!(
+                f,
+                "{},{},{},{},{:.6},{:.6},{}",
+                t.timestamp.format("%Y-%m-%dT%H:%M:%SZ"),
+                t.kind, t.status, t.mint, t.amount, t.pnl, t.signature
+            )?;
+        }
+        Ok(path)
     }
 
     /// Sync live wallet/metrics data into the shared LiveData arc for the AI tool dispatcher.

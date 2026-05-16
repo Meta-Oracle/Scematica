@@ -10,6 +10,8 @@ pub struct BotConfig {
     pub sniper: SniperConfig,
     pub arb: ArbConfig,
     pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub alerts: AlertsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,28 @@ pub struct SniperConfig {
     pub use_snipe_list: bool,
     /// Path to snipe list file
     pub snipe_list_path: String,
+    /// Auto-activate sell mode after this many successful buys (0 = unlimited)
+    pub max_buys: u32,
+    /// Trailing stop loss % from peak price (0 = disabled, uses fixed stop_loss_pct instead)
+    pub trailing_stop_loss_pct: f64,
+    /// Sell this % of position at partial_tp_trigger (0 = disabled)
+    pub partial_tp_pct: f64,
+    /// Price gain % that triggers partial take profit
+    pub partial_tp_trigger: f64,
+    /// Max open positions at once (0 = unlimited)
+    pub max_concurrent_positions: u32,
+    /// Activate cooldown after N consecutive losses (0 = disabled)
+    pub cooldown_after_losses: u32,
+    /// Cooldown duration in minutes
+    pub cooldown_minutes: u32,
+    /// Halt buying if daily losses exceed this SOL amount (0.0 = disabled)
+    pub daily_loss_limit_sol: f64,
+    /// Activate sell mode if wallet drops below this % of session starting balance (0.0 = disabled)
+    pub max_drawdown_pct: f64,
+    /// Path to dev wallet blacklist file (one pubkey per line)
+    pub blacklist_path: String,
+    /// Wallet addresses to copy-trade (buy same tokens they buy)
+    pub copy_wallets: Vec<String>,
     pub filters: FilterConfig,
 }
 
@@ -96,6 +120,17 @@ impl Default for SniperConfig {
             one_token_at_a_time: true,
             use_snipe_list: false,
             snipe_list_path: "snipe-list.txt".into(),
+            max_buys: 0,
+            trailing_stop_loss_pct: 0.0,
+            partial_tp_pct: 0.0,
+            partial_tp_trigger: 0.0,
+            max_concurrent_positions: 0,
+            cooldown_after_losses: 0,
+            cooldown_minutes: 30,
+            daily_loss_limit_sol: 0.0,
+            max_drawdown_pct: 0.0,
+            blacklist_path: "blacklist.txt".into(),
+            copy_wallets: vec![],
             filters: FilterConfig::default(),
         }
     }
@@ -118,6 +153,16 @@ pub struct FilterConfig {
     pub min_pool_size: f64,
     /// Max pool size in quote token (0 = disabled)
     pub max_pool_size: f64,
+    /// Reject tokens whose name/symbol contains known scam words
+    pub check_name: bool,
+    /// Require minimum recent transaction activity before buying
+    pub check_volume: bool,
+    /// Minimum number of transactions on the pool in the last 60s
+    pub min_volume_txns: u32,
+    /// Check if our position size causes >X% price impact
+    pub check_liquidity_depth: bool,
+    /// Max acceptable price impact % for our buy size (0 = disabled)
+    pub max_price_impact_pct: f64,
 }
 
 impl Default for FilterConfig {
@@ -133,8 +178,26 @@ impl Default for FilterConfig {
             check_socials: false,
             min_pool_size: 5.0,
             max_pool_size: 0.0,
+            check_name: true,
+            check_volume: false,
+            min_volume_txns: 3,
+            check_liquidity_depth: true,
+            max_price_impact_pct: 5.0,
         }
     }
+}
+
+/// Notification / alert configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AlertsConfig {
+    /// Telegram bot token (leave empty to disable)
+    pub telegram_bot_token: String,
+    /// Telegram chat ID (user or group)
+    pub telegram_chat_id: String,
+    /// Discord webhook URL (leave empty to disable)
+    pub discord_webhook_url: String,
+    /// Fire Windows desktop toast notifications
+    pub desktop_notifications: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +290,7 @@ impl BotConfig {
             sniper: SniperConfig::default(),
             arb: ArbConfig::default(),
             execution: ExecutionConfig::default(),
+            alerts: AlertsConfig::default(),
         })
     }
 }

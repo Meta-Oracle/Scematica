@@ -8,6 +8,7 @@ use scematica_core::{
     wallet::Wallet,
 };
 use scematica_sniper::{
+    alerts::AlertManager,
     listener::{ListenerEvent, PoolListener},
     sniper::Sniper,
 };
@@ -141,6 +142,9 @@ async fn main() -> Result<()> {
     // Init metrics
     let metrics = BotMetrics::new();
 
+    // Build alert manager from config (Telegram / Discord / desktop toast)
+    let alerts = Arc::new(AlertManager::new(config.alerts.clone()));
+
     // ── SCEMA balance gate ────────────────────────────────────────────────────
     // Uses get_token_accounts_by_owner to find the SCEMA account regardless of
     // which token program (legacy vs Token-2022) owns it — avoids ATA address
@@ -206,7 +210,18 @@ async fn main() -> Result<()> {
         wallet_kp.clone(),
         rpc.clone(),
         metrics.clone(),
+        alerts.clone(),
     ));
+
+    // Record session start balance for drawdown tracking
+    if let Ok(start_bal) = rpc.get_balance(&wallet_kp.pubkey()).await {
+        use std::sync::atomic::Ordering;
+        sniper.session_start_lamports.store(start_bal, Ordering::Relaxed);
+        info!("Session start balance: {:.4} SOL ({} lamports)", start_bal as f64 / 1e9, start_bal);
+    }
+
+    // Load persisted pool cache so previous-run tokens can be sold immediately
+    sniper.load_pool_cache("pool-cache.json");
 
     // Scan for tokens already held from a previous run and spawn sell monitors
     {
@@ -236,7 +251,9 @@ async fn main() -> Result<()> {
                         sniper_ref.scan_existing_positions().await;
                     });
                 } else if !active && was_active {
-                    info!("✅ Sell mode deactivated — resuming normal operation");
+                    // Reset buy counter so the next batch starts fresh
+                    sniper_sm.buy_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                    info!("✅ Sell mode deactivated — buy counter reset, resuming normal operation");
                 }
                 was_active = active;
             }
@@ -282,6 +299,141 @@ async fn main() -> Result<()> {
                 was_active = active;
             }
         });
+    }
+
+    // Rate-mode file watcher — checks scematica-rate-mode.json every 5 s.
+    // When the dashboard sets a new rate mode the sniper picks it up and overrides
+    // live_params immediately, letting the strategy agent continue from there.
+    {
+        let sniper_rm = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut last_mode = String::new();
+            loop {
+                interval.tick().await;
+                let Ok(data) = std::fs::read_to_string("scematica-rate-mode.json") else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
+                let mode_str = v["mode"].as_str().unwrap_or("").to_string();
+                if mode_str == last_mode { continue; }
+                last_mode = mode_str.clone();
+                let mut params = sniper_rm.live_params.write();
+                if let Some(tp)   = v["tp_pct"].as_f64()    { params.take_profit_pct  = tp; }
+                if let Some(sl)   = v["sl_pct"].as_f64()    { params.stop_loss_pct    = sl; }
+                if let Some(mult) = v["multiplier"].as_f64() { params.amount_multiplier = mult; }
+                info!(
+                    "⚡ Rate mode → {}  |  {:.1}x  TP {:.0}%  SL {:.0}%",
+                    mode_str, params.amount_multiplier, params.take_profit_pct, params.stop_loss_pct
+                );
+            }
+        });
+    }
+
+    // Pool cache persistence — flush to disk every 60 s so sell lookups survive crashes
+    {
+        let sniper_pc = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                sniper_pc.persist_pool_cache("pool-cache.json");
+            }
+        });
+    }
+
+    // Max drawdown guard — activates sell mode if wallet drops > max_drawdown_pct from session start
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_dd = sniper.clone();
+        let rpc_dd = rpc.clone();
+        let wallet_pk = wallet_kp.pubkey();
+        let max_dd = config.sniper.max_drawdown_pct;
+        tokio::spawn(async move {
+            if max_dd <= 0.0 { return; }
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let start = sniper_dd.session_start_lamports.load(Ordering::Relaxed);
+                if start == 0 { continue; }
+                if let Ok(current) = rpc_dd.get_balance(&wallet_pk).await {
+                    if current < start {
+                        let drawdown = (start - current) as f64 / start as f64 * 100.0;
+                        if drawdown >= max_dd {
+                            warn!(
+                                "🔴 Max drawdown {:.1}% reached (start={:.4} SOL, now={:.4} SOL) — activating sell mode",
+                                drawdown, start as f64 / 1e9, current as f64 / 1e9
+                            );
+                            sniper_dd.sell_mode.store(true, Ordering::Relaxed);
+                            let _ = std::fs::write(
+                                "scematica-sell-mode.json",
+                                r#"{"active":true,"reason":"max_drawdown"}"#,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Daily PnL midnight reset — zeroes the daily loss accumulator each UTC midnight
+    {
+        tokio::spawn({
+            let sniper_pr = sniper.clone();
+            async move {
+                loop {
+                    let now = chrono::Utc::now();
+                    let tomorrow = now.date_naive().succ_opt().unwrap_or(now.date_naive());
+                    let next_midnight = tomorrow
+                        .and_hms_opt(0, 0, 1)
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|| now + chrono::Duration::hours(24));
+                    let secs = (next_midnight - now).num_seconds().max(60) as u64;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(secs)).await;
+                    *sniper_pr.daily_pnl_lamports.lock() = 0;
+                    info!("📅 Daily PnL accumulator reset at UTC midnight");
+                }
+            }
+        });
+    }
+
+    // Config hot-reload — polls config.toml mtime every 30 s; reloads TP/SL/buy_amount into live_params
+    {
+        let sniper_hr = sniper.clone();
+        let config_path = args.config.clone().unwrap_or_else(|| "config.toml".into());
+        tokio::spawn(async move {
+            let mut last_mtime: Option<std::time::SystemTime> = None;
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let Ok(meta) = std::fs::metadata(&config_path) else { continue };
+                let Ok(mtime) = meta.modified() else { continue };
+                if last_mtime == Some(mtime) { continue; }
+                last_mtime = Some(mtime);
+                // Reload and update only live parameters (no restart required)
+                match scematica_core::config::BotConfig::from_file(&config_path) {
+                    Ok(new_cfg) => {
+                        let mut params = sniper_hr.live_params.write();
+                        params.take_profit_pct  = new_cfg.sniper.take_profit_pct;
+                        params.stop_loss_pct    = new_cfg.sniper.stop_loss_pct;
+                        // amount_multiplier intentionally not reset — rate mode owns it
+                        info!(
+                            "🔄 Config hot-reloaded: TP {:.1}%  SL {:.1}%",
+                            params.take_profit_pct, params.stop_loss_pct
+                        );
+                    }
+                    Err(e) => warn!("Config hot-reload parse error: {} — keeping current params", e),
+                }
+            }
+        });
+    }
+
+    // Copy-trade stub — logs wallets that are configured but does not yet execute trades
+    if !config.sniper.copy_wallets.is_empty() {
+        info!(
+            "Copy-trade wallets configured ({}): {:?}",
+            config.sniper.copy_wallets.len(),
+            config.sniper.copy_wallets
+        );
+        warn!("Copy-trade execution is a stub — transactions from watched wallets are logged but not mirrored yet");
     }
 
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes

@@ -37,6 +37,8 @@ pub struct DefaultExecutor {
     pub compute_unit_price: u64,
     pub skip_preflight: bool,
     pub max_retries: u32,
+    /// When true, fetches recent priority fees and uses the p75 percentile
+    pub dynamic_fees: bool,
 }
 
 impl DefaultExecutor {
@@ -51,6 +53,35 @@ impl DefaultExecutor {
             compute_unit_price,
             skip_preflight,
             max_retries,
+            dynamic_fees: false,
+        }
+    }
+
+    /// Enable dynamic priority fee: fetches getRecentPrioritizationFees and uses p75.
+    /// Falls back to compute_unit_price if the RPC call fails.
+    pub fn with_dynamic_fees(mut self) -> Self {
+        self.dynamic_fees = true;
+        self
+    }
+
+    async fn get_dynamic_fee(&self, rpc: &Arc<RpcClient>) -> u64 {
+        match rpc.get_recent_prioritization_fees(&[]).await {
+            Ok(fees) if !fees.is_empty() => {
+                let mut vals: Vec<u64> = fees.iter().map(|f| f.prioritization_fee).collect();
+                vals.sort_unstable();
+                let p75 = vals[(vals.len() * 3) / 4];
+                let result = p75.max(self.compute_unit_price);
+                debug!("Dynamic priority fee: {} (p75={}, floor={})", result, p75, self.compute_unit_price);
+                result
+            }
+            Ok(_) => {
+                warn!("get_recent_prioritization_fees returned empty — using configured fee");
+                self.compute_unit_price
+            }
+            Err(e) => {
+                warn!("get_recent_prioritization_fees failed: {} — using configured fee", e);
+                self.compute_unit_price
+            }
         }
     }
 }
@@ -63,9 +94,14 @@ impl TxExecutor for DefaultExecutor {
         wallet: &Keypair,
         rpc: &Arc<RpcClient>,
     ) -> Result<ExecResult> {
+        let cpu_price = if self.dynamic_fees {
+            self.get_dynamic_fee(rpc).await
+        } else {
+            self.compute_unit_price
+        };
         let mut all_ixs = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
-            ComputeBudgetInstruction::set_compute_unit_price(self.compute_unit_price),
+            ComputeBudgetInstruction::set_compute_unit_price(cpu_price),
         ];
         all_ixs.extend(instructions);
 

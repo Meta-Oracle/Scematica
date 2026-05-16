@@ -66,6 +66,31 @@ impl PoolCache {
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+
+    /// Persist all cached pools to disk so sell lookups survive restarts.
+    pub fn persist_to_file(&self, path: &str) {
+        let map: std::collections::HashMap<String, CachedPool> = self.inner
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        if let Ok(json) = serde_json::to_string(&map) {
+            let tmp = format!("{}.tmp", path);
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
+        }
+    }
+
+    /// Load cached pools from disk. Merges with any existing in-memory entries.
+    pub fn load_from_file(&self, path: &str) {
+        let Ok(data) = std::fs::read_to_string(path) else { return };
+        let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, CachedPool>>(&data) else { return };
+        let count = map.len();
+        for (k, v) in map {
+            self.inner.insert(k, v);
+        }
+        tracing::info!("Pool cache: loaded {} entries from {}", count, path);
+    }
 }
 
 /// Thread-safe market cache

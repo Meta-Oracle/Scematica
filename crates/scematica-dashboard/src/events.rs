@@ -1,7 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::app::BotMode;
+use crate::app::{BotMode, RateMode};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -60,10 +60,17 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool) -> Optio
             KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
             KeyCode::Char('b') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Both)),
             KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
+            // Rate mode presets — [1][2][3][4] on Config tab
+            KeyCode::Char('1') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Safe)),
+            KeyCode::Char('2') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Balanced)),
+            KeyCode::Char('3') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Aggressive)),
+            KeyCode::Char('4') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Degen)),
             // [e] on the Logs tab toggles emergency sell mode
             KeyCode::Char('e') if current_tab == 2 => Some(DashboardAction::ToggleSellMode),
             // [d] on the Logs tab triggers auto dump — force-sells all positions immediately
             KeyCode::Char('d') if current_tab == 2 => Some(DashboardAction::AutoDump),
+            // [x] on the Trades tab exports history to CSV
+            KeyCode::Char('x') if current_tab == 1 => Some(DashboardAction::ExportCsv),
             _ => None,
         }
     }
@@ -83,4 +90,6 @@ pub enum DashboardAction {
     StopBot,
     ToggleSellMode,
     AutoDump,
+    SetRateMode(RateMode),
+    ExportCsv,
 }

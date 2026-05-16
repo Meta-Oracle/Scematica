@@ -1,4 +1,4 @@
-use crate::app::AppState;
+use crate::app::{AppState, RateMode};
 use crate::chat::ChatLine;
 use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
 use ratatui::{
@@ -6,7 +6,7 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
+        Block, Borders, Cell, List, ListItem, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
     },
     Frame,
 };
@@ -131,18 +131,28 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let wallet = state.wallet_address.read().clone();
     let sol = *state.sol_balance.read();
     let scema = *state.scematica_balance.read();
+    let regime = state.strategy_regime.read().clone();
+    let open_pos = state.open_position_mints().len();
 
     let mode_color = match mode {
         crate::app::BotMode::Idle => Color::Yellow,
         _ => COLOR_ACCENT,
     };
 
+    let regime_indicator = match regime.as_str() {
+        "aggressive" => "▲AGG",
+        "conservative" => "▼CON",
+        _ => "◆NEU",
+    };
+
     let header_text = format!(
-        " SCEMATICA  │  Mode: {}  │  Wallet: {}  │  SOL: {:.4}  │  SCEMA: {:.2}",
+        " SCEMATICA  │  {}  │  Wallet: {}  │  SOL: {:.4}  │  SCEMA: {:.0}  │  Regime: {}  │  Pos: {}",
         mode,
         if wallet.len() > 12 { &wallet[..12] } else { &wallet },
         sol,
         scema,
+        regime_indicator,
+        open_pos,
     );
 
     let header = Paragraph::new(header_text)
@@ -171,13 +181,26 @@ fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
-    let chunks = Layout::default()
+    let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    render_metrics(f, chunks[0], state);
-    render_recent_trades(f, chunks[1], state);
+    // Left: metrics + session stats
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(7)])
+        .split(h_chunks[0]);
+    render_metrics(f, left_chunks[0], state);
+    render_session_stats(f, left_chunks[1], state);
+
+    // Right: recent trades + sparkline
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(5)])
+        .split(h_chunks[1]);
+    render_recent_trades(f, right_chunks[0], state);
+    render_pnl_sparkline(f, right_chunks[1], state);
 }
 
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
@@ -251,6 +274,56 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             .border_style(Style::default().fg(COLOR_ACCENT)),
     );
     f.render_widget(list, area);
+}
+
+fn render_session_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let best = *state.best_trade_pnl.read();
+    let worst = *state.worst_trade_pnl.read();
+    let streak = *state.trade_streak.read();
+    let open = state.open_position_mints().len();
+
+    let (streak_label, streak_color) = if streak > 0 {
+        (format!("W{}", streak), Color::Green)
+    } else if streak < 0 {
+        (format!("L{}", streak.abs()), Color::Red)
+    } else {
+        ("—".to_string(), Color::DarkGray)
+    };
+
+    let rows = vec![
+        Row::new(vec![
+            Cell::from("Best Trade"),
+            Cell::from(format!("{:+.4} SOL", best))
+                .style(Style::default().fg(if best >= 0.0 { Color::Green } else { COLOR_ACCENT })),
+        ]),
+        Row::new(vec![
+            Cell::from("Worst Trade"),
+            Cell::from(format!("{:+.4} SOL", worst))
+                .style(Style::default().fg(if worst >= 0.0 { Color::Green } else { COLOR_ACCENT })),
+        ]),
+        Row::new(vec![
+            Cell::from("Streak"),
+            Cell::from(streak_label).style(Style::default().fg(streak_color)),
+        ]),
+        Row::new(vec![
+            Cell::from("Open Pos"),
+            Cell::from(open.to_string()).style(Style::default().fg(Color::Cyan)),
+        ]),
+    ];
+
+    let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
+    let table = Table::new(rows, widths)
+        .block(Block::default().title(" 🏆 Session Stats ").borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
+    f.render_widget(table, area);
+}
+
+fn render_pnl_sparkline(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let spark_data: Vec<u64> = state.pnl_sparkline.read().iter().copied().collect();
+    let sparkline = Sparkline::default()
+        .block(Block::default().title(" PnL History ").borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)))
+        .data(&spark_data)
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(sparkline, area);
 }
 
 fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
@@ -406,6 +479,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mult = *state.strategy_multiplier.read();
     let regime = state.strategy_regime.read().clone();
     let mode = *state.active_mode.read();
+    let rate_mode = *state.rate_mode.read();
 
     let regime_color = match regime.as_str() {
         "aggressive" => Color::Green,
@@ -466,6 +540,43 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         ]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("Rate Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("  (press key to switch)"),
+        ]),
+        {
+            let active = rate_mode == RateMode::Safe;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[1] Safe       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("0.5x  0.005 SOL/trade  TP: 50%  SL: 10%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Balanced;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[2] Balanced   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("1.0x  0.010 SOL/trade  TP:100%  SL: 15%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Aggressive;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled("[3] Aggressive ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("2.0x  0.020 SOL/trade  TP:200%  SL: 25%", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Degen;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
+                Span::styled("[4] Degen      ", Style::default().fg(if active { COLOR_ACCENT } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("4.0x  0.040 SOL/trade  TP:300%  SL: 40%", Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
+            ])
+        },
+        Line::from(""),
+        Line::from(vec![
             Span::styled("SCEMATICA Token", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(vec![
@@ -492,7 +603,45 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         ]),
     ];
 
-    let para = Paragraph::new(text)
+    // Append filter rejection stats if available
+    let filter_stats_opt = state.filter_stats.read().clone();
+    let mut extra_lines: Vec<Line> = Vec::new();
+    if let Some(stats) = filter_stats_opt {
+        extra_lines.push(Line::from(""));
+        extra_lines.push(Line::from(vec![
+            Span::styled("Filter Stats", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]));
+        if let Some(obj) = stats.as_object() {
+            if let Some(seen) = obj.get("pools_seen").and_then(|v| v.as_u64()) {
+                extra_lines.push(Line::from(vec![
+                    Span::styled("  Seen:   ", Style::default().fg(COLOR_ACCENT)),
+                    Span::styled(seen.to_string(), Style::default().fg(COLOR_TEXT)),
+                ]));
+            }
+            if let Some(passed) = obj.get("pools_passed").and_then(|v| v.as_u64()) {
+                extra_lines.push(Line::from(vec![
+                    Span::styled("  Passed: ", Style::default().fg(COLOR_ACCENT)),
+                    Span::styled(passed.to_string(), Style::default().fg(Color::Green)),
+                ]));
+            }
+            if let Some(rejections) = obj.get("rejections").and_then(|v| v.as_object()) {
+                for (filter, count) in rejections.iter().take(6) {
+                    let n = count.as_u64().unwrap_or(0);
+                    if n > 0 {
+                        extra_lines.push(Line::from(vec![
+                            Span::styled(format!("  {:16}", filter), Style::default().fg(COLOR_ACCENT)),
+                            Span::styled(format!("{} rejected", n), Style::default().fg(Color::Yellow)),
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut all_lines = text;
+    all_lines.extend(extra_lines);
+
+    let para = Paragraph::new(all_lines)
         .block(
             Block::default()
                 .title(" ⚙️  Configuration ")
@@ -505,8 +654,9 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
+        1 => " [x] Export CSV  [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
         2 => " [e] Sell Mode  [d] DUMP ALL  [Tab] Switch tab  [q] Quit ",
-        3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [Tab] Switch tab  [q] Quit ",
+        3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [1-4] Rate Mode  [Tab] Switch tab  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
         _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
     };

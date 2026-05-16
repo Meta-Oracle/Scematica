@@ -22,6 +22,7 @@ use scematica_executor::{get_builder, SwapInstructionBuilder};
 use scematica_core::types::DexKind;
 
 use crate::{
+    alerts::AlertManager,
     cache::{CachedPool, MarketCache, PoolCache, SnipeListCache},
     executor::{DefaultExecutor, JitoExecutor, TxExecutor},
     filters::FilterPipeline,
@@ -59,6 +60,7 @@ pub struct Sniper {
     wallet: Arc<Keypair>,
     rpc: Arc<RpcClient>,
     pool_cache: PoolCache,
+    #[allow(dead_code)]
     market_cache: MarketCache,
     snipe_list: Option<SnipeListCache>,
     filter_pipeline: FilterPipeline,
@@ -81,8 +83,22 @@ pub struct Sniper {
     pub sell_mode: Arc<AtomicBool>,
     /// Set true by the dump-mode file watcher — sells all positions immediately with min_out=0
     pub dump_mode: Arc<AtomicBool>,
-    /// Semaphore: max 2 concurrent sell transactions to avoid 429 hammering
+    /// Semaphore: limits concurrent sell transactions to avoid 429 hammering
     sell_sem: Arc<tokio::sync::Semaphore>,
+    /// Counts successful buys this session — activates sell mode when config.max_buys is hit
+    pub buy_count: Arc<std::sync::atomic::AtomicU32>,
+    /// Number of currently open positions (active sell monitors)
+    pub open_positions: Arc<std::sync::atomic::AtomicU32>,
+    /// Consecutive losing trades counter (reset on win)
+    pub consecutive_losses: Arc<std::sync::atomic::AtomicU32>,
+    /// Unix timestamp (ms) after which buying resumes following a cooldown
+    pub cooldown_until_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Accumulated daily PnL in lamports (negative = loss; reset at midnight)
+    pub daily_pnl_lamports: Arc<parking_lot::Mutex<i64>>,
+    /// SOL balance (lamports) at session start — used for drawdown calculation
+    pub session_start_lamports: Arc<std::sync::atomic::AtomicU64>,
+    /// Alert manager for Telegram / Discord / desktop notifications
+    pub alerts: Arc<AlertManager>,
 }
 
 impl Sniper {
@@ -91,13 +107,19 @@ impl Sniper {
         wallet: Arc<Keypair>,
         rpc: Arc<RpcClient>,
         metrics: Arc<BotMetrics>,
+        alerts: Arc<AlertManager>,
     ) -> Self {
         let quote_mint = resolve_mint(&config.quote_mint)
             .unwrap_or(known_tokens::WSOL_MINT);
         let quote_decimals = if config.quote_mint.to_uppercase() == "USDC" { 6 } else { 9 };
         let quote_amount_raw = ui_to_raw(config.quote_amount, quote_decimals);
 
-        let filter_pipeline = FilterPipeline::new(config.filters.clone(), rpc.clone());
+        let filter_pipeline = FilterPipeline::new(
+            config.filters.clone(),
+            rpc.clone(),
+            quote_amount_raw,
+            &config.blacklist_path,
+        );
 
         let executor: Arc<dyn TxExecutor> = match config.quote_mint.as_str() {
             _ if std::env::var("EXECUTOR").unwrap_or_default() == "jito" => {
@@ -107,7 +129,7 @@ impl Sniper {
                     0.006,
                 ))
             }
-            _ => Arc::new(DefaultExecutor::new(200_000, 100_000, true, 3)),
+            _ => Arc::new(DefaultExecutor::new(400_000, 200_000, true, 3).with_dynamic_fees()),
         };
 
         let snipe_list = if config.use_snipe_list {
@@ -142,6 +164,13 @@ impl Sniper {
             sell_mode: Arc::new(AtomicBool::new(false)),
             dump_mode: Arc::new(AtomicBool::new(false)),
             sell_sem: Arc::new(tokio::sync::Semaphore::new(1)),
+            buy_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            open_positions: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            consecutive_losses: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            cooldown_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            daily_pnl_lamports: Arc::new(parking_lot::Mutex::new(0i64)),
+            session_start_lamports: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            alerts,
         }
     }
 
@@ -216,7 +245,18 @@ impl Sniper {
         }
     }
 
+    /// Persist pool cache to disk so sell lookups survive restarts.
+    pub fn persist_pool_cache(&self, path: &str) {
+        self.pool_cache.persist_to_file(path);
+    }
+
+    /// Load pool cache from disk at startup. Merges with any in-memory entries.
+    pub fn load_pool_cache(&self, path: &str) {
+        self.pool_cache.load_from_file(path);
+    }
+
     /// Record a completed trade outcome for the strategy agent.
+    #[allow(dead_code)]
     fn record_trade_outcome(&self, profitable: bool, pnl_sol: f64) {
         let mut history = self.trade_history.lock();
         history.push((profitable, pnl_sol));
@@ -274,6 +314,48 @@ impl Sniper {
         if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
             debug!(mint = %pool.base_mint, "Sell/dump mode active — skipping buy");
             return;
+        }
+
+        // Buy limit
+        if self.config.max_buys > 0 {
+            let count = self.buy_count.load(Ordering::Relaxed);
+            if count >= self.config.max_buys {
+                debug!(mint = %pool.base_mint, count, limit = self.config.max_buys, "Buy limit reached — skipping");
+                return;
+            }
+        }
+
+        // Max concurrent positions
+        if self.config.max_concurrent_positions > 0 {
+            let open = self.open_positions.load(Ordering::Relaxed);
+            if open >= self.config.max_concurrent_positions {
+                debug!(mint = %pool.base_mint, open, "Max concurrent positions reached — skipping");
+                return;
+            }
+        }
+
+        // Cooldown after consecutive losses
+        if self.config.cooldown_after_losses > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let until = self.cooldown_until_ms.load(Ordering::Relaxed);
+            if until > now_ms {
+                let remaining = (until - now_ms) / 1000;
+                debug!(mint = %pool.base_mint, remaining_secs = remaining, "Cooldown active — skipping buy");
+                return;
+            }
+        }
+
+        // Daily loss limit
+        if self.config.daily_loss_limit_sol > 0.0 {
+            let loss_lamports = -*self.daily_pnl_lamports.lock();
+            let loss_sol = loss_lamports as f64 / 1e9;
+            if loss_sol >= self.config.daily_loss_limit_sol {
+                warn!(mint = %pool.base_mint, loss_sol, "Daily loss limit reached — skipping buy");
+                return;
+            }
         }
 
         info!(mint = %pool.base_mint, pool = %pool.id, "New pool detected — evaluating");
@@ -417,7 +499,7 @@ impl Sniper {
         // Build swap instructions BEFORE acquiring the lock so a build failure
         // doesn't leave the lock permanently set (which would silently drop all
         // future pools).
-        let mut ixs = match self.raydium_builder.build_swap(
+        let ixs = match self.raydium_builder.build_swap(
             &pool.id,
             &wallet_pubkey,
             &self.quote_mint,
@@ -513,6 +595,39 @@ impl Sniper {
                         hops: 1,
                     }.append_to_file(TRADES_FILE);
 
+                    // Track open positions
+                    self.open_positions.fetch_add(1, Ordering::Relaxed);
+
+                    // Alert: buy confirmed
+                    {
+                        let alerts = self.alerts.clone();
+                        let mint_str = pool.base_mint.to_string();
+                        let amount_sol = scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals);
+                        tokio::spawn(async move {
+                            alerts.send(
+                                "BUY Confirmed",
+                                &format!("Mint: {}...\nAmount: {:.4} SOL", &mint_str[..8], amount_sol),
+                            ).await;
+                        });
+                    }
+
+                    // Buy limit tracking — activate sell mode when limit is hit
+                    if self.config.max_buys > 0 {
+                        let count = self.buy_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        info!("Buy #{}/{} confirmed", count, self.config.max_buys);
+                        if count >= self.config.max_buys {
+                            warn!(
+                                "Buy limit of {} reached — activating sell mode, waiting for all positions to close",
+                                self.config.max_buys
+                            );
+                            self.sell_mode.store(true, Ordering::Relaxed);
+                            let _ = std::fs::write(
+                                "scematica-sell-mode.json",
+                                r#"{"active":true,"reason":"buy_limit"}"#,
+                            );
+                        }
+                    }
+
                     // Schedule auto-sell — the monitor task owns the lock release.
                     // If auto_sell is disabled we release the lock here instead.
                     if self.config.auto_sell {
@@ -560,6 +675,7 @@ impl Sniper {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn monitor_and_sell(&self, pool: CachedPool, base_ata: Pubkey) {
         if self.config.auto_sell_delay_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(
@@ -661,6 +777,7 @@ impl Sniper {
         }
     }
 
+    #[allow(dead_code)]
     async fn sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
         info!(mint = %pool.base_mint, amount, "Executing sell");
         self.metrics.record_trade_attempt();
@@ -1052,6 +1169,11 @@ impl Sniper {
             sell_mode: self.sell_mode.clone(),
             dump_mode: self.dump_mode.clone(),
             sell_sem: self.sell_sem.clone(),
+            open_positions: self.open_positions.clone(),
+            consecutive_losses: self.consecutive_losses.clone(),
+            cooldown_until_ms: self.cooldown_until_ms.clone(),
+            daily_pnl_lamports: self.daily_pnl_lamports.clone(),
+            alerts: self.alerts.clone(),
         }
     }
 }
@@ -1066,18 +1188,17 @@ struct SellMonitor {
     processing_lock: Arc<Mutex<bool>>,
     quote_mint: Pubkey,
     quote_amount_raw: u64,
-    /// Raydium swap instruction builder
     raydium_builder: Arc<dyn SwapInstructionBuilder>,
-    /// Shared live params — reads latest TP/SL from strategy agent
     live_params: Arc<RwLock<LiveParams>>,
-    /// Shared trade history for strategy agent feedback
     trade_history: Arc<Mutex<Vec<(bool, f64)>>>,
-    /// Sell mode flag — when true, all monitoring is in force-sell mode
     sell_mode: Arc<AtomicBool>,
-    /// Dump mode flag — when true, sells use min_out=0 (accept any price)
     dump_mode: Arc<AtomicBool>,
-    /// Semaphore: max 2 concurrent sell transactions to avoid 429 storms
     sell_sem: Arc<tokio::sync::Semaphore>,
+    open_positions: Arc<std::sync::atomic::AtomicU32>,
+    consecutive_losses: Arc<std::sync::atomic::AtomicU32>,
+    cooldown_until_ms: Arc<std::sync::atomic::AtomicU64>,
+    daily_pnl_lamports: Arc<parking_lot::Mutex<i64>>,
+    alerts: Arc<AlertManager>,
 }
 
 impl SellMonitor {
@@ -1102,18 +1223,37 @@ impl SellMonitor {
             (p.take_profit_pct, p.stop_loss_pct)
         };
         let take_profit_factor = 1.0 + take_profit_pct / 100.0;
-        let stop_loss_factor = 1.0 - stop_loss_pct / 100.0;
-        let target_profit = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
-        let stop_loss_amount = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
+        let stop_loss_factor  = 1.0 - stop_loss_pct / 100.0;
+        let target_profit     = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
+        let mut stop_loss_amount = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
+
+        // Partial TP state
+        let partial_tp_enabled = self.config.partial_tp_pct > 0.0 && self.config.partial_tp_trigger > 0.0;
+        let partial_tp_target  = (self.quote_amount_raw as f64 * (1.0 + self.config.partial_tp_trigger / 100.0)) as u64;
+        let mut partial_tp_done = false;
+
+        // Trailing stop state
+        let trailing_enabled = self.config.trailing_stop_loss_pct > 0.0;
+        let mut peak_value: u64 = self.quote_amount_raw; // initialise at buy price
 
         let mut checks = 0u64;
         loop {
+            // Sell/dump mode activated mid-monitor → sell immediately
+            if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
+                tracing::info!(mint = %pool.base_mint, "Sell/dump mode active — forcing immediate sell");
+                if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
+                    let amount: u64 = balance.amount.parse().unwrap_or(0);
+                    if amount > 0 {
+                        self.sell_with_retry(&pool, &base_ata, amount).await;
+                    }
+                }
+                break;
+            }
+
             match self.rpc.get_token_account_balance(&base_ata).await {
                 Ok(balance) => {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
-                    if amount == 0 {
-                        break;
-                    }
+                    if amount == 0 { break; }
 
                     if let (Ok(qb), Ok(bb)) = (
                         self.rpc.get_token_account_balance(&pool.quote_vault).await,
@@ -1123,26 +1263,39 @@ impl SellMonitor {
                         let b: u64 = bb.amount.parse().unwrap_or(1);
                         let current_value = (amount as u128 * q as u128 / b as u128) as u64;
 
+                        // Update peak and trailing stop
+                        if trailing_enabled {
+                            if current_value > peak_value { peak_value = current_value; }
+                            let trail = (peak_value as f64 * (1.0 - self.config.trailing_stop_loss_pct / 100.0)) as u64;
+                            if trail > stop_loss_amount { stop_loss_amount = trail; }
+                        }
+
+                        // Partial TP: sell half, move stop to breakeven
+                        if partial_tp_enabled && !partial_tp_done && current_value >= partial_tp_target {
+                            let partial_amount = (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;
+                            if partial_amount > 0 {
+                                tracing::info!(mint = %pool.base_mint, "Partial TP triggered — selling {}%", self.config.partial_tp_pct);
+                                self.sell_with_retry(&pool, &base_ata, partial_amount).await;
+                                partial_tp_done = true;
+                                // Move stop to breakeven
+                                stop_loss_amount = self.quote_amount_raw;
+                            }
+                        }
+
                         if current_value >= target_profit || current_value <= stop_loss_amount {
                             let profitable = current_value >= target_profit;
-                            let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
-                                / 1_000_000_000.0;
+                            let pnl_lamports = current_value as i64 - self.quote_amount_raw as i64;
+                            let pnl_sol = pnl_lamports as f64 / 1e9;
                             let reason = if profitable { "take profit" } else { "stop loss" };
                             tracing::info!(
                                 mint = %pool.base_mint,
-                                current_value,
-                                target_profit,
-                                stop_loss = stop_loss_amount,
-                                pnl_sol,
+                                current_value, target_profit,
+                                stop_loss = stop_loss_amount, pnl_sol,
+                                peak_value,
                                 "Sell triggered: {}", reason
                             );
                             self.sell_with_retry(&pool, &base_ata, amount).await;
-                            // Record outcome for strategy agent
-                            {
-                                let mut history = self.trade_history.lock();
-                                history.push((profitable, pnl_sol));
-                                if history.len() > 20 { history.remove(0); }
-                            }
+                            self.record_sell_outcome(profitable, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                             break;
                         }
                     }
@@ -1157,6 +1310,7 @@ impl SellMonitor {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
                         self.sell_with_retry(&pool, &base_ata, amount).await;
+                        self.record_sell_outcome(false, -(self.quote_amount_raw as i64 / 10), -0.001, &pool.base_mint.to_string()).await;
                     }
                 }
                 break;
@@ -1164,16 +1318,68 @@ impl SellMonitor {
             tokio::time::sleep(interval).await;
         }
 
+        // Position closed — decrement counter
+        self.open_positions.fetch_sub(1, Ordering::Relaxed);
         if self.config.one_token_at_a_time {
             *self.processing_lock.lock() = false;
         }
     }
 
+    async fn record_sell_outcome(&self, profitable: bool, pnl_lamports: i64, pnl_sol: f64, mint: &str) {
+        // Strategy agent history
+        {
+            let mut history = self.trade_history.lock();
+            history.push((profitable, pnl_sol));
+            if history.len() > 20 { history.remove(0); }
+        }
+
+        // Daily PnL accumulator
+        {
+            let mut daily = self.daily_pnl_lamports.lock();
+            *daily += pnl_lamports;
+        }
+
+        // Consecutive loss / win tracking + cooldown
+        if profitable {
+            self.consecutive_losses.store(0, Ordering::Relaxed);
+        } else {
+            let losses = self.consecutive_losses.fetch_add(1, Ordering::Relaxed) + 1;
+            if self.config.cooldown_after_losses > 0 && losses >= self.config.cooldown_after_losses {
+                let cooldown_ms = self.config.cooldown_minutes as u64 * 60_000;
+                let until_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64 + cooldown_ms;
+                self.cooldown_until_ms.store(until_ms, Ordering::Relaxed);
+                tracing::warn!(
+                    "Cooldown activated after {} consecutive losses — pausing buys for {} min",
+                    losses, self.config.cooldown_minutes
+                );
+                let alerts = self.alerts.clone();
+                let mins = self.config.cooldown_minutes;
+                tokio::spawn(async move {
+                    alerts.send("Cooldown Activated", &format!("{} consecutive losses — pausing {}min", losses, mins)).await;
+                });
+            }
+        }
+
+        // Sell alert
+        let alerts = self.alerts.clone();
+        let emoji = if profitable { "✅" } else { "❌" };
+        let mint_short = mint[..8.min(mint.len())].to_string();
+        tokio::spawn(async move {
+            alerts.send(
+                &format!("{} SELL Confirmed", emoji),
+                &format!("Mint: {}...\nPnL: {:.4} SOL", mint_short, pnl_sol),
+            ).await;
+        });
+    }
+
     /// Persistent sell wrapper: retries `do_sell` up to 3 rounds with a 30 s pause.
     /// Refreshes the token balance before each round so stale amounts don't block later rounds.
     async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
-        // Dump mode: sell immediately and retry fast (5 s). Normal mode: 30 s between rounds.
-        let retry_delay_secs: u64 = if self.dump_mode.load(Ordering::Relaxed) { 5 } else { 30 };
+        // Dump mode: retry every 5 s. Normal mode: 15 s between rounds (was 30 s).
+        let retry_delay_secs: u64 = if self.dump_mode.load(Ordering::Relaxed) { 5 } else { 15 };
         let mut current_amount = amount;
         for round in 0..3u32 {
             // Refresh balance — token may have been partially or fully sold already

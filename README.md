@@ -1,164 +1,366 @@
-# 🌌 Scematica
+# Scematica v0.5.0
 
-# CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump
+**CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
-**Next-Generation Autonomous AI Trading Infrastructure for Solana.**
-
-Scematica is a modular, multi-strategy trading bot system that unifies token sniping, multi-DEX arbitrage, and agentic market analysis into a single extensible platform. Powered by an advanced AI layer, it doesn't just execute trades—it evaluates them through a multi-agent consensus framework.
+Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, deep Q-learning reinforcement, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 ---
 
-## 🚀 Vision
+## Architecture
 
-The future of trading is adaptive, autonomous, and predictive. Scematica is engineered to bridge the gap between static algorithmic trading and agentic intelligence, enabling high-performance execution on Solana with institutional-grade risk management.
+Scematica is a Rust workspace with 8 active crates:
 
-## 🏗️ Architecture
+| Crate | Binary | Purpose |
+|---|---|---|
+| `scematica-core` | — | Shared config, RPC, wallet, metrics, types |
+| `scematica-sniper` | `sniper` | Raydium pool sniping with filter pipeline and sell mechanics |
+| `scematica-arb` | `arb` | Cross-DEX arbitrage graph search (Raydium / Orca / Meteora) |
+| `scematica-executor` | — | Multi-DEX swap execution layer, Jupiter integration |
+| `scematica-ai` | — | LLM agents: Risk, Arb, Debate, Strategy, Report, Chat |
+| `scematica-nn` | — | Deep Q* reinforcement learning agent |
+| `scematica-dashboard` | `dashboard` | Ratatui TUI: monitor, control, AI chat |
+| `scematica-protocol` | `scematica-protocol` | Rust-native x402 HTTP payment protocol for Solana |
 
-Scematica is built as a highly modular Rust workspace:
+Tools (non-bot utilities):
+- `tools/key-converter` — Convert keypair formats
+- `tools/pool-seeder` — Pre-seed pool cache from on-chain data
 
-- **`scematica-core`**: The backbone. Shared types, configuration management, RPC wrappers, and wallet utilities.
-- **`scematica-ai`**: The brain. A sophisticated agentic framework featuring:
-    - **Risk Agent**: Evaluates new tokens for rug/honeypot risk.
-    - **Arb Agent**: Scores arbitrage paths for executability and profit.
-    - **Debate Agent**: A multi-agent "Bull vs. Bear" debate system for high-stakes decisions.
-    - **Strategy Agent**: Dynamically adjusts TP/SL based on market regimes.
-    - **Report Agent**: Generates natural language performance reports.
-- **`scematica-sniper`**: High-speed token sniper with advanced filters and AI integration.
-- **`scematica-arb`**: Cross-DEX arbitrage engine using a custom graph-based pathfinder.
-- **`scematica-executor`**: Multi-DEX execution layer supporting Raydium, Orca, Meteora, and Jupiter.
-- **`scematica-dashboard`**: A real-time TUI for monitoring bot performance and market health.
-- **`programs/scematica-swap`**: An on-chain Anchor program implementing the **profit-or-revert** pattern for safe atomic swaps.
-
-## ✨ Key Features
-
-- **AI-Powered Decision Making**: Every trade can be vetted by LLM-based agents (Llama 3.3 via Groq/OpenRouter).
-- **Atomic Arbitrage**: Profit-or-revert guarantees—if a trade isn't profitable, the transaction fails before funds are moved.
-- **Multi-DEX Support**: Native integration with Raydium (V4/Amm), Orca (Whirlpool), and Meteora (DLMM).
-- **Advanced Sniper Filters**: Mint renounced check, freeze authority detection, LP burn verification, and metadata analysis.
-- **Dynamic Risk Management**: AI-driven TP/SL adjustments and position sizing.
-- **Jito Integration**: Support for Jito bundles to avoid front-running and land transactions reliably.
+The `programs/scematica-swap` Anchor program must be built and deployed separately with `anchor build`.
 
 ---
 
-## 🛠️ Getting Started
+## Prerequisites
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (latest stable)
-- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools)
-- [Anchor Framework](https://www.anchor-lang.com/docs/installation) (if modifying on-chain programs)
-- A Groq API Key (Free tier available at [console.groq.com](https://console.groq.com))
-
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-repo/scematica.git
-   cd scematica
-   ```
-
-2. **Setup environment variables:**
-   ```bash
-   # Copy example env if available, or create one
-   # .env is used for sensitive keys
-   ```
-
-3. **Install dependencies and build:**
-   ```bash
-   cargo build --release
-   ```
-
-### Configuration
-
-Scematica uses a dual-layer configuration system:
-- **`.env`**: For sensitive keys (RPC URLs, AI API keys).
-- **`config.toml`**: For strategy parameters and paths.
-
-#### Keypair Configuration
-You can specify your wallet in `config.toml` or via the `KEYPAIR_PATH` environment variable. Scematica supports:
-- **Local Files**: `C:\Users\name\.config\solana\id.json` or `~/.config/solana/id.json`
-- **WSL UNC Paths**: `\\wsl$\Ubuntu\home\user\.config\solana\id.json` (Supported on Windows)
-- **Base58 Strings**: Paste your private key directly as a string.
-
-Example `config.toml`:
-```toml
-[wallet]
-keypair_path = "\\\\wsl$\\Ubuntu-22.04\\home\\deadsg\\.config\\solana\\id.json"
-```
-*Note: Use double backslashes in TOML for Windows paths.*
+- [Rust](https://rustup.rs/) (stable, 1.75+)
+- [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (for keypair generation)
+- A Solana wallet keypair (`~/.config/solana/id.json` or any path)
+- At least **250,000 SCEMA** tokens in your wallet (token-gated access — CA above)
+- A private RPC endpoint (Helius, QuickNode, or Triton recommended)
+- Optional: Groq or xAI API key for the AI chat and strategy agents
 
 ---
 
-## 🏃 Getting Fully Functional
+## Installation
 
-To get Scematica fully operational, follow these steps:
-
-### 1. Wallet Setup
-Ensure you have a Solana keypair. If you are on Windows but keep your keys in WSL, use the UNC path format as shown above. Ensure the wallet has at least 0.1 - 0.5 SOL for trading and transaction fees.
-
-### 2. RPC Nodes
-High-performance trading requires fast RPCs.
-- Edit `config.toml` and set `rpc.endpoint` and `rpc.ws_endpoint`.
-- **Recommended**: Use a private provider like Helius, QuickNode, or Triton. Public nodes will likely be rate-limited.
-
-### 3. AI Integration (Optional but Recommended)
-For AI-scored trades:
-- Get a Groq API key from [console.groq.com](https://console.groq.com).
-- Add `GROQ_API_KEY=your_key_here` to your `.env` file.
-
-### 4. On-Chain Program (For Arbitrage)
-The arbitrage engine requires the `scematica-swap` program to be deployed for profit-or-revert protection.
-- If using mainnet, ensure you have updated the `SWAP_PROGRAM_ID` in your config to match the deployed program.
-
-### 5. Running the Application
-Launch the dashboard to monitor everything in one place:
 ```bash
-cargo run --release --bin dashboard
+git clone https://github.com/Deadsg/scematica.git
+cd scematica
+
+# Build all binaries (release mode, ~5-10 min first run)
+cargo build --release
+
+# Binaries will be at:
+#   target/release/sniper.exe
+#   target/release/arb.exe
+#   target/release/dashboard.exe
+#   target/release/scematica-protocol.exe
+```
+
+> **Disk space note:** Release builds generate ~5-10 GB of artifacts. Run `cargo clean` periodically to reclaim space.
+
+---
+
+## Configuration
+
+### Environment file (`.env`)
+
+Create a `.env` in the repo root with sensitive keys:
+
+```env
+# RPC (can also be set in config.toml)
+RPC_ENDPOINT=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+RPC_WS_ENDPOINT=wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+
+# AI (optional — enables Strategy agent and Chat tab)
+GROQ_API_KEY=gsk_...
+# or
+XAI_API_KEY=xai-...
+
+# Scematica gate bypass (emergency only)
+# SCEMATICA_SKIP_GATE=1
+```
+
+### `config.toml` reference
+
+Full annotated example:
+
+```toml
+[rpc]
+endpoint    = "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
+ws_endpoint = "wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
+commitment  = "confirmed"   # confirmed | finalized | processed
+
+[wallet]
+# Supports: local file path, WSL UNC path, or base58 private key string
+keypair_path = "C:\\Users\\you\\.config\\solana\\id.json"
+# keypair_path = "\\\\wsl$\\Ubuntu\\home\\user\\.config\\solana\\id.json"
+
+# ─── Sniper ───────────────────────────────────────────────────
+[sniper]
+enabled            = true
+quote_mint         = "WSOL"     # WSOL or USDC
+quote_amount       = 0.01       # SOL per snipe (scaled by rate mode)
+buy_slippage_pct   = 1.0
+sell_slippage_pct  = 20.0       # wider = faster exit on thin pools
+take_profit_pct    = 100.0      # sell all when up 100%
+stop_loss_pct      = 15.0       # sell all when down 15%
+trailing_stop_loss_pct = 8.0    # trail 8% below peak (0 = use fixed SL)
+partial_tp_pct     = 50.0       # sell 50% of position at partial TP
+partial_tp_trigger = 60.0       # trigger partial TP when up 60%
+price_check_interval_ms  = 1000 # sell monitor poll rate
+price_check_duration_ms  = 180000  # 3 min total monitor window
+max_sell_retries   = 5
+max_buy_retries    = 3
+auto_sell          = true
+one_token_at_a_time = true      # sequential snipes (safer)
+max_buys           = 10         # auto sell-mode after N buys; 0 = unlimited
+max_concurrent_positions = 5    # max open positions
+cooldown_after_losses = 3       # pause buys after N consecutive losses
+cooldown_minutes   = 20
+daily_loss_limit_sol  = 0.05    # halt if daily loss exceeds X SOL
+max_drawdown_pct   = 30.0       # halt if wallet down X% from session start
+blacklist_path     = "blacklist.txt"
+copy_wallets       = []         # wallet addresses to copy-trade
+
+[sniper.filters]
+check_interval_ms    = 1000
+check_duration_ms    = 12000    # max time to wait for filter pass
+consecutive_matches  = 1
+check_mint_renounced = true
+check_freezable      = true
+check_burned         = true
+check_mutable        = true
+check_socials        = false
+check_name           = true     # reject scam/rug keywords in token name
+min_pool_size        = 5.0      # minimum pool SOL reserve
+max_pool_size        = 0.0      # 0 = no limit
+check_liquidity_depth = true
+max_price_impact_pct  = 5.0     # reject if our buy moves price >5%
+check_volume         = false    # require recent txn activity
+min_volume_txns      = 3
+
+# ─── Arbitrage ────────────────────────────────────────────────
+[arb]
+enabled             = true
+start_mint          = "WSOL"
+start_amount        = 0.005
+min_profit_lamports = 10000
+max_hops            = 3
+dexes               = ["Raydium", "Orca", "Meteora"]
+pool_dir            = "pools"
+amount_levels       = 4
+
+# ─── Execution ────────────────────────────────────────────────
+[execution]
+executor           = "default"  # default | jito
+custom_fee_sol     = 0.001
+compute_unit_limit = 400000
+compute_unit_price = 200000
+skip_preflight     = true
+jito_url           = "https://mainnet.block-engine.jito.wtf"
+
+# ─── Alerts ───────────────────────────────────────────────────
+[alerts]
+telegram_bot_token    = ""      # leave empty to disable
+telegram_chat_id      = ""
+discord_webhook_url   = ""
+desktop_notifications = true    # Windows toast on buy/sell
 ```
 
 ---
 
-## ⛓️ On-Chain Program
+## Running
 
-Scematica includes an Anchor program (`scematica-swap`) that ensures atomic profitability for arbitrage.
+### Dashboard (recommended entry point)
 
-### Deployment to Mainnet
+```bash
+# Full mode (requires config.toml + wallet)
+cargo run --release --bin dashboard
 
-1. **Build the program:**
-   ```bash
-   anchor build
-   ```
+# Demo mode (no keypair or RPC needed — simulated data)
+cargo run --release --bin dashboard -- --demo
+```
 
-2. **Get your Program ID:**
-   ```bash
-   solana address -k target/deploy/scematica_swap-keypair.json
-   ```
+### Bots standalone
 
-3. **Update Program IDs:**
-   - Update `declare_id!` in `programs/scematica-swap/src/lib.rs`.
-   - Update `[programs.mainnet]` in `Anchor.toml`.
-   - Update `SWAP_PROGRAM_ID` in your `.env`.
+```bash
+cargo run --release --bin sniper
+cargo run --release --bin arb
+```
 
-4. **Deploy:**
-   ```bash
-   anchor deploy --provider.cluster mainnet
-   ```
+### Scematica Protocol (x402 API server)
+
+```bash
+cargo run --release --bin scematica-protocol -- \
+  --pay-to YOUR_WALLET_ADDRESS \
+  --price-lamports 10000 \
+  --bind 0.0.0.0:4020 \
+  --keypair ~/.config/solana/id.json
+```
 
 ---
 
-## 💰 Funding & Testing
+## Dashboard Navigation
 
-- **Profit-or-Revert**: The on-chain `scematica-swap` program ensures that you can never lose capital due to slippage or front-running on an arb (only the transaction fee).
-- **Local Keys**: Your private keys never leave your machine.
-- **Fail-Safe AI**: If the AI layer is unavailable, the bot falls back to conservative, rule-based filters.
+The dashboard has 5 tabs. Navigate with `Tab` / `Shift+Tab` or `→` / `←`.
 
-## 🗺️ Roadmap
+### Tab 0 — Overview
 
-- **Q2 2026**: Multi-agent "Debate" system for trade validation. (✅ Completed)
-- **Q3 2026**: Predictive market regime detection and automatic strategy switching.
-- **Q4 2026**: Social sentiment integration via X/Telegram scrapers.
-- **Q1 2027**: Fully autonomous "Agentic Mode" where the bot manages its own portfolio.
+Live stats panel: SOL balance, SCEMA balance, wallet address, open positions, session PnL, trade counts, and NN agent status (epsilon, total steps, win rate).
 
-## 📄 License
+No interactive keys on this tab.
 
-MIT License. See [LICENSE](LICENSE) for more information.
+### Tab 1 — Trades
+
+Scrollable trade history table (buy/sell events from `scematica-trades.jsonl`).
+
+| Key | Action |
+|-----|--------|
+| `x` | Export trades to CSV (`scematica-trades-YYYYMMDD.csv`) |
+
+### Tab 2 — Logs
+
+Live log stream (tails `scematica-sniper.log` + dashboard internal events).
+
+| Key | Action |
+|-----|--------|
+| `e` | Toggle **Sell Mode** — pauses all buys, sells all open positions |
+| `d` | Toggle **Dump Mode** — force-sells everything at zero slippage |
+| `/` | Activate log filter (type to search, `Backspace` to clear, `Esc` to exit filter) |
+
+### Tab 3 — Control
+
+Bot process control and rate mode selection.
+
+| Key | Action |
+|-----|--------|
+| `s` | Start **Sniper** only |
+| `a` | Start **Arb** only |
+| `b` | Start **Both** (sniper + arb) |
+| `x` | **Stop** all bots |
+| `1` | Rate mode: **Safe** — 0.5x, TP 50%, SL 10% |
+| `2` | Rate mode: **Balanced** — 1.0x, TP 100%, SL 15% |
+| `3` | Rate mode: **Aggressive** — 2.0x, TP 200%, SL 20% |
+| `4` | Rate mode: **Degen** — 3.0x, TP 300%, SL 30% |
+
+### Tab 4 — Chat
+
+AI assistant powered by Groq (Llama) or xAI (Grok). Requires `GROQ_API_KEY` or `XAI_API_KEY`.
+
+| Key | Action |
+|-----|--------|
+| Type | Compose message |
+| `Enter` | Send message |
+| `Backspace` | Delete character |
+| `y` | Confirm a pending AI action (shown when bot proposes a trade) |
+| `n` | Reject a pending AI action |
+
+### Global keys
+
+| Key | Action |
+|-----|--------|
+| `q` / `Esc` | Quit dashboard |
+| `Tab` / `→` | Next tab |
+| `Shift+Tab` / `←` | Previous tab |
+| `Ctrl+C` | Force quit |
+
+---
+
+## Sell Mechanics
+
+The sniper uses a two-phase sell monitor per position:
+
+1. **Fast phase** (first 20 checks × 100ms): catches rapid dumps immediately after buy
+2. **Slow phase** (remaining time × `price_check_interval_ms`): standard monitoring
+
+Each iteration:
+- Re-reads `live_params` for dynamic TP/SL (updated by rate mode or config hot-reload)
+- Checks trailing stop — resets peak price on new highs
+- Triggers partial TP at `partial_tp_trigger`% gain (sells `partial_tp_pct`% of position)
+- Detects dump: 3 consecutive declining prices in fast phase → immediate exit
+- Falls back to AMM constant-product price: `out = (reserve_out × in × 9975) / (reserve_in × 10000 + in × 9975)`
+
+**Emergency controls:**
+- **Sell Mode** (`e` key or `scematica-sell-mode.json`): pauses all buys, sell-scans all wallet positions
+- **Dump Mode** (`d` key or `scematica-dump-mode.json`): `min_out = 0`, retries every 30s until all positions are gone
+- **Max drawdown guard**: auto-activates sell mode if wallet drops `max_drawdown_pct` from session start
+- **Daily loss limit**: halts new buys if daily SOL loss exceeds `daily_loss_limit_sol`
+
+---
+
+## Neural Network Agent (scematica-nn)
+
+The Deep Q* agent runs inside the sniper process and learns from every completed trade.
+
+- **State**: PnL%, position age, price momentum, win/loss streaks, liquidity score, open positions
+- **Actions**: BuyStandard, BuySized, SellAll, SellPartial, Hold
+- **Reward shaping**: +PnL%, −time penalty, win streak bonus, loss streak penalty
+- **Training**: experience replay buffer (10,000 samples), target network (sync every 100 steps)
+- **Checkpoints**: saved to `scematica-nn-agent.json` every 10 minutes
+- **Stats**: written to `scematica-nn-stats.json` every 30s (visible in Overview tab)
+- **Regime shift**: when the Strategy Agent detects a regime change, epsilon is spiked so the NN re-explores
+
+---
+
+## Scematica Protocol
+
+A Rust-native implementation of the [x402 HTTP payment standard](https://github.com/x402-foundation/x402) for Solana.
+
+Clients pay per API call with a micro-SOL transfer embedded in the `X-Payment` request header. No subscription, no API key — just pay-per-use on-chain.
+
+### Paid endpoints
+
+| Route | Description |
+|---|---|
+| `GET /signals/pools` | Live pool signals from the sniper stream |
+| `GET /signals/trades` | Recent trade events |
+| `GET /stats/nn` | NN agent performance stats |
+| `GET /stats/metrics` | Bot metrics snapshot |
+
+### Free endpoints
+
+| Route | Description |
+|---|---|
+| `GET /health` | Liveness check |
+| `GET /supported` | Payment requirements (asset, amount, destination) |
+
+### How it works
+
+1. Client requests a paid route → server returns `402 Payment Required` with `X-Payment-Response` header
+2. Client builds a partial SPL `TransferChecked` transaction signed by their key
+3. Client base64-encodes the tx and includes it in the `X-Payment` header of the next request
+4. Server verifies the partial tx (mint, destination, amount, client sig)
+5. Server refreshes blockhash, signs as fee payer, submits — then returns the API response
+
+---
+
+## State Files
+
+The sniper and dashboard communicate via JSON files in the working directory:
+
+| File | Written by | Purpose |
+|---|---|---|
+| `scematica-sell-mode.json` | Dashboard / drawdown guard | Activates emergency sell mode |
+| `scematica-dump-mode.json` | Dashboard | Activates dump mode (zero slippage) |
+| `scematica-rate-mode.json` | Dashboard | Active rate mode + TP/SL/multiplier |
+| `pool-cache.json` | Sniper | Pool → mint mapping for sell lookups |
+| `scematica-trades.jsonl` | Sniper | Trade history (append-only JSONL) |
+| `scematica-sniper.log` | Sniper | Log file tailed by dashboard |
+| `scematica-nn-agent.json` | NN agent | Model checkpoint |
+| `scematica-nn-stats.json` | NN agent | Stats for dashboard display |
+| `scematica-filter-stats.json` | Filter pipeline | Per-filter pass/fail counts |
+
+---
+
+## Security
+
+- Private keys never leave your machine
+- All SCEMA gate checks retry up to 5 times before failing (set `SCEMATICA_SKIP_GATE=1` to bypass during RPC outages)
+- Arbitrage uses the `scematica-swap` on-chain program with profit-or-revert: if the arb is not profitable, the transaction fails before any funds move
+- The Protocol server verifies every payment before settling — partial tx is validated for correct mint, destination, and amount
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

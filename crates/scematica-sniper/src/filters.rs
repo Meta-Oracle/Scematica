@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
 use crate::cache::CachedPool;
+use crate::reputation::DeployerLedger;
 
 /// Tracks per-filter rejection counts for dashboard stats
 #[derive(Debug, Default, Clone)]
@@ -63,20 +64,28 @@ pub trait PoolFilter: Send + Sync {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Hard cap per RPC call — any node that takes longer is treated as failed.
+const RPC_CALL_TIMEOUT_SECS: u64 = 5;
+
 fn is_rate_limited(e: &str) -> bool {
     e.contains("429") || e.contains("Too Many Requests")
 }
 
 /// Fetch an account with up to `retries` attempts, backing off on 429.
+/// Each attempt is capped at RPC_CALL_TIMEOUT_SECS so a hung node can't stall the pipeline.
 async fn get_account_retried(
     rpc: &Arc<RpcClient>,
     pubkey: &Pubkey,
     retries: u32,
 ) -> Option<Account> {
     for attempt in 0..retries {
-        match rpc.get_account(pubkey).await {
-            Ok(a) => return Some(a),
-            Err(e) => {
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_account(pubkey),
+        ).await;
+        match result {
+            Ok(Ok(a)) => return Some(a),
+            Ok(Err(e)) => {
                 let msg = e.to_string();
                 if is_rate_limited(&msg) && attempt + 1 < retries {
                     let delay = 600 * (attempt + 1) as u64;
@@ -85,21 +94,30 @@ async fn get_account_retried(
                     return None;
                 }
             }
+            Err(_) => {
+                debug!("RPC get_account timed out on attempt {}/{}", attempt + 1, retries);
+                return None;
+            }
         }
     }
     None
 }
 
 /// Fetch a token account balance with up to `retries` attempts on 429.
+/// Each attempt is capped at RPC_CALL_TIMEOUT_SECS.
 async fn get_token_balance_retried(
     rpc: &Arc<RpcClient>,
     pubkey: &Pubkey,
     retries: u32,
 ) -> Option<u64> {
     for attempt in 0..retries {
-        match rpc.get_token_account_balance(pubkey).await {
-            Ok(b) => return b.amount.parse().ok(),
-            Err(e) => {
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_token_account_balance(pubkey),
+        ).await;
+        match result {
+            Ok(Ok(b)) => return b.amount.parse().ok(),
+            Ok(Err(e)) => {
                 let msg = e.to_string();
                 if is_rate_limited(&msg) && attempt + 1 < retries {
                     let delay = 600 * (attempt + 1) as u64;
@@ -107,6 +125,10 @@ async fn get_token_balance_retried(
                 } else {
                     return None;
                 }
+            }
+            Err(_) => {
+                debug!("RPC get_token_balance timed out on attempt {}/{}", attempt + 1, retries);
+                return None;
             }
         }
     }
@@ -355,6 +377,277 @@ impl PoolFilter for BlacklistFilter {
     }
 }
 
+/// Reject tokens where top-10 holders own a suspicious share of supply (whale concentration rug signal).
+pub struct HolderConcentrationFilter {
+    pub max_top10_pct: f64,
+}
+
+#[async_trait]
+impl PoolFilter for HolderConcentrationFilter {
+    fn name(&self) -> &str { "HolderConcentration" }
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        // Fetch the token's total supply (5s timeout)
+        let supply = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_token_supply(&pool.base_mint),
+        ).await {
+            Ok(Ok(s)) => s.amount.parse::<u128>().unwrap_or(0),
+            Ok(Err(e)) => {
+                warn!(mint = %pool.base_mint, "HolderConcentration: supply fetch failed: {} — skipping", e);
+                return FilterResult::pass();
+            }
+            Err(_) => {
+                warn!(mint = %pool.base_mint, "HolderConcentration: supply fetch timed out — skipping");
+                return FilterResult::pass();
+            }
+        };
+        if supply == 0 {
+            return FilterResult::fail("Token supply is zero");
+        }
+
+        // getTokenLargestAccounts returns up to 20 largest holders sorted by balance (5s timeout)
+        let top = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_token_largest_accounts(&pool.base_mint),
+        ).await {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                warn!(mint = %pool.base_mint, "HolderConcentration: getLargestAccounts failed: {} — skipping", e);
+                return FilterResult::pass();
+            }
+            Err(_) => {
+                warn!(mint = %pool.base_mint, "HolderConcentration: getLargestAccounts timed out — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        let top10_amount: u128 = top.iter()
+            .take(10)
+            .filter_map(|a| a.amount.amount.parse::<u128>().ok())
+            .sum();
+
+        let concentration_pct = top10_amount as f64 / supply as f64 * 100.0;
+
+        if concentration_pct > self.max_top10_pct {
+            FilterResult::fail(format!(
+                "Top-10 holders own {:.1}% of supply (max allowed: {:.1}%)",
+                concentration_pct, self.max_top10_pct
+            ))
+        } else {
+            debug!(
+                mint = %pool.base_mint,
+                concentration_pct = %format!("{:.1}%", concentration_pct),
+                "Holder concentration OK"
+            );
+            FilterResult::pass()
+        }
+    }
+}
+
+/// Rejects pools where the deployer's historical rug score is too low.
+pub struct DeployerReputationFilter {
+    pub ledger: Arc<parking_lot::Mutex<DeployerLedger>>,
+    pub min_score: f64,
+}
+
+impl DeployerReputationFilter {
+    pub fn new(ledger: Arc<parking_lot::Mutex<DeployerLedger>>, min_score: f64) -> Self {
+        Self { ledger, min_score }
+    }
+}
+
+#[async_trait]
+impl PoolFilter for DeployerReputationFilter {
+    fn name(&self) -> &str { "DeployerReputation" }
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        let deployer = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_account(&pool.id),
+        ).await {
+            Ok(Ok(acct)) => acct.owner.to_string(),
+            Ok(Err(e)) => {
+                warn!(mint = %pool.base_mint, "DeployerReputation: account fetch failed: {} — skipping", e);
+                return FilterResult::pass();
+            }
+            Err(_) => {
+                warn!(mint = %pool.base_mint, "DeployerReputation: account fetch timed out — skipping");
+                return FilterResult::pass();
+            }
+        };
+        let score = self.ledger.lock().score(&deployer);
+        if score < self.min_score {
+            FilterResult::fail(format!(
+                "Deployer {} reputation score {:.2} < min {:.2}",
+                &deployer[..8.min(deployer.len())], score, self.min_score
+            ))
+        } else {
+            debug!(mint = %pool.base_mint, deployer = %&deployer[..8.min(deployer.len())], score, "Deployer reputation OK");
+            FilterResult::pass()
+        }
+    }
+}
+
+// ── new filters ───────────────────────────────────────────────────────────────
+
+/// Liquidity momentum filter.
+///
+/// Fetches the pool quote vault balance twice 3 seconds apart.  If the second
+/// reading hasn't grown by at least `min_growth_pct`% the pool is likely being
+/// drained by the deployer and is rejected.
+pub struct LiquidityMomentumFilter {
+    pub min_growth_pct: f64,
+}
+
+#[async_trait]
+impl PoolFilter for LiquidityMomentumFilter {
+    fn name(&self) -> &str { "LiquidityMomentum" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        let first = match get_token_balance_retried(rpc, &pool.quote_vault, 2).await {
+            Some(v) if v > 0 => v,
+            _ => {
+                warn!(mint = %pool.base_mint, "LiquidityMomentum: first read unavailable — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+        let second = match get_token_balance_retried(rpc, &pool.quote_vault, 2).await {
+            Some(v) => v,
+            None => {
+                warn!(mint = %pool.base_mint, "LiquidityMomentum: second read unavailable — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        // Check for zero to avoid divide-by-zero
+        if first == 0 {
+            return FilterResult::pass();
+        }
+
+        let growth_pct = (second as f64 - first as f64) / first as f64 * 100.0;
+
+        if growth_pct < self.min_growth_pct {
+            FilterResult::fail(format!(
+                "Liquidity momentum too low: {:.1}% growth (need {:.1}%); pool may be draining",
+                growth_pct, self.min_growth_pct
+            ))
+        } else {
+            debug!(
+                mint = %pool.base_mint,
+                growth_pct = %format!("{:.1}%", growth_pct),
+                "Liquidity momentum OK"
+            );
+            FilterResult::pass()
+        }
+    }
+}
+
+/// Cross-pool correlation rug guard.
+///
+/// Checks the deployer reputation ledger for rugs recorded within the last 24 h.
+/// Deployers who have rugged >N times recently are rejected.
+pub struct CrossPoolCorrelationFilter {
+    pub ledger: Arc<parking_lot::Mutex<crate::reputation::DeployerLedger>>,
+    pub max_rugs_24h: u32,
+}
+
+#[async_trait]
+impl PoolFilter for CrossPoolCorrelationFilter {
+    fn name(&self) -> &str { "CrossPoolCorrelation" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        let deployer = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_account(&pool.id),
+        ).await {
+            Ok(Ok(acct)) => acct.owner.to_string(),
+            Ok(Err(e)) => {
+                warn!(mint = %pool.base_mint, "CrossPoolCorrelation: account fetch failed: {} — skipping", e);
+                return FilterResult::pass();
+            }
+            Err(_) => {
+                warn!(mint = %pool.base_mint, "CrossPoolCorrelation: account fetch timed out — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        let rug_count = self.ledger.lock().recent_rug_count(&deployer);
+
+        if rug_count > self.max_rugs_24h {
+            FilterResult::fail(format!(
+                "Deployer {} has {} recent rugs (max allowed: {})",
+                &deployer[..8.min(deployer.len())], rug_count, self.max_rugs_24h
+            ))
+        } else {
+            debug!(
+                mint = %pool.base_mint,
+                deployer = %&deployer[..8.min(deployer.len())],
+                rug_count,
+                "Cross-pool correlation OK"
+            );
+            FilterResult::pass()
+        }
+    }
+}
+
+/// Jupiter price discrepancy filter.
+///
+/// Queries the Jupiter Price API for the token's price and compares it to the
+/// AMM pool price.  If Jupiter's price is higher than the AMM price by at least
+/// `min_premium_pct`%, the pool is a buy signal (cheap relative to the broader
+/// market).  Pools where the AMM is already at or above Jupiter are rejected.
+pub struct JupiterDiscrepancyFilter {
+    pub min_premium_pct: f64,
+}
+
+#[async_trait]
+impl PoolFilter for JupiterDiscrepancyFilter {
+    fn name(&self) -> &str { "JupiterDiscrepancy" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        // Estimate AMM price in lamports-per-base-token using reserve ratio.
+        let (quote_reserve, base_reserve) = match tokio::join!(
+            get_token_balance_retried(rpc, &pool.quote_vault, 2),
+            get_token_balance_retried(rpc, &pool.base_vault, 2),
+        ) {
+            (Some(q), Some(b)) if q > 0 && b > 0 => (q, b),
+            _ => {
+                warn!(mint = %pool.base_mint, "JupiterDiscrepancy: reserve fetch failed — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        let amm_price_lamports = quote_reserve as f64 / base_reserve as f64;
+
+        // Fetch Jupiter price
+        let jup_price_lamports = match crate::jup_oracle::JupiterOracle::get_price_lamports(&pool.base_mint).await {
+            Some(p) => p,
+            None => {
+                warn!(mint = %pool.base_mint, "JupiterDiscrepancy: Jupiter price unavailable — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        let premium = crate::jup_oracle::JupiterOracle::premium_pct(amm_price_lamports, jup_price_lamports);
+
+        if premium < self.min_premium_pct {
+            FilterResult::fail(format!(
+                "Jupiter premium {:.1}% < min {:.1}% (AMM={:.6} JUP={:.6} lamports/token)",
+                premium, self.min_premium_pct, amm_price_lamports, jup_price_lamports
+            ))
+        } else {
+            debug!(
+                mint = %pool.base_mint,
+                premium_pct = %format!("{:.1}%", premium),
+                "Jupiter discrepancy buy signal detected"
+            );
+            FilterResult::pass()
+        }
+    }
+}
+
 // ── pipeline ──────────────────────────────────────────────────────────────────
 
 pub struct FilterPipeline {
@@ -365,7 +658,13 @@ pub struct FilterPipeline {
 }
 
 impl FilterPipeline {
-    pub fn new(config: FilterConfig, rpc: Arc<RpcClient>, quote_amount_raw: u64, blacklist_path: &str) -> Self {
+    pub fn new(
+        config: FilterConfig,
+        rpc: Arc<RpcClient>,
+        quote_amount_raw: u64,
+        blacklist_path: &str,
+        deployer_ledger: Option<Arc<parking_lot::Mutex<DeployerLedger>>>,
+    ) -> Self {
         let mut filters: Vec<Box<dyn PoolFilter>> = vec![];
         if config.check_mint_renounced { filters.push(Box::new(MintRenounceFilter)); }
         if config.check_freezable      { filters.push(Box::new(FreezableFilter)); }
@@ -394,6 +693,35 @@ impl FilterPipeline {
                 filters.push(Box::new(bf));
             }
         }
+        if config.check_holder_concentration && config.max_top10_holder_pct > 0.0 {
+            filters.push(Box::new(HolderConcentrationFilter {
+                max_top10_pct: config.max_top10_holder_pct,
+            }));
+        }
+        if let Some(ledger) = deployer_ledger.clone() {
+            filters.push(Box::new(DeployerReputationFilter::new(ledger, 0.3)));
+        }
+
+        // ── New filters wired from config ─────────────────────────────────────
+        if config.check_liquidity_momentum {
+            filters.push(Box::new(LiquidityMomentumFilter {
+                min_growth_pct: config.liquidity_momentum_pct,
+            }));
+        }
+        if config.check_cross_pool_correlation {
+            if let Some(ledger) = deployer_ledger {
+                filters.push(Box::new(CrossPoolCorrelationFilter {
+                    ledger,
+                    max_rugs_24h: config.max_deployer_rugs_24h,
+                }));
+            }
+        }
+        if config.check_jupiter_discrepancy {
+            filters.push(Box::new(JupiterDiscrepancyFilter {
+                min_premium_pct: config.jupiter_min_premium_pct,
+            }));
+        }
+
         Self { filters, config, rpc, stats: FilterStats::default() }
     }
 

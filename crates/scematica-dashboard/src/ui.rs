@@ -6,6 +6,7 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
+        canvas::{Canvas, Points},
         Block, Borders, Cell, List, ListItem, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
     },
     Frame,
@@ -55,6 +56,7 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
         2 => render_logs(f, content_area, state),
         3 => render_config(f, content_area, state),
         4 => render_chat(f, content_area, state),
+        5 => render_radar(f, content_area, state),
         _ => {}
     }
 
@@ -167,7 +169,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let tab = *state.selected_tab.read();
-    let titles = vec!["Overview", "Trades", "Logs", "Config", "Chat"];
+    let titles = vec!["Overview", "Trades", "Logs", "Config", "Chat", "Radar"];
     let tabs = Tabs::new(titles)
         .select(tab)
         .style(Style::default().fg(COLOR_TEXT))
@@ -444,15 +446,19 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sell_mode = *state.sell_mode_active.read();
     let dump_mode = *state.dump_mode_active.read();
     let sol = *state.sol_balance.read();
+    let filter_active = *state.log_filter_active.read();
+    let filter_text = state.log_filter.read().clone();
 
-    // Build vertical layout dynamically based on active banners
+    // Build vertical layout dynamically based on active banners + filter bar
     let dump_h: u16 = if dump_mode { 3 } else { 0 };
     let sell_h: u16 = if sell_mode { 3 } else { 0 };
+    let filter_h: u16 = if filter_active || !filter_text.is_empty() { 3 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(dump_h),
             Constraint::Length(sell_h),
+            Constraint::Length(filter_h),
             Constraint::Min(0),
         ])
         .split(area);
@@ -479,27 +485,52 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         f.render_widget(banner, chunks[1]);
     }
 
-    let log_area = chunks[2];
+    if filter_h > 0 {
+        let cursor = if filter_active { "_" } else { "" };
+        let filter_display = format!(" Filter: {}{}", filter_text, cursor);
+        let filter_bar = Paragraph::new(filter_display)
+            .style(Style::default().fg(Color::White))
+            .block(Block::default()
+                .title(if filter_active { " [/] Filter (Esc to clear) " } else { " Filter active " })
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if filter_active { Color::Cyan } else { Color::DarkGray })));
+        f.render_widget(filter_bar, chunks[2]);
+    }
+
+    let log_area = chunks[3];
     let logs = state.log_lines.read();
-    let items: Vec<ListItem> = logs
-        .iter()
-        .rev()
-        .take(log_area.height as usize)
-        .map(|line| {
-            let color = if line.contains("DUMP MODE") {
-                Color::Yellow
-            } else if line.contains("ERROR") || line.contains("SELL MODE") {
-                COLOR_ACCENT
-            } else if line.contains("WARN") {
-                Color::Yellow
-            } else if line.contains("confirmed") || line.contains("Sell confirmed") {
-                Color::Green
-            } else {
-                COLOR_TEXT
-            };
-            ListItem::new(line.as_str()).style(Style::default().fg(color))
-        })
-        .collect();
+    let inner_width = log_area.width.saturating_sub(2).max(1) as usize;
+    let max_rows = log_area.height.saturating_sub(2) as usize;
+    let filter_lower = filter_text.to_lowercase();
+
+    let mut lines: Vec<Line> = Vec::new();
+    'outer: for raw in logs.iter().rev() {
+        if !filter_lower.is_empty() && !raw.to_lowercase().contains(&filter_lower) {
+            continue;
+        }
+        let color = if raw.contains("DUMP MODE") {
+            Color::Yellow
+        } else if raw.contains("ERROR") || raw.contains("SELL MODE") {
+            COLOR_ACCENT
+        } else if raw.contains("WARN") {
+            Color::Yellow
+        } else if raw.contains("confirmed") || raw.contains("Sell confirmed") {
+            Color::Green
+        } else {
+            COLOR_TEXT
+        };
+        let style = Style::default().fg(color);
+        let chars: Vec<char> = raw.chars().collect();
+        if chars.is_empty() {
+            lines.push(Line::from(Span::styled(String::new(), style)));
+            if lines.len() >= max_rows { break; }
+        } else {
+            for chunk in chars.chunks(inner_width) {
+                lines.push(Line::from(Span::styled(chunk.iter().collect::<String>(), style)));
+                if lines.len() >= max_rows { break 'outer; }
+            }
+        }
+    }
 
     let title = if dump_mode {
         " Logs — DUMP MODE ACTIVE (newest first) "
@@ -511,13 +542,13 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let border_color = if dump_mode { Color::Yellow } else { COLOR_ACCENT };
 
-    let list = List::new(items).block(
+    let paragraph = Paragraph::new(lines).block(
         Block::default()
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),
     );
-    f.render_widget(list, log_area);
+    f.render_widget(paragraph, log_area);
 }
 
 fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
@@ -704,15 +735,124 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
         1 => " [x] Export CSV  [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
-        2 => " [e] Sell Mode  [d] DUMP ALL  [Tab] Switch tab  [q] Quit ",
+        2 => " [/] Filter  [e] Sell Mode  [d] DUMP ALL  [Tab] Switch tab  [q] Quit ",
         3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [1-4] Rate Mode  [Tab] Switch tab  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
+        5 => " Pool Radar — live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
         _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
     };
     let footer = Paragraph::new(hint)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     f.render_widget(footer, area);
+}
+
+fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    // Split: canvas on top, table of recent pools below
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(13)])
+        .split(area);
+
+    let pools = state.radar_pools.read().clone();
+
+    // Separate passed / rejected pools for color-coded Points
+    let passed_coords: Vec<(f64, f64)> = pools
+        .iter()
+        .filter(|p| p.passed_filters)
+        .map(|p| (p.age_secs.min(299.0), p.size_sol.min(99.0).max(0.0)))
+        .collect();
+    let rejected_coords: Vec<(f64, f64)> = pools
+        .iter()
+        .filter(|p| !p.passed_filters)
+        .map(|p| (p.age_secs.min(299.0), p.size_sol.min(99.0).max(0.0)))
+        .collect();
+
+    let canvas = Canvas::default()
+        .block(
+            Block::default()
+                .title(" Pool Radar — Age vs Size (last 5 min)  ● = passed  × = rejected ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_ACCENT)),
+        )
+        .x_bounds([0.0, 300.0])
+        .y_bounds([0.0, 100.0])
+        .paint(move |ctx| {
+            // Axis labels
+            ctx.print(0.0, -5.0, "0s");
+            ctx.print(145.0, -5.0, "150s");
+            ctx.print(292.0, -5.0, "300s");
+            ctx.print(-12.0, 0.0, "0");
+            ctx.print(-15.0, 50.0, "50");
+            ctx.print(-18.0, 98.0, "100 SOL");
+
+            // Rejected pools — red dots
+            if !rejected_coords.is_empty() {
+                ctx.draw(&Points {
+                    coords: &rejected_coords,
+                    color: Color::Red,
+                });
+            }
+            // Passed pools — green dots
+            if !passed_coords.is_empty() {
+                ctx.draw(&Points {
+                    coords: &passed_coords,
+                    color: Color::Green,
+                });
+            }
+        });
+
+    f.render_widget(canvas, chunks[0]);
+
+    // Table: 10 most recent pools
+    let now = chrono::Utc::now().timestamp();
+    let rows: Vec<Row> = pools
+        .iter()
+        .rev()
+        .take(10)
+        .map(|p| {
+            let age_display = now - p.timestamp;
+            let pass_str = if p.passed_filters { "PASS" } else { "FAIL" };
+            let pass_color = if p.passed_filters { Color::Green } else { Color::Red };
+            let mint_short = p.mint[..8.min(p.mint.len())].to_string();
+            Row::new(vec![
+                Cell::from(mint_short),
+                Cell::from(format!("{:.0}s", p.age_secs)),
+                Cell::from(format!("{:.2}", p.size_sol)),
+                Cell::from(pass_str).style(Style::default().fg(pass_color)),
+                Cell::from(format!("{:.1}", p.score)),
+                Cell::from(format!("{}s ago", age_display)),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(10),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(6),
+        Constraint::Length(7),
+        Constraint::Min(0),
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Age").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Size SOL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Result").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Score").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Seen").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+            ]),
+        )
+        .block(
+            Block::default()
+                .title(" Recent Pools ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_ACCENT)),
+        );
+
+    f.render_widget(table, chunks[1]);
 }
 
 fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {

@@ -530,18 +530,25 @@ async fn main() -> Result<()> {
                 }
             });
         }
+
+        // Regime-shift polling: checks for the signal file written by run_strategy_loop,
+        // spikes epsilon on the agent so it re-explores in the new market regime.
+        {
+            let agent = Arc::clone(&nn_agent);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+                loop {
+                    interval.tick().await;
+                    if DQNAgent::poll_regime_shift_file("scematica-regime-shift.json") {
+                        if let Ok(mut ag) = agent.lock() {
+                            ag.notify_regime_shift();
+                        }
+                    }
+                }
+            });
+        }
     }
     // ─────────────────────────────────────────────────────────────────────────
-
-    // Copy-trade stub — logs wallets that are configured but does not yet execute trades
-    if !config.sniper.copy_wallets.is_empty() {
-        info!(
-            "Copy-trade wallets configured ({}): {:?}",
-            config.sniper.copy_wallets.len(),
-            config.sniper.copy_wallets
-        );
-        warn!("Copy-trade execution is a stub — transactions from watched wallets are logged but not mirrored yet");
-    }
 
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
     {
@@ -553,6 +560,25 @@ async fn main() -> Result<()> {
 
     // Event channel
     let (event_tx, mut event_rx) = mpsc::channel::<ListenerEvent>(1000);
+
+    // Copy-trade whale listener — subscribes to configured copy_wallets over WebSocket
+    // and emits NewPool events whenever they buy into a Raydium pool
+    if !config.sniper.copy_wallets.is_empty() {
+        use scematica_sniper::whale_copy::WhaleCopyListener;
+        let wc_tx = event_tx.clone();
+        let wc_wallets = config.sniper.copy_wallets.clone();
+        let wc_ws = config.rpc.ws_endpoint.clone();
+        tokio::spawn(async move {
+            let listener = WhaleCopyListener::new(wc_ws, wc_wallets, wc_tx);
+            loop {
+                if let Err(e) = listener.run().await {
+                    warn!("Whale copy listener error: {} — reconnecting in 10s", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                }
+            }
+        });
+        info!("👁 Whale copy listener started ({} wallets)", config.sniper.copy_wallets.len());
+    }
 
     // Spawn listener
     let ws_url = config.rpc.ws_endpoint.clone();
@@ -595,6 +621,206 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    // ── ATH tracker: update every 30s, log new ATH ───────────────────────────
+    {
+        let sniper_ath = sniper.clone();
+        let rpc_ath = rpc.clone();
+        let wallet_pk_ath = wallet_kp.pubkey();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            let mut last_ath: u64 = 0;
+            loop {
+                interval.tick().await;
+                if let Ok(balance) = rpc_ath.get_balance(&wallet_pk_ath).await {
+                    sniper_ath.ath_tracker.update(balance);
+                    let ath = sniper_ath.ath_tracker.ath();
+                    if ath > last_ath {
+                        info!(
+                            "🏆 New ATH balance: {:.4} SOL ({} lamports)",
+                            ath as f64 / 1e9, ath
+                        );
+                        last_ath = ath;
+                    }
+                    let dd = sniper_ath.ath_tracker.drawdown_pct(balance);
+                    if dd > 5.0 {
+                        debug!(
+                            "ATH drawdown: {:.1}% (current={:.4} SOL, ATH={:.4} SOL)",
+                            dd, balance as f64 / 1e9, ath as f64 / 1e9
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // ── Grief breaker logging: every 60s, log window loss if > 0 ─────────────
+    {
+        let sniper_gb = sniper.clone();
+        tokio::spawn(async move {
+            if sniper_gb.grief_breaker.is_none() { return; }
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Some(ref gb) = sniper_gb.grief_breaker {
+                    let loss = gb.window_loss_sol();
+                    if loss > 0.0 {
+                        if gb.is_tripped() {
+                            warn!(
+                                "🛑 Grief-loss breaker TRIPPED: {:.4} SOL lost in window",
+                                loss
+                            );
+                        } else {
+                            info!("⚠ Grief-loss window: {:.4} SOL", loss);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // ── Pump.fun graduation monitor ───────────────────────────────────────────
+    // Enabled when PUMPFUN_MONITOR=1 env var is set
+    if std::env::var("PUMPFUN_MONITOR").as_deref() == Ok("1") {
+        use scematica_sniper::pumpfun::PumpFunMonitor;
+        let pf_tx = event_tx.clone();
+        let pf_ws = config.rpc.ws_endpoint.clone();
+        let pf_threshold = std::env::var("PUMPFUN_THRESHOLD_SOL")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(82.0);
+        tokio::spawn(async move {
+            loop {
+                let monitor = PumpFunMonitor::new(pf_ws.clone(), pf_tx.clone(), pf_threshold);
+                if let Err(e) = monitor.run().await {
+                    warn!("Pump.fun monitor error: {} — restarting in 30s", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                }
+            }
+        });
+        info!("Pump.fun graduation monitor started (threshold={:.0} SOL)", pf_threshold);
+    }
+
+    // ── Profit extraction scheduler: every 60s check session PnL ─────────────
+    {
+        let sniper_pe = sniper.clone();
+        let rpc_pe = rpc.clone();
+        let wallet_kp_pe = wallet_kp.clone();
+        let extract_threshold = config.sniper.profit_extraction_threshold_sol;
+        let extract_pct = config.sniper.profit_extraction_pct;
+        let extract_wallet = config.sniper.profit_extraction_wallet.clone();
+
+        if extract_threshold > 0.0 && extract_pct > 0.0 && !extract_wallet.is_empty() {
+            let extract_wallet_log = extract_wallet.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+
+                    let start = sniper_pe.session_start_lamports.load(std::sync::atomic::Ordering::Relaxed);
+                    if start == 0 { continue; }
+
+                    let current = match rpc_pe.get_balance(&wallet_kp_pe.pubkey()).await {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+
+                    let pnl_lamports = current as i64 - start as i64;
+                    let _pnl_sol = pnl_lamports as f64 / 1e9;
+
+                    // Check PnL vs baseline
+                    let baseline = *sniper_pe.session_pnl_baseline_lamports.lock();
+                    let pnl_above_baseline = (pnl_lamports - baseline) as f64 / 1e9;
+
+                    if pnl_above_baseline < extract_threshold {
+                        continue;
+                    }
+
+                    let extract_amount_sol = pnl_above_baseline * extract_pct / 100.0;
+                    let extract_lamports = (extract_amount_sol * 1e9) as u64;
+
+                    if extract_lamports < 5_000_000 {
+                        // Below 0.005 SOL — not worth the tx fee
+                        continue;
+                    }
+
+                    let cold_wallet = match extract_wallet.parse::<solana_sdk::pubkey::Pubkey>() {
+                        Ok(pk) => pk,
+                        Err(e) => {
+                            warn!("Profit extraction: invalid wallet address: {}", e);
+                            continue;
+                        }
+                    };
+
+                    info!(
+                        "💰 Profit extraction: transferring {:.4} SOL ({:.0}% of {:.4} SOL profit) to {}",
+                        extract_amount_sol, extract_pct, pnl_above_baseline,
+                        &extract_wallet[..8.min(extract_wallet.len())]
+                    );
+
+                    let transfer_ix = solana_sdk::system_instruction::transfer(
+                        &wallet_kp_pe.pubkey(),
+                        &cold_wallet,
+                        extract_lamports,
+                    );
+
+                    match rpc_pe.get_latest_blockhash().await {
+                        Ok(blockhash) => {
+                            use solana_sdk::signer::Signer;
+                            let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+                                &[transfer_ix],
+                                Some(&wallet_kp_pe.pubkey()),
+                                &[wallet_kp_pe.as_ref()],
+                                blockhash,
+                            );
+                            match rpc_pe.send_and_confirm_transaction(&tx).await {
+                                Ok(sig) => {
+                                    info!("💰 Profit extraction confirmed: {}", sig);
+                                    // Reset the PnL baseline so we don't extract the same profit twice
+                                    *sniper_pe.session_pnl_baseline_lamports.lock() = pnl_lamports;
+                                }
+                                Err(e) => warn!("Profit extraction tx failed: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Profit extraction: blockhash fetch failed: {}", e),
+                    }
+                }
+            });
+            info!(
+                "💰 Profit extraction enabled: {:.0}% of profit when session PnL > {:.4} SOL → {}",
+                extract_pct, extract_threshold, &extract_wallet_log[..8.min(extract_wallet_log.len())]
+            );
+        }
+    }
+
+    // ── Multi-RPC latency updater: every 5 minutes ────────────────────────────
+    if !config.sniper.extra_rpc_endpoints.is_empty() {
+        use scematica_sniper::multi_rpc::MultiRpc;
+        use solana_sdk::commitment_config::CommitmentConfig;
+
+        let commitment = match config.rpc.commitment.as_str() {
+            "finalized" => CommitmentConfig::finalized(),
+            "processed" => CommitmentConfig::processed(),
+            _ => CommitmentConfig::confirmed(),
+        };
+
+        let mut all_endpoints = vec![config.rpc.endpoint.clone()];
+        all_endpoints.extend(config.sniper.extra_rpc_endpoints.clone());
+        let multi_rpc = Arc::new(MultiRpc::new(&all_endpoints, commitment));
+        info!(
+            "🌐 Multi-RPC pool: {} endpoints configured",
+            multi_rpc.endpoint_count()
+        );
+
+        let multi_rpc_bg = multi_rpc.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                multi_rpc_bg.update_latencies().await;
+            }
+        });
+    }
 
     info!("🚀 Sniper is running. Press Ctrl+C to stop.");
 

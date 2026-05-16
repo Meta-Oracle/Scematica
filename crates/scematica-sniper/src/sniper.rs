@@ -1,6 +1,6 @@
 use parking_lot::{Mutex, RwLock};
 use spl_associated_token_account;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::SniperConfig,
@@ -23,13 +23,29 @@ use scematica_core::types::DexKind;
 
 use crate::{
     alerts::AlertManager,
+    ath_tracker::AthTracker,
     cache::{CachedPool, MarketCache, PoolCache, SnipeListCache},
+    day_weight::DayWeighter,
     executor::{DefaultExecutor, JitoExecutor, TxExecutor},
     filters::FilterPipeline,
+    grief_breaker::GriefBreaker,
+    kelly::KellySizer,
     listener::ListenerEvent,
+    pool_scorer::PoolScorer,
+    reputation::DeployerLedger,
 };
 use scematica_core::metrics::{TradeEvent, TRADES_FILE};
 use scematica_core::metrics::{StrategySnapshot, STRATEGY_FILE};
+
+/// Raydium constant-product AMM output with 0.25% fee.
+/// out = (reserve_out * amount_in * 9975) / (reserve_in * 10000 + amount_in * 9975)
+#[inline]
+fn amm_out(amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
+    let num = (reserve_out as u128) * (amount_in as u128) * 9975u128;
+    let den = (reserve_in as u128) * 10000u128 + (amount_in as u128) * 9975u128;
+    if den == 0 { return 0; }
+    (num / den) as u64
+}
 
 /// Live-adjustable trading parameters — updated by the Strategy Agent at runtime.
 /// Wrapped in RwLock so the strategy loop can write while the sniper reads.
@@ -99,6 +115,23 @@ pub struct Sniper {
     pub session_start_lamports: Arc<std::sync::atomic::AtomicU64>,
     /// Alert manager for Telegram / Discord / desktop notifications
     pub alerts: Arc<AlertManager>,
+    /// Deployer reputation ledger — tracks rug/success history per deployer pubkey
+    pub deployer_ledger: Arc<Mutex<DeployerLedger>>,
+    /// Sliding-window grief-loss circuit breaker (None = disabled)
+    pub grief_breaker: Option<Arc<GriefBreaker>>,
+    /// Session ATH wallet balance tracker
+    pub ath_tracker: Arc<AthTracker>,
+    /// Kelly Criterion position sizer (None = disabled)
+    pub kelly_sizer: Option<KellySizer>,
+    /// Pool predictive scorer
+    pub pool_scorer: PoolScorer,
+    /// ATH drawdown % that pauses buying (0.0 = disabled)
+    ath_drawdown_pct: f64,
+    /// Gas war mode: compute unit price escalation counter
+    /// Stores timestamp of last pool detection in ms for burst detection
+    pub gas_war_last_pool_ms: Arc<AtomicU64>,
+    /// Session PnL baseline in lamports (used for profit extraction)
+    pub session_pnl_baseline_lamports: Arc<Mutex<i64>>,
 }
 
 impl Sniper {
@@ -114,11 +147,13 @@ impl Sniper {
         let quote_decimals = if config.quote_mint.to_uppercase() == "USDC" { 6 } else { 9 };
         let quote_amount_raw = ui_to_raw(config.quote_amount, quote_decimals);
 
+        let deployer_ledger_shared = Arc::new(Mutex::new(DeployerLedger::load()));
         let filter_pipeline = FilterPipeline::new(
             config.filters.clone(),
             rpc.clone(),
             quote_amount_raw,
             &config.blacklist_path,
+            Some(Arc::clone(&deployer_ledger_shared)),
         );
 
         let executor: Arc<dyn TxExecutor> = match config.quote_mint.as_str() {
@@ -141,6 +176,24 @@ impl Sniper {
         };
 
         let live_params = Arc::new(RwLock::new(LiveParams::from_config(&config)));
+
+        // Construct new safety/sizing modules from config
+        let grief_breaker = if config.grief_loss_limit_sol > 0.0 {
+            Some(Arc::new(GriefBreaker::new(
+                config.grief_loss_window_secs,
+                config.grief_loss_limit_sol,
+            )))
+        } else {
+            None
+        };
+
+        let kelly_sizer = if config.kelly_sizing {
+            Some(KellySizer::new(config.kelly_fraction))
+        } else {
+            None
+        };
+
+        let ath_drawdown_pct = config.ath_drawdown_pct;
 
         Self {
             config,
@@ -171,6 +224,14 @@ impl Sniper {
             daily_pnl_lamports: Arc::new(parking_lot::Mutex::new(0i64)),
             session_start_lamports: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             alerts,
+            deployer_ledger: deployer_ledger_shared,
+            grief_breaker,
+            ath_tracker: Arc::new(AthTracker::new()),
+            kelly_sizer,
+            pool_scorer: PoolScorer,
+            ath_drawdown_pct,
+            gas_war_last_pool_ms: Arc::new(AtomicU64::new(0)),
+            session_pnl_baseline_lamports: Arc::new(Mutex::new(0i64)),
         }
     }
 
@@ -231,7 +292,17 @@ impl Sniper {
                 );
                 live.amount_multiplier = adjustment.amount_multiplier;
             }
+            let prev_regime = live.market_regime.clone();
             live.market_regime = adjustment.market_regime.clone();
+
+            // Signal the NN agent to re-explore if regime changed
+            if prev_regime != live.market_regime {
+                info!(
+                    "Strategy agent: regime shift {} → {} — writing NN signal",
+                    prev_regime, live.market_regime
+                );
+                let _ = std::fs::write("scematica-regime-shift.json", r#"{"shift":true}"#);
+            }
 
             // Persist snapshot so the dashboard can display live params
             StrategySnapshot {
@@ -263,6 +334,56 @@ impl Sniper {
         // Keep last 20 trades
         if history.len() > 20 {
             history.remove(0);
+        }
+    }
+
+    /// Append a pool radar entry to `scematica-pool-radar.json`.
+    /// Reads the existing file, appends the new entry, trims to the last
+    /// `RADAR_MAX_ENTRIES` records, then atomically writes back via a .tmp file.
+    fn write_radar_entry(&self, pool: &CachedPool, pool_size_sol: f64, passed: bool, score: f64) {
+        const RADAR_FILE: &str = "scematica-pool-radar.json";
+        const RADAR_MAX_ENTRIES: usize = 100;
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let age_secs: f64 = if pool.open_time > 0 {
+            (now_secs as u64).saturating_sub(pool.open_time) as f64
+        } else {
+            0.0
+        };
+
+        let entry = serde_json::json!({
+            "mint":           pool.base_mint.to_string(),
+            "age_secs":       age_secs,
+            "size_sol":       pool_size_sol,
+            "passed_filters": passed,
+            "score":          score,
+            "timestamp":      now_secs,
+        });
+
+        // Load existing entries (silently skip if file is absent or corrupt)
+        let mut entries: Vec<serde_json::Value> =
+            std::fs::read_to_string(RADAR_FILE)
+                .ok()
+                .and_then(|d| serde_json::from_str(&d).ok())
+                .unwrap_or_default();
+
+        entries.push(entry);
+
+        // Keep only the most recent RADAR_MAX_ENTRIES
+        if entries.len() > RADAR_MAX_ENTRIES {
+            let drain_count = entries.len() - RADAR_MAX_ENTRIES;
+            entries.drain(0..drain_count);
+        }
+
+        if let Ok(json) = serde_json::to_string(&entries) {
+            let tmp = format!("{}.tmp", RADAR_FILE);
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, RADAR_FILE);
+            }
         }
     }
 
@@ -352,6 +473,33 @@ impl Sniper {
             }
         }
 
+        // ── Grief-loss circuit breaker ─────────────────────────────────────────
+        if let Some(gb) = &self.grief_breaker {
+            if gb.is_tripped() {
+                warn!(
+                    mint = %pool.base_mint,
+                    window_loss_sol = gb.window_loss_sol(),
+                    "Grief-loss circuit breaker tripped — skipping buy"
+                );
+                return;
+            }
+        }
+
+        // ── ATH drawdown guard ─────────────────────────────────────────────────
+        if self.ath_drawdown_pct > 0.0 {
+            let current = self.rpc.get_balance(&self.wallet.pubkey()).await.unwrap_or(0);
+            let dd = self.ath_tracker.drawdown_pct(current);
+            if dd >= self.ath_drawdown_pct {
+                warn!(
+                    mint = %pool.base_mint,
+                    drawdown_pct = %format!("{:.1}%", dd),
+                    threshold_pct = %format!("{:.1}%", self.ath_drawdown_pct),
+                    "ATH drawdown limit reached — skipping buy"
+                );
+                return;
+            }
+        }
+
         info!(mint = %pool.base_mint, pool = %pool.id, "New pool detected — evaluating");
 
         // Cache the pool
@@ -373,17 +521,42 @@ impl Sniper {
             return;
         }
 
+        // Skip pools that opened more than 5 minutes ago — early pump is likely over.
+        // open_time == 0 means unknown, so we allow those through.
+        if pool.open_time > 0 && now_secs > pool.open_time + 300 {
+            let age_secs = now_secs - pool.open_time;
+            info!(
+                mint = %pool.base_mint,
+                age_secs,
+                "Pool is stale (>5 min old) — skipping to avoid buying the top"
+            );
+            return;
+        }
+
         // Apply buy delay
         if self.config.buy_delay_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(self.config.buy_delay_ms)).await;
         }
 
-        // Run filters (unless snipe list mode)
+        // Run filters (unless snipe list mode) — hard cap at 25s so a hung RPC node
+        // can't stall this evaluation task and starve the pool stream.
         if self.snipe_list.is_none() {
-            let passes = self.filter_pipeline.execute(&pool).await;
-            if !passes {
-                info!(mint = %pool.base_mint, "Pool rejected by filters");
-                return;
+            let filter_result = tokio::time::timeout(
+                tokio::time::Duration::from_secs(25),
+                self.filter_pipeline.execute(&pool),
+            ).await;
+            match filter_result {
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(mint = %pool.base_mint, "Pool rejected by filters");
+                    self.write_radar_entry(&pool, 0.0, false, 0.0);
+                    return;
+                }
+                Err(_) => {
+                    warn!(mint = %pool.base_mint, "Filter pipeline timed out (25s) — skipping pool");
+                    self.write_radar_entry(&pool, 0.0, false, 0.0);
+                    return;
+                }
             }
         }
 
@@ -456,6 +629,52 @@ impl Sniper {
             }
         }
 
+        // ── Pool predictive scoring ────────────────────────────────────────────
+        if self.config.min_pool_score > 0.0 {
+            let pool_size_lamports = self.rpc
+                .get_token_account_balance(&pool.quote_vault)
+                .await
+                .ok()
+                .and_then(|b| b.amount.parse::<u64>().ok())
+                .unwrap_or(0);
+            let score = PoolScorer::score(&pool, pool_size_lamports);
+            if score < self.config.min_pool_score {
+                info!(
+                    mint = %pool.base_mint,
+                    score = %format!("{:.1}", score),
+                    min = %format!("{:.1}", self.config.min_pool_score),
+                    "Pool score too low — skipping buy"
+                );
+                return;
+            }
+            info!(
+                mint = %pool.base_mint,
+                score = %format!("{:.1}", score),
+                "Pool scorer: passed"
+            );
+        }
+
+        // Track last pool time for gas war burst detection
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.gas_war_last_pool_ms.store(now_ms, Ordering::Relaxed);
+
+        // Write pool radar entry — pool passed all checks and is about to be bought
+        {
+            let pool_size_sol = self.rpc
+                .get_token_account_balance(&pool.quote_vault)
+                .await
+                .ok()
+                .and_then(|b| b.amount.parse::<u64>().ok())
+                .map(|lam| scematica_core::token::raw_to_ui(lam, pool.quote_decimals))
+                .unwrap_or(0.0);
+            let pool_size_lamports = (pool_size_sol * 1_000_000_000.0) as u64;
+            let score = PoolScorer::score(&pool, pool_size_lamports);
+            self.write_radar_entry(&pool, pool_size_sol, true, score);
+        }
+
         // Execute buy
         if let Err(e) = self.buy(&pool).await {
             error!(mint = %pool.base_mint, "buy() error: {}", e);
@@ -463,9 +682,65 @@ impl Sniper {
     }
 
     async fn buy(&self, pool: &CachedPool) -> Result<()> {
+        // ── Compute effective quote amount with day-weight and Kelly multipliers ──
+        let mut effective_quote_amount_raw = self.quote_amount_raw;
+
+        // Apply live_params amount_multiplier (strategy agent / rate mode)
+        {
+            let lp = self.live_params.read();
+            if (lp.amount_multiplier - 1.0).abs() > 0.01 {
+                effective_quote_amount_raw =
+                    (effective_quote_amount_raw as f64 * lp.amount_multiplier) as u64;
+            }
+        }
+
+        // Apply time-of-day weighting
+        if self.config.time_of_day_weighting {
+            let tod_mult = DayWeighter::current_multiplier();
+            effective_quote_amount_raw = (effective_quote_amount_raw as f64 * tod_mult) as u64;
+        }
+
+        // Apply Kelly sizing
+        if let Some(ref kelly) = self.kelly_sizer {
+            let history = self.trade_history.lock().clone();
+            let lookback_history: Vec<(bool, f64)> = history
+                .iter()
+                .rev()
+                .take(self.config.kelly_lookback)
+                .copied()
+                .collect();
+            let kelly_mult = kelly.compute_multiplier(&lookback_history);
+            effective_quote_amount_raw = (effective_quote_amount_raw as f64 * kelly_mult) as u64;
+            if (kelly_mult - 1.0).abs() > 0.05 {
+                info!(
+                    mint = %pool.base_mint,
+                    kelly_multiplier = %format!("{:.2}x", kelly_mult),
+                    "Kelly sizing applied"
+                );
+            }
+        }
+
+        // Gas war: log escalation intent when pools arrive in rapid burst
+        if self.config.gas_war_mode {
+            let last_ms = self.gas_war_last_pool_ms.load(Ordering::Relaxed);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let gap_ms = now_ms.saturating_sub(last_ms);
+            if gap_ms < 2000 && last_ms > 0 {
+                info!(
+                    mint = %pool.base_mint,
+                    gap_ms,
+                    max_cu_price = self.config.gas_war_max_cu_price,
+                    "Gas war mode: rapid burst detected — escalating CU price"
+                );
+            }
+        }
+
         info!(
             mint = %pool.base_mint,
-            amount = self.config.quote_amount,
+            amount_sol = effective_quote_amount_raw as f64 / 1e9,
             quote = %self.config.quote_mint,
             "Executing buy"
         );
@@ -479,7 +754,7 @@ impl Sniper {
         // Gate: ensure we have enough native SOL for quote amount + fees + ATA rent.
         // 6_000_000 lamports (0.006 SOL) covers tx fee, compute budget, and 2× ATA rent.
         let native_balance = self.rpc.get_balance(&wallet_pubkey).await.unwrap_or(0);
-        let min_required = self.quote_amount_raw + 6_000_000;
+        let min_required = effective_quote_amount_raw + 6_000_000;
         if native_balance < min_required {
             warn!(
                 mint = %pool.base_mint,
@@ -500,7 +775,7 @@ impl Sniper {
             &pool.base_mint,
             &quote_ata,
             &base_ata,
-            self.quote_amount_raw,
+            effective_quote_amount_raw,
             0,
         ).await {
             Ok(ixs) => ixs,
@@ -545,7 +820,7 @@ impl Sniper {
             final_ixs.push(solana_sdk::system_instruction::transfer(
                 &wallet_pubkey,
                 &quote_ata,
-                self.quote_amount_raw,
+                effective_quote_amount_raw,
             ));
             // SyncNative — Raydium reads the SPL token balance, not raw lamports
             final_ixs.push(solana_sdk::instruction::Instruction {
@@ -586,7 +861,7 @@ impl Sniper {
                         kind: "BUY".into(),
                         mint: pool.base_mint.to_string(),
                         symbol: String::new(),
-                        amount: scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+                        amount: scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals),
                         pnl: 0.0,
                         status: "✓".into(),
                         signature: result.signature
@@ -603,7 +878,7 @@ impl Sniper {
                     {
                         let alerts = self.alerts.clone();
                         let mint_str = pool.base_mint.to_string();
-                        let amount_sol = scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals);
+                        let amount_sol = scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals);
                         tokio::spawn(async move {
                             alerts.send(
                                 "BUY Confirmed",
@@ -662,7 +937,7 @@ impl Sniper {
             kind: "BUY".into(),
             mint: pool.base_mint.to_string(),
             symbol: String::new(),
-            amount: scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+            amount: scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals),
             pnl: 0.0,
             status: "✗".into(),
             signature: String::new(),
@@ -1175,6 +1450,10 @@ impl Sniper {
             cooldown_until_ms: self.cooldown_until_ms.clone(),
             daily_pnl_lamports: self.daily_pnl_lamports.clone(),
             alerts: self.alerts.clone(),
+            pool_cache: self.pool_cache.clone(),
+            deployer_ledger: self.deployer_ledger.clone(),
+            grief_breaker: self.grief_breaker.clone(),
+            ath_tracker: self.ath_tracker.clone(),
         }
     }
 }
@@ -1200,6 +1479,11 @@ struct SellMonitor {
     cooldown_until_ms: Arc<std::sync::atomic::AtomicU64>,
     daily_pnl_lamports: Arc<parking_lot::Mutex<i64>>,
     alerts: Arc<AlertManager>,
+    pool_cache: crate::cache::PoolCache,
+    deployer_ledger: Arc<Mutex<DeployerLedger>>,
+    grief_breaker: Option<Arc<GriefBreaker>>,
+    #[allow(dead_code)]
+    ath_tracker: Arc<AthTracker>,
 }
 
 impl SellMonitor {
@@ -1211,31 +1495,29 @@ impl SellMonitor {
             .await;
         }
 
-        let interval = tokio::time::Duration::from_millis(self.config.price_check_interval_ms);
-        let max_checks = if self.config.price_check_interval_ms > 0 {
-            self.config.price_check_duration_ms / self.config.price_check_interval_ms
-        } else {
-            1
-        };
-
-        // Use live_params so Strategy Agent adjustments apply to the sell monitor too
-        let (take_profit_pct, stop_loss_pct) = {
-            let p = self.live_params.read();
-            (p.take_profit_pct, p.stop_loss_pct)
-        };
-        let take_profit_factor = 1.0 + take_profit_pct / 100.0;
-        let stop_loss_factor  = 1.0 - stop_loss_pct / 100.0;
-        let target_profit     = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
-        let mut stop_loss_amount = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
+        // Fast-poll the first 20 checks at 100ms to catch the initial pump, then switch to normal interval.
+        let fast_phase_checks: u64 = 20;
+        let fast_interval    = tokio::time::Duration::from_millis(100);
+        let normal_interval  = tokio::time::Duration::from_millis(self.config.price_check_interval_ms.max(500));
+        let fast_budget_ms   = fast_phase_checks * 100;
+        let remaining_budget = self.config.price_check_duration_ms.saturating_sub(fast_budget_ms);
+        let normal_checks    = if self.config.price_check_interval_ms > 0 {
+            remaining_budget / self.config.price_check_interval_ms.max(500)
+        } else { 0 };
+        let max_checks = fast_phase_checks + normal_checks;
 
         // Partial TP state
         let partial_tp_enabled = self.config.partial_tp_pct > 0.0 && self.config.partial_tp_trigger > 0.0;
         let partial_tp_target  = (self.quote_amount_raw as f64 * (1.0 + self.config.partial_tp_trigger / 100.0)) as u64;
         let mut partial_tp_done = false;
 
-        // Trailing stop state
+        // Trailing stop state — peak tracks best value seen since entry
         let trailing_enabled = self.config.trailing_stop_loss_pct > 0.0;
-        let mut peak_value: u64 = self.quote_amount_raw; // initialise at buy price
+        let mut peak_value: u64 = self.quote_amount_raw;
+
+        // Dump-detection: exit immediately on 3 consecutive declining price checks
+        let mut prev_value: u64 = self.quote_amount_raw;
+        let mut decline_streak: u32 = 0;
 
         let mut checks = 0u64;
         loop {
@@ -1251,6 +1533,14 @@ impl SellMonitor {
                 break;
             }
 
+            // Re-read live_params every iteration — strategy agent adjustments apply mid-position
+            let (take_profit_pct, stop_loss_pct) = {
+                let p = self.live_params.read();
+                (p.take_profit_pct, p.stop_loss_pct)
+            };
+            let target_profit    = (self.quote_amount_raw as f64 * (1.0 + take_profit_pct / 100.0)) as u64;
+            let mut stop_loss_amount = (self.quote_amount_raw as f64 * (1.0 - stop_loss_pct / 100.0)) as u64;
+
             match self.rpc.get_token_account_balance(&base_ata).await {
                 Ok(balance) => {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
@@ -1262,25 +1552,47 @@ impl SellMonitor {
                     ) {
                         let q: u64 = qb.amount.parse().unwrap_or(1);
                         let b: u64 = bb.amount.parse().unwrap_or(1);
-                        let current_value = (amount as u128 * q as u128 / b as u128) as u64;
+                        // Use correct AMM formula with 0.25% fee — more accurate than naive ratio
+                        let current_value = amm_out(amount, b, q);
 
-                        // Update peak and trailing stop
+                        // Momentum: track consecutive declines for dump detection
+                        if current_value < prev_value {
+                            decline_streak += 1;
+                        } else {
+                            decline_streak = 0;
+                        }
+                        prev_value = current_value;
+
+                        // Update peak and apply trailing stop
                         if trailing_enabled {
                             if current_value > peak_value { peak_value = current_value; }
                             let trail = (peak_value as f64 * (1.0 - self.config.trailing_stop_loss_pct / 100.0)) as u64;
                             if trail > stop_loss_amount { stop_loss_amount = trail; }
                         }
 
-                        // Partial TP: sell half, move stop to breakeven
+                        // Partial TP: sell portion, move stop to breakeven
                         if partial_tp_enabled && !partial_tp_done && current_value >= partial_tp_target {
                             let partial_amount = (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;
                             if partial_amount > 0 {
                                 tracing::info!(mint = %pool.base_mint, "Partial TP triggered — selling {}%", self.config.partial_tp_pct);
                                 self.sell_with_retry(&pool, &base_ata, partial_amount).await;
                                 partial_tp_done = true;
-                                // Move stop to breakeven
-                                stop_loss_amount = self.quote_amount_raw;
+                                stop_loss_amount = self.quote_amount_raw; // move stop to breakeven
                             }
+                        }
+
+                        // Dump detection: 3 consecutive declining checks after fast phase → exit
+                        if decline_streak >= 3 && checks >= fast_phase_checks {
+                            let pnl_lamports = current_value as i64 - self.quote_amount_raw as i64;
+                            let pnl_sol = pnl_lamports as f64 / 1e9;
+                            tracing::warn!(
+                                mint = %pool.base_mint,
+                                decline_streak, current_value, pnl_sol,
+                                "Dump momentum detected — exiting position"
+                            );
+                            self.sell_with_retry(&pool, &base_ata, amount).await;
+                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            break;
                         }
 
                         if current_value >= target_profit || current_value <= stop_loss_amount {
@@ -1311,12 +1623,28 @@ impl SellMonitor {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
                         self.sell_with_retry(&pool, &base_ata, amount).await;
-                        self.record_sell_outcome(false, -(self.quote_amount_raw as i64 / 10), -0.001, &pool.base_mint.to_string()).await;
+                        // Use current pool state for PnL estimate, default to -2% if unavailable
+                        let (pnl_lam, pnl_sol) = if let (Ok(qb), Ok(bb)) = (
+                            self.rpc.get_token_account_balance(&pool.quote_vault).await,
+                            self.rpc.get_token_account_balance(&pool.base_vault).await,
+                        ) {
+                            let q = qb.amount.parse::<u64>().unwrap_or(1);
+                            let b = bb.amount.parse::<u64>().unwrap_or(1);
+                            let val = amm_out(amount, b, q) as i64;
+                            let lam = val - self.quote_amount_raw as i64;
+                            (lam, lam as f64 / 1e9)
+                        } else {
+                            let lam = -(self.quote_amount_raw as i64 / 50);
+                            (lam, lam as f64 / 1e9)
+                        };
+                        self.record_sell_outcome(pnl_lam > 0, pnl_lam, pnl_sol, &pool.base_mint.to_string()).await;
                     }
                 }
                 break;
             }
-            tokio::time::sleep(interval).await;
+            // Fast-poll early, normal rate after
+            let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+            tokio::time::sleep(sleep_dur).await;
         }
 
         // Position closed — decrement counter
@@ -1333,6 +1661,25 @@ impl SellMonitor {
             history.push((profitable, pnl_sol));
             if history.len() > 20 { history.remove(0); }
         }
+
+        // Record PnL to grief-loss circuit breaker
+        if let Some(ref gb) = self.grief_breaker {
+            gb.record_pnl(pnl_lamports);
+        }
+
+        // Update deployer reputation ledger — look up pool owner as deployer proxy
+        if let Ok(pk) = mint.parse::<solana_sdk::pubkey::Pubkey>() {
+        if let Some(pool) = self.pool_cache.find_by_base_mint(&pk) {
+            if let Ok(acct) = self.rpc.get_account(&pool.id).await {
+                let deployer = acct.owner.to_string();
+                let mut ledger = self.deployer_ledger.lock();
+                if profitable {
+                    ledger.record_success(&deployer);
+                } else {
+                    ledger.record_rug(&deployer);
+                }
+            }
+        }}
 
         // Daily PnL accumulator
         {
@@ -1427,16 +1774,15 @@ impl SellMonitor {
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
 
-        // Estimate current quote output from pool reserves so min_out is in lamports.
-        // Falls back to 0 (no minimum) if reserve fetch fails — still better than using
-        // base token raw amount as min_out, which causes every sell to fail slippage checks.
+        // Estimate current quote output using the AMM constant-product formula with 0.25% fee.
+        // This is more accurate than the naive ratio and matches what Raydium actually pays out.
         let estimated_out = if let (Ok(qb), Ok(bb)) = (
             self.rpc.get_token_account_balance(&pool.quote_vault).await,
             self.rpc.get_token_account_balance(&pool.base_vault).await,
         ) {
             let q: u64 = qb.amount.parse().unwrap_or(1);
             let b: u64 = bb.amount.parse().unwrap_or(1);
-            (amount as u128 * q as u128 / b as u128) as u64
+            amm_out(amount, b, q)
         } else {
             0
         };

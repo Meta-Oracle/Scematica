@@ -59,14 +59,30 @@ impl AlertManager {
     }
 
     fn send_desktop(&self, title: &str, body: &str) {
-        // Windows toast via PowerShell — fire-and-forget, non-blocking
+        // Use System.Windows.Forms.NotifyIcon (balloon tip) — no WinRT dependency,
+        // works on all Windows 10/11 versions without type-loading issues.
+        // Escape single-quotes for PowerShell string literals.
+        let title_safe = title.replace('\'', "''");
+        let body_safe  = body.replace('\'', "''");
         let script = format!(
-            r#"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); $t.GetElementsByTagName('text')[0].AppendChild($t.CreateTextNode('{}')); $t.GetElementsByTagName('text')[1].AppendChild($t.CreateTextNode('{}')); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Scematica').Show([Windows.UI.Notifications.ToastNotification]::new($t))"#,
-            title.replace('\'', "\\'"),
-            body.replace('\'', "\\'")
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $n = New-Object System.Windows.Forms.NotifyIcon; \
+             $n.Icon = [System.Drawing.SystemIcons]::Application; \
+             $n.BalloonTipIcon = 'Info'; \
+             $n.BalloonTipTitle = '{}'; \
+             $n.BalloonTipText = '{}'; \
+             $n.Visible = $true; \
+             $n.ShowBalloonTip(4000); \
+             Start-Sleep -Milliseconds 4500; \
+             $n.Dispose()",
+            title_safe, body_safe
         );
+        // Redirect both stdout and stderr to null so PowerShell output never
+        // appears in scematica-sniper.log and pollutes the dashboard log panel.
         let _ = std::process::Command::new("powershell")
             .args(["-WindowStyle", "Hidden", "-NonInteractive", "-Command", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn();
     }
 }

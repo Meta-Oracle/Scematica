@@ -145,7 +145,11 @@ fn find_binary(name: &str) -> anyhow::Result<PathBuf> {
         if path.exists() { return Ok(path); }
     }
 
-    for dir in &["target/release", "target/debug"] {
+    // Check workspace-local target first, then the redirected external target dir.
+    // The external dir is set in .cargo/config.toml as C:\cargo-target\scematica
+    // when OneDrive space is constrained.
+    let candidates = ["target/release", "target/debug"];
+    for dir in &candidates {
         let path = PathBuf::from(dir).join(&bin);
         if path.exists() { return Ok(path); }
     }

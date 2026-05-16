@@ -237,7 +237,8 @@ async fn main() -> Result<()> {
                     }
 
                     let has_pending = state.chat_pending.read().is_some();
-                    if let Some(action) = handle_key(key, current_tab, has_pending) {
+                    let log_filter_active = *state.log_filter_active.read();
+                    if let Some(action) = handle_key(key, current_tab, has_pending, log_filter_active) {
                         match action {
                             DashboardAction::Quit => break,
                             DashboardAction::NextTab => state.next_tab(),
@@ -326,6 +327,23 @@ async fn main() -> Result<()> {
                                     Err(e) => state.push_log(format!("[EXPORT] Failed: {}", e)),
                                 }
                             }
+                            DashboardAction::LogFilterActivate => {
+                                *state.log_filter_active.write() = true;
+                            }
+                            DashboardAction::LogFilterChar(c) => {
+                                state.log_filter.write().push(c);
+                            }
+                            DashboardAction::LogFilterBackspace => {
+                                let mut f = state.log_filter.write();
+                                if f.pop().is_none() {
+                                    drop(f);
+                                    *state.log_filter_active.write() = false;
+                                }
+                            }
+                            DashboardAction::LogFilterClear => {
+                                state.log_filter.write().clear();
+                                *state.log_filter_active.write() = false;
+                            }
                             DashboardAction::SetRateMode(mode) => {
                                 *state.rate_mode.write() = mode;
                                 let json = serde_json::json!({
@@ -350,6 +368,7 @@ async fn main() -> Result<()> {
                     state.poll_log_file();
                     state.poll_filter_stats_file();
                     state.poll_nn_stats_file();
+                    state.poll_radar_file();
                     state.sync_live_data();
 
                     // Auto-enable sell mode when SOL drops below 0.015

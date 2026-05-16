@@ -1,6 +1,17 @@
 pub mod alerts;
+pub mod ath_tracker;
+pub mod backtester;
 pub mod cache;
+pub mod day_weight;
 pub mod executor;
 pub mod filters;
+pub mod grief_breaker;
+pub mod jup_oracle;
+pub mod kelly;
 pub mod listener;
+pub mod multi_rpc;
+pub mod pool_scorer;
+pub mod pumpfun;
+pub mod reputation;
+pub mod whale_copy;
 pub mod sniper;

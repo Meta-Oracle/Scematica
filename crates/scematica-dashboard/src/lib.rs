@@ -6,3 +6,5 @@ pub mod components;
 pub mod chat;
 pub mod process;
 pub mod demo;
+
+pub use app::RadarPool;

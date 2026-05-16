@@ -10,6 +10,10 @@ description = "New pool sniper engine for Scematica"
 name = "sniper"
 path = "src/main.rs"
 
+[[bin]]
+name = "backtest"
+path = "src/bin/backtest.rs"
+
 [dependencies]
 scematica-core = { path = "../scematica-core" }
 scematica-ai = { path = "../scematica-ai" }

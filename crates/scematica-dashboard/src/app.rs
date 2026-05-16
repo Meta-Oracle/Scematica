@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use scematica_core::metrics::{BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE, TRADES_FILE};
 use scematica_core::rpc::RpcConnection;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use crate::onboarding::OnboardingManager;
@@ -16,6 +17,8 @@ const MAX_LOG_LINES: usize = 200;
 const MAX_TRADES: usize = 100;
 /// Number of PnL data points to keep for the sparkline
 const SPARKLINE_CAPACITY: usize = 60;
+/// Max age of radar pool entries (5 minutes)
+const RADAR_MAX_AGE_SECS: i64 = 300;
 
 #[derive(Debug, Clone)]
 pub struct TradeEntry {
@@ -26,6 +29,22 @@ pub struct TradeEntry {
     pub pnl: f64,
     pub status: String,     // "✓" | "✗"
     pub signature: String,
+}
+
+/// Pool radar entry — written by the sniper when a pool is evaluated
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadarPool {
+    pub mint: String,
+    /// Seconds since pool opened
+    pub age_secs: f64,
+    /// Pool size in SOL at evaluation time
+    pub size_sol: f64,
+    /// true if the pool passed all filter checks and reached the buy call
+    pub passed_filters: bool,
+    /// Pool score 0..100 (from NN agent or heuristic)
+    pub score: f64,
+    /// Unix timestamp (seconds) when the sniper evaluated this pool
+    pub timestamp: i64,
 }
 
 /// Shared application state for the dashboard
@@ -83,6 +102,14 @@ pub struct AppState {
     pub filter_stats: RwLock<Option<serde_json::Value>>,
     /// Latest NN agent stats from scematica-nn-stats.json
     pub nn_stats: RwLock<Option<serde_json::Value>>,
+    /// Log tab filter: substring/keyword the user typed after pressing '/'
+    pub log_filter: RwLock<String>,
+    /// True while the user is typing in the log filter bar
+    pub log_filter_active: RwLock<bool>,
+    /// Per-token price samples for the mini price chart (mint → deque of price ratios)
+    pub price_history: RwLock<std::collections::HashMap<String, VecDeque<f64>>>,
+    /// Pool radar entries — populated by sniper writing to scematica-pool-radar.json
+    pub radar_pools: RwLock<Vec<RadarPool>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -200,6 +227,10 @@ impl AppState {
             trade_streak: RwLock::new(0),
             filter_stats: RwLock::new(None),
             nn_stats: RwLock::new(None),
+            log_filter: RwLock::new(String::new()),
+            log_filter_active: RwLock::new(false),
+            price_history: RwLock::new(std::collections::HashMap::new()),
+            radar_pools: RwLock::new(Vec::new()),
         })
     }
 
@@ -313,6 +344,17 @@ impl AppState {
         *self.nn_stats.write() = Some(v);
     }
 
+    /// Read pool radar entries from scematica-pool-radar.json.
+    /// Drops any entries older than 5 minutes.
+    pub fn poll_radar_file(&self) {
+        const RADAR_FILE: &str = "scematica-pool-radar.json";
+        let Ok(data) = std::fs::read_to_string(RADAR_FILE) else { return };
+        let Ok(mut pools) = serde_json::from_str::<Vec<RadarPool>>(&data) else { return };
+        let now = chrono::Utc::now().timestamp();
+        pools.retain(|p| now - p.timestamp <= RADAR_MAX_AGE_SECS);
+        *self.radar_pools.write() = pools;
+    }
+
     pub fn effective_snapshot(&self) -> MetricsSnapshot {
         self.live_snapshot
             .read()
@@ -329,6 +371,13 @@ impl AppState {
     }
 
     pub fn push_trade(&self, trade: TradeEntry) {
+        // Track price history per token for the mini chart (use amount as proxy sample)
+        if trade.amount > 0.0 {
+            let mut ph = self.price_history.write();
+            let entry = ph.entry(trade.mint.clone()).or_insert_with(VecDeque::new);
+            entry.push_back(trade.amount);
+            if entry.len() > 60 { entry.pop_front(); }
+        }
         let mut trades = self.trades.write();
         trades.push_front(trade);
         while trades.len() > MAX_TRADES {
@@ -346,12 +395,12 @@ impl AppState {
 
     pub fn next_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = (*tab + 1) % 5;
+        *tab = (*tab + 1) % 6;
     }
 
     pub fn prev_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = tab.checked_sub(1).unwrap_or(4);
+        *tab = tab.checked_sub(1).unwrap_or(5);
     }
 
     pub fn push_chat_line(&self, line: ChatLine) {

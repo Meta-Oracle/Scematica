@@ -186,13 +186,14 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    // Left: metrics + session stats
+    // Left: metrics + session stats + NN stats
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(7)])
+        .constraints([Constraint::Min(0), Constraint::Length(7), Constraint::Length(7)])
         .split(h_chunks[0]);
     render_metrics(f, left_chunks[0], state);
     render_session_stats(f, left_chunks[1], state);
+    render_nn_stats(f, left_chunks[2], state);
 
     // Right: recent trades + sparkline
     let right_chunks = Layout::default()
@@ -324,6 +325,54 @@ fn render_pnl_sparkline(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .data(&spark_data)
         .style(Style::default().fg(Color::Green));
     f.render_widget(sparkline, area);
+}
+
+fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let nn = state.nn_stats.read();
+    let block = Block::default()
+        .title(" 🧠 Deep Q* Agent ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let rows = if let Some(v) = &*nn {
+        let epsilon    = v["epsilon"].as_f64().unwrap_or(1.0);
+        let steps      = v["step_count"].as_u64().unwrap_or(0);
+        let replay     = v["replay_size"].as_u64().unwrap_or(0);
+        let loss       = v["avg_loss"].as_f64().unwrap_or(0.0);
+        let reward     = v["total_reward"].as_f64().unwrap_or(0.0);
+        let ready      = v["ready_to_advise"].as_bool().unwrap_or(false);
+        let last_act   = v["last_action"].as_str().unwrap_or("-").to_string();
+        let ready_str  = if ready { "YES" } else { "NO" };
+        let ready_col  = if ready { Color::Green } else { Color::Yellow };
+        vec![
+            Row::new(vec![
+                Cell::from("ε / Steps").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.4}  /  {}", epsilon, steps)),
+            ]),
+            Row::new(vec![
+                Cell::from("Replay / Loss").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{}  /  {:.6}", replay, loss)),
+            ]),
+            Row::new(vec![
+                Cell::from("Total Reward").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.4}", reward)),
+            ]),
+            Row::new(vec![
+                Cell::from("Last Action").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(last_act),
+            ]),
+            Row::new(vec![
+                Cell::from("Advising").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(ready_str).style(Style::default().fg(ready_col)),
+            ]),
+        ]
+    } else {
+        vec![Row::new(vec![Cell::from("Waiting for NN agent...").style(Style::default().fg(Color::DarkGray))])]
+    };
+
+    let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)])
+        .block(block);
+    f.render_widget(table, area);
 }
 
 fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {

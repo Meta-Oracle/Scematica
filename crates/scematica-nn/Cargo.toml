@@ -1,0 +1,15 @@
+[package]
+name = "scematica-nn"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Deep Q* neural network trading agent for Scematica"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rand.workspace = true
+anyhow.workspace = true

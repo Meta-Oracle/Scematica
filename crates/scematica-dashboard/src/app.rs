@@ -81,6 +81,8 @@ pub struct AppState {
     pub trade_streak: RwLock<i32>,
     /// Raw filter rejection stats read from scematica-filter-stats.json
     pub filter_stats: RwLock<Option<serde_json::Value>>,
+    /// Latest NN agent stats from scematica-nn-stats.json
+    pub nn_stats: RwLock<Option<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -197,6 +199,7 @@ impl AppState {
             worst_trade_pnl: RwLock::new(0.0),
             trade_streak: RwLock::new(0),
             filter_stats: RwLock::new(None),
+            nn_stats: RwLock::new(None),
         })
     }
 
@@ -301,6 +304,13 @@ impl AppState {
         let Ok(data) = std::fs::read_to_string(STATS_FILE) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
         *self.filter_stats.write() = Some(v);
+    }
+
+    /// Read NN agent stats from scematica-nn-stats.json.
+    pub fn poll_nn_stats_file(&self) {
+        let Ok(data) = std::fs::read_to_string("scematica-nn-stats.json") else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
+        *self.nn_stats.write() = Some(v);
     }
 
     pub fn effective_snapshot(&self) -> MetricsSnapshot {

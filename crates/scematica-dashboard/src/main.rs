@@ -349,6 +349,7 @@ async fn main() -> Result<()> {
                     state.poll_strategy_file();
                     state.poll_log_file();
                     state.poll_filter_stats_file();
+                    state.poll_nn_stats_file();
                     state.sync_live_data();
 
                     // Auto-enable sell mode when SOL drops below 0.015

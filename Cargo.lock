@@ -4013,6 +4013,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scematica-nn"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "scematica-sniper"
 version = "0.2.0"
 dependencies = [
@@ -4033,6 +4045,7 @@ dependencies = [
  "scematica-ai",
  "scematica-core",
  "scematica-executor",
+ "scematica-nn",
  "serde",
  "serde_json",
  "solana-account-decoder",

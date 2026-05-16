@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use scematica_nn::{AgentStats, DQNAgent, TradeAction, TradeState as NNState};
 use scematica_core::{
     config::BotConfig,
     metrics::BotMetrics,
@@ -16,7 +17,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, signer::Signer};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// Minimum SCEMA balance required to run the sniper.
@@ -425,6 +426,112 @@ async fn main() -> Result<()> {
             }
         });
     }
+
+    // ── Deep Q* Neural Network agent ────────────────────────────────────────
+    // Observer mode: learns from completed trades by polling scematica-trades.jsonl.
+    // Once epsilon < 0.5 (ready_to_advise=true) it can gate buy decisions.
+    {
+        use std::sync::{Arc, Mutex};
+        let nn_agent: Arc<Mutex<DQNAgent>> = Arc::new(Mutex::new(
+            match DQNAgent::load("scematica-nn-agent.json") {
+                Ok(a) => { info!("🧠 NN agent loaded from checkpoint"); a }
+                Err(_) => { info!("🧠 NN agent initialised fresh (STATE_DIM={}, ACTIONS=5)", scematica_nn::STATE_DIM); DQNAgent::new() }
+            }
+        ));
+
+        // Observer task: polls scematica-trades.jsonl for new SELL events, extracts
+        // reward from PnL, constructs (state, action, reward, next_state) tuples, trains.
+        {
+            let agent = Arc::clone(&nn_agent);
+            tokio::spawn(async move {
+                let mut last_seen: usize = 0;
+                let mut consecutive_wins: i32  = 0;
+                let mut consecutive_losses: i32 = 0;
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    let Ok(raw) = std::fs::read_to_string("scematica-trades.jsonl") else { continue };
+                    let lines: Vec<&str> = raw.lines().collect();
+                    if lines.len() <= last_seen { continue; }
+
+                    for line in &lines[last_seen..] {
+                        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                        if v["action"].as_str() != Some("SELL") { continue; }
+
+                        let pnl_sol = v["pnl_sol"].as_f64().unwrap_or(0.0);
+                        let pnl_pct = v["pnl_pct"].as_f64().unwrap_or(0.0);
+                        let age_secs = v["position_age_secs"].as_f64().unwrap_or(0.0);
+
+                        // Update streak tracking
+                        if pnl_sol > 0.0 {
+                            consecutive_wins  += 1;
+                            consecutive_losses = 0;
+                        } else {
+                            consecutive_losses += 1;
+                            consecutive_wins   = 0;
+                        }
+
+                        let state = NNState::from_trade_fields(
+                            pnl_pct, age_secs, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
+                        );
+                        let action = if v["action"].as_str() == Some("SELL") {
+                            TradeAction::SellAll
+                        } else {
+                            TradeAction::BuyStandard
+                        };
+                        let reward = DQNAgent::shape_reward(pnl_pct, (age_secs / 60.0) as u32);
+                        let next_state = NNState::from_trade_fields(
+                            0.0, 0.0, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
+                        );
+
+                        if let Ok(mut ag) = agent.lock() {
+                            ag.observe(state, action, reward, next_state, true);
+                            if let Some(loss) = ag.train_step() {
+                                debug!("NN train loss={:.6}", loss);
+                            }
+                        }
+                    }
+                    last_seen = lines.len();
+                }
+            });
+        }
+
+        // Stats flush task: writes scematica-nn-stats.json every 30s for the dashboard.
+        {
+            let agent = Arc::clone(&nn_agent);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    if let Ok(ag) = agent.lock() {
+                        let stats: AgentStats = ag.stats();
+                        let _ = std::fs::write(
+                            "scematica-nn-stats.json",
+                            serde_json::to_string(&stats).unwrap(),
+                        );
+                    }
+                }
+            });
+        }
+
+        // Checkpoint save task: persists weights every 10 minutes.
+        {
+            let agent = Arc::clone(&nn_agent);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600));
+                loop {
+                    interval.tick().await;
+                    if let Ok(ag) = agent.lock() {
+                        match ag.save("scematica-nn-agent.json") {
+                            Ok(_)  => info!("🧠 NN agent checkpoint saved"),
+                            Err(e) => tracing::warn!("NN checkpoint save failed: {}", e),
+                        }
+                    }
+                }
+            });
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Copy-trade stub — logs wallets that are configured but does not yet execute trades
     if !config.sniper.copy_wallets.is_empty() {

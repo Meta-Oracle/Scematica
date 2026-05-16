@@ -6,6 +6,7 @@ members = [
     "crates/scematica-executor",
     "crates/scematica-dashboard",
     "crates/scematica-ai",
+    "crates/scematica-nn",
     "tools/key-converter",
     "tools/pool-seeder",
 ]

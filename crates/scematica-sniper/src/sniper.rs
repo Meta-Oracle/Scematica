@@ -68,8 +68,8 @@ pub struct Sniper {
     metrics: Arc<BotMetrics>,
     /// AI coordinator — None if no API key is configured
     ai: Option<Arc<AiCoordinator>>,
-    /// Mutex to enforce one-token-at-a-time
-    processing_lock: Arc<Mutex<bool>>,
+    /// AtomicBool: true while a buy + sell-monitor pair owns the processing slot.
+    processing_lock: Arc<std::sync::atomic::AtomicBool>,
     quote_mint: Pubkey,
     quote_decimals: u8,
     quote_amount_raw: u64,
@@ -153,7 +153,7 @@ impl Sniper {
             executor,
             metrics,
             ai: AiCoordinator::from_env_optional().map(Arc::new),
-            processing_lock: Arc::new(Mutex::new(false)),
+            processing_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             quote_mint,
             quote_decimals,
             quote_amount_raw,
@@ -301,14 +301,8 @@ impl Sniper {
             }
         }
 
-        // One-token-at-a-time check
-        if self.config.one_token_at_a_time {
-            let locked = self.processing_lock.lock();
-            if *locked {
-                debug!(mint = %pool.base_mint, "Skipping: already processing a token");
-                return;
-            }
-        }
+        // one_token_at_a_time gate is enforced atomically right before the buy.
+        // Filters still run on every pool so we keep stats current.
 
         // Skip all buys when sell mode or dump mode is active
         if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
@@ -517,9 +511,16 @@ impl Sniper {
             }
         };
 
-        // Acquire lock only after we have valid instructions ready to execute
+        // Atomically claim the processing slot — skip buy if another position owns it.
+        // Using compare_exchange so the check+set is race-free (unlike the old Mutex<bool> pattern).
         if self.config.one_token_at_a_time {
-            *self.processing_lock.lock() = true;
+            if self.processing_lock
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                debug!(mint = %pool.base_mint, "one_token_at_a_time: slot taken, skipping buy");
+                return Ok(());
+            }
         }
 
         // Build the final instruction list:
@@ -637,7 +638,7 @@ impl Sniper {
                             monitor.monitor_and_sell(pool_clone, base_ata).await;
                         });
                     } else if self.config.one_token_at_a_time {
-                        *self.processing_lock.lock() = false;
+                        self.processing_lock.store(false, Ordering::Relaxed);
                     }
                     return Ok(());
                 }
@@ -669,7 +670,7 @@ impl Sniper {
             hops: 1,
         }.append_to_file(TRADES_FILE);
         if self.config.one_token_at_a_time {
-            *self.processing_lock.lock() = false;
+            self.processing_lock.store(false, Ordering::Relaxed);
         }
 
         Ok(())
@@ -773,7 +774,7 @@ impl Sniper {
         }
 
         if self.config.one_token_at_a_time {
-            *self.processing_lock.lock() = false;
+            self.processing_lock.store(false, Ordering::Relaxed);
         }
     }
 
@@ -1185,7 +1186,7 @@ struct SellMonitor {
     rpc: Arc<RpcClient>,
     executor: Arc<dyn TxExecutor>,
     metrics: Arc<BotMetrics>,
-    processing_lock: Arc<Mutex<bool>>,
+    processing_lock: Arc<std::sync::atomic::AtomicBool>,
     quote_mint: Pubkey,
     quote_amount_raw: u64,
     raydium_builder: Arc<dyn SwapInstructionBuilder>,
@@ -1321,7 +1322,7 @@ impl SellMonitor {
         // Position closed — decrement counter
         self.open_positions.fetch_sub(1, Ordering::Relaxed);
         if self.config.one_token_at_a_time {
-            *self.processing_lock.lock() = false;
+            self.processing_lock.store(false, Ordering::Relaxed);
         }
     }
 

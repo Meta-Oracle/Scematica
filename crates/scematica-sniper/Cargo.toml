@@ -14,6 +14,7 @@ path = "src/main.rs"
 scematica-core = { path = "../scematica-core" }
 scematica-ai = { path = "../scematica-ai" }
 scematica-executor = { path = "../scematica-executor" }
+scematica-nn = { path = "../scematica-nn" }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

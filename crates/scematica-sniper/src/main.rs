@@ -94,7 +94,9 @@ async fn main() -> Result<()> {
     let quote_mint = scematica_core::token::resolve_mint(&config.sniper.quote_mint)
         .ok_or_else(|| anyhow::anyhow!("Unknown quote mint: {}", config.sniper.quote_mint))?;
 
-    // Validate wallet has quote token account
+    // Ensure the quote token ATA exists. For WSOL we create it automatically —
+    // each buy already funds it via transfer+SyncNative, so the account just needs
+    // to exist. For other quote mints (USDC) a missing ATA is a real config error.
     let quote_ata = scematica_core::token::get_ata(&wallet_kp.pubkey(), &quote_mint);
     match rpc.get_token_account_balance(&quote_ata).await {
         Ok(balance) => {
@@ -104,11 +106,35 @@ async fn main() -> Result<()> {
             );
         }
         Err(_) => {
-            error!(
-                "No {} token account found. Please create one first.",
-                config.sniper.quote_mint
-            );
-            return Err(anyhow::anyhow!("Missing quote token account"));
+            use scematica_core::types::known_tokens;
+            if quote_mint == known_tokens::WSOL_MINT {
+                // Auto-create the WSOL ATA — the buy flow wraps SOL into it on demand.
+                info!("WSOL ATA not found — creating it now");
+                let create_ix =
+                    spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                        &wallet_kp.pubkey(),
+                        &wallet_kp.pubkey(),
+                        &known_tokens::WSOL_MINT,
+                        &spl_token::id(),
+                    );
+                let blockhash = rpc.get_latest_blockhash().await?;
+                let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+                    &[create_ix],
+                    Some(&wallet_kp.pubkey()),
+                    &[wallet_kp.as_ref()],
+                    blockhash,
+                );
+                match rpc.send_and_confirm_transaction(&tx).await {
+                    Ok(sig) => info!("WSOL ATA created: {}", sig),
+                    Err(e) => warn!("WSOL ATA creation failed (may already exist): {}", e),
+                }
+            } else {
+                error!(
+                    "No {} token account found. Please create one first.",
+                    config.sniper.quote_mint
+                );
+                return Err(anyhow::anyhow!("Missing quote token account"));
+            }
         }
     }
 

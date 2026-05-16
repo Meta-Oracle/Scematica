@@ -100,9 +100,10 @@ impl TxExecutor for DefaultExecutor {
                     let msg = e.to_string();
                     warn!("Transaction attempt {} failed: {}", attempt + 1, msg);
                     if attempt + 1 < self.max_retries {
-                        // Exponential back-off: 429 → 2 s, 4 s, 8 s…; others → 500 ms
+                        // Exponential back-off: 429 → 8 s, 16 s, 32 s; others → 500 ms
+                        // Helius free plan rate window is ~10 s — start above it
                         let delay_ms: u64 = if msg.contains("429") {
-                            2000 << attempt.min(3)
+                            8000u64 << attempt.min(2)
                         } else {
                             500
                         };

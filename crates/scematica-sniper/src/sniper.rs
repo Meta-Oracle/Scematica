@@ -141,7 +141,7 @@ impl Sniper {
             trade_history: Arc::new(Mutex::new(Vec::new())),
             sell_mode: Arc::new(AtomicBool::new(false)),
             dump_mode: Arc::new(AtomicBool::new(false)),
-            sell_sem: Arc::new(tokio::sync::Semaphore::new(2)),
+            sell_sem: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -270,9 +270,9 @@ impl Sniper {
             }
         }
 
-        // Skip all buys when sell mode is active (low SOL or manual override)
-        if self.sell_mode.load(Ordering::Relaxed) {
-            debug!(mint = %pool.base_mint, "Sell mode active — skipping buy");
+        // Skip all buys when sell mode or dump mode is active
+        if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
+            debug!(mint = %pool.base_mint, "Sell/dump mode active — skipping buy");
             return;
         }
 
@@ -1172,6 +1172,8 @@ impl SellMonitor {
     /// Persistent sell wrapper: retries `do_sell` up to 3 rounds with a 30 s pause.
     /// Refreshes the token balance before each round so stale amounts don't block later rounds.
     async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
+        // Dump mode: sell immediately and retry fast (5 s). Normal mode: 30 s between rounds.
+        let retry_delay_secs: u64 = if self.dump_mode.load(Ordering::Relaxed) { 5 } else { 30 };
         let mut current_amount = amount;
         for round in 0..3u32 {
             // Refresh balance — token may have been partially or fully sold already
@@ -1187,15 +1189,20 @@ impl SellMonitor {
                 Ok(()) => return,
                 Err(e) => {
                     let is_last = round >= 2;
+                    let next_action = if is_last {
+                        "giving up".to_string()
+                    } else {
+                        format!("retrying in {}s", retry_delay_secs)
+                    };
                     tracing::error!(
                         mint = %pool.base_mint,
                         round = round + 1,
                         "Sell round failed: {} — {}",
                         e,
-                        if is_last { "giving up" } else { "retrying in 30s" }
+                        next_action
                     );
                     if !is_last {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
                     }
                 }
             }
@@ -1243,7 +1250,21 @@ impl SellMonitor {
             "Building sell instruction"
         );
 
-        let mut ixs = self.raydium_builder.build_swap(
+        // For WSOL sells: recreate the ATA before the swap (close_account below will close it,
+        // and any prior sell may have already closed it — idempotent so safe to prepend always).
+        let mut pre_ixs: Vec<solana_sdk::instruction::Instruction> = Vec::new();
+        if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
+            pre_ixs.push(
+                spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                    &wallet_pubkey,
+                    &wallet_pubkey,
+                    &scematica_core::types::known_tokens::WSOL_MINT,
+                    &spl_token::id(),
+                )
+            );
+        }
+
+        let swap_ixs = self.raydium_builder.build_swap(
             &pool.id,
             &wallet_pubkey,
             &pool.base_mint,
@@ -1253,6 +1274,9 @@ impl SellMonitor {
             amount,
             min_out,
         ).await?;
+
+        let mut ixs = pre_ixs;
+        ixs.extend(swap_ixs);
 
         // After selling base → WSOL, close the WSOL ATA to unwrap back to native SOL.
         if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
@@ -1308,7 +1332,7 @@ impl SellMonitor {
                     if err.contains("0x26") && !tried_zero_slippage {
                         tried_zero_slippage = true;
                         tracing::warn!(mint = %pool.base_mint, "0x26 slippage — rebuilding sell with min_out=0");
-                        if let Ok(mut rebuilt) = self.raydium_builder.build_swap(
+                        if let Ok(swap_rebuilt) = self.raydium_builder.build_swap(
                             &pool.id,
                             &wallet_pubkey,
                             &pool.base_mint,
@@ -1318,13 +1342,20 @@ impl SellMonitor {
                             amount,
                             0,
                         ).await {
+                            let mut rebuilt: Vec<solana_sdk::instruction::Instruction> = Vec::new();
+                            if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
+                                rebuilt.push(
+                                    spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                                        &wallet_pubkey, &wallet_pubkey,
+                                        &scematica_core::types::known_tokens::WSOL_MINT,
+                                        &spl_token::id(),
+                                    )
+                                );
+                            }
+                            rebuilt.extend(swap_rebuilt);
                             if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
                                 if let Ok(close_ix) = spl_token::instruction::close_account(
-                                    &spl_token::id(),
-                                    &quote_ata,
-                                    &wallet_pubkey,
-                                    &wallet_pubkey,
-                                    &[],
+                                    &spl_token::id(), &quote_ata, &wallet_pubkey, &wallet_pubkey, &[],
                                 ) {
                                     rebuilt.push(close_ix);
                                 }

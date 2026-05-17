@@ -417,6 +417,42 @@ async fn main() -> Result<()> {
                                     mode.label(), mode.multiplier(), mode.buy_sol(), mode.tp_pct(), mode.sl_pct()
                                 ));
                             }
+                            DashboardAction::ToggleMoonChase => {
+                                let new_val = !*state.moon_chase.read();
+                                *state.moon_chase.write() = new_val;
+                                if new_val {
+                                    let json = serde_json::json!({
+                                        "active": true,
+                                        "max_escalations": 8,
+                                        "escalation_factor": 1.75,
+                                        "pullback_exit_pct": 25.0,
+                                        "escalation_threshold_pct": 3.0,
+                                    });
+                                    let _ = std::fs::write("scematica-moon-chase.json", json.to_string());
+                                    state.push_log("[MOON CHASE] 🌙 ENGAGED — 8 escalations × 1.75×, pullback 25%, threshold 3%/check");
+                                } else {
+                                    let _ = std::fs::remove_file("scematica-moon-chase.json");
+                                    state.push_log("[MOON CHASE] disengaged — momentum-hold back to EV-optimal params");
+                                }
+                            }
+                            DashboardAction::SetBuilderMode(bm) => {
+                                *state.builder_mode.write() = bm;
+                                if bm == scematica_dashboard::app::BuilderMode::Off {
+                                    let _ = std::fs::remove_file("scematica-builder-mode.json");
+                                    state.push_log("[BUILDER] Mode → Off (sniper uses config.toml wallet_target_sol)");
+                                } else {
+                                    let json = serde_json::json!({
+                                        "mode": bm.as_str(),
+                                        "target_sol": bm.target_sol(),
+                                        "progressive_scaling": bm.progressive(),
+                                    });
+                                    let _ = std::fs::write("scematica-builder-mode.json", json.to_string());
+                                    state.push_log(format!(
+                                        "[BUILDER] Mode → {}  |  target {:.1} SOL  |  progressive scaling: {}",
+                                        bm.label(), bm.target_sol(), if bm.progressive() { "ON" } else { "OFF" },
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -435,6 +471,7 @@ async fn main() -> Result<()> {
                     state.poll_filter_stats_file();
                     state.poll_nn_stats_file();
                     state.poll_radar_file();
+                    state.poll_live_positions_file();
                     state.sync_live_data();
 
                     // Mirror the high-speed-mode file into local state so the UI label

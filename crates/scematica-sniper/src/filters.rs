@@ -702,9 +702,14 @@ impl FilterPipeline {
                 max_top10_pct: config.max_top10_holder_pct,
             }));
         }
-        if let Some(ledger) = deployer_ledger.clone() {
-            filters.push(Box::new(DeployerReputationFilter::new(ledger, 0.3)));
-        }
+        // DeployerReputationFilter is DISABLED here until proper deployer-wallet
+        // resolution is implemented. The current impl uses `account.owner` which
+        // always returns the Raydium AMM V4 program ID (675kPX9M…) for every pool
+        // — so every pool gets attributed to a single "deployer" and rejected with
+        // the same reputation score. Proper resolution would require fetching the
+        // pool's creation tx and extracting the fee-payer wallet, which is too
+        // expensive per-pool to do inline. The ledger Arc remains in scope and is
+        // still used by CrossPoolCorrelationFilter below.
 
         // ── New filters wired from config ─────────────────────────────────────
         if config.check_liquidity_momentum {

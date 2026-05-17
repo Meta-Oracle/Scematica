@@ -339,15 +339,33 @@ impl DQNAgent {
 
     /// Convert PnL percentage into a shaped scalar reward.
     ///
-    /// - Wins are rewarded linearly.
-    /// - Losses are penalised 1.5× to discourage drawdown.
-    /// - A small per-step hold penalty discourages idle positions.
+    /// Designed to match the bot's "establish profits first" doctrine:
+    /// - Fast small wins (≤2 minutes) get a 1.5× bonus to reward quick rotation
+    ///   while the wallet is still being built up.
+    /// - Tiny losses (-10 % to 0 %) are mildly penalised — those are noise, not
+    ///   bad pool selection.
+    /// - Moderate losses (-50 % to -10 %) penalised 2× to discourage holding dips.
+    /// - Rug-magnitude losses (≤ -50 %) get a 3× multiplier AND a -50 flat add
+    ///   so the agent learns to recognise rug-prone pools, not just bad timing.
+    /// - Hold penalty is capped at 0.5 so a long winning hold isn't drowned out.
     pub fn shape_reward(pnl_pct: f64, hold_steps: u32) -> f64 {
-        let hold_penalty = hold_steps as f64 * 0.001;
+        // v0.8.0: bands tightened ~30%. Fast-win window narrowed from ≤2 to ≤1
+        // step, mid-loss band extended from -10..0 to -7..0, rug penalty pulled
+        // forward (-50..-10 was 2× → -35..-7 is now 2.2×, ≤-35 is now 3.2× + -55
+        // flat). Net effect: the agent gets stronger learning signal on the
+        // "rug vs not rug" boundary, which is where profit-first mode lives or dies.
+        let hold_penalty = (hold_steps as f64 * 0.001).min(0.5);
         if pnl_pct >= 0.0 {
-            pnl_pct - hold_penalty
+            let fast_bonus = if hold_steps <= 1 { 1.6 } else { 1.0 };
+            pnl_pct * fast_bonus - hold_penalty
+        } else if pnl_pct >= -7.0 {
+            pnl_pct * 1.3 - hold_penalty
+        } else if pnl_pct >= -35.0 {
+            pnl_pct * 2.2 - hold_penalty
         } else {
-            pnl_pct * 1.5 - hold_penalty
+            // Rug territory — severe penalty so the agent learns to avoid these
+            // pools at the *selection* step, not just the exit step.
+            pnl_pct * 3.2 - hold_penalty - 55.0
         }
     }
 

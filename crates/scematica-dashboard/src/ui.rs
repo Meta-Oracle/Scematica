@@ -1,4 +1,4 @@
-use crate::app::{AppState, RateMode};
+use crate::app::{AppState, BuilderMode, RateMode};
 use crate::chat::ChatLine;
 use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
 use ratatui::{
@@ -134,7 +134,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sol = *state.sol_balance.read();
     let scema = *state.scematica_balance.read();
     let regime = state.strategy_regime.read().clone();
-    let open_pos = state.open_position_mints().len();
+    let open_pos = state.open_position_count();
 
     let mode_color = match mode {
         crate::app::BotMode::Idle => Color::Yellow,
@@ -197,13 +197,147 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     render_session_stats(f, left_chunks[1], state);
     render_nn_stats(f, left_chunks[2], state);
 
-    // Right: recent trades + sparkline
+    // Right: live positions + recent trades + sparkline.
+    // Live positions get top billing — that's what the operator needs to see
+    // in real time. Bumped to 14 rows so up to 11 positions are visible (2
+    // border lines + 1 header).
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(5)])
+        .constraints([
+            Constraint::Length(14), // live positions (was 10)
+            Constraint::Min(0),     // recent trades
+            Constraint::Length(5),  // sparkline
+        ])
         .split(h_chunks[1]);
-    render_recent_trades(f, right_chunks[0], state);
-    render_pnl_sparkline(f, right_chunks[1], state);
+    render_live_positions(f, right_chunks[0], state);
+    render_recent_trades(f, right_chunks[1], state);
+    render_pnl_sparkline(f, right_chunks[2], state);
+}
+
+fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let positions = state.live_positions.read();
+    let now_unix = chrono::Utc::now().timestamp();
+
+    // Detect a stale file: if last_check on EVERY position is >10 s ago, the
+    // sniper either isn't running or its flush task is wedged. Surface that in
+    // the title so the operator doesn't sit staring at frozen values.
+    let max_age_since_check = positions
+        .iter()
+        .map(|p| now_unix.saturating_sub(p.last_check_unix_secs))
+        .max()
+        .unwrap_or(0);
+    let title_suffix = if positions.is_empty() {
+        String::new()
+    } else if max_age_since_check > 10 {
+        format!("  ⚠ stale ({}s)", max_age_since_check)
+    } else {
+        String::new()
+    };
+    let title = format!(" 💼 Open Positions  ({} live){} ", positions.len(), title_suffix);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if positions.is_empty() {
+        let p = Paragraph::new("no open positions")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    // Sort by entry time descending — newest position at the top, so a fresh
+    // buy appears where the operator's eye lands. Older positions fall off
+    // the bottom only if there are more than panel-height rows.
+    let mut sorted: Vec<_> = positions.iter().cloned().collect();
+    sorted.sort_by(|a, b| b.entry_unix_secs.cmp(&a.entry_unix_secs));
+
+    let rows: Vec<Row> = sorted
+        .iter()
+        .map(|p| {
+            let pnl = p.pnl_pct();
+            let peak = p.peak_pnl_pct();
+            let age = p.age_secs();
+            let entry_sol = p.entry_sol();
+            let value_sol = p.value_sol();
+            let staleness = now_unix.saturating_sub(p.last_check_unix_secs);
+
+            // PnL color thresholds: tuned so partial-TP territory (≥30 %) shows
+            // bright green, normal positive shows green, near-zero shows yellow,
+            // mild loss shows orange (light red), serious loss shows red.
+            let pnl_color = if pnl >= 30.0       { Color::LightGreen }
+                       else if pnl >= 5.0        { Color::Green }
+                       else if pnl > -5.0        { Color::Yellow }
+                       else if pnl > -25.0       { Color::LightRed }
+                       else                      { Color::Red };
+
+            // Status column conveys WHY the position is in the state it's in.
+            // Order matters: escalation wins over momentum, partial-TP done
+            // overrides plain monitoring, staleness flag wins over all.
+            let status = if staleness > 5 {
+                "⏱ stale".to_string()
+            } else if p.escalations > 0 {
+                format!("🚀x{}", p.escalations)
+            } else if peak >= 30.0 {
+                "📈 riding".to_string()
+            } else if pnl > 5.0 {
+                "✓ green".to_string()
+            } else if pnl > -5.0 {
+                "· watch".to_string()
+            } else {
+                "▼ down".to_string()
+            };
+
+            // Age formatting: <60 s in seconds, <60 min in minutes, else hours.
+            let age_str = if age < 60 { format!("{}s", age) }
+                     else if age < 3600 { format!("{}m{}s", age / 60, age % 60) }
+                     else { format!("{}h{}m", age / 3600, (age % 3600) / 60) };
+
+            Row::new(vec![
+                Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
+                Cell::from(age_str),
+                Cell::from(format!("{:.4}", entry_sol))
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.4}", value_sol))
+                    .style(Style::default().fg(pnl_color)),
+                Cell::from(format!("{:+.1}%", pnl))
+                    .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
+                Cell::from(format!("{:+.1}%", peak))
+                    .style(Style::default().fg(Color::Cyan)),
+                Cell::from(format!("{:.0}%", p.dynamic_tp_pct))
+                    .style(Style::default().fg(Color::Magenta)),
+                Cell::from(status),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(9),  // Mint
+        Constraint::Length(7),  // Age
+        Constraint::Length(7),  // Entry SOL
+        Constraint::Length(7),  // Value SOL
+        Constraint::Length(8),  // PnL %
+        Constraint::Length(8),  // Peak %
+        Constraint::Length(6),  // TP target %
+        Constraint::Length(10), // Status
+    ];
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec![
+                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Age").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Entry").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Value").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("PnL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Peak").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("TP").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Status").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+            ]),
+        )
+        .block(block);
+    f.render_widget(table, area);
 }
 
 fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
@@ -283,7 +417,7 @@ fn render_session_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let best = *state.best_trade_pnl.read();
     let worst = *state.worst_trade_pnl.read();
     let streak = *state.trade_streak.read();
-    let open = state.open_position_mints().len();
+    let open = state.open_position_count();
 
     let (streak_label, streak_color) = if streak > 0 {
         (format!("W{}", streak), Color::Green)
@@ -569,6 +703,8 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let regime = state.strategy_regime.read().clone();
     let mode = *state.active_mode.read();
     let rate_mode = *state.rate_mode.read();
+    let builder_mode = *state.builder_mode.read();
+    let moon_chase = *state.moon_chase.read();
 
     let regime_color = match regime.as_str() {
         "aggressive" => Color::Green,
@@ -633,35 +769,117 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             Span::raw("  (press key to switch)"),
         ]),
         {
+            let active = rate_mode == RateMode::Bearish;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Blue } else { Color::DarkGray })),
+                Span::styled("[1] Bearish    ", Style::default().fg(if active { Color::Blue } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("0.3x  0.003 SOL/trade  TP: 45%  SL:  8%", Style::default().fg(if active { Color::Blue } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Micro;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Cyan } else { Color::DarkGray })),
+                Span::styled("[2] Micro      ", Style::default().fg(if active { Color::Cyan } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("0.1x  0.001 SOL/trade  TP: 60%  SL: 10%  (≈$1–2 wallets)", Style::default().fg(if active { Color::Cyan } else { Color::DarkGray })),
+            ])
+        },
+        {
             let active = rate_mode == RateMode::Safe;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[1] Safe       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("0.5x  0.005 SOL/trade  TP: 50%  SL: 10%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[3] Safe       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("0.5x  0.005 SOL/trade  TP: 75%  SL: 10%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
             ])
         },
         {
             let active = rate_mode == RateMode::Balanced;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[2] Balanced   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("1.0x  0.010 SOL/trade  TP:100%  SL: 15%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[4] Balanced   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("1.0x  0.010 SOL/trade  TP:150%  SL: 15%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
             ])
         },
         {
             let active = rate_mode == RateMode::Aggressive;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
-                Span::styled("[3] Aggressive ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("2.0x  0.020 SOL/trade  TP:200%  SL: 25%", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled("[5] Aggressive ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("2.0x  0.020 SOL/trade  TP:300%  SL: 25%", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
             ])
         },
         {
             let active = rate_mode == RateMode::Degen;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
-                Span::styled("[4] Degen      ", Style::default().fg(if active { COLOR_ACCENT } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("4.0x  0.040 SOL/trade  TP:300%  SL: 40%", Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
+                Span::styled("[6] Degen      ", Style::default().fg(if active { COLOR_ACCENT } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("4.0x  0.040 SOL/trade  TP:450%  SL: 40%", Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Bullish;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+                Span::styled("[7] Bullish    ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("6.0x  0.060 SOL/trade  TP:750%  SL: 50%", Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = rate_mode == RateMode::Moon;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::LightMagenta } else { Color::DarkGray })),
+                Span::styled("[8] 🌙 Moon    ", Style::default().fg(if active { Color::LightMagenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("8.0x  0.080 SOL/trade  TP:1200% SL: 60%  (parabolic chase)", Style::default().fg(if active { Color::LightMagenta } else { Color::DarkGray })),
+            ])
+        },
+        Line::from(""),
+        {
+            let mc_color = if moon_chase { Color::LightMagenta } else { Color::DarkGray };
+            let mc_text  = if moon_chase {
+                "🌙 ENGAGED  —  8 escalations × 1.75×  |  pullback 25%  |  threshold 3%/check"
+            } else {
+                "disengaged  —  press [m] to enable parabolic-greedy escalation"
+            };
+            Line::from(vec![
+                Span::styled("[m] Moon Chase: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(mc_text, Style::default().fg(mc_color).add_modifier(if moon_chase { Modifier::BOLD } else { Modifier::empty() })),
+            ])
+        },
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Builder Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("  (wallet growth target — profit-first SL until target reached)"),
+        ]),
+        {
+            let active = builder_mode == BuilderMode::Off;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::DarkGray } else { Color::DarkGray })),
+                Span::styled("[o] Off          ", Style::default().fg(if active { Color::White } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("use config.toml wallet_target_sol", Style::default().fg(Color::DarkGray)),
+            ])
+        },
+        {
+            let active = builder_mode == BuilderMode::Growth;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[g] Growth       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("target 0.2 SOL — gentle build-up phase", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = builder_mode == BuilderMode::Builder;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled("[j] Builder      ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("target 1.0 SOL — scale up to a serious bag", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+            ])
+        },
+        {
+            let active = builder_mode == BuilderMode::SuperBuilder;
+            Line::from(vec![
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+                Span::styled("[k] SuperBuilder ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled("target 3.0 SOL + progressive rate-mode scaling", Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
             ])
         },
         Line::from(""),
@@ -765,30 +983,44 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let pools = state.radar_pools.read().clone();
 
-    // Y-axis: 0 → 10 SOL, log-ish via min/clamp. Pump.fun graduates land at
-    // 0.4–3 SOL — the old 0–100 SOL scale crushed them all into the bottom row.
-    // We pin the displayed value into [0, 10] and add a marker above for any pool
-    // bigger than that.
-    const Y_MAX: f64 = 10.0;
-    let to_y = |sol: f64| sol.clamp(0.0, Y_MAX);
+    // X-axis: seconds since the sniper observed each pool (now - timestamp).
+    // The on-disk `age_secs` field is the pool's age at evaluation time, but
+    // `pool.open_time` is rarely populated by Raydium for new pools so most
+    // entries report 0 there — which would stack every dot at x=0 and render
+    // a useless radar. Using `now - timestamp` instead gives a proper temporal
+    // spread regardless of open_time availability.
+    let now = chrono::Utc::now().timestamp();
+    const X_MAX: f64 = 300.0;
+    let to_x = |ts: i64| ((now - ts).max(0) as f64).min(X_MAX - 1.0);
+
+    // Y-axis: log10(size_sol + 1) so the scale covers the full range of pools we
+    // actually see (0.1 SOL pump.fun → 1000+ SOL whale pools) without crushing
+    // small ones into the bottom row or clamping large ones.
+    //   1 SOL  → y ≈ 0.30
+    //   10 SOL → y ≈ 1.04
+    //   100 SOL → y ≈ 2.00
+    //   1000 SOL → y ≈ 3.00
+    const Y_MAX: f64 = 3.5;
+    let to_y = |sol: f64| (sol.max(0.0) + 1.0).log10().clamp(0.0, Y_MAX);
 
     // Separate passed / rejected pools for color-coded Points
     let passed_coords: Vec<(f64, f64)> = pools
         .iter()
         .filter(|p| p.passed_filters)
-        .map(|p| (p.age_secs.min(299.0), to_y(p.size_sol)))
+        .map(|p| (to_x(p.timestamp), to_y(p.size_sol)))
         .collect();
     let rejected_coords: Vec<(f64, f64)> = pools
         .iter()
         .filter(|p| !p.passed_filters)
-        .map(|p| (p.age_secs.min(299.0), to_y(p.size_sol)))
+        .map(|p| (to_x(p.timestamp), to_y(p.size_sol)))
         .collect();
 
     let total = pools.len();
     let passed = pools.iter().filter(|p| p.passed_filters).count();
+    let rejected = total - passed;
     let canvas_title = format!(
-        " Pool Radar — Age vs Size  |  pools: {} (passed {} red rejected) ",
-        total, passed,
+        " Pool Radar — Seen vs Size (log)  |  total: {}  passed: {} (green)  rejected: {} (red) ",
+        total, passed, rejected,
     );
 
     let canvas = Canvas::default()
@@ -798,16 +1030,17 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_ACCENT)),
         )
-        .x_bounds([0.0, 300.0])
+        .x_bounds([0.0, X_MAX])
         .y_bounds([0.0, Y_MAX])
         .paint(move |ctx| {
-            // Axis labels: X = pool age in seconds, Y = quote-vault SOL.
-            ctx.print(0.0, -0.5, "0s");
-            ctx.print(150.0, -0.5, "150s");
-            ctx.print(292.0, -0.5, "300s");
-            ctx.print(-12.0, 0.0,   "0");
-            ctx.print(-15.0, 5.0,   "5");
-            ctx.print(-18.0, 9.8,   "10 SOL");
+            // X = seconds since sniper observed the pool; Y = log10(size_sol+1).
+            ctx.print(0.0,   -0.15, "now");
+            ctx.print(150.0, -0.15, "2.5m ago");
+            ctx.print(285.0, -0.15, "5m ago");
+            ctx.print(-18.0, 0.30, "1");
+            ctx.print(-22.0, 1.04, "10");
+            ctx.print(-26.0, 2.00, "100");
+            ctx.print(-30.0, 3.00, "1k SOL");
 
             if !rejected_coords.is_empty() {
                 ctx.draw(&Points {
@@ -825,24 +1058,31 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     f.render_widget(canvas, chunks[0]);
 
-    // Table: 10 most recent pools
-    let now = chrono::Utc::now().timestamp();
-    let rows: Vec<Row> = pools
+    // Table: 10 most recent pools (sorted by timestamp descending — newest first).
+    // Sorting matters when entries arrive out of order from concurrent evaluators.
+    let mut sorted = pools.clone();
+    sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let rows: Vec<Row> = sorted
         .iter()
-        .rev()
         .take(10)
         .map(|p| {
-            let age_display = now - p.timestamp;
+            let seen_secs_ago = (now - p.timestamp).max(0);
             let pass_str = if p.passed_filters { "PASS" } else { "FAIL" };
             let pass_color = if p.passed_filters { Color::Green } else { Color::Red };
             let mint_short = p.mint[..8.min(p.mint.len())].to_string();
+            // Prefer the on-disk pool age when populated, otherwise fall back to "seen"
+            let age_cell = if p.age_secs > 0.0 {
+                format!("{:.0}s", p.age_secs)
+            } else {
+                format!("~{}s", seen_secs_ago)
+            };
             Row::new(vec![
                 Cell::from(mint_short),
-                Cell::from(format!("{:.0}s", p.age_secs)),
+                Cell::from(age_cell),
                 Cell::from(format!("{:.2}", p.size_sol)),
                 Cell::from(pass_str).style(Style::default().fg(pass_color)),
                 Cell::from(format!("{:.1}", p.score)),
-                Cell::from(format!("{}s ago", age_display)),
+                Cell::from(format!("{}s ago", seen_secs_ago)),
             ])
         })
         .collect();

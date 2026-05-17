@@ -1,7 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::app::{BotMode, RateMode};
+use crate::app::{BotMode, BuilderMode, RateMode};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -63,11 +63,22 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool, log_filt
             KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
             KeyCode::Char('b') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Both)),
             KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
-            // Rate mode presets — [1][2][3][4] on Config tab
-            KeyCode::Char('1') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Safe)),
-            KeyCode::Char('2') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Balanced)),
-            KeyCode::Char('3') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Aggressive)),
-            KeyCode::Char('4') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Degen)),
+            // Rate mode presets — [1]–[7] on Config tab (least → most aggressive)
+            KeyCode::Char('1') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Bearish)),
+            KeyCode::Char('2') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Micro)),
+            KeyCode::Char('3') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Safe)),
+            KeyCode::Char('4') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Balanced)),
+            KeyCode::Char('5') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Aggressive)),
+            KeyCode::Char('6') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Degen)),
+            KeyCode::Char('7') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Bullish)),
+            KeyCode::Char('8') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Moon)),
+            // Builder modes — [g] Growth (0.2), [j] Builder (1.0), [k] Super Builder (3.0), [o] Off
+            KeyCode::Char('g') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Growth)),
+            KeyCode::Char('j') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Builder)),
+            KeyCode::Char('k') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::SuperBuilder)),
+            KeyCode::Char('o') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Off)),
+            // [m] toggles Moon Chase — momentum-hold escalator goes parabolic-greedy
+            KeyCode::Char('m') if current_tab == 3 => Some(DashboardAction::ToggleMoonChase),
             // [e] on the Logs tab toggles emergency sell mode
             KeyCode::Char('e') if current_tab == 2 && !log_filter_active => Some(DashboardAction::ToggleSellMode),
             // [b] on the Logs tab force-clears sell mode (resume buying). Deletes the
@@ -112,6 +123,8 @@ pub enum DashboardAction {
     ToggleHighSpeed,
     AutoDump,
     SetRateMode(RateMode),
+    SetBuilderMode(BuilderMode),
+    ToggleMoonChase,
     ExportCsv,
     ResetPositions,
     LogFilterActivate,

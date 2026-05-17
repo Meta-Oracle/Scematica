@@ -42,6 +42,12 @@ impl StrategySnapshot {
 
 /// A single trade event written by the sniper or arb engine.
 /// Serialised as one JSON object per line (JSONL) for cheap append + tail.
+///
+/// The NN observer (`scematica-sniper/src/main.rs`) consumes this stream and
+/// trains the Deep Q* agent — keys here are the source of truth for that
+/// contract. `pnl_pct` and `position_age_secs` are populated on SELL events so
+/// the agent gets normalised reward signal; defaulted to 0 on BUY/ARB so older
+/// JSONL files keep deserialising.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeEvent {
     /// ISO-8601 timestamp
@@ -64,6 +70,13 @@ pub struct TradeEvent {
     pub dex: String,
     /// Number of hops (1 for sniper trades, 2+ for arb)
     pub hops: u8,
+    /// Realised PnL as a percentage of entry size (SELL only; 0 otherwise).
+    /// Used as the primary reward signal for the NN agent.
+    #[serde(default)]
+    pub pnl_pct: f64,
+    /// How long the position was held in seconds (SELL only; 0 otherwise).
+    #[serde(default)]
+    pub position_age_secs: f64,
 }
 
 impl TradeEvent {

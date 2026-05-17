@@ -7,4 +7,4 @@ pub mod chat;
 pub mod process;
 pub mod demo;
 
-pub use app::RadarPool;
+pub use app::{LivePosition, RadarPool};

@@ -1,1 +1,1 @@
-{"step_count":0,"train_steps":0,"epsilon":1.0,"replay_size":0,"total_reward":0.0,"avg_loss":0.0,"target_updates":0,"ready_to_advise":false,"last_action":null,"last_q_values":[0.0,0.0,0.0,0.0,0.0]}
+{"step_count":123,"train_steps":0,"epsilon":0.9403384831029961,"replay_size":34,"total_reward":-21281.07109200001,"avg_loss":0.0,"target_updates":0,"ready_to_advise":false,"last_action":null,"last_q_values":[0.0,0.0,0.0,0.0,0.0]}

@@ -431,6 +431,95 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Builder-mode file watcher — checks scematica-builder-mode.json every 5 s.
+    // The dashboard writes this when the operator presses [g]/[j]/[k]/[o]; we
+    // mirror it into atomic state so the sell-monitor's profit-first gate and the
+    // buy() progressive scaler pick up the change without a restart.
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_bm = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut last_label = String::new();
+            loop {
+                interval.tick().await;
+                let path = "scematica-builder-mode.json";
+                if !std::path::Path::new(path).exists() {
+                    // Cleared from dashboard → reset to defaults
+                    if !last_label.is_empty() {
+                        sniper_bm.wallet_target_lamports_override.store(0, Ordering::Relaxed);
+                        sniper_bm.progressive_scaling.store(false, Ordering::Relaxed);
+                        info!("🏗️  Builder mode cleared — using config.wallet_target_sol");
+                        last_label.clear();
+                    }
+                    continue;
+                }
+                let Ok(data) = std::fs::read_to_string(path) else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
+                let label = v["mode"].as_str().unwrap_or("").to_string();
+                if label == last_label { continue; }
+                last_label = label.clone();
+                let target_sol = v["target_sol"].as_f64().unwrap_or(0.0);
+                let progressive = v["progressive_scaling"].as_bool().unwrap_or(false);
+                let target_lam = (target_sol * 1e9) as u64;
+                sniper_bm.wallet_target_lamports_override.store(target_lam, Ordering::Relaxed);
+                sniper_bm.progressive_scaling.store(progressive, Ordering::Relaxed);
+                info!(
+                    "🏗️  Builder mode → {}  |  target {:.2} SOL  |  progressive: {}",
+                    label, target_sol, if progressive { "ON" } else { "OFF" },
+                );
+            }
+        });
+    }
+
+    // Live positions flush task — serialises the in-memory position registry
+    // to scematica-positions.json every 1 s. The dashboard reads this on its
+    // tick poll. Atomic write via tmp + rename so the dashboard never reads a
+    // half-written file mid-flush.
+    {
+        let sniper_lp = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let snap: Vec<_> = sniper_lp
+                    .live_positions
+                    .iter()
+                    .map(|e| e.value().clone())
+                    .collect();
+                if let Ok(json) = serde_json::to_string(&snap) {
+                    let tmp = "scematica-positions.json.tmp";
+                    if std::fs::write(tmp, &json).is_ok() {
+                        let _ = std::fs::rename(tmp, "scematica-positions.json");
+                    }
+                }
+            }
+        });
+    }
+
+    // Moon Chase file watcher — checks scematica-moon-chase.json every 5 s.
+    // Presence of the file = engaged; absence = disengaged. The sell monitor
+    // reads sniper.moon_chase via Atomic on every check, so toggling is hot.
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_mc = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut was_active = false;
+            loop {
+                interval.tick().await;
+                let active = std::path::Path::new("scematica-moon-chase.json").exists();
+                sniper_mc.moon_chase.store(active, Ordering::Relaxed);
+                if active && !was_active {
+                    warn!("🌙 MOON CHASE engaged — 8 escalations × 1.75×, pullback 25%, threshold 3%/check");
+                } else if !active && was_active {
+                    info!("🌙 Moon Chase disengaged — momentum-hold back to EV-optimal params");
+                }
+                was_active = active;
+            }
+        });
+    }
+
     // Pool cache persistence — flush to disk every 60 s so sell lookups survive crashes
     {
         let sniper_pc = sniper.clone();
@@ -573,8 +662,28 @@ async fn main() -> Result<()> {
             }
         ));
 
+        // Initial stats write — without this, the dashboard's NN panel sits blank
+        // for the first 5 s after launch (until the flush task ticks for the first
+        // time). Writing immediately gives the operator visible signal that the
+        // agent loaded and is alive even before any trades have happened.
+        {
+            if let Ok(ag) = nn_agent.lock() {
+                let stats: AgentStats = ag.stats();
+                if let Ok(s) = serde_json::to_string(&stats) {
+                    let _ = std::fs::write("scematica-nn-stats.json", s);
+                }
+            }
+        }
+
         // Observer task: polls scematica-trades.jsonl for new SELL events, extracts
         // reward from PnL, constructs (state, action, reward, next_state) tuples, trains.
+        //
+        // Field-name contract: TradeEvent serialises as `kind`/`pnl`/`pnl_pct`/
+        // `position_age_secs` (see scematica-core/src/metrics.rs). The previous
+        // version of this loop read `action`/`pnl_sol` — which never matched — so
+        // the agent silently never trained and the dashboard panel was pinned to
+        // ε=1.0, steps=0, replay=0 forever. Keep these key names in sync with
+        // TradeEvent or the agent will go dark again.
         {
             let agent = Arc::clone(&nn_agent);
             tokio::spawn(async move {
@@ -590,10 +699,18 @@ async fn main() -> Result<()> {
 
                     for line in &lines[last_seen..] {
                         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                        if v["action"].as_str() != Some("SELL") { continue; }
+                        if v["kind"].as_str() != Some("SELL") { continue; }
+                        // Only train on confirmed sells — failed sells carry no usable price signal
+                        // (the sniper marks them with pnl_pct=-100 as a fallback for hard failures,
+                        // but we want learning to focus on real market outcomes).
+                        let confirmed = v["status"].as_str() == Some("✓");
 
-                        let pnl_sol = v["pnl_sol"].as_f64().unwrap_or(0.0);
-                        let pnl_pct = v["pnl_pct"].as_f64().unwrap_or(0.0);
+                        let pnl_sol = v["pnl"].as_f64().unwrap_or(0.0);
+                        let pnl_pct = v["pnl_pct"].as_f64().unwrap_or_else(|| {
+                            // Backfill for older entries without pnl_pct: derive it from pnl_sol
+                            // assuming the standard quote_amount baseline (0.01 SOL).
+                            if pnl_sol == 0.0 { 0.0 } else { pnl_sol / 0.01 * 100.0 }
+                        });
                         let age_secs = v["position_age_secs"].as_f64().unwrap_or(0.0);
 
                         // Update streak tracking
@@ -608,12 +725,14 @@ async fn main() -> Result<()> {
                         let state = NNState::from_trade_fields(
                             pnl_pct, age_secs, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
                         );
-                        let action = if v["action"].as_str() == Some("SELL") {
-                            TradeAction::SellAll
+                        let action = TradeAction::SellAll;
+                        let reward = if confirmed {
+                            DQNAgent::shape_reward(pnl_pct, (age_secs / 60.0) as u32)
                         } else {
-                            TradeAction::BuyStandard
+                            // Penalise hard-failed sells lightly so the agent learns to avoid pools
+                            // where exits jam without flooding the signal with synthetic -100% events.
+                            -1.0
                         };
-                        let reward = DQNAgent::shape_reward(pnl_pct, (age_secs / 60.0) as u32);
                         let next_state = NNState::from_trade_fields(
                             0.0, 0.0, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
                         );
@@ -630,19 +749,26 @@ async fn main() -> Result<()> {
             });
         }
 
-        // Stats flush task: writes scematica-nn-stats.json every 30s for the dashboard.
+        // Stats flush task: writes scematica-nn-stats.json every 5 s for the dashboard.
+        // 5 s matches the dashboard's poll cadence on the file — slower than that and the
+        // panel feels frozen between updates (the previous 30 s interval is what made it
+        // look like the agent wasn't running at all).
         {
             let agent = Arc::clone(&nn_agent);
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
                     if let Ok(ag) = agent.lock() {
                         let stats: AgentStats = ag.stats();
-                        let _ = std::fs::write(
-                            "scematica-nn-stats.json",
-                            serde_json::to_string(&stats).unwrap(),
-                        );
+                        if let Ok(s) = serde_json::to_string(&stats) {
+                            // Atomic write: tmp → rename so the dashboard never reads a
+                            // half-written file mid-flush.
+                            let tmp = "scematica-nn-stats.json.tmp";
+                            if std::fs::write(tmp, &s).is_ok() {
+                                let _ = std::fs::rename(tmp, "scematica-nn-stats.json");
+                            }
+                        }
                     }
                 }
             });

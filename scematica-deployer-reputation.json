@@ -1,10 +1,34 @@
 {
   "records": {
-    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": {
-      "rug_count": 4,
-      "success_count": 1,
-      "total_trades": 5,
-      "ema_rug_rate": 0.7599
+    "Gs6dMPyvhqWLuPYaAAJYTvogPKP1hiWNKxeBExHSpump": {
+      "rug_count": 1,
+      "success_count": 0,
+      "total_trades": 1,
+      "ema_rug_rate": 0.3
+    },
+    "8YiB8B43EwDeSx5Jp91VQjgBU4mfCgVvyNahadtzpump": {
+      "rug_count": 1,
+      "success_count": 0,
+      "total_trades": 1,
+      "ema_rug_rate": 0.3
+    },
+    "942dr3uUvPBKrrgRUXCBmhKUvkjc8Ju4Mg61FEKXUQg1": {
+      "rug_count": 1,
+      "success_count": 0,
+      "total_trades": 1,
+      "ema_rug_rate": 0.3
+    },
+    "713CNQFLfa3g2KwJ5rnfRntXE3mUmGVFUQ2ey7wpump": {
+      "rug_count": 1,
+      "success_count": 0,
+      "total_trades": 1,
+      "ema_rug_rate": 0.3
+    },
+    "CtaVq7fp5xwYFenGQypqdK97LJhTD72GgRsY8e4Npump": {
+      "rug_count": 1,
+      "success_count": 0,
+      "total_trades": 1,
+      "ema_rug_rate": 0.3
     }
   }
 }

@@ -1,10 +1,76 @@
-# Scematica v0.5.0
+# Scematica v0.8.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, deep Q-learning reinforcement, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 ---
+
+## What's New in v0.8.0
+
+- **Loss cooldown removed.** The bot no longer pauses buys after consecutive
+  losses. Streak tracking still runs for the reputation ledger + dashboard
+  display, but `cooldown_after_losses` and `cooldown_minutes` are now no-ops
+  (retained in config for back-compat).
+- **Evaluation strategies ~30 % stricter** across the board to bias toward
+  win-rate over opportunity volume:
+  - **PoolScorer bands tightened**: ultra-fresh shrank 10s → 7s, sweet-spot
+    size narrowed 5–30 SOL → 6.5–22 SOL, stale-pool penalty grew from -30
+    to -38, future-dated open_time penalised -32 (was -25).
+  - **Filter defaults**: `consecutive_matches` 1 → 2, `check_duration_ms`
+    8000 → 5600, `min_pool_size` 0.3 → 0.4, `max_price_impact_pct` 5 → 3.5,
+    `max_top10_holder_pct` 95 → 67, `max_deployer_rugs_24h` 3 → 2.
+  - **Liquidity momentum** + **cross-pool rug correlation** now ON by default
+    (cheap to evaluate, sharp signal).
+  - `min_pool_score` default 0 → **45** — the sharpened scorer now actually
+    gates buys; pools with neither a freshness nor sweet-spot bonus are skipped.
+  - **dQ\* reward shaping**: fast-win window 2 → 1 step, mid-loss band -10..0
+    → -7..0, rug-magnitude penalty pulled forward to ≤-35 (was -50) with
+    multiplier 3.0× → 3.2× and flat -55 (was -50).
+
+## What's New in v0.7.0
+
+- **Profit-first growth doctrine.** New `profit_first_mode` (on by default) gates
+  the stop-loss while the wallet is below `wallet_target_sol` (default 0.2 SOL).
+  Positions only exit at TP, partial TP, or the rug-only `profit_first_floor_pct`
+  (default -50%). The bot books wins before tolerating drawdown — the dump
+  detector and the window-expiry force-sell both honour the gate. Once the
+  wallet crosses target, normal SL behaviour resumes.
+- **Builder-mode ladder** — three growth targets, hot-toggle from the dashboard
+  Config tab:
+  - `[g] Growth` — 0.2 SOL target (matches the default)
+  - `[j] Builder` — 1.0 SOL target
+  - `[k] SuperBuilder` — 3.0 SOL target **plus progressive rate-mode scaling**
+    (position size grows linearly from 1.0× → 2.5× as the wallet climbs from
+    0% → 100% of target)
+  - `[o] Off` — fall back to the config-file value
+- **Sharper Pool Scorer.** Tighter freshness gradient (ultra-fresh ≤10s gets
+  +30, anything >10min is -30), tightened size sweet spot (5–30 SOL = +18,
+  outside that the rug surface is too high), and a clock-skew guard for
+  future-dated `open_time` values.
+- **Refined Deep Q* reward shaping.** Fast small wins (≤2 mins) earn a 1.5×
+  multiplier, rug-magnitude losses (≤-50 %) get a 3× penalty + flat -50 so
+  the agent learns to avoid the *selection*, not just the exit. Capped hold
+  penalty so a long winning hold isn't drowned out.
+- **Radar fixed.** Switched to log-scaled Y axis (1 → 1000 SOL fits without
+  clamping), X axis now uses "seconds since sniper observed" instead of the
+  unreliable `pool.open_time`, table sorts by newest first.
+
+## What's New in v0.6.0
+
+- **Expanded rate-mode ladder** — seven presets covering every wallet size and risk
+  appetite: `Bearish → Micro → Safe → Balanced → Aggressive → Degen → Bullish`.
+  `Micro` (0.1× multiplier, ~0.001 SOL/trade) is sized for wallets with only
+  $1–2 of SOL — enough to actually place a buy after fees and ATA rent.
+- **Deep Q* agent now actually trains.** The NN observer was reading the wrong
+  keys (`action`/`pnl_sol`) from `scematica-trades.jsonl` while the writer was
+  serialising `kind`/`pnl` — every SELL was silently skipped, so the dashboard
+  panel stayed pinned at ε=1.0, steps=0, replay=0 forever. Fixed the field
+  contract, added `pnl_pct` and `position_age_secs` to `TradeEvent` so the
+  agent gets real reward signal, dropped the stats flush from 30 s → 5 s, and
+  made the file writes atomic (`tmp` + rename).
+- **Hot dashboard updates.** NN panel refreshes on every dashboard tick now
+  that the sniper flushes stats six times faster.
 
 ## What's New in v0.5.0
 
@@ -333,10 +399,28 @@ Bot process control and rate mode selection.
 | `a` | Start **Arb** only |
 | `b` | Start **Both** (sniper + arb) |
 | `x` | **Stop** all bots |
-| `1` | Rate mode: **Safe** — 0.5x, TP 50%, SL 10% |
-| `2` | Rate mode: **Balanced** — 1.0x, TP 100%, SL 15% |
-| `3` | Rate mode: **Aggressive** — 2.0x, TP 200%, SL 20% |
-| `4` | Rate mode: **Degen** — 3.0x, TP 300%, SL 30% |
+| `1` | Rate mode: **Bearish** — 0.3x, ~0.003 SOL/trade, TP 30%, SL 8% |
+| `2` | Rate mode: **Micro** — 0.1x, ~0.001 SOL/trade, TP 40%, SL 10% (≈$1–2 wallets) |
+| `3` | Rate mode: **Safe** — 0.5x, ~0.005 SOL/trade, TP 50%, SL 10% |
+| `4` | Rate mode: **Balanced** — 1.0x, ~0.010 SOL/trade, TP 100%, SL 15% (default) |
+| `5` | Rate mode: **Aggressive** — 2.0x, ~0.020 SOL/trade, TP 200%, SL 25% |
+| `6` | Rate mode: **Degen** — 4.0x, ~0.040 SOL/trade, TP 300%, SL 40% |
+| `7` | Rate mode: **Bullish** — 6.0x, ~0.060 SOL/trade, TP 500%, SL 50% |
+| `g` | Builder mode: **Growth** — wallet target 0.2 SOL |
+| `j` | Builder mode: **Builder** — wallet target 1.0 SOL |
+| `k` | Builder mode: **SuperBuilder** — wallet target 3.0 SOL + progressive scaling |
+| `o` | Builder mode: **Off** — fall back to `config.toml` `wallet_target_sol` |
+
+The seven rate modes form a ladder from least to most aggressive — each
+multiplier scales `quote_amount` (default 0.01 SOL) and rewrites live TP/SL
+in the running sniper via `scematica-rate-mode.json`.
+
+The four builder modes are orthogonal: they set the wallet-growth target that
+profit-first mode uses to decide when the bot is "in build-up" (SL gated to
+the rug-only floor) vs "at target" (normal SL). **SuperBuilder** additionally
+applies a 1.0× → 2.5× progressive multiplier to position sizing as the wallet
+grows toward 3 SOL, so winning streaks compound automatically. Cleared by
+pressing `o` or by deleting `scematica-builder-mode.json`. No restart required.
 
 ### Tab 4 — Chat
 

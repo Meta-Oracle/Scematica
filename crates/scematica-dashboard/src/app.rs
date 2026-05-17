@@ -31,6 +31,41 @@ pub struct TradeEntry {
     pub signature: String,
 }
 
+/// Live position snapshot — written by the sniper's live-position registry
+/// every 1 s. Mirrors `scematica_sniper::sniper::LivePositionSnapshot` so the
+/// dashboard can deserialise without the heavy cross-crate dep.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LivePosition {
+    pub mint: String,
+    pub entry_lamports: u64,
+    pub current_value_lamports: u64,
+    pub peak_value_lamports: u64,
+    pub entry_unix_secs: i64,
+    pub dynamic_tp_pct: f64,
+    pub escalations: u32,
+    pub last_check_unix_secs: i64,
+}
+
+impl LivePosition {
+    pub fn age_secs(&self) -> i64 {
+        chrono::Utc::now().timestamp().saturating_sub(self.entry_unix_secs).max(0)
+    }
+    pub fn pnl_pct(&self) -> f64 {
+        if self.entry_lamports == 0 { 0.0 } else {
+            (self.current_value_lamports as f64 - self.entry_lamports as f64)
+                / self.entry_lamports as f64 * 100.0
+        }
+    }
+    pub fn peak_pnl_pct(&self) -> f64 {
+        if self.entry_lamports == 0 { 0.0 } else {
+            (self.peak_value_lamports as f64 - self.entry_lamports as f64)
+                / self.entry_lamports as f64 * 100.0
+        }
+    }
+    pub fn entry_sol(&self) -> f64  { self.entry_lamports as f64 / 1e9 }
+    pub fn value_sol(&self) -> f64  { self.current_value_lamports as f64 / 1e9 }
+}
+
 /// Pool radar entry — written by the sniper when a pool is evaluated
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadarPool {
@@ -92,6 +127,12 @@ pub struct AppState {
     pub high_speed_active: RwLock<bool>,
     /// Current rate mode — controls buy size, TP%, and SL% presets
     pub rate_mode: RwLock<RateMode>,
+    /// Current builder mode — controls wallet growth target + progressive scaling
+    pub builder_mode: RwLock<BuilderMode>,
+    /// Moon Chase: when ON, the momentum-hold escalator runs aggressive params
+    /// (more escalations, higher factor, wider pullback). Mirrored to the sniper
+    /// via `scematica-moon-chase.json`.
+    pub moon_chase: RwLock<bool>,
     /// Normalized PnL samples for the sparkline (scaled to u64 for ratatui Sparkline)
     pub pnl_sparkline: RwLock<VecDeque<u64>>,
     /// Best confirmed trade PnL this session (SOL)
@@ -112,6 +153,55 @@ pub struct AppState {
     pub price_history: RwLock<std::collections::HashMap<String, VecDeque<f64>>>,
     /// Pool radar entries — populated by sniper writing to scematica-pool-radar.json
     pub radar_pools: RwLock<Vec<RadarPool>>,
+    /// Live open positions — sniper updates `scematica-positions.json` every 1 s
+    pub live_positions: RwLock<Vec<LivePosition>>,
+}
+
+/// Wallet-growth ladder. Sets `wallet_target_sol` (profit-first stays on while
+/// the wallet is under target) and, for Super Builder, enables progressive
+/// rate-mode bumps as the wallet grows.
+///
+///   Off          — operator-defined target from `config.toml` (default 0.2)
+///   Growth       — 0.2 SOL target (matches default)
+///   Builder      — 1.0 SOL target
+///   SuperBuilder — 3.0 SOL target + progressive scaling
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuilderMode {
+    #[default]
+    Off,
+    Growth,
+    Builder,
+    SuperBuilder,
+}
+
+impl BuilderMode {
+    pub fn target_sol(self) -> f64 {
+        match self {
+            BuilderMode::Off          => 0.0, // sniper falls back to config value
+            BuilderMode::Growth       => 0.2,
+            BuilderMode::Builder      => 1.0,
+            BuilderMode::SuperBuilder => 3.0,
+        }
+    }
+    pub fn progressive(self) -> bool {
+        matches!(self, BuilderMode::SuperBuilder)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            BuilderMode::Off          => "Off",
+            BuilderMode::Growth       => "Growth",
+            BuilderMode::Builder      => "Builder",
+            BuilderMode::SuperBuilder => "SuperBuilder",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BuilderMode::Off          => "off",
+            BuilderMode::Growth       => "growth",
+            BuilderMode::Builder      => "builder",
+            BuilderMode::SuperBuilder => "super_builder",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -124,54 +214,99 @@ pub enum BotMode {
 }
 
 /// Rate mode controls buy size, take-profit, and stop-loss presets.
+///
+/// Modes ordered from least to most aggressive:
+///   Bearish → Micro → Safe → Balanced → Aggressive → Degen → Bullish
+///
+/// `Micro` is sized for wallets with only $1–2 of SOL — 0.1× the base
+/// quote_amount (≈0.001 SOL/trade) so a small bag can actually place a buy
+/// after fees and ATA rent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RateMode {
+    Bearish,
+    Micro,
     Safe,
     #[default]
     Balanced,
     Aggressive,
     Degen,
+    Bullish,
+    /// **Moon** — the 8th tier, built for chasing parabolic outliers. Entry TP
+    /// is 1200 % but the real prize is the escalator: with Moon Chase ON, a
+    /// Moon trade can ride through 7+ escalations (1200 % → 2100 % → 3675 % →
+    /// 6431 % → …) before the pullback exit fires. The 5 % of trades that
+    /// reach this territory pay for the much higher rate of small losses.
+    Moon,
 }
 
 impl RateMode {
     pub fn multiplier(self) -> f64 {
         match self {
+            RateMode::Bearish    => 0.3,
+            RateMode::Micro      => 0.1,
             RateMode::Safe       => 0.5,
             RateMode::Balanced   => 1.0,
             RateMode::Aggressive => 2.0,
             RateMode::Degen      => 4.0,
+            RateMode::Bullish    => 6.0,
+            RateMode::Moon       => 8.0,
         }
     }
     pub fn tp_pct(self) -> f64 {
+        // v0.9.0: base TP targets bumped to take advantage of momentum-hold
+        // escalation. The values below are entry triggers — once hit, the
+        // sell monitor escalates them if velocity is still strong, so a
+        // Balanced trade can ride 150 % → 225 % → 337 % → 506 % before
+        // capping out (4 escalations × 1.5×).
+        //
+        // Moon (v0.9.1) sits at 1200 % — high enough that the escalator only
+        // engages on legitimate parabolic moves, so we don't waste capital
+        // chasing small bumps with the most expensive position size.
         match self {
-            RateMode::Safe       =>  50.0,
-            RateMode::Balanced   => 100.0,
-            RateMode::Aggressive => 200.0,
-            RateMode::Degen      => 300.0,
+            RateMode::Bearish    =>   45.0,
+            RateMode::Micro      =>   60.0,
+            RateMode::Safe       =>   75.0,
+            RateMode::Balanced   =>  150.0,
+            RateMode::Aggressive =>  300.0,
+            RateMode::Degen      =>  450.0,
+            RateMode::Bullish    =>  750.0,
+            RateMode::Moon       => 1200.0,
         }
     }
     pub fn sl_pct(self) -> f64 {
         match self {
+            RateMode::Bearish    =>   8.0,
+            RateMode::Micro      =>  10.0,
             RateMode::Safe       =>  10.0,
             RateMode::Balanced   =>  15.0,
             RateMode::Aggressive =>  25.0,
             RateMode::Degen      =>  40.0,
+            RateMode::Bullish    =>  50.0,
+            RateMode::Moon       =>  60.0,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
+            RateMode::Bearish    => "Bearish",
+            RateMode::Micro      => "Micro",
             RateMode::Safe       => "Safe",
             RateMode::Balanced   => "Balanced",
             RateMode::Aggressive => "Aggressive",
             RateMode::Degen      => "Degen",
+            RateMode::Bullish    => "Bullish",
+            RateMode::Moon       => "Moon",
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
+            RateMode::Bearish    => "bearish",
+            RateMode::Micro      => "micro",
             RateMode::Safe       => "safe",
             RateMode::Balanced   => "balanced",
             RateMode::Aggressive => "aggressive",
             RateMode::Degen      => "degen",
+            RateMode::Bullish    => "bullish",
+            RateMode::Moon       => "moon",
         }
     }
     /// SOL per trade at base quote_amount=0.01
@@ -224,6 +359,8 @@ impl AppState {
             dump_mode_active: RwLock::new(false),
             high_speed_active: RwLock::new(false),
             rate_mode: RwLock::new(RateMode::default()),
+            builder_mode: RwLock::new(BuilderMode::default()),
+            moon_chase: RwLock::new(false),
             pnl_sparkline: RwLock::new(VecDeque::with_capacity(SPARKLINE_CAPACITY)),
             best_trade_pnl: RwLock::new(0.0),
             worst_trade_pnl: RwLock::new(0.0),
@@ -234,6 +371,7 @@ impl AppState {
             log_filter_active: RwLock::new(false),
             price_history: RwLock::new(std::collections::HashMap::new()),
             radar_pools: RwLock::new(Vec::new()),
+            live_positions: RwLock::new(Vec::new()),
         })
     }
 
@@ -387,6 +525,14 @@ impl AppState {
         *self.nn_stats.write() = Some(v);
     }
 
+    /// Read live open positions from scematica-positions.json (sniper writes every 1 s).
+    pub fn poll_live_positions_file(&self) {
+        const POS_FILE: &str = "scematica-positions.json";
+        let Ok(data) = std::fs::read_to_string(POS_FILE) else { return };
+        let Ok(positions) = serde_json::from_str::<Vec<LivePosition>>(&data) else { return };
+        *self.live_positions.write() = positions;
+    }
+
     /// Read pool radar entries from scematica-pool-radar.json.
     /// Drops any entries older than 5 minutes.
     pub fn poll_radar_file(&self) {
@@ -452,6 +598,15 @@ impl AppState {
         while history.len() > 200 {
             history.pop_front();
         }
+    }
+
+    /// Count currently open positions. Prefers the live registry (sniper writes
+    /// scematica-positions.json every 1 s); falls back to the trade-history
+    /// derivation when the registry hasn't been populated yet (sniper not
+    /// running, or just started).
+    pub fn open_position_count(&self) -> usize {
+        let live = self.live_positions.read().len();
+        if live > 0 { live } else { self.open_position_mints().len() }
     }
 
     /// Derive currently open positions from trade history.

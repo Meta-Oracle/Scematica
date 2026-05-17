@@ -156,6 +156,8 @@ impl ArbExecutor {
                         signature: sig.to_string(),
                         dex: dex_label,
                         hops: path.hops() as u8,
+                        pnl_pct: 0.0,
+                        position_age_secs: 0.0,
                     }
                     .append_to_file(TRADES_FILE);
 
@@ -175,6 +177,8 @@ impl ArbExecutor {
                         signature: sig.to_string(),
                         dex: path.pool_path.iter().map(|e| format!("{}", e.dex)).collect::<Vec<_>>().join("→"),
                         hops: path.hops() as u8,
+                        pnl_pct: 0.0,
+                        position_age_secs: 0.0,
                     }
                     .append_to_file(TRADES_FILE);
 

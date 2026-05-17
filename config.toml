@@ -25,7 +25,10 @@ auto_sell_delay_ms = 0
 take_profit_pct = 100.0   # Sell when up 100% — let winners run to 2x
 stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
 buy_slippage_pct = 1.0
-sell_slippage_pct = 20.0   # wider slippage — gets us out faster on thin pools
+sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
+                           # estimated_out computation and tx landing. 20% was
+                           # getting dropped by leader before the 0x26 fallback
+                           # could trigger.
 price_check_interval_ms = 1000    # check price every 1s (was 2s) — catches TP/SL 2x faster
 price_check_duration_ms = 180000  # 3 min monitor window (was 5 min) — force-sell sooner
 one_token_at_a_time = true
@@ -47,18 +50,33 @@ copy_wallets = []              # Wallet addresses to copy-trade (buy same tokens
 check_interval_ms = 1000   # poll filters every 1s (was 2s)
 check_duration_ms = 12000  # filter window 12s (was 20s) — accept good pools faster
 consecutive_matches = 1    # one confirmed pass is enough with all filters enabled
-check_mint_renounced = true
-check_freezable = true
-check_burned = true
-check_mutable = true
+check_mint_renounced = false  # Disabled: many pump.fun graduates haven't renounced
+                              # at the moment the WS programNotification fires —
+                              # the renounce tx is still in flight. Keeping this on
+                              # rejects 30–40% of legitimate fresh launches.
+check_freezable = true        # KEEP — freeze authority is a real honeypot signal
+check_burned = true           # KEEP — pool vault being non-empty is the real rug check
+check_mutable = true          # Metadata mutability check (cheap, keep)
 check_socials = false
-min_pool_size = 5.0        # Minimum pool size in SOL
-max_pool_size = 0.0        # 0 = disabled
-check_name = true          # Reject tokens with scam/rug words in name
+min_pool_size = 0.3           # Minimum pool SOL liquidity. Fresh pump.fun graduates
+                              # land at 0.4–3 SOL, so 5 was rejecting all of them.
+                              # 0.3 lets micro-cap snipes through while still cutting
+                              # the truly-dead pools that come back to life.
+max_pool_size = 0.0           # 0 = disabled
+check_name = false            # Disabled: common substrings like "test"/"moon"/"fair
+                              # launch" generate too many false positives on real
+                              # memecoin names. Re-enable if your snipe list is
+                              # specifically curated against scam-word patterns.
 check_volume = false       # Require recent transaction activity (off by default)
 min_volume_txns = 3        # Minimum transactions in last 60s
 check_liquidity_depth = true      # Check price impact before buying
 max_price_impact_pct = 5.0        # Reject if our buy causes >5% price impact
+
+# Holder concentration: fresh memecoins consistently have >80% top-10 concentration
+# in their first minutes (dev + early buyers). 70% cap was killing every pool.
+# Disabled here; re-enable with a high cap (e.g. 95%) if you want it as a softer guard.
+check_holder_concentration = false
+max_top10_holder_pct = 95.0
 
 # ============================================================
 # Arbitrage Configuration

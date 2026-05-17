@@ -70,6 +70,13 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool, log_filt
             KeyCode::Char('4') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Degen)),
             // [e] on the Logs tab toggles emergency sell mode
             KeyCode::Char('e') if current_tab == 2 && !log_filter_active => Some(DashboardAction::ToggleSellMode),
+            // [b] on the Logs tab force-clears sell mode (resume buying). Deletes the
+            // sell-mode file regardless of which subsystem set it (drawdown / buy_limit
+            // / dashboard) — the operator is explicitly overriding the safety.
+            KeyCode::Char('b') if current_tab == 2 && !log_filter_active => Some(DashboardAction::BuyMode),
+            // [h] on the Logs tab toggles HIGH-SPEED MODE — bypasses filters/AI/scorer
+            // and races for entries. Accepts higher 429 / fail rate as the trade-off.
+            KeyCode::Char('h') if current_tab == 2 && !log_filter_active => Some(DashboardAction::ToggleHighSpeed),
             // [d] on the Logs tab triggers auto dump — force-sells all positions immediately
             KeyCode::Char('d') if current_tab == 2 && !log_filter_active => Some(DashboardAction::AutoDump),
             // [/] on the Logs tab activates the filter bar
@@ -79,6 +86,10 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool, log_filt
             KeyCode::Backspace if current_tab == 2 && log_filter_active => Some(DashboardAction::LogFilterBackspace),
             // [x] on the Trades tab exports history to CSV
             KeyCode::Char('x') if current_tab == 1 => Some(DashboardAction::ExportCsv),
+            // [R] on the Trades tab resets the position counter — backs up + truncates
+            // scematica-trades.jsonl and clears the in-memory deque. Use this when the
+            // displayed open-position count is stale (e.g., wallet was emptied externally).
+            KeyCode::Char('R') if current_tab == 1 => Some(DashboardAction::ResetPositions),
             _ => None,
         }
     }
@@ -97,9 +108,12 @@ pub enum DashboardAction {
     StartBot(BotMode),
     StopBot,
     ToggleSellMode,
+    BuyMode,
+    ToggleHighSpeed,
     AutoDump,
     SetRateMode(RateMode),
     ExportCsv,
+    ResetPositions,
     LogFilterActivate,
     LogFilterChar(char),
     LogFilterBackspace,

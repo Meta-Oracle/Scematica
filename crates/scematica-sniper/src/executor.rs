@@ -94,11 +94,18 @@ impl TxExecutor for DefaultExecutor {
         wallet: &Keypair,
         rpc: &Arc<RpcClient>,
     ) -> Result<ExecResult> {
-        let cpu_price = if self.dynamic_fees {
-            self.get_dynamic_fee(rpc).await
-        } else {
-            self.compute_unit_price
+        let high_speed_fee_now = std::path::Path::new("scematica-highspeed-mode.json").exists();
+        let cpu_price = {
+            let base = if self.dynamic_fees {
+                self.get_dynamic_fee(rpc).await
+            } else {
+                self.compute_unit_price
+            };
+            if high_speed_fee_now { base.saturating_mul(3) } else { base }
         };
+        // Capture caller-supplied instruction count BEFORE moving into all_ixs —
+        // used below for the buy-vs-sell heuristic (buy=5+, sell=1–3).
+        let caller_ix_count = instructions.len();
         let mut all_ixs = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
             ComputeBudgetInstruction::set_compute_unit_price(cpu_price),
@@ -111,37 +118,82 @@ impl TxExecutor for DefaultExecutor {
         let mut tx = Transaction::new_unsigned(msg);
         tx.sign(&[wallet], blockhash);
 
+        let send_config = solana_client::rpc_config::RpcSendTransactionConfig {
+            skip_preflight: self.skip_preflight,
+            ..Default::default()
+        };
+
+        // High-speed mode toggles via a sentinel file (so the sniper, executor, and
+        // dashboard all agree without plumbing an extra arg through every call site).
+        let high_speed = std::path::Path::new("scematica-highspeed-mode.json").exists();
+
+        // Heuristic: buys carry many caller-supplied instructions (create-WSOL-ATA +
+        // transfer + sync_native + create-base-ATA + swap, typically 5+). Sells are
+        // just the swap (and maybe a close-account), typically 1–2. We tighten the
+        // per-attempt deadline only on buys in high-speed mode — sells must always
+        // get enough time to LAND, otherwise the position can't exit and we get the
+        // "sell exhausted 5 retries" loop.
+        let is_buy_shape = caller_ix_count >= 4;
+
         for attempt in 0..self.max_retries {
-            debug!("Sending transaction attempt {}/{}", attempt + 1, self.max_retries);
-            match rpc
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    &tx,
-                    CommitmentConfig::confirmed(),
-                    solana_client::rpc_config::RpcSendTransactionConfig {
-                        skip_preflight: self.skip_preflight,
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                Ok(sig) => {
-                    info!("Transaction confirmed: {}", sig);
+            debug!(
+                "Sending transaction attempt {}/{} (high_speed={}, buy_shape={})",
+                attempt + 1, self.max_retries, high_speed, is_buy_shape,
+            );
+            let per_attempt_deadline = if high_speed && is_buy_shape {
+                tokio::time::Duration::from_millis(2500)
+            } else {
+                tokio::time::Duration::from_secs(6)
+            };
+            const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(400);
+
+            let outcome = tokio::time::timeout(per_attempt_deadline, async {
+                // 1. Fire the tx (non-blocking — returns once the RPC accepts it).
+                let sig = rpc
+                    .send_transaction_with_config(&tx, send_config)
+                    .await?;
+
+                // 2. Poll for `processed` commitment. `processed` is the fastest meaningful
+                //    state on Solana — typically lands within 400–800 ms. Waiting for
+                //    `confirmed` here costs another 800–1500 ms per snipe with no value
+                //    because the sell-monitor verifies the position via on-chain balance
+                //    read anyway.
+                loop {
+                    match rpc
+                        .confirm_transaction_with_commitment(&sig, CommitmentConfig::processed())
+                        .await
+                    {
+                        Ok(resp) if resp.value => return Ok::<_, anyhow::Error>(sig),
+                        Ok(_)                  => tokio::time::sleep(POLL_INTERVAL).await,
+                        Err(e)                 => return Err(e.into()),
+                    }
+                }
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(sig)) => {
+                    info!("Transaction landed: {}", sig);
                     return Ok(ExecResult {
                         signature: Some(sig.to_string()),
                         confirmed: true,
                         error: None,
                     });
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     let msg = e.to_string();
                     warn!("Transaction attempt {} failed: {}", attempt + 1, msg);
                     if attempt + 1 < self.max_retries {
-                        // Exponential back-off: 429 → 8 s, 16 s, 32 s; others → 500 ms
-                        // Helius free plan rate window is ~10 s — start above it
-                        let delay_ms: u64 = if msg.contains("429") {
+                        // High-speed: skip the 429 backoff entirely and retry near-immediately.
+                        //             The operator opted into the rate-limit thrash.
+                        // Normal:     429 → 8 s, 16 s, 32 s (Helius free-plan window is ~10 s);
+                        //             other transient failures (stale blockhash) → 200 ms.
+                        let delay_ms: u64 = if high_speed {
+                            50
+                        } else if msg.contains("429") {
                             8000u64 << attempt.min(2)
                         } else {
-                            500
+                            200
                         };
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                     } else {
@@ -149,6 +201,22 @@ impl TxExecutor for DefaultExecutor {
                             signature: None,
                             confirmed: false,
                             error: Some(msg),
+                        });
+                    }
+                }
+                Err(_) => {
+                    warn!(
+                        "Transaction attempt {}/{} timed out after {:?}",
+                        attempt + 1, self.max_retries, per_attempt_deadline,
+                    );
+                    if attempt + 1 < self.max_retries {
+                        let gap_ms = if high_speed { 50 } else { 200 };
+                        tokio::time::sleep(tokio::time::Duration::from_millis(gap_ms)).await;
+                    } else {
+                        return Ok(ExecResult {
+                            signature: None,
+                            confirmed: false,
+                            error: Some(format!("timeout after {:?}", per_attempt_deadline)),
                         });
                     }
                 }

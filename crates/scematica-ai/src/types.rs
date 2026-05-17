@@ -196,8 +196,14 @@ pub struct TokenRiskScore {
 }
 
 impl TokenRiskScore {
+    /// Allow the buy unless the AI actively flags it as high-risk (score < 40).
+    /// "unknown symbol" / "no social links" are normal for fresh pump.fun graduates
+    /// and shouldn't gate a snipe — the AI here is a rug-pattern detector, not a
+    /// quality filter. Previously we required recommendation=="buy" AND score>=60,
+    /// which rejected every fresh-launch token because the LLM returns "watch"
+    /// when symbol/socials are blank.
     pub fn should_buy(&self) -> bool {
-        self.recommendation == "buy" && self.score >= 60
+        !self.is_high_risk()
     }
 
     pub fn is_high_risk(&self) -> bool {

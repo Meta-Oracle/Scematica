@@ -1,0 +1,47 @@
+[package]
+name = "scematica-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica Protocol: Rust-native x402 HTTP 402 payment standard for Solana"
+
+[[bin]]
+name = "protocol"
+path = "src/main.rs"
+
+[dependencies]
+scematica-core = { path = "../scematica-core" }
+
+# Solana
+solana-sdk.workspace = true
+solana-client.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
+
+# HTTP server — axum 0.6 shares http/tower crate versions with the rest of the workspace
+axum = { version = "0.6", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.4", features = ["cors", "trace"] }
+
+# Async
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+bincode.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Utilities
+chrono.workspace = true
+dotenv.workspace = true
+clap = { version = "4", features = ["derive"] }

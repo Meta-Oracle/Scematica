@@ -47,6 +47,43 @@ fn amm_out(amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
     (num / den) as u64
 }
 
+/// RAII guard: holds the one_token_at_a_time processing lock and unconditionally
+/// releases it on Drop. Prevents lock leaks on early returns, panics, or
+/// awaits cancelled by an enclosing timeout — any of which previously left the
+/// sniper unable to process *any* further pool until restart.
+///
+/// Call `release_to_sell_monitor()` when you intentionally want to hand the lock
+/// off to the post-buy sell monitor (only released when the position closes).
+struct ProcessingSlot<'a> {
+    lock: &'a Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl<'a> ProcessingSlot<'a> {
+    /// Try to claim the slot atomically. Returns `None` if already held.
+    fn try_acquire(lock: &'a Arc<AtomicBool>) -> Option<Self> {
+        if lock.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            Some(Self { lock, armed: true })
+        } else {
+            None
+        }
+    }
+
+    /// Hand the slot off — the sell monitor will release it when the position closes.
+    /// After calling this, the Drop impl becomes a no-op.
+    fn release_to_sell_monitor(mut self) {
+        self.armed = false;
+    }
+}
+
+impl<'a> Drop for ProcessingSlot<'a> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.lock.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Live-adjustable trading parameters — updated by the Strategy Agent at runtime.
 /// Wrapped in RwLock so the strategy loop can write while the sniper reads.
 #[derive(Debug, Clone)]
@@ -99,6 +136,17 @@ pub struct Sniper {
     pub sell_mode: Arc<AtomicBool>,
     /// Set true by the dump-mode file watcher — sells all positions immediately with min_out=0
     pub dump_mode: Arc<AtomicBool>,
+    /// HIGH-SPEED MODE — set true by the high-speed-mode file watcher. When on:
+    ///   • the filter pipeline is bypassed entirely (we trust the listener gate)
+    ///   • AI risk + pool-scorer + radar pre-fetch are skipped
+    ///   • the executor uses a tighter per-attempt deadline + lower 429 backoff
+    ///   • compute_unit_price is escalated 3× to win priority races
+    /// Deliberately accepts 429 / failed-tx noise as the cost of doing business.
+    pub high_speed_mode: Arc<AtomicBool>,
+    /// Last unix-second when we surfaced a "skipped due to sell/dump mode" log line.
+    /// Used to throttle the (otherwise per-pool spammy) info messages to ~once / 30 s,
+    /// so the operator can see *why* nothing is being bought without the log scrolling.
+    skip_log_throttle_secs: Arc<AtomicU64>,
     /// Semaphore: limits concurrent sell transactions to avoid 429 hammering
     sell_sem: Arc<tokio::sync::Semaphore>,
     /// Counts successful buys this session — activates sell mode when config.max_buys is hit
@@ -216,6 +264,8 @@ impl Sniper {
             trade_history: Arc::new(Mutex::new(Vec::new())),
             sell_mode: Arc::new(AtomicBool::new(false)),
             dump_mode: Arc::new(AtomicBool::new(false)),
+            high_speed_mode: Arc::new(AtomicBool::new(false)),
+            skip_log_throttle_secs: Arc::new(AtomicU64::new(0)),
             sell_sem: Arc::new(tokio::sync::Semaphore::new(1)),
             buy_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             open_positions: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -403,8 +453,15 @@ impl Sniper {
     async fn on_new_pool(&self, pool: CachedPool) {
         let mint_str = pool.base_mint.to_string();
 
-        // Skip if already processed
+        // Cross-session dedup. The listener-level seen_pool_ids set already drops
+        // duplicate events within a session before they reach us, so this guard
+        // mostly fires for pools persisted to pool-cache.json from a prior run.
         if self.pool_cache.contains(&pool.id.to_string()) {
+            debug!(
+                mint = %pool.base_mint,
+                pool = %pool.id,
+                "Pool already in persisted cache — skipping (clear pool-cache.json to re-eval)"
+            );
             return;
         }
 
@@ -425,9 +482,31 @@ impl Sniper {
         // one_token_at_a_time gate is enforced atomically right before the buy.
         // Filters still run on every pool so we keep stats current.
 
-        // Skip all buys when sell mode or dump mode is active
-        if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
-            debug!(mint = %pool.base_mint, "Sell/dump mode active — skipping buy");
+        // Skip all buys when sell mode or dump mode is active. Emit a visible log
+        // line at most once every 30 s so the operator sees the bot is alive and
+        // why it's not buying — without flooding the dashboard for every Raydium
+        // program notification.
+        let sell_on = self.sell_mode.load(Ordering::Relaxed);
+        let dump_on = self.dump_mode.load(Ordering::Relaxed);
+        if sell_on || dump_on {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last = self.skip_log_throttle_secs.load(Ordering::Relaxed);
+            if now_secs.saturating_sub(last) >= 30 {
+                if self.skip_log_throttle_secs
+                    .compare_exchange(last, now_secs, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    let mode = if dump_on { "DUMP" } else { "SELL" };
+                    info!(
+                        mode,
+                        "Pools being skipped because {} mode is active — press [b] on dashboard Logs tab to clear",
+                        mode,
+                    );
+                }
+            }
             return;
         }
 
@@ -538,9 +617,33 @@ impl Sniper {
             tokio::time::sleep(tokio::time::Duration::from_millis(self.config.buy_delay_ms)).await;
         }
 
-        // Run filters (unless snipe list mode) — hard cap at 25s so a hung RPC node
-        // can't stall this evaluation task and starve the pool stream.
-        if self.snipe_list.is_none() {
+        // Fetch pool size + compute score UPFRONT so radar entries reflect reality
+        // for both passed and rejected pools. Without this every rejected pool wrote
+        // (size=0, score=0) — every dot stacked at the canvas origin so the radar
+        // looked broken.
+        let upfront_pool_size_lamports: u64 = tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            self.rpc.get_token_account_balance(&pool.quote_vault),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|b| b.amount.parse::<u64>().ok())
+        .unwrap_or(0);
+        let upfront_pool_size_sol = upfront_pool_size_lamports as f64 / 1e9;
+        let upfront_score = PoolScorer::score(&pool, upfront_pool_size_lamports);
+
+        // High-speed mode: skip filters, AI, scorer — go straight to buy. The operator
+        // has explicitly opted in to extra rugs / failed buys / 429s in exchange for
+        // entry latency. We still respect the listener's open_time gate above.
+        let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+        if high_speed {
+            info!(mint = %pool.base_mint, "⚡ HIGH-SPEED — bypassing filters/AI/scorer");
+        }
+
+        // Run filters (unless snipe list mode or high-speed mode) — hard cap at 25s
+        // so a hung RPC node can't stall this evaluation task and starve the pool stream.
+        if !high_speed && self.snipe_list.is_none() {
             let filter_result = tokio::time::timeout(
                 tokio::time::Duration::from_secs(25),
                 self.filter_pipeline.execute(&pool),
@@ -549,19 +652,19 @@ impl Sniper {
                 Ok(true) => {}
                 Ok(false) => {
                     info!(mint = %pool.base_mint, "Pool rejected by filters");
-                    self.write_radar_entry(&pool, 0.0, false, 0.0);
+                    self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
                     return;
                 }
                 Err(_) => {
                     warn!(mint = %pool.base_mint, "Filter pipeline timed out (25s) — skipping pool");
-                    self.write_radar_entry(&pool, 0.0, false, 0.0);
+                    self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
                     return;
                 }
             }
         }
 
-        // AI risk assessment (if available)
-        if let Some(ai) = &self.ai {
+        // AI risk assessment (if available, and not high-speed)
+        if !high_speed { if let Some(ai) = &self.ai {
             let pool_size_sol = scematica_core::token::raw_to_ui(
                 // rough estimate from quote vault — 0 if unavailable
                 self.rpc.get_token_account_balance(&pool.quote_vault).await
@@ -574,15 +677,17 @@ impl Sniper {
             // UTC hour from open_time (unix timestamp)
             let open_hour = (pool.open_time % 86400 / 3600) as u8;
 
-            // Pool already passed all enabled filters at this point, so:
-            // - mint_renounced = true  (MintRenounceFilter passed or was disabled)
-            // - freezable = false      (FreezableFilter passed or was disabled)
-            // - lp_burned = true       (BurnFilter passed or was disabled)
-            // Pass the known-good state so the AI isn't told the token is risky.
-            let mint_renounced = self.config.filters.check_mint_renounced; // enabled → verified
-            let freezable = false; // FreezableFilter already confirmed not freezable
-            let lp_burned = self.config.filters.check_burned;
-            let mutable_metadata = !self.config.filters.check_mutable; // mutable only if we didn't check
+            // The pool has already passed every ENABLED filter at this point. When a
+            // filter is disabled, the operator opted out of caring — feed the AI the
+            // "safe" value rather than the disabled flag, otherwise the LLM scores it
+            // as risky for things we explicitly chose not to check (e.g., we disabled
+            // check_mint_renounced because pump.fun graduates renounce *after* the WS
+            // notification; the AI was scoring them 30/100 with "mint not renounced"
+            // as the top reason, and rejecting every buy).
+            let mint_renounced = true;
+            let freezable = false;
+            let lp_burned = true;
+            let mutable_metadata = false;
 
             let risk = ai.risk.score_token(
                 &pool.base_mint.to_string(),
@@ -627,10 +732,10 @@ impl Sniper {
                     return;
                 }
             }
-        }
+        } } // close `if let Some(ai)` and the outer `if !high_speed` guard
 
-        // ── Pool predictive scoring ────────────────────────────────────────────
-        if self.config.min_pool_score > 0.0 {
+        // ── Pool predictive scoring (skipped in high-speed mode) ───────────────
+        if !high_speed && self.config.min_pool_score > 0.0 {
             let pool_size_lamports = self.rpc
                 .get_token_account_balance(&pool.quote_vault)
                 .await
@@ -786,17 +891,20 @@ impl Sniper {
             }
         };
 
-        // Atomically claim the processing slot — skip buy if another position owns it.
-        // Using compare_exchange so the check+set is race-free (unlike the old Mutex<bool> pattern).
-        if self.config.one_token_at_a_time {
-            if self.processing_lock
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
-                debug!(mint = %pool.base_mint, "one_token_at_a_time: slot taken, skipping buy");
-                return Ok(());
+        // High-speed bypasses the one_token_at_a_time gate so multiple snipes can
+        // race in parallel. Otherwise we hold the lock for the duration of the buy.
+        let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+        let slot = if self.config.one_token_at_a_time && !high_speed {
+            match ProcessingSlot::try_acquire(&self.processing_lock) {
+                Some(g) => Some(g),
+                None => {
+                    debug!(mint = %pool.base_mint, "one_token_at_a_time: slot taken, skipping buy");
+                    return Ok(());
+                }
             }
-        }
+        } else {
+            None
+        };
 
         // Build the final instruction list:
         // 1. Create WSOL ATA (idempotent)
@@ -844,9 +952,30 @@ impl Sniper {
         let ixs = final_ixs;
 
 
+        // Per-attempt deadline — independently of the executor's own internal cap.
+        // Defense in depth: even if a custom executor (e.g. Jito) blocks forever
+        // on the bundle endpoint, the buy task here can never hold the slot beyond this.
+        const BUY_ATTEMPT_DEADLINE: tokio::time::Duration = tokio::time::Duration::from_secs(8);
+
         for attempt in 0..self.config.max_buy_retries {
             info!("Buy attempt {}/{}", attempt + 1, self.config.max_buy_retries);
-            match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
+            let exec_outcome = tokio::time::timeout(
+                BUY_ATTEMPT_DEADLINE,
+                self.executor.execute(ixs.clone(), &self.wallet, &self.rpc),
+            ).await;
+            let exec_result = match exec_outcome {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(
+                        mint = %pool.base_mint,
+                        attempt = attempt + 1,
+                        "executor.execute() exceeded {:?} — skipping to next attempt",
+                        BUY_ATTEMPT_DEADLINE,
+                    );
+                    continue;
+                }
+            };
+            match exec_result {
                 Ok(result) if result.confirmed => {
                     info!(
                         mint = %pool.base_mint,
@@ -905,15 +1034,17 @@ impl Sniper {
                     }
 
                     // Schedule auto-sell — the monitor task owns the lock release.
-                    // If auto_sell is disabled we release the lock here instead.
+                    // If auto_sell is disabled the slot is released by ProcessingSlot::Drop
+                    // when this function returns.
                     if self.config.auto_sell {
+                        // Hand off the slot to the spawned sell monitor; the monitor task
+                        // is responsible for storing(false) when the position closes.
+                        if let Some(s) = slot { s.release_to_sell_monitor(); }
                         let pool_clone = pool.clone();
                         let monitor = self.clone_for_sell();
                         tokio::spawn(async move {
                             monitor.monitor_and_sell(pool_clone, base_ata).await;
                         });
-                    } else if self.config.one_token_at_a_time {
-                        self.processing_lock.store(false, Ordering::Relaxed);
                     }
                     return Ok(());
                 }
@@ -944,10 +1075,7 @@ impl Sniper {
             dex: "Raydium".into(),
             hops: 1,
         }.append_to_file(TRADES_FILE);
-        if self.config.one_token_at_a_time {
-            self.processing_lock.store(false, Ordering::Relaxed);
-        }
-
+        // ProcessingSlot::Drop releases the lock when `slot` goes out of scope here.
         Ok(())
     }
 
@@ -1445,6 +1573,7 @@ impl Sniper {
             sell_mode: self.sell_mode.clone(),
             dump_mode: self.dump_mode.clone(),
             sell_sem: self.sell_sem.clone(),
+            buy_count: self.buy_count.clone(),
             open_positions: self.open_positions.clone(),
             consecutive_losses: self.consecutive_losses.clone(),
             cooldown_until_ms: self.cooldown_until_ms.clone(),
@@ -1474,6 +1603,7 @@ struct SellMonitor {
     sell_mode: Arc<AtomicBool>,
     dump_mode: Arc<AtomicBool>,
     sell_sem: Arc<tokio::sync::Semaphore>,
+    buy_count: Arc<std::sync::atomic::AtomicU32>,
     open_positions: Arc<std::sync::atomic::AtomicU32>,
     consecutive_losses: Arc<std::sync::atomic::AtomicU32>,
     cooldown_until_ms: Arc<std::sync::atomic::AtomicU64>,
@@ -1495,14 +1625,20 @@ impl SellMonitor {
             .await;
         }
 
-        // Fast-poll the first 20 checks at 100ms to catch the initial pump, then switch to normal interval.
-        let fast_phase_checks: u64 = 20;
-        let fast_interval    = tokio::time::Duration::from_millis(100);
-        let normal_interval  = tokio::time::Duration::from_millis(self.config.price_check_interval_ms.max(500));
-        let fast_budget_ms   = fast_phase_checks * 100;
+        // Fast-poll the first 30 checks at 75 ms to catch the initial pump/dump, then switch to normal interval.
+        // The 3x balance fetches per check now run in parallel (tokio::join!), so 75 ms is a realistic
+        // floor on a Helius/Triton endpoint — the previous 100 ms left RPC capacity idle between polls.
+        let fast_phase_checks: u64 = 30;
+        let fast_poll_ms: u64        = 75;
+        let fast_interval    = tokio::time::Duration::from_millis(fast_poll_ms);
+        let normal_floor_ms          = 250u64;
+        let normal_interval  = tokio::time::Duration::from_millis(
+            self.config.price_check_interval_ms.max(normal_floor_ms),
+        );
+        let fast_budget_ms   = fast_phase_checks * fast_poll_ms;
         let remaining_budget = self.config.price_check_duration_ms.saturating_sub(fast_budget_ms);
         let normal_checks    = if self.config.price_check_interval_ms > 0 {
-            remaining_budget / self.config.price_check_interval_ms.max(500)
+            remaining_budget / self.config.price_check_interval_ms.max(normal_floor_ms)
         } else { 0 };
         let max_checks = fast_phase_checks + normal_checks;
 
@@ -1541,15 +1677,38 @@ impl SellMonitor {
             let target_profit    = (self.quote_amount_raw as f64 * (1.0 + take_profit_pct / 100.0)) as u64;
             let mut stop_loss_amount = (self.quote_amount_raw as f64 * (1.0 - stop_loss_pct / 100.0)) as u64;
 
-            match self.rpc.get_token_account_balance(&base_ata).await {
+            // Fan out the three balance reads concurrently with a 2 s wall-clock cap.
+            // Without this cap, a single stalled RPC would freeze the whole sell loop —
+            // the position would sit through any pump/dump without ever re-evaluating
+            // TP/SL until `max_checks` finally elapsed (potentially minutes).
+            const SELL_POLL_DEADLINE: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+            let fetch_fut = async {
+                tokio::join!(
+                    self.rpc.get_token_account_balance(&base_ata),
+                    self.rpc.get_token_account_balance(&pool.quote_vault),
+                    self.rpc.get_token_account_balance(&pool.base_vault),
+                )
+            };
+            let (ata_res, qb_res, bb_res) = match tokio::time::timeout(SELL_POLL_DEADLINE, fetch_fut).await {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::debug!(
+                        mint = %pool.base_mint,
+                        "Sell-monitor balance fetch timed out — skipping this iteration"
+                    );
+                    checks += 1;
+                    if checks >= max_checks { break; }
+                    let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+                    tokio::time::sleep(sleep_dur).await;
+                    continue;
+                }
+            };
+            match ata_res {
                 Ok(balance) => {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount == 0 { break; }
 
-                    if let (Ok(qb), Ok(bb)) = (
-                        self.rpc.get_token_account_balance(&pool.quote_vault).await,
-                        self.rpc.get_token_account_balance(&pool.base_vault).await,
-                    ) {
+                    if let (Ok(qb), Ok(bb)) = (qb_res, bb_res) {
                         let q: u64 = qb.amount.parse().unwrap_or(1);
                         let b: u64 = bb.amount.parse().unwrap_or(1);
                         // Use correct AMM formula with 0.25% fee — more accurate than naive ratio
@@ -1623,11 +1782,12 @@ impl SellMonitor {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
                         self.sell_with_retry(&pool, &base_ata, amount).await;
-                        // Use current pool state for PnL estimate, default to -2% if unavailable
-                        let (pnl_lam, pnl_sol) = if let (Ok(qb), Ok(bb)) = (
-                            self.rpc.get_token_account_balance(&pool.quote_vault).await,
-                            self.rpc.get_token_account_balance(&pool.base_vault).await,
-                        ) {
+                        // Parallel reserve fetch for PnL estimate.
+                        let (qb_res, bb_res) = tokio::join!(
+                            self.rpc.get_token_account_balance(&pool.quote_vault),
+                            self.rpc.get_token_account_balance(&pool.base_vault),
+                        );
+                        let (pnl_lam, pnl_sol) = if let (Ok(qb), Ok(bb)) = (qb_res, bb_res) {
                             let q = qb.amount.parse::<u64>().unwrap_or(1);
                             let b = bb.amount.parse::<u64>().unwrap_or(1);
                             let val = amm_out(amount, b, q) as i64;
@@ -1647,8 +1807,33 @@ impl SellMonitor {
             tokio::time::sleep(sleep_dur).await;
         }
 
-        // Position closed — decrement counter
-        self.open_positions.fetch_sub(1, Ordering::Relaxed);
+        // Position closed — decrement counter. fetch_sub returns the previous value,
+        // so a return of 1 means we just dropped to 0 open positions.
+        let prev_open = self.open_positions.fetch_sub(1, Ordering::Relaxed);
+        if prev_open == 1 {
+            // All positions are closed. If buy_limit auto-tripped sell mode, undo it
+            // so a fresh trading session can begin: reset the buy counter, delete the
+            // sell-mode file (the main-loop watcher will then flip sell_mode → false),
+            // and clear the atomic immediately so the next pool isn't gated.
+            //
+            // We deliberately only auto-clear OUR own trigger (reason=="buy_limit").
+            // Dashboard- or drawdown-triggered sell modes carry different reasons and
+            // must persist until the user / operator clears them.
+            let was_buy_limit = std::fs::read_to_string("scematica-sell-mode.json")
+                .map(|s| s.contains("buy_limit"))
+                .unwrap_or(false);
+            if was_buy_limit {
+                let prev = self.buy_count.swap(0, Ordering::Relaxed);
+                self.sell_mode.store(false, Ordering::Relaxed);
+                let _ = std::fs::remove_file("scematica-sell-mode.json");
+                tracing::info!(
+                    cleared_buys = prev,
+                    "All positions closed — buy counter reset, sell-mode lifted (buy_limit cycle complete)",
+                );
+            } else {
+                tracing::debug!("All positions closed (sell_mode external — not auto-resetting)");
+            }
+        }
         if self.config.one_token_at_a_time {
             self.processing_lock.store(false, Ordering::Relaxed);
         }
@@ -1881,10 +2066,19 @@ impl SellMonitor {
                         error = %err,
                         "Sell attempt failed"
                     );
-                    // 0x26 = Raydium slippage check; rebuild with min_out=0 without consuming a retry
-                    if err.contains("0x26") && !tried_zero_slippage {
+                    // Trigger zero-slippage fallback either when Raydium explicitly reports
+                    // 0x26 (slippage error) OR when our send/confirm window times out (which
+                    // it does when the leader drops the tx before reporting the slippage error
+                    // back — common on thin pump.fun pools where price moves >20% during the
+                    // 6s window). Without the timeout branch, we'd burn all 5 retries on a
+                    // tx the leader keeps dropping.
+                    let is_slippage_or_timeout =
+                        err.contains("0x26")
+                        || err.contains("timeout after")
+                        || err.contains("slippage");
+                    if is_slippage_or_timeout && !tried_zero_slippage {
                         tried_zero_slippage = true;
-                        tracing::warn!(mint = %pool.base_mint, "0x26 slippage — rebuilding sell with min_out=0");
+                        tracing::warn!(mint = %pool.base_mint, error = %err, "Slippage/timeout — rebuilding sell with min_out=0");
                         if let Ok(swap_rebuilt) = self.raydium_builder.build_swap(
                             &pool.id,
                             &wallet_pubkey,

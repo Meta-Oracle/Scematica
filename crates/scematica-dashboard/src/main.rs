@@ -14,7 +14,7 @@ use scematica_core::metrics::BotMetrics;
 use scematica_core::token::raw_to_ui;
 use scematica_core::types::known_tokens;
 use scematica_dashboard::{
-    app::AppState,
+    app::{AppState, BotMode},
     chat::{ChatLine, ChatUpdate},
     demo::run_demo,
     events::{handle_key, spawn_event_reader, AppEvent, DashboardAction},
@@ -304,6 +304,49 @@ async fn main() -> Result<()> {
                                     );
                                 }
                             }
+                            DashboardAction::BuyMode => {
+                                // Force-clear sell mode regardless of which subsystem set it.
+                                // Inspect the file (if any) so the log entry tells the operator
+                                // what they just overrode — drawdown? buy_limit? manual?
+                                const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
+                                let prior_reason = std::fs::read_to_string(SELL_MODE_FILE)
+                                    .ok()
+                                    .and_then(|s| {
+                                        serde_json::from_str::<serde_json::Value>(&s).ok()
+                                    })
+                                    .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)))
+                                    .unwrap_or_else(|| "manual".to_string());
+                                let existed = std::path::Path::new(SELL_MODE_FILE).exists();
+                                let _ = std::fs::remove_file(SELL_MODE_FILE);
+                                *state.sell_mode_active.write() = false;
+                                if existed {
+                                    state.push_log(format!(
+                                        "[BUY MODE] Sell-mode cleared (was: {}) — buying re-enabled",
+                                        prior_reason,
+                                    ));
+                                } else {
+                                    state.push_log(
+                                        "[BUY MODE] No sell-mode file present; buying already enabled".to_string()
+                                    );
+                                }
+                            }
+                            DashboardAction::ToggleHighSpeed => {
+                                const HS_FILE: &str = "scematica-highspeed-mode.json";
+                                let currently = *state.high_speed_active.read();
+                                let next = !currently;
+                                *state.high_speed_active.write() = next;
+                                if next {
+                                    let _ = std::fs::write(HS_FILE, r#"{"active":true}"#);
+                                    state.push_log(
+                                        "[HIGH-SPEED] ⚡ ENGAGED — filters/AI/scorer bypassed, fee escalated, parallel buys. Expect 429s.".to_string()
+                                    );
+                                } else {
+                                    let _ = std::fs::remove_file(HS_FILE);
+                                    state.push_log(
+                                        "[HIGH-SPEED] Disengaged — normal filter pipeline restored".to_string()
+                                    );
+                                }
+                            }
                             DashboardAction::AutoDump => {
                                 let currently = *state.dump_mode_active.read();
                                 let next = !currently;
@@ -326,6 +369,22 @@ async fn main() -> Result<()> {
                                     Ok(path) => state.push_log(format!("[EXPORT] Trades saved to {}", path)),
                                     Err(e) => state.push_log(format!("[EXPORT] Failed: {}", e)),
                                 }
+                            }
+                            DashboardAction::ResetPositions => {
+                                // Back up the trades file, truncate it, and clear the in-memory
+                                // deque + offset. Next poll will be a no-op (file is empty).
+                                use std::fs;
+                                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                                let backup = format!("scematica-trades.jsonl.bak-{}", ts);
+                                let backup_ok = fs::rename("scematica-trades.jsonl", &backup).is_ok();
+                                let trunc_ok = fs::write("scematica-trades.jsonl", []).is_ok();
+                                state.trades.write().clear();
+                                *state.trade_file_offset.write() = 0;
+                                state.push_log(format!(
+                                    "[RESET] Position counter cleared (backup: {}, ok={})",
+                                    if backup_ok { backup } else { "skipped".to_string() },
+                                    trunc_ok,
+                                ));
                             }
                             DashboardAction::LogFilterActivate => {
                                 *state.log_filter_active.write() = true;
@@ -365,24 +424,32 @@ async fn main() -> Result<()> {
                     state.poll_metrics_file();
                     state.poll_trade_file();
                     state.poll_strategy_file();
-                    state.poll_log_file();
+                    // Only tail scematica-sniper.log when the sniper is NOT a child of
+                    // this dashboard. When dashboard-managed, the process manager pipes
+                    // the child's stderr straight into the log buffer (see process.rs).
+                    // Polling the file as well would push every line twice — that was the
+                    // "stuck displaying the metric over and over" footgun.
+                    if matches!(*state.active_mode.read(), BotMode::Idle) {
+                        state.poll_log_file();
+                    }
                     state.poll_filter_stats_file();
                     state.poll_nn_stats_file();
                     state.poll_radar_file();
                     state.sync_live_data();
 
-                    // Auto-enable sell mode when SOL drops below 0.015
-                    // (not enough to buy + pay fees — only selling makes sense)
-                    let sol = *state.sol_balance.read();
-                    let sell_mode = *state.sell_mode_active.read();
-                    if sol > 0.0 && sol < 0.015 && !sell_mode {
-                        *state.sell_mode_active.write() = true;
-                        let _ = std::fs::write("scematica-sell-mode.json", r#"{"active":true}"#);
-                        state.push_log(format!(
-                            "[SELL MODE] Auto-activated — SOL balance {:.4} below 0.015 threshold",
-                            sol
-                        ));
+                    // Mirror the high-speed-mode file into local state so the UI label
+                    // reflects external changes (e.g. user deletes the file by hand,
+                    // or another tool toggles it).
+                    let hs_now = std::path::Path::new("scematica-highspeed-mode.json").exists();
+                    if *state.high_speed_active.read() != hs_now {
+                        *state.high_speed_active.write() = hs_now;
                     }
+
+                    // (Removed) auto-sell-mode trigger on low SOL balance.
+                    // The sniper's own buy gate (sniper.rs::buy) already refuses to buy
+                    // when native_balance < quote_amount + 6_000_000 lamports. Re-writing
+                    // the sell-mode file every ~250 ms here would (and did) overwrite Buy
+                    // Mode the instant the user pressed [b], creating an unbreakable loop.
                 }
                 AppEvent::Quit => break,
             }

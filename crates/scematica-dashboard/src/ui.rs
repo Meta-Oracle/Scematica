@@ -532,15 +532,24 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         }
     }
 
+    let high_speed = *state.high_speed_active.read();
     let title = if dump_mode {
-        " Logs — DUMP MODE ACTIVE (newest first) "
+        " Logs — DUMP MODE ACTIVE (newest first)  [b] Force Buy Mode ".to_string()
     } else if sell_mode {
-        " Logs — SELL MODE (newest first) "
+        " Logs — SELL MODE (newest first)  [b] Force Buy Mode  [d] Dump All ".to_string()
+    } else if high_speed {
+        " Logs — ⚡ HIGH-SPEED (newest first)  [h] Disable  [e] Sell Mode  [d] Dump ".to_string()
     } else {
-        " Logs (newest first)  [e] Sell Mode  [d] Dump All "
+        " Logs (newest first)  [e] Sell Mode  [b] Buy Mode  [h] High-Speed  [d] Dump All ".to_string()
     };
 
-    let border_color = if dump_mode { Color::Yellow } else { COLOR_ACCENT };
+    let border_color = if dump_mode {
+        Color::Yellow
+    } else if high_speed {
+        Color::LightMagenta
+    } else {
+        COLOR_ACCENT
+    };
 
     let paragraph = Paragraph::new(lines).block(
         Block::default()
@@ -734,8 +743,8 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
-        1 => " [x] Export CSV  [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
-        2 => " [/] Filter  [e] Sell Mode  [d] DUMP ALL  [Tab] Switch tab  [q] Quit ",
+        1 => " [x] Export CSV  [R] Reset Positions  [Tab] Switch  [q] Quit  [←/→] Navigate ",
+        2 => " [/] Filter  [e] Sell  [b] Buy  [h] High-Speed  [d] DUMP ALL  [Tab] Switch  [q] Quit ",
         3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [1-4] Rate Mode  [Tab] Switch tab  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
         5 => " Pool Radar — live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
@@ -756,44 +765,56 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let pools = state.radar_pools.read().clone();
 
+    // Y-axis: 0 → 10 SOL, log-ish via min/clamp. Pump.fun graduates land at
+    // 0.4–3 SOL — the old 0–100 SOL scale crushed them all into the bottom row.
+    // We pin the displayed value into [0, 10] and add a marker above for any pool
+    // bigger than that.
+    const Y_MAX: f64 = 10.0;
+    let to_y = |sol: f64| sol.clamp(0.0, Y_MAX);
+
     // Separate passed / rejected pools for color-coded Points
     let passed_coords: Vec<(f64, f64)> = pools
         .iter()
         .filter(|p| p.passed_filters)
-        .map(|p| (p.age_secs.min(299.0), p.size_sol.min(99.0).max(0.0)))
+        .map(|p| (p.age_secs.min(299.0), to_y(p.size_sol)))
         .collect();
     let rejected_coords: Vec<(f64, f64)> = pools
         .iter()
         .filter(|p| !p.passed_filters)
-        .map(|p| (p.age_secs.min(299.0), p.size_sol.min(99.0).max(0.0)))
+        .map(|p| (p.age_secs.min(299.0), to_y(p.size_sol)))
         .collect();
+
+    let total = pools.len();
+    let passed = pools.iter().filter(|p| p.passed_filters).count();
+    let canvas_title = format!(
+        " Pool Radar — Age vs Size  |  pools: {} (passed {} red rejected) ",
+        total, passed,
+    );
 
     let canvas = Canvas::default()
         .block(
             Block::default()
-                .title(" Pool Radar — Age vs Size (last 5 min)  ● = passed  × = rejected ")
+                .title(canvas_title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_ACCENT)),
         )
         .x_bounds([0.0, 300.0])
-        .y_bounds([0.0, 100.0])
+        .y_bounds([0.0, Y_MAX])
         .paint(move |ctx| {
-            // Axis labels
-            ctx.print(0.0, -5.0, "0s");
-            ctx.print(145.0, -5.0, "150s");
-            ctx.print(292.0, -5.0, "300s");
-            ctx.print(-12.0, 0.0, "0");
-            ctx.print(-15.0, 50.0, "50");
-            ctx.print(-18.0, 98.0, "100 SOL");
+            // Axis labels: X = pool age in seconds, Y = quote-vault SOL.
+            ctx.print(0.0, -0.5, "0s");
+            ctx.print(150.0, -0.5, "150s");
+            ctx.print(292.0, -0.5, "300s");
+            ctx.print(-12.0, 0.0,   "0");
+            ctx.print(-15.0, 5.0,   "5");
+            ctx.print(-18.0, 9.8,   "10 SOL");
 
-            // Rejected pools — red dots
             if !rejected_coords.is_empty() {
                 ctx.draw(&Points {
                     coords: &rejected_coords,
                     color: Color::Red,
                 });
             }
-            // Passed pools — green dots
             if !passed_coords.is_empty() {
                 ctx.draw(&Points {
                     coords: &passed_coords,

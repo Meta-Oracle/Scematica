@@ -2,7 +2,10 @@ use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
+use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -24,6 +27,13 @@ pub struct PoolListener {
     wallet: Pubkey,
     quote_mint: Pubkey,
     event_tx: mpsc::Sender<ListenerEvent>,
+    /// Pool IDs we've already dispatched this session. Raydium fires
+    /// programNotification on every pool state change (each swap, deposit,
+    /// withdrawal, etc.) so a single pool generates dozens-to-hundreds of
+    /// events per minute. We dedup here so decode/channel-send/task-spawn
+    /// work happens AT MOST ONCE per pool. The persistent pool-cache.json
+    /// guard in on_new_pool is kept as a cross-session safety net.
+    seen_pool_ids: Arc<Mutex<HashSet<Pubkey>>>,
 }
 
 impl PoolListener {
@@ -38,6 +48,7 @@ impl PoolListener {
             wallet,
             quote_mint,
             event_tx,
+            seen_pool_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -80,25 +91,72 @@ impl PoolListener {
 
         info!("WebSocket subscriptions active");
 
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    if let Err(e) = self.handle_message(&text).await {
-                        warn!("Error handling WS message: {}", e);
+        // Stall watchdog + heartbeat. Previously, a silently-dead WS (no FIN, no
+        // RST, just stops sending data — typical NAT/LB timeouts) made the bot
+        // appear alive while delivering zero pool events for minutes. Now:
+        //   • outbound ping every 20 s keeps NAT/LB state warm
+        //   • 60 s read-timeout → drop the connection and let the outer reconnect loop fire
+        //   • 30 s heartbeat log so operators can see the listener IS working
+        const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+        const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+        const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let mut ping_clock = tokio::time::interval(PING_INTERVAL);
+        ping_clock.tick().await; // skip the immediate-fire tick
+        let mut hb_clock = tokio::time::interval(HEARTBEAT_INTERVAL);
+        hb_clock.tick().await;
+
+        let mut text_msgs: u64 = 0;
+        let mut pool_events: u64 = 0;
+        let mut last_event = std::time::Instant::now();
+
+        loop {
+            tokio::select! {
+                msg = tokio::time::timeout(READ_TIMEOUT, read.next()) => {
+                    let msg = match msg {
+                        Err(_) => {
+                            warn!(
+                                text_msgs, pool_events,
+                                idle_secs = last_event.elapsed().as_secs(),
+                                "WS read stalled >60s — forcing reconnect"
+                            );
+                            break;
+                        }
+                        Ok(None) => {
+                            warn!("WS stream ended");
+                            break;
+                        }
+                        Ok(Some(m)) => m,
+                    };
+                    last_event = std::time::Instant::now();
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            text_msgs += 1;
+                            if text.contains("programNotification") { pool_events += 1; }
+                            if let Err(e) = self.handle_message(&text).await {
+                                warn!("Error handling WS message: {}", e);
+                            }
+                        }
+                        Ok(Message::Ping(data)) => { let _ = write.send(Message::Pong(data)).await; }
+                        Ok(Message::Pong(_)) => {}
+                        Ok(Message::Close(_)) => { warn!("WebSocket connection closed by peer"); break; }
+                        Err(e) => { error!("WebSocket error: {}", e); break; }
+                        _ => {}
                     }
                 }
-                Ok(Message::Ping(data)) => {
-                    let _ = write.send(Message::Pong(data)).await;
+                _ = ping_clock.tick() => {
+                    if let Err(e) = write.send(Message::Ping(vec![])).await {
+                        warn!("WS ping send failed: {} — reconnect", e);
+                        break;
+                    }
                 }
-                Ok(Message::Close(_)) => {
-                    warn!("WebSocket connection closed");
-                    break;
+                _ = hb_clock.tick() => {
+                    info!(
+                        text_msgs, pool_events,
+                        idle_secs = last_event.elapsed().as_secs(),
+                        "📡 Listener heartbeat",
+                    );
                 }
-                Err(e) => {
-                    error!("WebSocket error: {}", e);
-                    break;
-                }
-                _ => {}
             }
         }
 
@@ -134,12 +192,64 @@ impl PoolListener {
         let pubkey_str = params["value"]["pubkey"].as_str().unwrap_or("");
         let data = &params["value"]["account"]["data"];
 
+        // Cheap dedup BEFORE any decoding. Raydium fires programNotification on
+        // every pool state change (every swap, deposit, withdraw) so a single
+        // pool emits 50–200 events per minute. Without this gate, each duplicate
+        // event ran the base64 decoder, the layout parser, normalisation, the
+        // channel send, and a fresh tokio::spawn — wasted CPU and channel slots.
+        if let Ok(pool_id) = Pubkey::from_str(pubkey_str) {
+            let already_seen = {
+                let mut seen = self.seen_pool_ids.lock();
+                if seen.contains(&pool_id) {
+                    true
+                } else {
+                    seen.insert(pool_id);
+                    // Cap the set so a long-running session can't grow unbounded.
+                    // 20k pool IDs ≈ 640 KB which is fine, but anything past that
+                    // is just past sessions we've already shipped to evaluator.
+                    if seen.len() > 20_000 {
+                        // Crude eviction: clear half the entries. The chance of
+                        // re-seeing an evicted pool's events is tiny because each
+                        // pool's burst of state-change events happens in the first
+                        // few minutes of its life.
+                        let to_drop: Vec<Pubkey> =
+                            seen.iter().take(10_000).copied().collect();
+                        for k in to_drop { seen.remove(&k); }
+                    }
+                    false
+                }
+            };
+            if already_seen {
+                return Ok(());
+            }
+        }
+
         if let Some(b64) = data[0].as_str() {
             use base64::Engine;
             let bytes = base64::engine::general_purpose::STANDARD.decode(b64)?;
             if bytes.len() >= 752 {
                 if let Some(pool) = decode_raydium_v4_pool(pubkey_str, &bytes) {
-                    debug!(pool = %pool.id, base = %pool.base_mint, "New pool detected");
+                    // Raydium pools can be initialised with either token in the "coin"
+                    // (base) slot. pump.fun's newer migration path puts WSOL as base
+                    // and the memecoin as quote — opposite of the original convention.
+                    // Normalise so downstream code always sees:
+                    //   pool.base_mint  = the target memecoin
+                    //   pool.quote_mint = our configured quote (e.g. WSOL)
+                    // The on-chain swap builder reads vaults from chain state, so
+                    // swapping our cached view doesn't affect tx correctness.
+                    let mut pool = pool;
+                    if pool.base_mint == self.quote_mint && pool.quote_mint != self.quote_mint {
+                        std::mem::swap(&mut pool.base_mint, &mut pool.quote_mint);
+                        std::mem::swap(&mut pool.base_vault, &mut pool.quote_vault);
+                        std::mem::swap(&mut pool.base_decimals, &mut pool.quote_decimals);
+                    }
+                    info!(
+                        pool = %pool.id,
+                        base = %pool.base_mint,
+                        quote = %pool.quote_mint,
+                        open_time = pool.open_time,
+                        "📥 Listener decoded pool — dispatching to evaluator",
+                    );
                     let _ = self.event_tx.send(ListenerEvent::NewPool(pool)).await;
                 }
             }

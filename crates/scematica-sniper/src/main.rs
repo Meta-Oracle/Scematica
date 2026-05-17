@@ -36,6 +36,35 @@ struct Args {
     log_level: String,
 }
 
+/// Returns true if a process with `pid` is currently running.
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .output();
+        match out {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.lines().any(|l| l.contains(&pid.to_string()))
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::path::Path::new(&format!("/proc/{}", pid)).exists()
+    }
+}
+
+/// Best-effort removal of the lock file on graceful shutdown.
+struct LockGuard;
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file("scematica-sniper.lock");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -64,6 +93,31 @@ async fn main() -> Result<()> {
     info!("╔══════════════════════════════════════╗");
     info!("║     SCEMATICA SNIPER  v{}          ║", env!("CARGO_PKG_VERSION"));
     info!("╚══════════════════════════════════════╝");
+
+    // ── Single-instance guard ───────────────────────────────────────────────
+    // Two sniper processes sharing the same Helius WebSocket rate-limit each
+    // other into uselessness (we observed ~1 pool/15 min instead of 1 pool/min).
+    // Refuse to start if another instance is already alive.
+    const LOCK_FILE: &str = "scematica-sniper.lock";
+    if let Ok(prev) = std::fs::read_to_string(LOCK_FILE) {
+        if let Some(pid_str) = prev.lines().next() {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                if is_process_alive(pid) {
+                    error!(
+                        "Another sniper is already running (PID {}). Refusing to start a duplicate. \
+                         Stop the existing instance or delete {} if you know it's stale.",
+                        pid, LOCK_FILE,
+                    );
+                    return Err(anyhow::anyhow!("duplicate sniper instance detected (PID {})", pid));
+                }
+                warn!("Stale {} from dead PID {} — overwriting", LOCK_FILE, pid);
+            }
+        }
+    }
+    let _ = std::fs::write(LOCK_FILE, format!("{}\n", std::process::id()));
+    // Best-effort cleanup on graceful shutdown (Ctrl+C). Crashes leave the file
+    // behind, but the next start's is_process_alive() check handles that.
+    let _lock_guard = LockGuard;
 
     // Load config
     let config = match &args.config {
@@ -224,11 +278,59 @@ async fn main() -> Result<()> {
     // Load persisted pool cache so previous-run tokens can be sold immediately
     sniper.load_pool_cache("pool-cache.json");
 
+    // Surface any stale lock files from a prior session so the operator knows why
+    // buys might be paused. Without this banner the dashboard just silently rejects
+    // every pool with no obvious reason — exactly the "still gets hung up on sell
+    // mode" footgun.
+    {
+        const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
+        const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
+        if let Ok(contents) = std::fs::read_to_string(SELL_MODE_FILE) {
+            let reason = serde_json::from_str::<serde_json::Value>(&contents)
+                .ok()
+                .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)))
+                .unwrap_or_else(|| "unknown".to_string());
+            warn!(
+                "🚨 STARTUP: scematica-sell-mode.json exists (reason: {}). Buying is PAUSED. \
+                 Press [b] in the dashboard Logs tab to override, or delete the file manually.",
+                reason,
+            );
+        }
+        if std::path::Path::new(DUMP_MODE_FILE).exists() {
+            warn!(
+                "🚨 STARTUP: scematica-dump-mode.json exists. DUMP MODE is engaged — all positions \
+                 will be force-sold with zero slippage. Delete the file or press [d] to clear."
+            );
+        }
+    }
+
     // Scan for tokens already held from a previous run and spawn sell monitors
     {
         let sniper_scan = sniper.clone();
         tokio::spawn(async move {
             sniper_scan.scan_existing_positions().await;
+        });
+    }
+
+    // High-speed-mode file watcher — checks scematica-highspeed-mode.json every 2 s
+    // (faster than the other watchers so the operator's toggle takes effect quickly).
+    {
+        use std::sync::atomic::Ordering;
+        let sniper_hs = sniper.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+            let mut was_active = false;
+            loop {
+                interval.tick().await;
+                let active = std::path::Path::new("scematica-highspeed-mode.json").exists();
+                sniper_hs.high_speed_mode.store(active, Ordering::Relaxed);
+                if active && !was_active {
+                    warn!("⚡ HIGH-SPEED MODE engaged — filters/AI/scorer bypassed, fee escalated, parallel buys enabled. Expect 429s and failed buys.");
+                } else if !active && was_active {
+                    info!("⚡ High-speed mode disengaged — normal filter pipeline restored");
+                }
+                was_active = active;
+            }
         });
     }
 
@@ -341,7 +443,10 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Max drawdown guard — activates sell mode if wallet drops > max_drawdown_pct from session start
+    // Max drawdown guard — activates sell mode if wallet drops > max_drawdown_pct from
+    // session start. Also self-clears when the wallet recovers above the threshold
+    // and there are no open positions — otherwise a single dip pinned the bot in sell
+    // mode forever (the "still hung up on sell mode" footgun).
     {
         use std::sync::atomic::Ordering;
         let sniper_dd = sniper.clone();
@@ -355,20 +460,49 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 let start = sniper_dd.session_start_lamports.load(Ordering::Relaxed);
                 if start == 0 { continue; }
-                if let Ok(current) = rpc_dd.get_balance(&wallet_pk).await {
-                    if current < start {
-                        let drawdown = (start - current) as f64 / start as f64 * 100.0;
-                        if drawdown >= max_dd {
-                            warn!(
-                                "🔴 Max drawdown {:.1}% reached (start={:.4} SOL, now={:.4} SOL) — activating sell mode",
-                                drawdown, start as f64 / 1e9, current as f64 / 1e9
-                            );
-                            sniper_dd.sell_mode.store(true, Ordering::Relaxed);
-                            let _ = std::fs::write(
-                                "scematica-sell-mode.json",
-                                r#"{"active":true,"reason":"max_drawdown"}"#,
-                            );
-                        }
+                let current = match rpc_dd.get_balance(&wallet_pk).await {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+
+                let drawdown_pct = if current < start {
+                    (start - current) as f64 / start as f64 * 100.0
+                } else { 0.0 };
+
+                // Trip condition — set sell-mode with reason=max_drawdown.
+                if drawdown_pct >= max_dd {
+                    let already_set = std::fs::read_to_string("scematica-sell-mode.json")
+                        .map(|s| s.contains("max_drawdown"))
+                        .unwrap_or(false);
+                    if !already_set {
+                        warn!(
+                            "🔴 Max drawdown {:.1}% reached (start={:.4} SOL, now={:.4} SOL) — activating sell mode",
+                            drawdown_pct, start as f64 / 1e9, current as f64 / 1e9,
+                        );
+                    }
+                    sniper_dd.sell_mode.store(true, Ordering::Relaxed);
+                    let _ = std::fs::write(
+                        "scematica-sell-mode.json",
+                        r#"{"active":true,"reason":"max_drawdown"}"#,
+                    );
+                    continue;
+                }
+
+                // Recovery condition — clear ONLY if the active sell-mode file is our
+                // own drawdown trigger (reason=="max_drawdown") AND all positions have
+                // closed. We never clobber dashboard / buy_limit / dump triggers.
+                if let Ok(contents) = std::fs::read_to_string("scematica-sell-mode.json") {
+                    let is_drawdown_trigger = contents.contains("max_drawdown");
+                    let no_open = sniper_dd.open_positions.load(Ordering::Relaxed) == 0;
+                    // Add 1% hysteresis so we don't flap right at the boundary.
+                    let recovered = drawdown_pct + 1.0 < max_dd;
+                    if is_drawdown_trigger && no_open && recovered {
+                        sniper_dd.sell_mode.store(false, Ordering::Relaxed);
+                        let _ = std::fs::remove_file("scematica-sell-mode.json");
+                        info!(
+                            "🟢 Drawdown recovered ({:.1}% < {:.1}% threshold) and no open positions — sell mode lifted",
+                            drawdown_pct, max_dd,
+                        );
                     }
                 }
             }

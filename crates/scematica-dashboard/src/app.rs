@@ -88,6 +88,8 @@ pub struct AppState {
     pub sell_mode_active: RwLock<bool>,
     /// Auto dump mode: when true the sniper immediately force-sells all positions (min_out=0)
     pub dump_mode_active: RwLock<bool>,
+    /// Mirror of scematica-highspeed-mode.json — operator toggles via [h] in Logs tab.
+    pub high_speed_active: RwLock<bool>,
     /// Current rate mode — controls buy size, TP%, and SL% presets
     pub rate_mode: RwLock<RateMode>,
     /// Normalized PnL samples for the sparkline (scaled to u64 for ratatui Sparkline)
@@ -220,6 +222,7 @@ impl AppState {
             bot_cmd_tx: RwLock::new(None),
             sell_mode_active: RwLock::new(false),
             dump_mode_active: RwLock::new(false),
+            high_speed_active: RwLock::new(false),
             rate_mode: RwLock::new(RateMode::default()),
             pnl_sparkline: RwLock::new(VecDeque::with_capacity(SPARKLINE_CAPACITY)),
             best_trade_pnl: RwLock::new(0.0),
@@ -243,6 +246,19 @@ impl AppState {
 
     /// Tail the trade event log file and push any new events into the trades deque.
     pub fn poll_trade_file(&self) {
+        let offset = *self.trade_file_offset.read();
+
+        // File-shrink detection: if scematica-trades.jsonl was truncated or rotated
+        // externally (e.g. user reset positions), the recorded offset is now past
+        // EOF. Treat that as "reset" — clear the in-memory deque and re-read from 0.
+        if let Ok(meta) = std::fs::metadata(TRADES_FILE) {
+            if meta.len() < offset {
+                self.trades.write().clear();
+                *self.trade_file_offset.write() = 0;
+                self.push_log("[RESET] Trade history file shrank → cleared in-memory positions");
+            }
+        }
+
         let offset = *self.trade_file_offset.read();
         let (events, new_offset) = TradeEvent::read_new_events(TRADES_FILE, offset);
         if events.is_empty() {
@@ -316,11 +332,38 @@ impl AppState {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
         const LOG_FILE: &str = "scematica-sniper.log";
         let mut offset = *self.sniper_log_offset.read();
+
+        // First call: seek to file end so we don't replay the entire prior session's
+        // log into the dashboard buffer on startup. Stored offset == 0 + a non-empty
+        // file ⇒ first run ⇒ jump past existing content and only show new lines.
+        if offset == 0 {
+            if let Ok(meta) = std::fs::metadata(LOG_FILE) {
+                let end = meta.len();
+                if end > 0 {
+                    offset = end;
+                    *self.sniper_log_offset.write() = end;
+                }
+            }
+        }
+
         let Ok(mut file) = std::fs::File::open(LOG_FILE) else { return };
+
+        // If the file shrank (rotation, manual truncate), reset to the new length so
+        // we don't perma-block on a stale offset past EOF.
+        if let Ok(meta) = file.metadata() {
+            if meta.len() < offset {
+                offset = meta.len();
+                *self.sniper_log_offset.write() = offset;
+            }
+        }
+
         if file.seek(SeekFrom::Start(offset)).is_err() { return }
         let mut new_offset = offset;
         let reader = BufReader::new(&mut file);
         for line in reader.lines().map_while(Result::ok) {
+            // BufReader::lines() strips trailing \n AND \r\n; advance by len + 1
+            // (we approximate, since we don't know which terminator was used). Any
+            // 1-byte/line drift is bounded by the file-shrink reset above.
             new_offset += line.len() as u64 + 1;
             self.push_log(format!("[SNIPER] {}", line));
         }

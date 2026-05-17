@@ -168,7 +168,9 @@ impl Default for SniperConfig {
             stop_loss_pct: 15.0,
             buy_slippage_pct: 1.5,
             sell_slippage_pct: 2.0,
-            price_check_interval_ms: 500,
+            // Tighter price polling — the sell monitor now fans out the 3 balance reads
+            // concurrently, so 250 ms is achievable without overloading a paid RPC.
+            price_check_interval_ms: 250,
             price_check_duration_ms: 120_000,
             one_token_at_a_time: true,
             use_snipe_list: false,
@@ -260,23 +262,37 @@ pub struct FilterConfig {
 impl Default for FilterConfig {
     fn default() -> Self {
         Self {
-            check_interval_ms: 2000,
-            check_duration_ms: 20_000,
-            consecutive_matches: 2,
-            check_mint_renounced: true,
-            check_freezable: true,
-            check_burned: true,
+            // Tightened: the filter pipeline now runs every filter concurrently per pass,
+            // so each pass costs ~1 RPC RTT (not N*RTT + N*120ms). Polling at 500 ms and
+            // exiting after 8 s catches all but the most pathological pool delays.
+            check_interval_ms: 500,
+            check_duration_ms: 8_000,
+            consecutive_matches: 1,
+            // Default OFF: many fresh pump.fun graduates haven't renounced yet at
+            // the moment the WS event fires (renounce tx still in flight). This was
+            // rejecting 30–40 % of legitimate launches. Re-enable explicitly if you
+            // want a stricter mode.
+            check_mint_renounced: false,
+            check_freezable: true,     // KEEP — real honeypot signal
+            check_burned: true,        // KEEP — empty pool vault is a real rug signal
             check_mutable: true,
             check_socials: false,
-            min_pool_size: 5.0,
+            // Lowered: fresh pump.fun graduates land at 0.4–3 SOL liquidity. 5 SOL
+            // minimum rejected all of them.
+            min_pool_size: 0.3,
             max_pool_size: 0.0,
-            check_name: true,
+            // Default OFF: substring match on common words ("moon", "test", "fair
+            // launch", "1000x") generates too many false positives on real memecoins.
+            check_name: false,
             check_volume: false,
             min_volume_txns: 3,
             check_liquidity_depth: true,
             max_price_impact_pct: 5.0,
-            check_holder_concentration: true,
-            max_top10_holder_pct: 70.0,
+            // Fresh-pool memecoins almost always have >80% top-10 concentration
+            // because the dev and early buyers still hold. Default OFF — re-enable
+            // explicitly in config.toml with a much higher max if used as a soft guard.
+            check_holder_concentration: false,
+            max_top10_holder_pct: 95.0,
             check_liquidity_momentum: false,
             liquidity_momentum_pct: 5.0,
             check_cross_pool_correlation: false,

@@ -65,7 +65,10 @@ pub trait PoolFilter: Send + Sync {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Hard cap per RPC call — any node that takes longer is treated as failed.
-const RPC_CALL_TIMEOUT_SECS: u64 = 5;
+/// 3 s is well above the p99 for a healthy paid RPC (Helius/Triton); anything
+/// slower than that is almost certainly a stalled/degraded node and we'd rather
+/// fail open than hold the whole pipeline.
+const RPC_CALL_TIMEOUT_SECS: u64 = 3;
 
 fn is_rate_limited(e: &str) -> bool {
     e.contains("429") || e.contains("Too Many Requests")
@@ -88,7 +91,9 @@ async fn get_account_retried(
             Ok(Err(e)) => {
                 let msg = e.to_string();
                 if is_rate_limited(&msg) && attempt + 1 < retries {
-                    let delay = 600 * (attempt + 1) as u64;
+                    // 250ms / 500ms / 1000ms — paid RPCs recover from 429 within ~hundreds of ms;
+                    // the old 600ms*attempt floor was tuned for the public mainnet-beta endpoint.
+                    let delay = 250u64 << attempt.min(2);
                     tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                 } else {
                     return None;
@@ -120,7 +125,7 @@ async fn get_token_balance_retried(
             Ok(Err(e)) => {
                 let msg = e.to_string();
                 if is_rate_limited(&msg) && attempt + 1 < retries {
-                    let delay = 600 * (attempt + 1) as u64;
+                    let delay = 250u64 << attempt.min(2);
                     tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                 } else {
                     return None;
@@ -652,7 +657,6 @@ impl PoolFilter for JupiterDiscrepancyFilter {
 
 pub struct FilterPipeline {
     filters: Vec<Box<dyn PoolFilter>>,
-    config: FilterConfig,
     rpc: Arc<RpcClient>,
     pub stats: FilterStats,
 }
@@ -722,59 +726,49 @@ impl FilterPipeline {
             }));
         }
 
-        Self { filters, config, rpc, stats: FilterStats::default() }
+        let _ = config; // settings now baked into the constructed filters; pipeline itself is stateless re: intervals
+        Self { filters, rpc, stats: FilterStats::default() }
     }
 
     pub async fn execute(&self, pool: &CachedPool) -> bool {
+        // Single-shot evaluation: each pool is checked exactly once and we move on.
+        // The old retry loop (check_interval_ms × check_duration_ms × consecutive_matches)
+        // could spend 8–20 s per pool waiting for filters to "settle", during which
+        // newer pools were stalling in the channel queue. Fresh launches dump in the
+        // first 30 s — burning 20 s on a single fence-sitter trades the next 10 candidates
+        // for it. One pass, one verdict, next pool.
         self.stats.pools_seen.fetch_add(1, Ordering::Relaxed);
-        if self.filters.is_empty() {
-            self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
-            return true;
-        }
-
-        let interval = tokio::time::Duration::from_millis(self.config.check_interval_ms);
-        let max_checks = if self.config.check_interval_ms > 0 {
-            self.config.check_duration_ms / self.config.check_interval_ms
+        let passed = if self.filters.is_empty() {
+            true
         } else {
-            1
+            self.run_once(pool).await
         };
-
-        let mut consecutive = 0u32;
-        let mut checks = 0u64;
-
-        loop {
-            if self.run_once(pool).await {
-                consecutive += 1;
-                debug!(mint = %pool.base_mint, "Filter pass {}/{}", consecutive, self.config.consecutive_matches);
-                if consecutive >= self.config.consecutive_matches {
-                    self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
-                    self.stats.write_to_file(FILTER_STATS_FILE);
-                    return true;
-                }
-            } else {
-                consecutive = 0;
-            }
-
-            checks += 1;
-            if checks >= max_checks {
-                self.stats.write_to_file(FILTER_STATS_FILE);
-                return false;
-            }
-
-            tokio::time::sleep(interval).await;
+        if passed {
+            self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
         }
+        self.stats.write_to_file(FILTER_STATS_FILE);
+        passed
     }
 
     async fn run_once(&self, pool: &CachedPool) -> bool {
-        for filter in &self.filters {
+        // Run every filter concurrently — they're independent RPC reads with no side effects.
+        // For a typical 10-filter config this replaces ~10*(RPC_RTT) + 9*120ms of sequential
+        // latency with a single ~RPC_RTT round-trip in the common case.
+        let futures = self.filters.iter().map(|filter| async move {
+            let name = filter.name();
             let result = filter.check(pool, &self.rpc).await;
+            (name, result)
+        });
+        let results = futures::future::join_all(futures).await;
+
+        // Surface the first failure (deterministic order = filter declaration order).
+        for (name, result) in results {
             if !result.passed {
                 let reason = result.reason.as_deref().unwrap_or("unknown");
-                info!(mint = %pool.base_mint, filter = filter.name(), reason = %reason, "Filter rejected pool");
-                self.stats.record_rejection(filter.name());
+                info!(mint = %pool.base_mint, filter = name, reason = %reason, "Filter rejected pool");
+                self.stats.record_rejection(name);
                 return false;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
         }
         true
     }

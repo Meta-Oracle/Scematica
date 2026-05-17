@@ -339,33 +339,61 @@ impl DQNAgent {
 
     /// Convert PnL percentage into a shaped scalar reward.
     ///
-    /// Designed to match the bot's "establish profits first" doctrine:
-    /// - Fast small wins (≤2 minutes) get a 1.5× bonus to reward quick rotation
-    ///   while the wallet is still being built up.
-    /// - Tiny losses (-10 % to 0 %) are mildly penalised — those are noise, not
-    ///   bad pool selection.
-    /// - Moderate losses (-50 % to -10 %) penalised 2× to discourage holding dips.
-    /// - Rug-magnitude losses (≤ -50 %) get a 3× multiplier AND a -50 flat add
-    ///   so the agent learns to recognise rug-prone pools, not just bad timing.
-    /// - Hold penalty is capped at 0.5 so a long winning hold isn't drowned out.
+    /// v1.0.0 — mathematically redesigned from real trade distribution analysis:
+    ///   observed wins: +99% at 0-19s; observed losses: -90% at various ages.
+    ///   Old function EV at 30% win rate ≈ -192.  New EV > 0 when exits are fast.
+    ///
+    /// **Profit zone** — convex (super-linear) scaling via log₂:
+    ///   R = pnl × (1 + log₂(1 + pnl/25))
+    ///   +25% → ×2.0, +50% → ×2.58, +99% → ×3.31  (replaces flat ×1.6 cap).
+    ///   Timing bonus: +75 for < 1 min, +30 for 1-3 min, +10 for 3-10 min,
+    ///   −2/step thereafter (capital-lock cost), capped at −40.
+    ///
+    /// **Loss zones** — sub-linear scaling keeps noise from dominating signal:
+    ///   −5% to 0%  : ×1.0  (noise — don't overfit)
+    ///   −30% to −5%: ×1.8  (avoidable dip-holding)
+    ///   −60% to −30%: ×2.5 (failure to cut losses)
+    ///   < −60% (rug): ×1.5 flat −15 if hold_steps=0 (mercy — unavoidable),
+    ///                  ×2.5 flat −70 otherwise (should have exited sooner).
+    ///
+    /// `hold_steps` is position age in MINUTES (call site: age_secs/60 as u32).
     pub fn shape_reward(pnl_pct: f64, hold_steps: u32) -> f64 {
-        // v0.8.0: bands tightened ~30%. Fast-win window narrowed from ≤2 to ≤1
-        // step, mid-loss band extended from -10..0 to -7..0, rug penalty pulled
-        // forward (-50..-10 was 2× → -35..-7 is now 2.2×, ≤-35 is now 3.2× + -55
-        // flat). Net effect: the agent gets stronger learning signal on the
-        // "rug vs not rug" boundary, which is where profit-first mode lives or dies.
-        let hold_penalty = (hold_steps as f64 * 0.001).min(0.5);
         if pnl_pct >= 0.0 {
-            let fast_bonus = if hold_steps <= 1 { 1.6 } else { 1.0 };
-            pnl_pct * fast_bonus - hold_penalty
-        } else if pnl_pct >= -7.0 {
-            pnl_pct * 1.3 - hold_penalty
-        } else if pnl_pct >= -35.0 {
-            pnl_pct * 2.2 - hold_penalty
+            // Super-linear profit: log₂(1 + pnl/25) adds ~0.26× at +5%,
+            // ~1.0× at +25%, ~2.31× at +99%.  Rewards big wins far more.
+            let log_boost = ((1.0 + pnl_pct / 25.0).ln() / std::f64::consts::LN_2).max(0.0);
+            let base_reward = pnl_pct * (1.0 + log_boost);
+
+            let timing_bonus: f64 = if hold_steps == 0 {
+                75.0 // < 1 min fast snipe — maximum efficiency signal
+            } else if hold_steps <= 3 {
+                30.0 // quick clean exit
+            } else if hold_steps <= 10 {
+                10.0 // acceptable hold
+            } else {
+                // Capital-lock cost past 10 min, capped at −40
+                -(((hold_steps as f64 - 10.0) * 2.0).min(40.0))
+            };
+
+            base_reward + timing_bonus
+        } else if pnl_pct >= -5.0 {
+            // Tiny loss: noise territory — don't let it drown profit signal
+            pnl_pct * 1.0
+        } else if pnl_pct >= -30.0 {
+            // Moderate loss: avoidable, penalise dip-holding
+            pnl_pct * 1.8
+        } else if pnl_pct >= -60.0 {
+            // Heavy loss: failure to cut — strong negative gradient
+            pnl_pct * 2.5
         } else {
-            // Rug territory — severe penalty so the agent learns to avoid these
-            // pools at the *selection* step, not just the exit step.
-            pnl_pct * 3.2 - hold_penalty - 55.0
+            // Rug territory (< −60%).
+            // hold_steps=0 → exited in < 1 min → unavoidable; mercy reduces flat.
+            // hold_steps>0 → held through a recognisable dump → full punishment.
+            if hold_steps == 0 {
+                pnl_pct * 1.5 - 15.0
+            } else {
+                pnl_pct * 2.5 - 70.0
+            }
         }
     }
 
@@ -415,10 +443,11 @@ impl DQNAgent {
 
     /// Inject `count` synthetic adversarial transitions into the replay buffer.
     ///
-    /// Three scenario types are generated in rotation:
-    /// 1. **Rug-pull** — brief pump followed by total exit: action=Hold, reward=-50.0, done=true.
-    /// 2. **Pump-and-dump** — fast rise, agent sells at peak: action=SellAll, reward=+30.0, done=true.
-    /// 3. **Honeypot** — buy succeeds but sell never clears: action=SellAll, reward=-100.0, done=true.
+    /// Rewards are calibrated to match `shape_reward` output so synthetic
+    /// scenarios don't contradict real-trade signal magnitudes:
+    /// 1. **Rug-pull** (held through): −90% pnl, slow exit → reward ≈ −295.
+    /// 2. **Pump-and-dump** (fast peak exit): +99% pnl, hold_steps=0 → reward ≈ +403.
+    /// 3. **Honeypot** (capital locked for hours): −70% pnl, slow exit → reward ≈ −245.
     pub fn inject_adversarial_scenarios(&mut self, count: usize) {
         let mut rng = rand::thread_rng();
         for i in 0..count {
@@ -450,10 +479,11 @@ impl DQNAgent {
                         current_pnl_pct: -0.95,
                         ..state.clone()
                     };
+                    // Held through rug: -90% pnl, hold_steps=2 → shape_reward(-90,2) ≈ -295
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::Hold.index(),
-                        reward: -50.0,
+                        reward: -295.0,
                         next_state: next_state.to_vec(),
                         done: true,
                     });
@@ -485,10 +515,11 @@ impl DQNAgent {
                         current_pnl_pct: 0.0,                        // sold at peak
                         ..state.clone()
                     };
+                    // Fast peak exit: +99% pnl, hold_steps=0 → shape_reward(99,0) ≈ +403
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::SellAll.index(),
-                        reward: 30.0,
+                        reward: 403.0,
                         next_state: next_state.to_vec(),
                         done: true,
                     });
@@ -520,10 +551,11 @@ impl DQNAgent {
                         current_pnl_pct: -1.0, // effectively a total loss
                         ..state.clone()
                     };
+                    // Capital locked for hours: -70% pnl, hold_steps=10+ → shape_reward(-70,10) ≈ -245
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::SellAll.index(),
-                        reward: -100.0,
+                        reward: -245.0,
                         next_state: next_state.to_vec(),
                         done: true,
                     });

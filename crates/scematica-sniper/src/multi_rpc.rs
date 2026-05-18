@@ -4,6 +4,55 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
 
+/// Categorized RPC error — determines whether to failover, backoff, or ignore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcErrorKind {
+    /// 429 Too Many Requests — exponential backoff, don't failover.
+    RateLimited,
+    /// Node's slot is lagging behind cluster — failover immediately.
+    NodeBehind,
+    /// Account / pool not found — expected for fresh pools; don't penalise endpoint.
+    AccountNotFound,
+    /// Network timeout or connection refused — failover and log.
+    NetworkTimeout,
+    /// Any other RPC error (invalid tx, bad args, etc.)
+    Other,
+}
+
+impl RpcErrorKind {
+    /// Parse a client error string into a categorized kind.
+    pub fn from_error_str(e: &str) -> Self {
+        if e.contains("429") || e.contains("Too Many Requests") || e.contains("rate limit") {
+            Self::RateLimited
+        } else if e.contains("behind") || e.contains("slot") && e.contains("lag") {
+            Self::NodeBehind
+        } else if e.contains("AccountNotFound")
+            || e.contains("could not find account")
+            || e.contains("invalid account data")
+        {
+            Self::AccountNotFound
+        } else if e.contains("timed out")
+            || e.contains("connection refused")
+            || e.contains("Connection reset")
+            || e.contains("BrokenPipe")
+        {
+            Self::NetworkTimeout
+        } else {
+            Self::Other
+        }
+    }
+
+    /// True when this error kind should trigger an endpoint failover.
+    pub fn should_failover(self) -> bool {
+        matches!(self, Self::NodeBehind | Self::NetworkTimeout)
+    }
+
+    /// True when this error kind warrants adding a latency penalty to the endpoint.
+    pub fn penalise_endpoint(self) -> bool {
+        !matches!(self, Self::AccountNotFound)
+    }
+}
+
 /// Multi-RPC client with automatic failover and latency-based primary selection.
 ///
 /// Maintains a list of RPC endpoints and tracks the round-trip latency to each.
@@ -55,6 +104,36 @@ impl MultiRpc {
         let prev = self.primary_idx.fetch_add(1, Ordering::Relaxed) % len;
         let next = (prev + 1) % len;
         warn!("MultiRpc: failing over from endpoint {} to {}", prev, next);
+    }
+
+    /// Handle an RPC error string with categorization.
+    /// - Rate limits: returns backoff duration (caller should sleep).
+    /// - Node-behind / timeout: triggers failover and returns None.
+    /// - AccountNotFound: silently ignored, no penalty.
+    /// - Other: logs and returns None.
+    pub fn handle_error(&self, error: &str, attempt: u32) -> Option<std::time::Duration> {
+        let kind = RpcErrorKind::from_error_str(error);
+        match kind {
+            RpcErrorKind::RateLimited => {
+                let delay_ms = 250u64 << attempt.min(3); // 250ms / 500ms / 1s / 2s
+                debug!("MultiRpc: rate-limited — backing off {}ms", delay_ms);
+                Some(std::time::Duration::from_millis(delay_ms))
+            }
+            RpcErrorKind::NodeBehind | RpcErrorKind::NetworkTimeout => {
+                warn!("MultiRpc: {} — triggering failover", error);
+                self.failover();
+                None
+            }
+            RpcErrorKind::AccountNotFound => {
+                // Expected for fresh pools — don't log at warn level, no penalty
+                debug!("MultiRpc: account not found (expected for fresh pools)");
+                None
+            }
+            RpcErrorKind::Other => {
+                warn!("MultiRpc: unclassified RPC error: {}", error);
+                None
+            }
+        }
     }
 
     /// Measure the latency to each endpoint by calling `getSlot`.

@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Number of features in the state vector fed to the Q-network.
-pub const STATE_DIM: usize = 18;
+/// v1.1.0: expanded from 18 → 24 with peak PnL, pool quality, deployer rug rate,
+/// volume velocity, price velocity, and price acceleration.
+pub const STATE_DIM: usize = 24;
 
 /// Market + position context captured at decision time.
 /// All numeric fields use real-world units; `to_vec()` normalises them to [0, 1].
@@ -43,6 +45,36 @@ pub struct TradeState {
     pub time_of_day_norm: f64,
     /// Number of open positions.
     pub open_positions: i32,
+
+    // ── v1.1.0 new features ───────────────────────────────────────────────────
+
+    /// Highest PnL seen since position entry (fractional, e.g. 0.8 = 80% peak).
+    /// Enables the agent to reason about exit efficiency: how far off peak is the
+    /// current exit?  0.0 if no position is open.
+    pub peak_pnl_pct: f64,
+
+    /// Pool predictive quality score normalised to [0, 1] (raw 0–100).
+    /// Lets the agent learn to be more/less aggressive based on pool quality.
+    pub pool_score_norm: f64,
+
+    /// EMA deployer rug rate from the reputation ledger, [0, 1].
+    /// 0 = no rugs recorded, 1 = all rugs. Defaults to 0.5 if unknown.
+    pub deployer_rug_rate: f64,
+
+    /// Rate of change of volume_5min_sol between the last two observations.
+    /// Positive = volume growing (pump phase), negative = drying up (dump risk).
+    /// Normalised: raw delta / 20 SOL, clamped to [-1, 1].
+    pub volume_velocity: f64,
+
+    /// First derivative of price_change_pct between consecutive observations.
+    /// Positive = accelerating upward, negative = decelerating / reversing.
+    /// Clamped to [-1, 1].
+    pub price_velocity: f64,
+
+    /// Second derivative of price_change_pct (change in velocity).
+    /// Positive = still accelerating, negative = inflection point (momentum fading).
+    /// Clamped to [-1, 1].
+    pub price_acceleration: f64,
 }
 
 impl TradeState {
@@ -67,10 +99,18 @@ impl TradeState {
             (self.spread_pct / 0.1).min(1.0),
             self.time_of_day_norm.clamp(0.0, 1.0),
             (self.open_positions as f64 / 5.0).min(1.0),
+            // v1.1.0 features
+            self.peak_pnl_pct.clamp(0.0, 5.0) / 5.0,
+            self.pool_score_norm.clamp(0.0, 1.0),
+            self.deployer_rug_rate.clamp(0.0, 1.0),
+            self.volume_velocity.clamp(-1.0, 1.0) * 0.5 + 0.5,
+            self.price_velocity.clamp(-1.0, 1.0) * 0.5 + 0.5,
+            self.price_acceleration.clamp(-1.0, 1.0) * 0.5 + 0.5,
         ]
     }
 
     /// Build a state from flat data available in scematica-trades.jsonl + metrics snapshot.
+    /// New v1.1.0 fields default to zero / neutral when not provided by the replay loop.
     pub fn from_trade_fields(
         pnl_pct: f64,
         position_age_secs: f64,
@@ -90,6 +130,44 @@ impl TradeState {
             consecutive_losses,
             sol_balance_sol,
             open_positions,
+            time_of_day_norm: hour / 24.0,
+            deployer_rug_rate: 0.5, // neutral unknown
+            ..Default::default()
+        }
+    }
+
+    /// Build a rich state during live trading with all v1.1.0 fields populated.
+    pub fn from_live_fields(
+        pnl_pct: f64,
+        peak_pnl_pct: f64,
+        position_age_secs: f64,
+        daily_pnl_sol: f64,
+        consecutive_wins: i32,
+        consecutive_losses: i32,
+        sol_balance_sol: f64,
+        open_positions: i32,
+        pool_score_norm: f64,
+        deployer_rug_rate: f64,
+        volume_velocity: f64,
+        price_velocity: f64,
+        price_acceleration: f64,
+    ) -> Self {
+        use chrono::Timelike;
+        let hour = chrono::Utc::now().hour() as f64;
+        Self {
+            current_pnl_pct: pnl_pct,
+            peak_pnl_pct,
+            position_age_secs,
+            daily_pnl_sol,
+            consecutive_wins,
+            consecutive_losses,
+            sol_balance_sol,
+            open_positions,
+            pool_score_norm,
+            deployer_rug_rate,
+            volume_velocity,
+            price_velocity,
+            price_acceleration,
             time_of_day_norm: hour / 24.0,
             ..Default::default()
         }

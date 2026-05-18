@@ -1,10 +1,79 @@
 use crate::{
     client::AiClient,
     prompts,
-    types::{ArbScore, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment, TokenRiskScore},
+    types::{ArbScore, AiProvider, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment, TokenRiskScore},
 };
 use chrono::Utc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use tracing::{debug, warn};
+
+// ─── Rate-limit cache ─────────────────────────────────────────────────────────
+// When the primary AI provider returns HTTP 429, we cache the retry-after
+// expiry here and skip all calls until it clears. This eliminates per-pool HTTP
+// round-trips that add latency without adding signal during rate-limited periods.
+
+static RATE_LIMIT_UNTIL_SECS: AtomicU64 = AtomicU64::new(0);
+static FALLBACK_CLIENT: OnceLock<Option<AiClient>> = OnceLock::new();
+
+fn get_fallback() -> Option<&'static AiClient> {
+    FALLBACK_CLIENT.get_or_init(|| {
+        dotenv::dotenv().ok();
+        // Try OpenRouter as the fallback provider (free tier available)
+        if std::env::var("OPENROUTER_API_KEY").is_ok() {
+            AiClient::new(AiProvider::OpenRouter).ok()
+        } else if std::env::var("OLLAMA_HOST").is_ok() {
+            AiClient::new(AiProvider::Ollama).ok()
+        } else {
+            None
+        }
+    }).as_ref()
+}
+
+fn is_rate_limited() -> bool {
+    let until = RATE_LIMIT_UNTIL_SECS.load(Ordering::Relaxed);
+    if until == 0 { return false; }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    now < until
+}
+
+/// Parse "Please try again in 1m23.456s" or "Please try again in 30s" from Groq 429 body.
+fn parse_retry_after(err: &str) -> u64 {
+    if let Some(start) = err.find("try again in ") {
+        let rest = &err[start + "try again in ".len()..];
+        let end = rest.find(['.', '\n', '"']).unwrap_or(rest.len());
+        let segment = rest[..end].trim();
+        if let Some(m_pos) = segment.find('m') {
+            let mins: u64 = segment[..m_pos].parse().unwrap_or(0);
+            let secs_str = segment.get(m_pos + 1..).unwrap_or("0").trim_end_matches('s');
+            let secs: u64 = secs_str.parse().unwrap_or(0);
+            return mins * 60 + secs + 10; // +10s buffer
+        }
+        let s = segment.trim_end_matches('s');
+        if let Ok(secs) = s.parse::<u64>() {
+            return secs + 10;
+        }
+    }
+    300 // default 5-minute blackout if unparseable
+}
+
+fn handle_rate_limit(err: &str) {
+    let delay = parse_retry_after(err);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    RATE_LIMIT_UNTIL_SECS.store(now + delay, Ordering::Relaxed);
+    warn!("AI rate-limited — suppressing calls for {}s (until cached expiry)", delay);
+}
+
+fn is_rate_limit_err(e: &str) -> bool {
+    e.contains("429") || e.contains("rate_limit") || e.contains("Rate limit")
+        || e.contains("quota") || e.contains("try again in ")
+}
 
 // ─── Risk Agent ───────────────────────────────────────────────────────────────
 
@@ -20,6 +89,8 @@ impl RiskAgent {
 
     /// Assess a token and return a risk score.
     /// Returns a default "skip" score if the AI call fails (fail-safe).
+    /// Rate-limit aware: skips the HTTP call during cached blackout windows
+    /// and automatically retries with the fallback provider on 429 errors.
     pub async fn score_token(
         &self,
         mint: &str,
@@ -33,6 +104,14 @@ impl RiskAgent {
         has_socials: bool,
         open_time_utc_hour: u8,
     ) -> TokenRiskScore {
+        // Skip the HTTP round-trip entirely if we know the primary is rate-limited
+        if is_rate_limited() {
+            // Try fallback before giving up
+            if get_fallback().is_none() {
+                return Self::default_skip(mint, "rate-limited (cached)");
+            }
+        }
+
         let prompt = prompts::build_risk_prompt(
             mint,
             symbol,
@@ -46,7 +125,35 @@ impl RiskAgent {
             open_time_utc_hour,
         );
 
-        match self.client.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await {
+        // Choose primary or fallback client based on rate-limit state
+        let result = if is_rate_limited() {
+            if let Some(fb) = get_fallback() {
+                fb.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await
+            } else {
+                return Self::default_skip(mint, "rate-limited, no fallback");
+            }
+        } else {
+            let res = self.client.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await;
+            // On 429: cache the blackout, then try fallback in-band
+            if let Err(ref e) = res {
+                let err_str = e.to_string();
+                if is_rate_limit_err(&err_str) {
+                    handle_rate_limit(&err_str);
+                    if let Some(fb) = get_fallback() {
+                        warn!(mint = %mint, "Primary AI rate-limited — trying fallback provider");
+                        fb.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await
+                    } else {
+                        return Self::default_skip(mint, "rate-limited, no fallback configured");
+                    }
+                } else {
+                    res
+                }
+            } else {
+                res
+            }
+        };
+
+        match result {
             Ok(json_str) => {
                 match serde_json::from_str::<TokenRiskScore>(&json_str) {
                     Ok(mut score) => {
@@ -66,8 +173,12 @@ impl RiskAgent {
                 }
             }
             Err(e) => {
+                let err_str = e.to_string();
+                if is_rate_limit_err(&err_str) {
+                    handle_rate_limit(&err_str);
+                }
                 warn!("AI risk agent error: {}", e);
-                Self::default_skip(mint, &e.to_string())
+                Self::default_skip(mint, &err_str)
             }
         }
     }

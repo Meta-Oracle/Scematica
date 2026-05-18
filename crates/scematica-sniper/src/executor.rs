@@ -94,15 +94,18 @@ impl TxExecutor for DefaultExecutor {
         wallet: &Keypair,
         rpc: &Arc<RpcClient>,
     ) -> Result<ExecResult> {
-        let high_speed_fee_now = std::path::Path::new("scematica-highspeed-mode.json").exists();
+        // Read high-speed sentinel file once — shared for the whole execute() call.
+        let high_speed = std::path::Path::new("scematica-highspeed-mode.json").exists();
+
         let cpu_price = {
             let base = if self.dynamic_fees {
                 self.get_dynamic_fee(rpc).await
             } else {
                 self.compute_unit_price
             };
-            if high_speed_fee_now { base.saturating_mul(3) } else { base }
+            if high_speed { base.saturating_mul(3) } else { base }
         };
+
         // Capture caller-supplied instruction count BEFORE moving into all_ixs —
         // used below for the buy-vs-sell heuristic (buy=5+, sell=1–3).
         let caller_ix_count = instructions.len();
@@ -112,20 +115,10 @@ impl TxExecutor for DefaultExecutor {
         ];
         all_ixs.extend(instructions);
 
-        let blockhash = rpc.get_latest_blockhash().await?;
-        // Build a legacy transaction (compatible with all RPC nodes)
-        let msg = Message::new_with_blockhash(&all_ixs, Some(&wallet.pubkey()), &blockhash);
-        let mut tx = Transaction::new_unsigned(msg);
-        tx.sign(&[wallet], blockhash);
-
         let send_config = solana_client::rpc_config::RpcSendTransactionConfig {
             skip_preflight: self.skip_preflight,
             ..Default::default()
         };
-
-        // High-speed mode toggles via a sentinel file (so the sniper, executor, and
-        // dashboard all agree without plumbing an extra arg through every call site).
-        let high_speed = std::path::Path::new("scematica-highspeed-mode.json").exists();
 
         // Heuristic: buys carry many caller-supplied instructions (create-WSOL-ATA +
         // transfer + sync_native + create-base-ATA + swap, typically 5+). Sells are
@@ -136,6 +129,27 @@ impl TxExecutor for DefaultExecutor {
         let is_buy_shape = caller_ix_count >= 4;
 
         for attempt in 0..self.max_retries {
+            // Fetch a FRESH blockhash before every attempt.
+            //
+            // The previous design signed once and resubmitted the same tx on all retries.
+            // After a 429 backoff (8 s + 16 s + 32 s = 56 s total), Solana's ~150-slot
+            // (~60 s) blockhash TTL expired and every retry returned "BlockhashNotFound"
+            // even though the RPC was healthy. Fetching fresh here fixes that and adds
+            // <20 ms of latency per attempt (one roundtrip vs re-signing a stale tx).
+            let blockhash = match rpc.get_latest_blockhash().await {
+                Ok(bh) => bh,
+                Err(e) => {
+                    warn!("Blockhash fetch failed on attempt {}: {} — retrying", attempt + 1, e);
+                    if attempt + 1 < self.max_retries {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                    continue;
+                }
+            };
+            let msg = Message::new_with_blockhash(&all_ixs, Some(&wallet.pubkey()), &blockhash);
+            let mut tx = Transaction::new_unsigned(msg);
+            tx.sign(&[wallet], blockhash);
+
             debug!(
                 "Sending transaction attempt {}/{} (high_speed={}, buy_shape={})",
                 attempt + 1, self.max_retries, high_speed, is_buy_shape,
@@ -181,27 +195,34 @@ impl TxExecutor for DefaultExecutor {
                     });
                 }
                 Ok(Err(e)) => {
-                    let msg = e.to_string();
-                    warn!("Transaction attempt {} failed: {}", attempt + 1, msg);
-                    if attempt + 1 < self.max_retries {
-                        // High-speed: skip the 429 backoff entirely and retry near-immediately.
-                        //             The operator opted into the rate-limit thrash.
-                        // Normal:     429 → 8 s, 16 s, 32 s (Helius free-plan window is ~10 s);
-                        //             other transient failures (stale blockhash) → 200 ms.
-                        let delay_ms: u64 = if high_speed {
-                            50
-                        } else if msg.contains("429") {
-                            8000u64 << attempt.min(2)
-                        } else {
-                            200
-                        };
-                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                    } else {
+                    let err_str = e.to_string();
+                    warn!("Transaction attempt {} failed: {}", attempt + 1, err_str);
+                    if attempt + 1 >= self.max_retries {
                         return Ok(ExecResult {
                             signature: None,
                             confirmed: false,
-                            error: Some(msg),
+                            error: Some(err_str),
                         });
+                    }
+                    // Error-specific retry delay:
+                    //   Slippage (0x26): immediate — rebuild with zero min_out at the do_sell layer
+                    //   BlockhashNotFound: immediate — fresh hash already fetched at loop top
+                    //   Rate-limit (429): exponential backoff (Helius free-plan window ~10 s)
+                    //   High-speed: always immediate regardless of error type
+                    //   Other transient: short 200 ms gap
+                    let is_slippage = err_str.contains("0x26") || err_str.contains("slippage");
+                    let is_blockhash = err_str.contains("BlockhashNotFound")
+                        || err_str.contains("Blockhash not found");
+                    let is_rate_limit = err_str.contains("429");
+                    let delay_ms: u64 = if high_speed || is_slippage || is_blockhash {
+                        0  // retry immediately; slippage rebuilt by caller, hash refreshed at loop top
+                    } else if is_rate_limit {
+                        8000u64 << attempt.min(2)
+                    } else {
+                        200
+                    };
+                    if delay_ms > 0 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                     }
                 }
                 Err(_) => {
@@ -209,16 +230,14 @@ impl TxExecutor for DefaultExecutor {
                         "Transaction attempt {}/{} timed out after {:?}",
                         attempt + 1, self.max_retries, per_attempt_deadline,
                     );
-                    if attempt + 1 < self.max_retries {
-                        let gap_ms = if high_speed { 50 } else { 200 };
-                        tokio::time::sleep(tokio::time::Duration::from_millis(gap_ms)).await;
-                    } else {
+                    if attempt + 1 >= self.max_retries {
                         return Ok(ExecResult {
                             signature: None,
                             confirmed: false,
                             error: Some(format!("timeout after {:?}", per_attempt_deadline)),
                         });
                     }
+                    // Timeout: fresh blockhash on next attempt is sufficient, no extra delay
                 }
             }
         }

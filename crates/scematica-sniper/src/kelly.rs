@@ -3,20 +3,30 @@
 /// Tracks win rate and average win/loss from recent trade history, then
 /// applies a fractional Kelly formula to produce a position-size multiplier.
 ///
-/// Formula: f* = (p * b - q) / b
-///   p = win rate, q = 1 - p, b = avg_win / avg_loss
+/// Formula: f* = (p * b - q) / b  where b = avg_win / avg_loss (asymmetric Kelly)
+///   p = win rate, q = 1 - p
 ///
 /// The raw Kelly fraction is further scaled by `fraction` (default 0.25 =
 /// quarter-Kelly) to be conservative.  Result is clamped to 0.25 ..= 3.0.
+///
+/// Warm-up guard: returns 0.5× (half base) until `min_trades` samples are
+/// available, preventing extreme sizing from lucky/unlucky first few trades.
 pub struct KellySizer {
     /// Scaling factor applied to the raw Kelly fraction (e.g. 0.25 for quarter-Kelly)
     fraction: f64,
+    /// Minimum trade count before full Kelly activates. Below this, returns 0.5.
+    min_trades: usize,
 }
 
 impl KellySizer {
     pub fn new(fraction: f64) -> Self {
+        Self::with_min_trades(fraction, 10)
+    }
+
+    pub fn with_min_trades(fraction: f64, min_trades: usize) -> Self {
         Self {
             fraction: fraction.max(0.01).min(1.0),
+            min_trades,
         }
     }
 
@@ -27,9 +37,16 @@ impl KellySizer {
     ///   - 1.0 means trade at the base quote amount
     ///   - > 1.0 means trade more aggressively
     ///   - < 1.0 means reduce position size
+    ///
+    /// Returns 0.5 when fewer than `min_trades` are available (warm-up period).
     pub fn compute_multiplier(&self, history: &[(bool, f64)]) -> f64 {
         if history.is_empty() {
             return 1.0;
+        }
+
+        // Warm-up guard: not enough data for reliable Kelly estimate
+        if history.len() < self.min_trades {
+            return 0.5;
         }
 
         let wins: Vec<f64> = history.iter()

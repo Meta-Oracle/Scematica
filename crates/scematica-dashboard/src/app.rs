@@ -155,6 +155,15 @@ pub struct AppState {
     pub radar_pools: RwLock<Vec<RadarPool>>,
     /// Live open positions — sniper updates `scematica-positions.json` every 1 s
     pub live_positions: RwLock<Vec<LivePosition>>,
+    /// Set to true the first time `scematica-positions.json` is successfully parsed.
+    /// Once true, `open_position_count()` trusts the file count unconditionally —
+    /// even when it is 0 (all positions closed). Without this flag, an empty file
+    /// causes the counter to fall back to `open_position_mints()` which reads from
+    /// the trade-history deque and may report phantom open positions for buys whose
+    /// matching sells were evicted from the deque or not yet polled.
+    pub live_positions_file_seen: std::sync::atomic::AtomicBool,
+    /// Rolling last 5 alert messages displayed in the overview panel
+    pub alert_history: RwLock<VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
 }
 
 /// Wallet-growth ladder. Sets `wallet_target_sol` (profit-first stays on while
@@ -372,6 +381,8 @@ impl AppState {
             price_history: RwLock::new(std::collections::HashMap::new()),
             radar_pools: RwLock::new(Vec::new()),
             live_positions: RwLock::new(Vec::new()),
+            live_positions_file_seen: std::sync::atomic::AtomicBool::new(false),
+            alert_history: RwLock::new(VecDeque::with_capacity(5)),
         })
     }
 
@@ -440,6 +451,18 @@ impl AppState {
                         *streak = if *streak <= 0 { *streak - 1 } else { -1 };
                     }
                 }
+            }
+            // Alert history: record confirmed BUY/SELL events (last 5 visible in overview)
+            if event.status == "✓" {
+                let title = format!("{} {}", event.status, event.kind.clone());
+                let body = if event.kind == "SELL" {
+                    format!("{}… PnL: {:.4} SOL", &event.mint[..8.min(event.mint.len())], event.pnl)
+                } else {
+                    format!("{}… {:.4} SOL", &event.mint[..8.min(event.mint.len())], event.amount)
+                };
+                let mut ah = self.alert_history.write();
+                if ah.len() >= 5 { ah.pop_back(); }
+                ah.push_front((event.timestamp, title, body));
             }
             let entry = TradeEntry {
                 timestamp: event.timestamp,
@@ -531,6 +554,10 @@ impl AppState {
         let Ok(data) = std::fs::read_to_string(POS_FILE) else { return };
         let Ok(positions) = serde_json::from_str::<Vec<LivePosition>>(&data) else { return };
         *self.live_positions.write() = positions;
+        // Mark that the file has been seen at least once. After this point,
+        // open_position_count() trusts the file count (even when 0) instead of
+        // falling back to the trade-history deque — preventing phantom positions.
+        self.live_positions_file_seen.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read pool radar entries from scematica-pool-radar.json.
@@ -600,13 +627,23 @@ impl AppState {
         }
     }
 
-    /// Count currently open positions. Prefers the live registry (sniper writes
-    /// scematica-positions.json every 1 s); falls back to the trade-history
-    /// derivation when the registry hasn't been populated yet (sniper not
-    /// running, or just started).
+    /// Count currently open positions.
+    ///
+    /// Once `scematica-positions.json` has been parsed at least once, the file
+    /// is the authoritative source — even when it contains 0 entries (all positions
+    /// closed). This prevents the fallback from returning phantom open positions
+    /// for buys whose matching sell was evicted from the in-memory trade deque.
+    ///
+    /// Before the file is seen (sniper not yet started), derives from trade history
+    /// so the counter is non-zero during a session where the sniper ran previously.
     pub fn open_position_count(&self) -> usize {
-        let live = self.live_positions.read().len();
-        if live > 0 { live } else { self.open_position_mints().len() }
+        if self.live_positions_file_seen.load(std::sync::atomic::Ordering::Relaxed) {
+            self.live_positions.read().len()
+        } else {
+            // Sniper hasn't written the positions file yet — derive from trade history
+            let live = self.live_positions.read().len();
+            if live > 0 { live } else { self.open_position_mints().len() }
+        }
     }
 
     /// Derive currently open positions from trade history.

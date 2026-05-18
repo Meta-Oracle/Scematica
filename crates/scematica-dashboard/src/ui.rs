@@ -197,21 +197,20 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     render_session_stats(f, left_chunks[1], state);
     render_nn_stats(f, left_chunks[2], state);
 
-    // Right: live positions + recent trades + sparkline.
-    // Live positions get top billing — that's what the operator needs to see
-    // in real time. Bumped to 14 rows so up to 11 positions are visible (2
-    // border lines + 1 header).
+    // Right: live positions + recent trades + sparkline + alert history
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(14), // live positions (was 10)
+            Constraint::Length(14), // live positions
             Constraint::Min(0),     // recent trades
             Constraint::Length(5),  // sparkline
+            Constraint::Length(7),  // alert history (last 5 events)
         ])
         .split(h_chunks[1]);
     render_live_positions(f, right_chunks[0], state);
     render_recent_trades(f, right_chunks[1], state);
     render_pnl_sparkline(f, right_chunks[2], state);
+    render_alert_history(f, right_chunks[3], state);
 }
 
 fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
@@ -463,24 +462,66 @@ fn render_pnl_sparkline(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     f.render_widget(sparkline, area);
 }
 
+fn render_alert_history(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let alerts = state.alert_history.read();
+    let block = Block::default()
+        .title(" Recent Alerts ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let items: Vec<ListItem> = if alerts.is_empty() {
+        vec![ListItem::new(
+            Line::from(Span::styled("No alerts yet", Style::default().fg(Color::DarkGray))),
+        )]
+    } else {
+        alerts.iter().map(|(ts, title, body)| {
+            let is_sell = title.contains("SELL");
+            let is_buy  = title.contains("BUY");
+            let col = if is_sell && title.contains('✓') { Color::Green }
+                      else if is_buy { Color::Cyan }
+                      else { Color::Yellow };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", ts.format("%H:%M:%S")),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(format!("{} — {}", title, body), Style::default().fg(col)),
+            ]))
+        }).collect()
+    };
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
 fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let nn = state.nn_stats.read();
+
+    // Split area: top for stats table, bottom for Q-value bar chart
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(7), Constraint::Length(4)])
+        .split(area);
+
     let block = Block::default()
         .title(" 🧠 Deep Q* Agent ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
-    let rows = if let Some(v) = &*nn {
-        let epsilon    = v["epsilon"].as_f64().unwrap_or(1.0);
-        let steps      = v["step_count"].as_u64().unwrap_or(0);
-        let replay     = v["replay_size"].as_u64().unwrap_or(0);
-        let loss       = v["avg_loss"].as_f64().unwrap_or(0.0);
-        let reward     = v["total_reward"].as_f64().unwrap_or(0.0);
-        let ready      = v["ready_to_advise"].as_bool().unwrap_or(false);
-        let last_act   = v["last_action"].as_str().unwrap_or("-").to_string();
-        let ready_str  = if ready { "YES" } else { "NO" };
-        let ready_col  = if ready { Color::Green } else { Color::Yellow };
-        vec![
+    let action_labels = ["Hold", "Buy", "BuyAgg", "SellP", "SellAll"];
+
+    if let Some(v) = &*nn {
+        let epsilon  = v["epsilon"].as_f64().unwrap_or(1.0);
+        let steps    = v["step_count"].as_u64().unwrap_or(0);
+        let replay   = v["replay_size"].as_u64().unwrap_or(0);
+        let loss     = v["avg_loss"].as_f64().unwrap_or(0.0);
+        let reward   = v["total_reward"].as_f64().unwrap_or(0.0);
+        let ready    = v["ready_to_advise"].as_bool().unwrap_or(false);
+        let last_act = v["last_action"].as_str().unwrap_or("-").to_string();
+        let ready_str = if ready { "YES" } else { "NO" };
+        let ready_col = if ready { Color::Green } else { Color::Yellow };
+
+        let rows = vec![
             Row::new(vec![
                 Cell::from("ε / Steps").style(Style::default().fg(Color::DarkGray)),
                 Cell::from(format!("{:.4}  /  {}", epsilon, steps)),
@@ -491,7 +532,7 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             ]),
             Row::new(vec![
                 Cell::from("Total Reward").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:.4}", reward)),
+                Cell::from(format!("{:.2}", reward)),
             ]),
             Row::new(vec![
                 Cell::from("Last Action").style(Style::default().fg(Color::DarkGray)),
@@ -501,14 +542,70 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 Cell::from("Advising").style(Style::default().fg(Color::DarkGray)),
                 Cell::from(ready_str).style(Style::default().fg(ready_col)),
             ]),
-        ]
-    } else {
-        vec![Row::new(vec![Cell::from("Waiting for NN agent...").style(Style::default().fg(Color::DarkGray))])]
-    };
+        ];
+        let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)])
+            .block(block);
+        f.render_widget(table, chunks[0]);
 
-    let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)])
-        .block(block);
-    f.render_widget(table, area);
+        // Q-value bar chart — one bar per action, width proportional to Q-value
+        let q_vals: Vec<f64> = if let Some(arr) = v["last_q_values"].as_array() {
+            arr.iter().filter_map(|x| x.as_f64()).collect()
+        } else {
+            Vec::new()
+        };
+
+        if !q_vals.is_empty() {
+            let q_block = Block::default()
+                .title(" Q-values ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
+
+            let q_min = q_vals.iter().cloned().fold(f64::INFINITY, f64::min);
+            let q_max = q_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let q_range = (q_max - q_min).max(1.0);
+            let max_action = q_vals.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            let bar_w = (chunks[1].width.saturating_sub(2)) as usize / action_labels.len().max(1);
+            let mut spans: Vec<Span> = Vec::new();
+            for (i, (&q, &label)) in q_vals.iter().zip(action_labels.iter()).enumerate() {
+                let norm = ((q - q_min) / q_range * (bar_w.saturating_sub(1)) as f64) as usize;
+                let bar: String = "█".repeat(norm.max(1));
+                let col = if i == max_action { Color::Green } else { Color::Blue };
+                spans.push(Span::styled(
+                    format!("{:<width$}", format!("{} {:.1}", label, q), width = bar_w),
+                    Style::default().fg(col),
+                ));
+                let _ = bar; // suppress unused warning; label already carries width signal
+            }
+            let p = Paragraph::new(Line::from(spans)).block(q_block);
+            f.render_widget(p, chunks[1]);
+        } else {
+            let q_block = Block::default()
+                .title(" Q-values ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
+            let p = Paragraph::new("  Waiting for first Q-value observation…")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(q_block);
+            f.render_widget(p, chunks[1]);
+        }
+    } else {
+        let table = Table::new(
+            vec![Row::new(vec![Cell::from("Waiting for NN agent...").style(Style::default().fg(Color::DarkGray))])],
+            [Constraint::Min(0)],
+        ).block(block);
+        f.render_widget(table, chunks[0]);
+
+        let q_block = Block::default()
+            .title(" Q-values ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+        f.render_widget(q_block, chunks[1]);
+    }
 }
 
 fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {

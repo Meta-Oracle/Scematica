@@ -269,6 +269,71 @@ pub struct SniperConfig {
     /// regardless of profit-first extension logic. Prevents capital from being
     /// permanently locked in a dead pool. 0 = disabled. Default 90.
     pub max_position_hold_mins: u32,
+
+    // ── Absolute SOL floor ────────────────────────────────────────────────────
+    /// Never enter a trade if the wallet's SOL balance would drop below this
+    /// after the buy. Reserves gas money so sells never fail due to empty wallet.
+    /// Default 0.02 SOL.
+    pub min_sol_reserve: f64,
+
+    // ── Confirmation window ───────────────────────────────────────────────────
+    /// After detecting a pool, wait this many ms and re-check vault balance.
+    /// If price has already moved >15% from creation price, skip the buy — we
+    /// are entering after the initial pump. 0 = disabled. Default 0.
+    pub confirmation_window_ms: u64,
+
+    // ── Session heat cooldown ─────────────────────────────────────────────────
+    /// Pause buying for `session_heat_cooldown_mins` after this many losses in
+    /// `session_heat_window_secs`. Distinct from grief_breaker (which is based on
+    /// SOL magnitude); this fires on *frequency*. 0 = disabled. Default 3.
+    pub session_heat_losses: u32,
+    /// Rolling window in seconds for session heat tracking. Default 3600.
+    pub session_heat_window_secs: u64,
+    /// Pause duration in minutes when session heat is tripped. Default 15.
+    pub session_heat_cooldown_mins: u32,
+
+    // ── Volume exhaustion exit ────────────────────────────────────────────────
+    /// Exit the position when observed volume drops to this % of the entry-time
+    /// volume. The pump is over when volume dries up. 0.0 = disabled.
+    pub volume_exhaustion_pct: f64,
+
+    // ── Buy/sell ratio inversion exit ─────────────────────────────────────────
+    /// Exit immediately when the buy/sell ratio drops below this threshold after
+    /// having been above it at entry. Net sellers dominating = distribution phase.
+    /// 0.0 = disabled. Default 0.0.
+    pub buy_sell_ratio_exit: f64,
+
+    // ── Check interval acceleration ───────────────────────────────────────────
+    /// When 3 consecutive price checks are all down, halve the check interval
+    /// (minimum 25 ms). Re-expands to normal when price stabilises. Default true.
+    pub check_interval_acceleration: bool,
+
+    // ── Whale exit detector ───────────────────────────────────────────────────
+    /// If the pool's quote vault drops by more than this % in a single price-check
+    /// cycle, trigger an immediate sell — a large holder exited. 0.0 = disabled.
+    pub whale_exit_vault_drop_pct: f64,
+
+    // ── Pool-quality buy sizing ───────────────────────────────────────────────
+    /// Scale buy size by pool_score/100. Score 95 → full size, score 55 → 55%.
+    /// Requires min_pool_score > 0 to be meaningful. Default false.
+    pub pool_quality_sizing: bool,
+
+    // ── Kelly warm-up ─────────────────────────────────────────────────────────
+    /// Minimum number of historical trades before Kelly sizing activates. Below
+    /// this the multiplier is 0.5× (half base) to avoid wild early sizing.
+    /// Default 10.
+    pub kelly_min_trades: usize,
+
+    // ── Deployer wallet age filter ────────────────────────────────────────────
+    /// Reject pools from deployer wallets younger than this many hours.
+    /// Fresh wallets almost always belong to rug setups. 0 = disabled.
+    pub deployer_wallet_age_min_hours: u64,
+
+    // ── Filter TTL cache ──────────────────────────────────────────────────────
+    /// Cache filter pipeline results per pool pubkey for this many seconds to
+    /// avoid repeated RPC calls when the same pool fires multiple events.
+    /// Default 30.
+    pub filter_cache_ttl_secs: u64,
 }
 
 impl Default for SniperConfig {
@@ -282,9 +347,16 @@ impl Default for SniperConfig {
             max_sell_retries: 5,
             auto_sell: true,
             auto_sell_delay_ms: 0,
-            take_profit_pct: 50.0,
+            // v1.2.0: raised 50→80 — momentum escalation now runs 5 rounds
+            // (up from 4), so TP needs to be a higher starting floor to let the
+            // escalator capture the full parabolic move before exit.
+            take_profit_pct: 80.0,
             stop_loss_pct: 15.0,
-            buy_slippage_pct: 1.5,
+            // v1.1.1: widened 1.5→3.0 — thin memecoin pools move 3-5% between pool
+            // detection and tx landing. 1.5% caused frequent buy rejections with 0x26
+            // errors on the first attempt, burning all 3 retries on pools that were
+            // still buyable. 3.0% accepts the same buy in one shot.
+            buy_slippage_pct: 3.0,
             // v1.0.0: widened 2.0→2.5 — memecoin pools are thin; a 2% slippage
             // floor causes frequent sell rejections during high-volatility moves.
             sell_slippage_pct: 2.5,
@@ -300,9 +372,13 @@ impl Default for SniperConfig {
             use_snipe_list: false,
             snipe_list_path: "snipe-list.txt".into(),
             max_buys: 0,
-            trailing_stop_loss_pct: 15.0,
+            // v1.2.0: tightened 15→12 — once a position has a peak, reclaim
+            // gains faster before they evaporate on a reversal.
+            trailing_stop_loss_pct: 12.0,
             partial_tp_pct: 50.0,
-            partial_tp_trigger: 30.0,
+            // v1.2.0: raised 30→45 — don't take first partial until genuinely
+            // in profit; avoids giving up upside on the initial pump leg.
+            partial_tp_trigger: 45.0,
             max_concurrent_positions: 0,
             cooldown_after_losses: 3,
             cooldown_minutes: 15,
@@ -323,12 +399,12 @@ impl Default for SniperConfig {
             profit_extraction_threshold_sol: 0.0,
             profit_extraction_pct: 0.0,
             profit_extraction_wallet: String::new(),
-            // v0.9.2 sweet-spot: dropped 45 → 25. The PoolScorer's sharp bands
-            // mean a pool below 25 truly is junk (no fresh-age bonus AND
-            // sub-1-SOL liquidity). Above 25 we hand the decision to the AI
-            // gates: Grok risk scorer + dQ* observer. Those two evolve with
-            // training data; the static score gate doesn't.
-            min_pool_score: 25.0,
+            // v1.2.0: raised 25→35. The 2 SOL min_pool_size and check_name filter
+            // already eliminated the worst pools; raising the score gate here
+            // focuses on pools with both fresh age AND sufficient liquidity.
+            // Moderate: operators willing to take more micro-cap risk can lower
+            // to 25 in config.toml.
+            min_pool_score: 35.0,
             extra_rpc_endpoints: vec![],
             adaptive_slippage: false,
             sandwich_shield: false,
@@ -343,10 +419,16 @@ impl Default for SniperConfig {
             momentum_hold: true,
             momentum_window_checks: 5,
             momentum_escalation_threshold_pct: 5.0,
-            momentum_escalation_factor: 1.5,
-            momentum_max_escalations: 4,
-            momentum_min_peak_pct: 20.0,
-            momentum_pullback_exit_pct: 15.0,
+            // v1.2.0: slightly more aggressive escalation factor
+            momentum_escalation_factor: 1.6,
+            // v1.2.0: one extra escalation round — lets a parabolic move run
+            // up to 1.6^5 = ~10.5× the configured TP target before force exit
+            momentum_max_escalations: 5,
+            // v1.2.0: require 25% peak (was 20) before momentum pullback fires —
+            // avoids premature exits on small initial pops
+            momentum_min_peak_pct: 25.0,
+            // v1.2.0: slightly more room at peak before locking in gains
+            momentum_pullback_exit_pct: 18.0,
             // v0.9.6 perfect-exit defaults
             adaptive_pullback: true,
             velocity_decay_exit: true,
@@ -358,16 +440,44 @@ impl Default for SniperConfig {
             // without false-positive risk on healthy pauses.
             velocity_decay_drop_threshold: 1.5,
             tiered_partial_tp: true,
+            // v1.2.0: shifted tiers up — hold position longer before first partial,
+            // maximize gains at each subsequent tier.
             tiered_partial_tp_levels: vec![
-                (30.0, 25.0),
-                (75.0, 25.0),
-                (150.0, 25.0),
+                (45.0, 20.0),   // first partial at +45% (was 30%) — sell 20%
+                (100.0, 25.0),  // second at +100% (was 75%) — sell 25%
+                (200.0, 25.0),  // third at +200% (was 150%) — sell 25%
             ],
             // v1.0.0 reliability defaults
             flash_crash_pct: 22.0,
-            profit_lock_checks: 8,
+            // v1.2.0: lowered 8→6 — lock profits sooner once we're consistently
+            // above entry (prevents round-trip losses on sustained winners)
+            profit_lock_checks: 6,
             close_ata_on_sell: true,
             max_position_hold_mins: 90,
+            // v1.1.0 new risk + sizing defaults
+            min_sol_reserve: 0.02,
+            // v1.1.1: enabled 0→200ms — waits 200ms then re-checks the quote vault.
+            // If the vault drained >15% (someone already front-ran the pump), skip.
+            // This costs one extra RPC call per pool but eliminates the class of trades
+            // where we buy into a pool that was already >15% pumped by the time our
+            // tx builds — those trades are near-guaranteed immediate losses.
+            confirmation_window_ms: 200,
+            session_heat_losses: 3,
+            session_heat_window_secs: 3600,
+            session_heat_cooldown_mins: 15,
+            // v1.2.0: exit when in profit and volume drops >65% from entry vault —
+            // signals the pump is exhausted and smart money has already exited.
+            volume_exhaustion_pct: 65.0,
+            buy_sell_ratio_exit: 0.0,
+            check_interval_acceleration: true,
+            // v1.2.0: exit instantly when a single check shows the vault drops >22%
+            // in one tick — strong rug/whale-exit signal; acts faster than the
+            // 3-consecutive-decline detector.
+            whale_exit_vault_drop_pct: 22.0,
+            pool_quality_sizing: false,
+            kelly_min_trades: 10,
+            deployer_wallet_age_min_hours: 0,
+            filter_cache_ttl_secs: 30,
         }
     }
 }
@@ -422,6 +532,15 @@ pub struct FilterConfig {
     pub check_jupiter_discrepancy: bool,
     /// Minimum Jupiter premium % to treat as a buy signal
     pub jupiter_min_premium_pct: f64,
+
+    // ── Deployer wallet age ───────────────────────────────────────────────────
+    /// Reject pools from wallets younger than `deployer_min_age_hours`. Fresh
+    /// wallets are a strong rug signal. 0 = disabled.
+    pub check_deployer_wallet_age: bool,
+    pub deployer_min_age_hours: u64,
+    /// Cache filter results per pool pubkey for this many seconds.
+    /// Avoids redundant RPC calls when duplicate pool events arrive. Default 30.
+    pub filter_cache_ttl_secs: u64,
 }
 
 impl Default for FilterConfig {
@@ -450,9 +569,15 @@ impl Default for FilterConfig {
             check_burned: true,
             check_mutable: true,
             check_socials: false,
-            min_pool_size: 0.25,
+            // v1.2.0: raised 1.0→2.0 SOL. The 1 SOL floor reduced the worst rug
+            // rate but 1-2 SOL pools still drain within the first 500ms. 2 SOL gives
+            // the pool enough liquidity cushion to survive initial bot traffic.
+            // Ultra-low-cap operators can lower to 1.0 in config.toml.
+            min_pool_size: 2.0,
             max_pool_size: 0.0,
-            check_name: false,
+            // v1.2.0: enabled — cheap name/symbol check filters the most obvious
+            // scam tokens (test, fake, honeypot etc.) with zero RPC cost.
+            check_name: true,
             check_volume: false,
             min_volume_txns: 3,
             check_liquidity_depth: true,
@@ -471,9 +596,15 @@ impl Default for FilterConfig {
             // KEEP ON — sharp, cheap, and the dQ* agent's reward signal also
             // depends on the deployer ledger.
             check_cross_pool_correlation: true,
-            max_deployer_rugs_24h: 3,
+            // v1.2.0: tightened 3→2 — a deployer with 2+ rugs in 24h is a repeat
+            // offender; blocking at 2 reduces exposure without excluding genuinely
+            // new deployers (who have 0 rug history).
+            max_deployer_rugs_24h: 2,
             check_jupiter_discrepancy: false,
             jupiter_min_premium_pct: 5.0,
+            check_deployer_wallet_age: false,
+            deployer_min_age_hours: 48,
+            filter_cache_ttl_secs: 30,
         }
     }
 }

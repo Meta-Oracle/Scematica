@@ -22,6 +22,9 @@ pub struct ArbPath {
     pub profit: i128,
     /// Profit as a percentage of input
     pub profit_pct: f64,
+    /// Unix millisecond timestamp when reserves were fetched — used for staleness check
+    #[serde(default)]
+    pub fetched_at_ms: u64,
 }
 
 impl ArbPath {
@@ -44,6 +47,11 @@ impl ArbPath {
         let pool_keys: Vec<String> = pool_path.iter().map(|p| p.pool_address.to_string()).collect();
         let id = format!("{}{}", mint_keys.join(""), pool_keys.join(""));
 
+        let fetched_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         Self {
             id,
             mint_path,
@@ -53,6 +61,7 @@ impl ArbPath {
             hop_amounts,
             profit,
             profit_pct,
+            fetched_at_ms,
         }
     }
 

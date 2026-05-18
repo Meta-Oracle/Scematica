@@ -810,6 +810,34 @@ async fn main() -> Result<()> {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Trade log rotation task: archive scematica-trades.jsonl when it exceeds 10,000 lines.
+    // Archives to scematica-trades.jsonl.bak-<timestamp> and starts fresh so the NN
+    // observer and dashboard don't read GB-sized files on long-running sessions.
+    {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            const TRADES_FILE: &str = "scematica-trades.jsonl";
+            const MAX_LINES: usize = 10_000;
+            loop {
+                interval.tick().await;
+                if let Ok(contents) = std::fs::read_to_string(TRADES_FILE) {
+                    let line_count = contents.lines().count();
+                    if line_count >= MAX_LINES {
+                        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                        let archive = format!("{}.bak-{}", TRADES_FILE, ts);
+                        if std::fs::rename(TRADES_FILE, &archive).is_ok() {
+                            info!(
+                                line_count,
+                                archive = %archive,
+                                "Trade log rotated — archived and starting fresh"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Spawn Strategy Agent loop — adjusts TP/SL/amount every 5 minutes
     {
         let sniper_clone = sniper.clone();

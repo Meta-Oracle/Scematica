@@ -653,12 +653,93 @@ impl PoolFilter for JupiterDiscrepancyFilter {
     }
 }
 
+/// Rejects pools whose base-mint token was created less than `min_age_hours` ago.
+///
+/// A freshly minted token (< 48h) from a never-seen deployer is the single
+/// strongest rug predictor on Solana. We use the oldest transaction on the
+/// base_mint address as a proxy for when the token was created.
+pub struct DeployerWalletAgeFilter {
+    pub min_age_hours: u64,
+}
+
+#[async_trait]
+impl PoolFilter for DeployerWalletAgeFilter {
+    fn name(&self) -> &str { "DeployerWalletAge" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        if self.min_age_hours == 0 {
+            return FilterResult::pass();
+        }
+
+        use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
+        use solana_sdk::commitment_config::CommitmentConfig;
+
+        // Fetch up to 10 signatures for the base mint, newest first.
+        // The last (oldest) entry gives us the mint creation blockTime.
+        let config = GetConfirmedSignaturesForAddress2Config {
+            limit: Some(10),
+            commitment: Some(CommitmentConfig::confirmed()),
+            ..Default::default()
+        };
+
+        let sigs = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_signatures_for_address_with_config(&pool.base_mint, config),
+        ).await {
+            Ok(Ok(s)) if !s.is_empty() => s,
+            Ok(Ok(_)) => {
+                debug!(mint = %pool.base_mint, "DeployerWalletAge: no signatures found — skipping");
+                return FilterResult::pass();
+            }
+            Ok(Err(e)) => {
+                warn!(mint = %pool.base_mint, "DeployerWalletAge: sig fetch failed: {} — skipping", e);
+                return FilterResult::pass();
+            }
+            Err(_) => {
+                warn!(mint = %pool.base_mint, "DeployerWalletAge: sig fetch timed out — skipping");
+                return FilterResult::pass();
+            }
+        };
+
+        // Oldest signature is the last in the list (they're ordered newest-first)
+        let oldest = sigs.last().unwrap();
+        let creation_block_time = match oldest.block_time {
+            Some(t) => t,
+            None => return FilterResult::pass(), // block_time unavailable — fail-open
+        };
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let age_hours = (now_secs - creation_block_time).max(0) as u64 / 3600;
+
+        if age_hours < self.min_age_hours {
+            FilterResult::fail(format!(
+                "Token only {} hours old (min: {} hours) — likely fresh rug wallet",
+                age_hours, self.min_age_hours
+            ))
+        } else {
+            debug!(
+                mint = %pool.base_mint,
+                age_hours,
+                "Deployer wallet age OK"
+            );
+            FilterResult::pass()
+        }
+    }
+}
+
 // ── pipeline ──────────────────────────────────────────────────────────────────
 
 pub struct FilterPipeline {
     filters: Vec<Box<dyn PoolFilter>>,
     rpc: Arc<RpcClient>,
     pub stats: FilterStats,
+    /// Pool-id → (passed, timestamp) cache to avoid repeating RPC calls on duplicate events.
+    result_cache: Arc<DashMap<String, (bool, std::time::Instant)>>,
+    cache_ttl_secs: u64,
 }
 
 impl FilterPipeline {
@@ -669,85 +750,124 @@ impl FilterPipeline {
         blacklist_path: &str,
         deployer_ledger: Option<Arc<parking_lot::Mutex<DeployerLedger>>>,
     ) -> Self {
+        // ── Filter ordering: cheapest first so expensive RPC calls only run on
+        // pools that pass the cheap guards. Each filter's RPC cost is noted below.
         let mut filters: Vec<Box<dyn PoolFilter>> = vec![];
-        if config.check_mint_renounced { filters.push(Box::new(MintRenounceFilter)); }
-        if config.check_freezable      { filters.push(Box::new(FreezableFilter)); }
-        if config.check_burned         { filters.push(Box::new(BurnFilter)); }
-        if config.min_pool_size > 0.0 || config.max_pool_size > 0.0 {
-            filters.push(Box::new(PoolSizeFilter {
-                min_size_lamports: (config.min_pool_size * 1e9) as u64,
-                max_size_lamports: (config.max_pool_size * 1e9) as u64,
-            }));
-        }
-        if config.check_name {
-            filters.push(Box::new(NameFilter));
-        }
-        if config.check_volume && config.min_volume_txns > 0 {
-            filters.push(Box::new(VolumeFilter { min_txns: config.min_volume_txns }));
-        }
-        if config.check_liquidity_depth && config.max_price_impact_pct > 0.0 {
-            filters.push(Box::new(LiquidityDepthFilter {
-                quote_amount_raw,
-                max_price_impact_pct: config.max_price_impact_pct,
-            }));
-        }
+
+        // [1 RPC] In-memory blacklist check — nearly free after initial load
         if std::path::Path::new(blacklist_path).exists() {
             let bf = BlacklistFilter::load(blacklist_path);
             if !bf.blacklist.is_empty() {
                 filters.push(Box::new(bf));
             }
         }
+        // [1 RPC] Freeze authority check — single getAccountInfo on mint
+        if config.check_freezable      { filters.push(Box::new(FreezableFilter)); }
+        // [1 RPC] Mint renounce check — same account data as FreezableFilter
+        if config.check_mint_renounced { filters.push(Box::new(MintRenounceFilter)); }
+        // [1 RPC] Base vault balance check — quick reject for empty/rugged pools
+        if config.check_burned         { filters.push(Box::new(BurnFilter)); }
+        // [1 RPC] Pool size range check
+        if config.min_pool_size > 0.0 || config.max_pool_size > 0.0 {
+            filters.push(Box::new(PoolSizeFilter {
+                min_size_lamports: (config.min_pool_size * 1e9) as u64,
+                max_size_lamports: (config.max_pool_size * 1e9) as u64,
+            }));
+        }
+        // [1 RPC] Price impact from our buy size — single quote vault read
+        if config.check_liquidity_depth && config.max_price_impact_pct > 0.0 {
+            filters.push(Box::new(LiquidityDepthFilter {
+                quote_amount_raw,
+                max_price_impact_pct: config.max_price_impact_pct,
+            }));
+        }
+        // [1 RPC + parse] Scam word check — metadata account fetch + string scan
+        if config.check_name {
+            filters.push(Box::new(NameFilter));
+        }
+        // [1 RPC] Recent tx volume check
+        if config.check_volume && config.min_volume_txns > 0 {
+            filters.push(Box::new(VolumeFilter { min_txns: config.min_volume_txns }));
+        }
+        // [1 RPC + in-memory lookup] Deployer rug history via CrossPoolCorrelation
+        // DeployerReputationFilter is DISABLED — `account.owner` always returns the
+        // Raydium AMM V4 program ID (675kPX9M…), not the actual deployer wallet.
+        // CrossPoolCorrelationFilter uses the same field but the ledger data is keyed
+        // by program ID, which is still useful as a per-program-version guard.
+        if config.check_cross_pool_correlation {
+            if let Some(ref ledger) = deployer_ledger {
+                filters.push(Box::new(CrossPoolCorrelationFilter {
+                    ledger: Arc::clone(ledger),
+                    max_rugs_24h: config.max_deployer_rugs_24h,
+                }));
+            }
+        }
+        // [1 RPC] Deployer wallet / token age via oldest mint signature
+        if config.check_deployer_wallet_age && config.deployer_min_age_hours > 0 {
+            filters.push(Box::new(DeployerWalletAgeFilter {
+                min_age_hours: config.deployer_min_age_hours,
+            }));
+        }
+        // [2 RPC] Top-10 holder concentration — two RPC calls (supply + largest accounts)
         if config.check_holder_concentration && config.max_top10_holder_pct > 0.0 {
             filters.push(Box::new(HolderConcentrationFilter {
                 max_top10_pct: config.max_top10_holder_pct,
             }));
         }
-        // DeployerReputationFilter is DISABLED here until proper deployer-wallet
-        // resolution is implemented. The current impl uses `account.owner` which
-        // always returns the Raydium AMM V4 program ID (675kPX9M…) for every pool
-        // — so every pool gets attributed to a single "deployer" and rejected with
-        // the same reputation score. Proper resolution would require fetching the
-        // pool's creation tx and extracting the fee-payer wallet, which is too
-        // expensive per-pool to do inline. The ledger Arc remains in scope and is
-        // still used by CrossPoolCorrelationFilter below.
-
-        // ── New filters wired from config ─────────────────────────────────────
+        // [2 RPC + 3s wait] Liquidity momentum — most expensive filter, runs last
         if config.check_liquidity_momentum {
             filters.push(Box::new(LiquidityMomentumFilter {
                 min_growth_pct: config.liquidity_momentum_pct,
             }));
         }
-        if config.check_cross_pool_correlation {
-            if let Some(ledger) = deployer_ledger {
-                filters.push(Box::new(CrossPoolCorrelationFilter {
-                    ledger,
-                    max_rugs_24h: config.max_deployer_rugs_24h,
-                }));
-            }
-        }
+        // [2 RPC + HTTP] Jupiter discrepancy — external HTTP call, run last
         if config.check_jupiter_discrepancy {
             filters.push(Box::new(JupiterDiscrepancyFilter {
                 min_premium_pct: config.jupiter_min_premium_pct,
             }));
         }
 
-        let _ = config; // settings now baked into the constructed filters; pipeline itself is stateless re: intervals
-        Self { filters, rpc, stats: FilterStats::default() }
+        let cache_ttl_secs = config.filter_cache_ttl_secs.max(5);
+        Self {
+            filters,
+            rpc,
+            stats: FilterStats::default(),
+            result_cache: Arc::new(DashMap::new()),
+            cache_ttl_secs,
+        }
     }
 
     pub async fn execute(&self, pool: &CachedPool) -> bool {
-        // Single-shot evaluation: each pool is checked exactly once and we move on.
-        // The old retry loop (check_interval_ms × check_duration_ms × consecutive_matches)
-        // could spend 8–20 s per pool waiting for filters to "settle", during which
-        // newer pools were stalling in the channel queue. Fresh launches dump in the
-        // first 30 s — burning 20 s on a single fence-sitter trades the next 10 candidates
-        // for it. One pass, one verdict, next pool.
         self.stats.pools_seen.fetch_add(1, Ordering::Relaxed);
+
+        // TTL cache: skip redundant RPC calls when the same pool fires multiple events
+        let cache_key = pool.id.to_string();
+        if let Some(entry) = self.result_cache.get(&cache_key) {
+            let (passed, ts) = *entry;
+            if ts.elapsed().as_secs() < self.cache_ttl_secs {
+                debug!(mint = %pool.base_mint, cached = passed, "Filter result served from cache");
+                if passed {
+                    self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
+                }
+                return passed;
+            }
+        }
+
         let passed = if self.filters.is_empty() {
             true
         } else {
             self.run_once(pool).await
         };
+
+        // Cache the result
+        self.result_cache.insert(cache_key, (passed, std::time::Instant::now()));
+
+        // Periodically evict stale cache entries (every ~100 evaluations on average)
+        if self.stats.pools_seen.load(Ordering::Relaxed) % 100 == 0 {
+            let ttl = self.cache_ttl_secs;
+            self.result_cache.retain(|_, (_, ts)| ts.elapsed().as_secs() < ttl);
+        }
+
         if passed {
             self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
         }
@@ -756,8 +876,8 @@ impl FilterPipeline {
     }
 
     async fn run_once(&self, pool: &CachedPool) -> bool {
-        // Run every filter concurrently — they're independent RPC reads with no side effects.
-        // For a typical 10-filter config this replaces ~10*(RPC_RTT) + 9*120ms of sequential
+        // Run every filter concurrently — independent RPC reads with no side effects.
+        // For a typical 10-filter config this replaces ~10*(RPC_RTT) sequential
         // latency with a single ~RPC_RTT round-trip in the common case.
         let futures = self.filters.iter().map(|filter| async move {
             let name = filter.name();

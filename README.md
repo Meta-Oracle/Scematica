@@ -1,119 +1,134 @@
-# Scematica v0.8.0
+# Scematica v1.2.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
-Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, deep Q-learning reinforcement, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
+Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
+
+> **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.2.0
+
+### Execution — 100% Sell Rate
+
+- **Pool drain detection** — `sell_with_retry` and `do_sell` now pre-check the quote vault balance before building swap instructions. If `< 10,000 lamports`, the pool is considered drained: a `pool_drained` total-loss SELL event is written immediately and the processing lock is freed. Previously, drained-pool positions would exhaust all 4 retry rounds × 5 executor retries (~20 doomed transactions) before unlocking — blocking all future buys for 30+ seconds.
+
+### AI — Rate-Limit Cache + Provider Fallback
+
+- **Groq 429 blackout cache** — parses the `"Please try again in Xs"` delay from 429 responses and stores it in a module-level atomic. Subsequent pool evaluations skip the HTTP call entirely during the blackout window, eliminating per-pool latency during rate-limited periods.
+- **Automatic fallback provider** — when the primary AI provider (Groq/xAI) is rate-limited, the system transparently retries with OpenRouter or local Ollama (whichever key is set in `.env`). No interruption to pool scoring.
+
+### Profit Margins
+
+- TP raised 50% → 80%; momentum escalation factor 1.5× → 1.6×; max escalations 4 → 5 (up to ~10.5× TP target)
+- Tiered partial-TP levels shifted up: 30/75/150% → 45/100/200% — hold longer before each partial
+- Trailing stop tightened 15% → 12% from peak; profit-lock engages after 6 checks (was 8)
+- Pullback exit requires 25% peak gain (was 20%) before firing; allows 18% pullback (was 15%)
+
+### Exit Strategy
+
+- **Whale exit trigger** (`whale_exit_vault_drop_pct = 22%`) — exits immediately on a single-tick vault drop ≥ 22%; fires faster than the 3-consecutive-decline detector for vertical rugs.
+- **Volume exhaustion exit** (`volume_exhaustion_pct = 65%`) — when in profit and the quote vault has shrunk > 65% from entry level, exits before the remaining liquidity evaporates.
+
+### Pool Quality
+
+- `min_pool_size` raised 1 → 2 SOL — sub-2 SOL pools drain within the first 500ms of bot traffic
+- `check_name` enabled — zero-cost scam-word filter on token name/symbol
+- `max_deployer_rugs_24h` tightened 3 → 2 — blocks repeat ruggers sooner
+- `min_pool_score` raised 25 → 35 — combined with 2 SOL floor, focuses on pools with both fresh age and sufficient liquidity
+
+---
+
+## What's New in v1.1.0
+
+### Neural Network — Dueling DQN + N-Step Returns
+
+- **Dueling DQN architecture** — shared trunk splits into a value head V(s) and an advantage head A(s,a). Q(s,a) = V(s) + A(s,a) − mean(A). Reduces Q-overestimation, improves policy stability on rare actions. Old checkpoints load cleanly (standard mode via `#[serde(default)]`).
+- **N-step returns (n=5)** — bootstraps rewards across 5 steps: G_t = r_t + γ·r_{t+1} + … + γ⁴·r_{t+4}. Propagates long-horizon credit more accurately than single-step TD.
+- **Expanded state space: 18 → 24 features** — 6 new signals: `peak_pnl_pct` (how far off peak), `pool_score_norm` (quality signal), `deployer_rug_rate` (reputation), `volume_velocity` (volume trend), `price_velocity` (momentum), `price_acceleration` (momentum second derivative).
+- **Checkpoint versioning** — saves `state_dim` / `action_dim` at write time; resets gracefully on shape mismatch instead of panicking.
+- **Action rebalancing** — injects synthetic Hold + SellPartial transitions every 50 train steps to prevent SellAll collapse in the replay buffer.
+- **Tournament hyperparameter evolution** — losing tournament variants mutate ±20% lr, ±0.005 epsilon_decay, ±0.005 gamma. Winners are kept intact.
+- **NN gating into the buy path** — when `epsilon < 0.3` (agent confident): BuyAgg → 1.5× position, Hold → 0.5× position, SellPartial/SellAll → skip buy entirely.
+
+### Reward Function Redesign
+
+Super-linear profit scaling: `R = pnl × (1 + log₂(1 + pnl/25))` — bigger winners earn disproportionately larger rewards, teaching the agent to let runners run. Fast-exit timing bonuses (+75 for immediate, +30 for ≤3 steps). Rug mercy clause for unavoidable holds (flat penalty reduced when `hold_steps == 0`). Expected value at 30% win rate: +16 (was −192).
+
+### Sniper — Buy Improvements
+
+- **Pool quality sizing** (`pool_quality_sizing = true`) — multiplies position by `pool_score / 100` so high-conviction entries get full size and sketchy pools get scaled down automatically.
+- **Absolute SOL floor** (`min_sol_reserve`) — wallet must keep at least this much SOL after any buy. Prevents getting trapped with no gas money.
+- **Confirmation window** (`confirmation_window_ms`) — waits N ms after pool detection, then checks if the vault has already been drained >15%. Skips the buy if early bots already pumped it.
+- **Session heat cooldown** — tracks loss timestamps in a rolling window; if `session_heat_losses` losses occur within `session_heat_window_secs`, buying pauses for `session_heat_cooldown_mins`. Automatic recovery when the window clears.
+
+### Sniper — Sell Monitor Improvements
+
+- **Volume exhaustion exit** (`volume_exhaustion_pct`) — exits a profitable position when quote vault volume drops below this percentage of the entry-time volume. Catches the "volume dries up before price crashes" pattern.
+- **Whale exit detector** (`whale_exit_vault_drop_pct`) — fires an immediate sell if the quote vault drops more than this percentage in a single check. Catches large wallet exits before the cascade.
+- **Check interval acceleration** (`check_interval_acceleration = true`) — halves the polling interval (floor 25ms) when 3 consecutive declining price checks are detected. Faster reaction without burning RPC on stable positions.
+
+### Filter Pipeline
+
+- **DeployerWalletAgeFilter** — rejects pools from wallets younger than `deployer_min_age_hours`. Uses `getSignaturesForAddress` on the base mint as a cost-efficient proxy for wallet creation time.
+- **Filter TTL cache** — caches pass/fail results per pool pubkey for `filter_cache_ttl_secs` (default 30s). Eliminates redundant RPC calls when duplicate events arrive for the same pool.
+- **Cost-ordered pipeline** — filters run cheapest first: in-memory blacklist → freeze → mint renounce → LP burn → pool size → liquidity depth → name → volume → cross-pool → deployer age → holder concentration → liquidity momentum → Jupiter. Expensive filters only see pools that passed cheap guards.
+- **RPC error categorization** — `multi_rpc.rs` now classifies errors into `RateLimited` (backoff), `NodeBehind` / `NetworkTimeout` (failover), `AccountNotFound` (ignore), `Other` (log). No more blunt failover on 429s.
+
+### Kelly Sizing
+
+- **Warm-up guard** — returns 0.5× multiplier until at least `kelly_min_trades` trades are recorded. Prevents Kelly from sizing huge on a 1-trade sample.
+
+### Infrastructure
+
+- **Trade log rotation** — archives `scematica-trades.jsonl` to a timestamped backup when it exceeds 10,000 lines. Keeps the NN observer and dashboard fast on long sessions.
+- **Arb gas-adjusted minimum profit** — minimum profit threshold is now `max(config_min, tx_fee × 3)`. Never executes an arb whose profit doesn't cover fees by 3×.
+- **Arb stale quote detection** — `ArbPath` records `fetched_at_ms`; execution is skipped if more than 800ms (≈2 Solana slots) have elapsed since reserve fetch. Avoids negative-profit reverts on stale data.
+
+### Dashboard
+
+- **NN Q-value bar chart** — the Deep Q* panel now renders a per-action Q-value bar underneath the stats table. The highest-Q action is highlighted green so you can see at a glance what the agent thinks about the current market.
+- **Alert history panel** — rolling last 5 confirmed BUY/SELL events displayed in the Overview tab. No more digging through logs to see what just happened.
+
+---
+
+## What's New in v1.0.0
+
+- **WSOL ATA lifecycle hardened** — idempotent create, transfer, SyncNative before every buy. Sell-side close_account fire-and-forget reclaims ~0.002 SOL rent per position.
+- **Multi-phase sell monitor** — fast phase (30 checks × 75ms) for dump detection, normal phase (configurable interval, floor 250ms). Both balance reads happen in parallel via `tokio::join!`.
+- **Flash-crash detector** — single-check drop ≥ `flash_crash_pct` from entry triggers emergency exit before the 3-decline counter even accumulates.
+- **Tiered partial-TP ladder** — up to N levels, each selling `sell_pct` of remaining balance at `trigger_pct` gain. Stop moves to breakeven after tier 1 fires.
+- **Profit-lock** — after `profit_lock_checks` consecutive checks above entry, SL floor raises to near-breakeven (entry × 0.98) permanently.
+- **Velocity-decay exit** — compares recent vs. previous half of a rolling velocity window; exits when upward momentum is measurably dying but price hasn't reversed yet.
+- **Adaptive pullback exit** — pullback threshold scales with peak gain (`θ_eff = base × √(1 + peak/100)`). Big winners get more room to breathe before exiting.
+- **Moon Chase mode** (`[m]` key) — swaps momentum-hold parameters to an aggressive "parabolic outlier" preset (8 escalations, 1.75× factor, 25% pullback, 3%/check threshold).
+- **Live position registry** — `scematica-positions.json` flushed every second; dashboard Positions tab shows current value, peak, dynamic TP, escalations, and staleness indicator.
+- **Process manager** — dashboard spawns and monitors the sniper as a child process; restarts automatically on crash.
+- **Session stats** — best/worst trade, win/loss streak, PnL sparkline.
 
 ---
 
 ## What's New in v0.8.0
 
-- **Loss cooldown removed.** The bot no longer pauses buys after consecutive
-  losses. Streak tracking still runs for the reputation ledger + dashboard
-  display, but `cooldown_after_losses` and `cooldown_minutes` are now no-ops
-  (retained in config for back-compat).
-- **Evaluation strategies ~30 % stricter** across the board to bias toward
-  win-rate over opportunity volume:
-  - **PoolScorer bands tightened**: ultra-fresh shrank 10s → 7s, sweet-spot
-    size narrowed 5–30 SOL → 6.5–22 SOL, stale-pool penalty grew from -30
-    to -38, future-dated open_time penalised -32 (was -25).
-  - **Filter defaults**: `consecutive_matches` 1 → 2, `check_duration_ms`
-    8000 → 5600, `min_pool_size` 0.3 → 0.4, `max_price_impact_pct` 5 → 3.5,
-    `max_top10_holder_pct` 95 → 67, `max_deployer_rugs_24h` 3 → 2.
-  - **Liquidity momentum** + **cross-pool rug correlation** now ON by default
-    (cheap to evaluate, sharp signal).
-  - `min_pool_score` default 0 → **45** — the sharpened scorer now actually
-    gates buys; pools with neither a freshness nor sweet-spot bonus are skipped.
-  - **dQ\* reward shaping**: fast-win window 2 → 1 step, mid-loss band -10..0
-    → -7..0, rug-magnitude penalty pulled forward to ≤-35 (was -50) with
-    multiplier 3.0× → 3.2× and flat -55 (was -50).
+- Loss cooldown removed — streak tracking retained for display only
+- Evaluation criteria tightened ~30%: PoolScorer bands narrowed, filter defaults stricter
+- `min_pool_score` default 0 → 45 — scorer now actually gates buys
 
 ## What's New in v0.7.0
 
-- **Profit-first growth doctrine.** New `profit_first_mode` (on by default) gates
-  the stop-loss while the wallet is below `wallet_target_sol` (default 0.2 SOL).
-  Positions only exit at TP, partial TP, or the rug-only `profit_first_floor_pct`
-  (default -50%). The bot books wins before tolerating drawdown — the dump
-  detector and the window-expiry force-sell both honour the gate. Once the
-  wallet crosses target, normal SL behaviour resumes.
-- **Builder-mode ladder** — three growth targets, hot-toggle from the dashboard
-  Config tab:
-  - `[g] Growth` — 0.2 SOL target (matches the default)
-  - `[j] Builder` — 1.0 SOL target
-  - `[k] SuperBuilder` — 3.0 SOL target **plus progressive rate-mode scaling**
-    (position size grows linearly from 1.0× → 2.5× as the wallet climbs from
-    0% → 100% of target)
-  - `[o] Off` — fall back to the config-file value
-- **Sharper Pool Scorer.** Tighter freshness gradient (ultra-fresh ≤10s gets
-  +30, anything >10min is -30), tightened size sweet spot (5–30 SOL = +18,
-  outside that the rug surface is too high), and a clock-skew guard for
-  future-dated `open_time` values.
-- **Refined Deep Q* reward shaping.** Fast small wins (≤2 mins) earn a 1.5×
-  multiplier, rug-magnitude losses (≤-50 %) get a 3× penalty + flat -50 so
-  the agent learns to avoid the *selection*, not just the exit. Capped hold
-  penalty so a long winning hold isn't drowned out.
-- **Radar fixed.** Switched to log-scaled Y axis (1 → 1000 SOL fits without
-  clamping), X axis now uses "seconds since sniper observed" instead of the
-  unreliable `pool.open_time`, table sorts by newest first.
+- Profit-first growth doctrine with `profit_first_mode`
+- Builder mode ladder: Growth / Builder / SuperBuilder (progressive rate scaling)
+- Sharper pool scorer with freshness gradient and size sweet-spot
 
 ## What's New in v0.6.0
 
-- **Expanded rate-mode ladder** — seven presets covering every wallet size and risk
-  appetite: `Bearish → Micro → Safe → Balanced → Aggressive → Degen → Bullish`.
-  `Micro` (0.1× multiplier, ~0.001 SOL/trade) is sized for wallets with only
-  $1–2 of SOL — enough to actually place a buy after fees and ATA rent.
-- **Deep Q* agent now actually trains.** The NN observer was reading the wrong
-  keys (`action`/`pnl_sol`) from `scematica-trades.jsonl` while the writer was
-  serialising `kind`/`pnl` — every SELL was silently skipped, so the dashboard
-  panel stayed pinned at ε=1.0, steps=0, replay=0 forever. Fixed the field
-  contract, added `pnl_pct` and `position_age_secs` to `TradeEvent` so the
-  agent gets real reward signal, dropped the stats flush from 30 s → 5 s, and
-  made the file writes atomic (`tmp` + rename).
-- **Hot dashboard updates.** NN panel refreshes on every dashboard tick now
-  that the sniper flushes stats six times faster.
+- Expanded rate-mode ladder: Bearish → Micro → Safe → Balanced → Aggressive → Degen → Bullish
+- NN observer actually trains (fixed field name mismatch, added `pnl_pct`/`position_age_secs`)
 
 ## What's New in v0.5.0
 
-v0.5.0 lands 36 new features across detection, risk, AI, and execution. Headline additions:
-
-**Trading intelligence**
-- **Kelly position sizing** (`kelly.rs`) — fractional Kelly multiplier `f* = (p·b − q) / b` clamped to `[0.25, 3.0]`, computed from rolling trade history.
-- **Pool predictive scorer** (`pool_scorer.rs`) — 0–100 score from pool age + quote-vault size; sniper rejects below `min_pool_score`.
-- **Pump dump exit** — 3-consecutive-decline detector in the fast-poll phase triggers immediate exit.
-- **Cross-pool deployer correlation** — rejects pools from deployers with >N rugs in the persistent ledger (`scematica-deployer-reputation.json`).
-- **Time-of-day weighting** (`day_weight.rs`) — 1.3× during 14–17 UTC peak hours, 0.7× overnight (0–5 UTC).
-- **Gas war mode** — escalates `compute_unit_price` toward `gas_war_max_cu_price` when pools arrive in rapid succession.
-- **Liquidity momentum filter** — rejects pools whose quote vault isn't growing between checks.
-- **Pool staleness gate** — skips pools opened >5 min ago.
-
-**Risk & portfolio**
-- **Grief-loss circuit breaker** (`grief_breaker.rs`) — 5-min sliding-window cumulative-loss halt.
-- **ATH drawdown watermark** (`ath_tracker.rs`) — pauses buys when wallet drops `ath_drawdown_pct` below all-time-high.
-- **Profit extraction scheduler** — auto-sweeps a configurable % of profit to a cold wallet once session PnL exceeds threshold.
-- **Holder-concentration check** — rejects pools where top-10 holders hold more than `max_top10_holder_pct` of supply.
-- **Portfolio heat limit** — `max_concurrent_positions` caps in-flight risk.
-- **Daily loss limit + max drawdown** — separate halt conditions on absolute SOL loss and % equity drop.
-
-**Signal sources**
-- **Pump.fun graduation monitor** (`pumpfun.rs`) — polls bonding-curve accounts; emits a synthetic `NewPool` when within 10 SOL of the ~85 SOL graduation threshold.
-- **Jupiter price discrepancy filter** (`jup_oracle.rs`) — only buys when the pool price is at least `jupiter_min_premium_pct` below Jupiter's reference price.
-- **Multi-RPC failover** (`multi_rpc.rs`) — latency-ranked round-robin across `extra_rpc_endpoints`; `update_latencies()` re-elects the fastest endpoint as primary.
-- **Whale copy-trading** (`whale_copy.rs`) — `logsSubscribe` on configured wallets; their Raydium activity emits `NewPool` for the sniper pipeline.
-- **Adaptive slippage** / **Sandwich shield** config flags for Jito-protected routing.
-
-**AI & learning**
-- **Regime-aware NN branching** — separate `(online, target)` Q-network pairs per regime (`bull` / `bear` / `sideways` / `panic`); engaged when `epsilon < 0.3` and a known regime is set.
-- **Adversarial scenario injection** — every 100 train steps, synthetic rug/pump/honeypot transitions are pushed into the replay buffer.
-- **Explainable decisions** — `select_action_with_reason()` exposes Q-values + a human-readable `top_reason`.
-- **Multi-agent tournament** (`tournament.rs`) — 3 hyperparameter variants (conservative / balanced / aggressive) run in parallel; the highest `total_reward` agent is promoted every 1,000 steps. Persisted in `scematica-nn-tournament.json`.
-
-**Infrastructure**
-- **Backtesting engine** (`backtester.rs` + `bin/backtest.rs`) — replays JSONL pool history through the filter pipeline; reports win rate, avg win/loss, and expected value.
-- **Pool radar tab** (Tab 5) — age-vs-size scatter heatmap.
-- **AlertManager** (`alerts.rs`) — Telegram + Discord webhook + Windows desktop toast on every buy/sell.
-- **Dynamic fee escalation** in the executor pipeline.
-- **Pool cache** persisted to `pool-cache.json` and pre-seeded from on-chain state via `tools/pool-seeder`.
-- **Scematica Protocol (x402)** — Rust-native HTTP 402 payment server for monetizing signals (see below).
+36 features including Kelly sizing, Pool Scorer, Pump.fun monitor, Multi-RPC failover, regime-aware NN branching, adversarial scenario injection, multi-agent tournament, backtesting engine.
 
 ---
 
@@ -128,15 +143,35 @@ Scematica is a Rust workspace with 8 active crates:
 | `scematica-arb` | `arb` | Cross-DEX arbitrage graph search (Raydium / Orca / Meteora) |
 | `scematica-executor` | — | Multi-DEX swap execution layer, Jupiter integration |
 | `scematica-ai` | — | LLM agents: Risk, Arb, Debate, Strategy, Report, Chat |
-| `scematica-nn` | — | Deep Q* reinforcement learning agent |
+| `scematica-nn` | — | Dueling Deep Q* reinforcement learning agent |
 | `scematica-dashboard` | `dashboard` | Ratatui TUI: monitor, control, AI chat |
 | `scematica-protocol` | `scematica-protocol` | Rust-native x402 HTTP payment protocol for Solana |
 
-Tools (non-bot utilities):
+Tools:
 - `tools/key-converter` — Convert keypair formats
 - `tools/pool-seeder` — Pre-seed pool cache from on-chain data
 
 The `programs/scematica-swap` Anchor program must be built and deployed separately with `anchor build`.
+
+### File-based IPC
+
+The sniper and dashboard are separate processes that communicate exclusively through JSON files in the working directory. All writes are atomic (write to `.tmp`, then rename). Never add sockets or channels — use this pattern.
+
+| File | Writer | Purpose |
+|---|---|---|
+| `scematica-sniper.log` | sniper | Log stream tailed by dashboard |
+| `scematica-trades.jsonl` | sniper | Append-only trade events (rotated at 10k lines) |
+| `scematica-metrics.json` | sniper | Metrics snapshot every 5s |
+| `scematica-filter-stats.json` | sniper | Per-filter rejection counts |
+| `scematica-nn-stats.json` | NN agent | ε, steps, replay size, reward, Q-values (every 5s) |
+| `scematica-nn-agent.json` | NN agent | Model checkpoint (every 10 min) |
+| `scematica-nn-tournament.json` | NN tournament | Per-variant rewards + primary |
+| `scematica-deployer-reputation.json` | reputation ledger | Per-deployer rug/success EMA |
+| `scematica-strategy.json` | AI strategy agent | TP/SL/multiplier/regime |
+| `scematica-rate-mode.json` | dashboard | Active rate mode + TP/SL |
+| `scematica-sell-mode.json` | dashboard / drawdown guard | Pauses buys, sells positions |
+| `scematica-dump-mode.json` | dashboard | Force-sell with `min_out = 0` |
+| `pool-cache.json` | sniper / pool-seeder | Pool → mint lookup for sells |
 
 ---
 
@@ -145,7 +180,7 @@ The `programs/scematica-swap` Anchor program must be built and deployed separate
 - [Rust](https://rustup.rs/) (stable, 1.75+)
 - [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools) (for keypair generation)
 - A Solana wallet keypair (`~/.config/solana/id.json` or any path)
-- At least **250,000 SCEMA** tokens in your wallet (token-gated access — CA above)
+- At least **250,000 SCEMA** tokens in your wallet (token-gated — CA above)
 - A private RPC endpoint (Helius, QuickNode, or Triton recommended)
 - Optional: Groq or xAI API key for the AI chat and strategy agents
 
@@ -161,13 +196,13 @@ cd scematica
 cargo build --release
 
 # Binaries will be at:
-#   target/release/sniper.exe
-#   target/release/arb.exe
+#   target/release/sniper.exe      (Windows)
 #   target/release/dashboard.exe
+#   target/release/arb.exe
 #   target/release/scematica-protocol.exe
 ```
 
-> **Disk space note:** Release builds generate ~5-10 GB of artifacts. Run `cargo clean` periodically to reclaim space.
+> **Disk space:** Release builds use 5–10 GB. Run `cargo clean` periodically to reclaim space.
 
 ---
 
@@ -175,174 +210,149 @@ cargo build --release
 
 ### Environment file (`.env`)
 
-Create a `.env` in the repo root with sensitive keys:
+Create `.env` in the repo root:
 
 ```env
-# RPC (can also be set in config.toml)
 RPC_ENDPOINT=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 RPC_WS_ENDPOINT=wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 
-# AI (optional — enables Strategy agent and Chat tab)
+# AI (optional)
 GROQ_API_KEY=gsk_...
 # or
 XAI_API_KEY=xai-...
 
-# Scematica gate bypass (emergency only)
+# Emergency gate bypass (use only during RPC outages)
 # SCEMATICA_SKIP_GATE=1
 ```
 
 ### `config.toml` reference
 
-Full annotated example:
-
 ```toml
 [rpc]
 endpoint    = "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
 ws_endpoint = "wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
-commitment  = "confirmed"   # confirmed | finalized | processed
+commitment  = "confirmed"
 
 [wallet]
-# Supports: local file path, WSL UNC path, or base58 private key string
 keypair_path = "C:\\Users\\you\\.config\\solana\\id.json"
-# keypair_path = "\\\\wsl$\\Ubuntu\\home\\user\\.config\\solana\\id.json"
 
-# ─── Sniper ───────────────────────────────────────────────────
 [sniper]
 enabled            = true
-quote_mint         = "WSOL"     # WSOL or USDC
+quote_mint         = "WSOL"
 quote_amount       = 0.01       # SOL per snipe (scaled by rate mode)
-buy_slippage_pct   = 1.0
-sell_slippage_pct  = 20.0       # wider = faster exit on thin pools
-take_profit_pct    = 100.0      # sell all when up 100%
-stop_loss_pct      = 15.0       # sell all when down 15%
-trailing_stop_loss_pct = 8.0    # trail 8% below peak (0 = use fixed SL)
-partial_tp_pct     = 50.0       # sell 50% of position at partial TP
-partial_tp_trigger = 60.0       # trigger partial TP when up 60%
-price_check_interval_ms  = 1000 # sell monitor poll rate
-price_check_duration_ms  = 180000  # 3 min total monitor window
-max_sell_retries   = 5
-max_buy_retries    = 3
-auto_sell          = true
-one_token_at_a_time = true      # sequential snipes (safer)
-max_buys           = 10         # auto sell-mode after N buys; 0 = unlimited
-max_concurrent_positions = 5    # max open positions
-cooldown_after_losses = 3       # pause buys after N consecutive losses
-cooldown_minutes   = 20
-daily_loss_limit_sol  = 0.05    # halt if daily loss exceeds X SOL
-max_drawdown_pct   = 30.0       # halt if wallet down X% from session start
-blacklist_path     = "blacklist.txt"
-copy_wallets       = []         # whale wallet addresses for copy-trade listener
+buy_slippage_pct   = 1.5
+sell_slippage_pct  = 2.5
+take_profit_pct    = 100.0
+stop_loss_pct      = 15.0
+trailing_stop_loss_pct   = 8.0
+partial_tp_pct           = 50.0
+partial_tp_trigger       = 60.0
+price_check_interval_ms  = 250
+price_check_duration_ms  = 900000   # 15 min total window
+max_sell_retries         = 5
+max_buy_retries          = 3
+auto_sell                = true
+one_token_at_a_time      = true
+max_buys                 = 0        # 0 = unlimited
+max_concurrent_positions = 3
+daily_loss_limit_sol     = 0.05
+blacklist_path           = "blacklist.txt"
 
-# ── Kelly position sizing ────────────────────────────────────
-kelly_sizing       = false      # scale quote_amount by fractional Kelly
-kelly_fraction     = 0.25       # 0.25 = quarter-Kelly (conservative)
-kelly_lookback     = 20         # recent trades used for win-rate estimate
+# ── v1.1.0 new fields ────────────────────────────────────────
+min_sol_reserve          = 0.02     # keep at least this SOL in wallet after buy
+confirmation_window_ms   = 0        # 0=disabled; check vault drain before buying
+pool_quality_sizing      = false    # scale position by pool_score/100
+kelly_min_trades         = 10       # trades required before Kelly activates
+check_interval_acceleration = true  # halve poll interval on 3 consecutive declines
 
-# ── Pool predictive scoring ──────────────────────────────────
-min_pool_score     = 0.0        # 0–100; 0 = disabled. Pools below score are skipped
+# Session heat cooldown
+session_heat_losses      = 0        # 0=disabled; losses in window to trigger pause
+session_heat_window_secs = 3600     # rolling window for loss counting
+session_heat_cooldown_mins = 15     # pause duration when heat trips
 
-# ── Gas war mode ─────────────────────────────────────────────
-gas_war_mode       = false      # escalate CU price on rapid pool bursts
-gas_war_max_cu_price = 2_000_000  # ceiling in micro-lamports
+# Sell monitor exit signals
+volume_exhaustion_pct    = 65.0     # exit when volume drops below 65% of entry (in profit only)
+whale_exit_vault_drop_pct = 22.0    # exit on single-check vault drop ≥ 22%
 
-# ── ATH drawdown watermark ───────────────────────────────────
-ath_drawdown_pct   = 0.0        # pause buys at X% below session ATH (0 = disabled)
+# ── Kelly position sizing ─────────────────────────────────────
+kelly_sizing    = false
+kelly_fraction  = 0.25
+kelly_lookback  = 20
 
-# ── Grief-loss circuit breaker ───────────────────────────────
-grief_loss_window_secs = 300    # sliding window (5 min default)
-grief_loss_limit_sol   = 0.0    # halt if window loss exceeds X SOL (0 = disabled)
+# ── Pool predictive scoring ───────────────────────────────────
+min_pool_score  = 35.0
 
-# ── Time-of-day weighting ────────────────────────────────────
-time_of_day_weighting  = false  # 1.3x peak / 0.7x overnight UTC
+# ── Profit-first growth ───────────────────────────────────────
+profit_first_mode        = true
+profit_first_floor_pct   = 50.0
+wallet_target_sol        = 0.2
 
-# ── Profit extraction ────────────────────────────────────────
-profit_extraction_threshold_sol = 0.0  # trigger sweep when session PnL exceeds X SOL
-profit_extraction_pct           = 0.0  # % of profit to send to cold wallet
-profit_extraction_wallet        = ""   # destination address
+# ── Momentum hold ─────────────────────────────────────────────
+momentum_hold                    = true
+momentum_max_escalations         = 5
+momentum_escalation_factor       = 1.6
+momentum_pullback_exit_pct       = 18.0
+momentum_escalation_threshold_pct = 5.0
 
-# ── Multi-RPC failover ───────────────────────────────────────
-extra_rpc_endpoints = []        # additional RPC URLs for latency-ranked failover
+# ── Risk breakers ─────────────────────────────────────────────
+ath_drawdown_pct       = 0.0
+grief_loss_window_secs = 300
+grief_loss_limit_sol   = 0.0
 
-# ── Execution protection ─────────────────────────────────────
-adaptive_slippage  = false      # tune slippage by recent sell success rate
-sandwich_shield    = false      # switch to Jito bundle routing on sandwich pattern
+# ── Multi-RPC failover ────────────────────────────────────────
+extra_rpc_endpoints = []
 
 [sniper.filters]
-check_interval_ms    = 1000
-check_duration_ms    = 12000    # max time to wait for filter pass
-consecutive_matches  = 1
-check_mint_renounced = true
-check_freezable      = true
-check_burned         = true
-check_mutable        = true
-check_socials        = false
-check_name           = true     # reject scam/rug keywords in token name
-min_pool_size        = 5.0      # minimum pool SOL reserve
-max_pool_size        = 0.0      # 0 = no limit
-check_liquidity_depth = true
-max_price_impact_pct  = 5.0     # reject if our buy moves price >5%
-check_volume         = false    # require recent txn activity
-min_volume_txns      = 3
+check_mint_renounced         = true
+check_freezable              = true
+check_burned                 = true
+min_pool_size                = 5.0
+max_price_impact_pct         = 3.5
+check_holder_concentration   = true
+max_top10_holder_pct         = 67.0
+check_liquidity_momentum     = true
+check_cross_pool_correlation = true
+max_deployer_rugs_24h        = 2
+filter_cache_ttl_secs        = 30   # cache filter results per pool (seconds)
 
-# Holder concentration
-check_holder_concentration = true
-max_top10_holder_pct       = 70.0  # reject if top-10 wallets own > this %
+# ── Deployer wallet age filter (v1.1.0) ──────────────────────
+check_deployer_wallet_age    = false
+deployer_min_age_hours       = 48
 
-# Liquidity momentum (quote vault must be growing)
-check_liquidity_momentum   = false
-liquidity_momentum_pct     = 5.0   # required % growth between checks
-
-# Cross-pool deployer correlation (rug history)
-check_cross_pool_correlation = false
-max_deployer_rugs_24h        = 3   # reject deployers with > N historical rugs
-
-# Jupiter price discrepancy (buy when AMM is cheaper than Jupiter)
-check_jupiter_discrepancy    = false
-jupiter_min_premium_pct      = 5.0 # require Jup price ≥ AMM price + X%
-
-# ─── Arbitrage ────────────────────────────────────────────────
 [arb]
 enabled             = true
 start_mint          = "WSOL"
 start_amount        = 0.005
 min_profit_lamports = 10000
 max_hops            = 3
-dexes               = ["Raydium", "Orca", "Meteora"]
-pool_dir            = "pools"
-amount_levels       = 4
 
-# ─── Execution ────────────────────────────────────────────────
 [execution]
-executor           = "default"  # default | jito
-custom_fee_sol     = 0.001
 compute_unit_limit = 400000
 compute_unit_price = 200000
 skip_preflight     = true
-jito_url           = "https://mainnet.block-engine.jito.wtf"
 
-# ─── Alerts ───────────────────────────────────────────────────
 [alerts]
-telegram_bot_token    = ""      # leave empty to disable
+telegram_bot_token    = ""
 telegram_chat_id      = ""
 discord_webhook_url   = ""
-desktop_notifications = true    # Windows toast on buy/sell
+desktop_notifications = true
 ```
 
 ---
 
 ## Running
 
-### Dashboard (recommended entry point)
+### Dashboard (recommended)
 
 ```bash
-# Full mode (requires config.toml + wallet)
+# Full mode (requires config.toml + wallet + SCEMA tokens)
 cargo run --release --bin dashboard
 
 # Demo mode (no keypair or RPC needed — simulated data)
 cargo run --release --bin dashboard -- --demo
 ```
 
-### Bots standalone
+### Standalone bots
 
 ```bash
 cargo run --release --bin sniper
@@ -355,191 +365,127 @@ cargo run --release --bin arb
 cargo run --release --bin scematica-protocol -- \
   --pay-to YOUR_WALLET_ADDRESS \
   --price-lamports 10000 \
-  --bind 0.0.0.0:4020 \
-  --keypair ~/.config/solana/id.json
+  --bind 0.0.0.0:4020
 ```
 
 ---
 
 ## Dashboard Navigation
 
-The dashboard has 5 tabs. Navigate with `Tab` / `Shift+Tab` or `→` / `←`.
+Navigate tabs with `Tab` / `Shift+Tab` or `→` / `←`.
 
 ### Tab 0 — Overview
 
-Live stats panel: SOL balance, SCEMA balance, wallet address, open positions, session PnL, trade counts, and NN agent status (epsilon, total steps, win rate).
-
-No interactive keys on this tab.
+Live stats: SOL balance, SCEMA balance, open positions, session PnL, trade counts, NN agent status (ε, steps, Q-value chart), last 5 alerts.
 
 ### Tab 1 — Trades
 
-Scrollable trade history table (buy/sell events from `scematica-trades.jsonl`).
+Scrollable trade history.
 
 | Key | Action |
 |-----|--------|
-| `x` | Export trades to CSV (`scematica-trades-YYYYMMDD.csv`) |
+| `x` | Export trades to CSV |
 
 ### Tab 2 — Logs
 
-Live log stream (tails `scematica-sniper.log` + dashboard internal events).
+Live log stream from sniper.
 
 | Key | Action |
 |-----|--------|
-| `e` | Toggle **Sell Mode** — pauses all buys, sells all open positions |
-| `d` | Toggle **Dump Mode** — force-sells everything at zero slippage |
-| `/` | Activate log filter (type to search, `Backspace` to clear, `Esc` to exit filter) |
+| `e` | Toggle **Sell Mode** — pause buys, sell all positions |
+| `d` | Toggle **Dump Mode** — force-sell everything at zero slippage |
+| `/` | Log filter (type to search, `Esc` to exit) |
 
 ### Tab 3 — Control
 
-Bot process control and rate mode selection.
-
 | Key | Action |
 |-----|--------|
-| `s` | Start **Sniper** only |
-| `a` | Start **Arb** only |
-| `b` | Start **Both** (sniper + arb) |
+| `s` | Start **Sniper** |
+| `a` | Start **Arb** |
+| `b` | Start **Both** |
 | `x` | **Stop** all bots |
-| `1` | Rate mode: **Bearish** — 0.3x, ~0.003 SOL/trade, TP 30%, SL 8% |
-| `2` | Rate mode: **Micro** — 0.1x, ~0.001 SOL/trade, TP 40%, SL 10% (≈$1–2 wallets) |
-| `3` | Rate mode: **Safe** — 0.5x, ~0.005 SOL/trade, TP 50%, SL 10% |
-| `4` | Rate mode: **Balanced** — 1.0x, ~0.010 SOL/trade, TP 100%, SL 15% (default) |
-| `5` | Rate mode: **Aggressive** — 2.0x, ~0.020 SOL/trade, TP 200%, SL 25% |
-| `6` | Rate mode: **Degen** — 4.0x, ~0.040 SOL/trade, TP 300%, SL 40% |
-| `7` | Rate mode: **Bullish** — 6.0x, ~0.060 SOL/trade, TP 500%, SL 50% |
-| `g` | Builder mode: **Growth** — wallet target 0.2 SOL |
-| `j` | Builder mode: **Builder** — wallet target 1.0 SOL |
-| `k` | Builder mode: **SuperBuilder** — wallet target 3.0 SOL + progressive scaling |
-| `o` | Builder mode: **Off** — fall back to `config.toml` `wallet_target_sol` |
-
-The seven rate modes form a ladder from least to most aggressive — each
-multiplier scales `quote_amount` (default 0.01 SOL) and rewrites live TP/SL
-in the running sniper via `scematica-rate-mode.json`.
-
-The four builder modes are orthogonal: they set the wallet-growth target that
-profit-first mode uses to decide when the bot is "in build-up" (SL gated to
-the rug-only floor) vs "at target" (normal SL). **SuperBuilder** additionally
-applies a 1.0× → 2.5× progressive multiplier to position sizing as the wallet
-grows toward 3 SOL, so winning streaks compound automatically. Cleared by
-pressing `o` or by deleting `scematica-builder-mode.json`. No restart required.
+| `1` | Rate: **Bearish** — 0.3×, TP 30%, SL 8% |
+| `2` | Rate: **Micro** — 0.1×, TP 40%, SL 10% (tiny wallets) |
+| `3` | Rate: **Safe** — 0.5×, TP 50%, SL 10% |
+| `4` | Rate: **Balanced** — 1.0×, TP 100%, SL 15% (default) |
+| `5` | Rate: **Aggressive** — 2.0×, TP 200%, SL 25% |
+| `6` | Rate: **Degen** — 4.0×, TP 300%, SL 40% |
+| `7` | Rate: **Bullish** — 6.0×, TP 500%, SL 50% |
+| `g` | Builder: **Growth** — 0.2 SOL target |
+| `j` | Builder: **Builder** — 1.0 SOL target |
+| `k` | Builder: **SuperBuilder** — 3.0 SOL target + progressive scaling |
+| `o` | Builder: **Off** |
+| `m` | Toggle **Moon Chase** — aggressive momentum params |
 
 ### Tab 4 — Chat
 
-AI assistant powered by Groq (Llama) or xAI (Grok). Requires `GROQ_API_KEY` or `XAI_API_KEY`.
-
-| Key | Action |
-|-----|--------|
-| Type | Compose message |
-| `Enter` | Send message |
-| `Backspace` | Delete character |
-| `y` | Confirm a pending AI action (shown when bot proposes a trade) |
-| `n` | Reject a pending AI action |
+AI assistant (requires `GROQ_API_KEY` or `XAI_API_KEY`).
 
 ### Tab 5 — Radar
 
-Pool radar: age-vs-size scatter heatmap rendered from the live pool stream. Helps spot bursts of suspiciously thin pools or whale-backed launches at a glance. No interactive keys.
+Pool age-vs-size scatter heatmap.
 
 ### Global keys
 
 | Key | Action |
 |-----|--------|
-| `q` / `Esc` | Quit dashboard |
-| `Tab` / `→` | Next tab |
-| `Shift+Tab` / `←` | Previous tab |
+| `q` / `Esc` | Quit |
 | `Ctrl+C` | Force quit |
-
----
-
-## Sell Mechanics
-
-The sniper uses a two-phase sell monitor per position:
-
-1. **Fast phase** (first 20 checks × 100ms): catches rapid dumps immediately after buy
-2. **Slow phase** (remaining time × `price_check_interval_ms`): standard monitoring
-
-Each iteration:
-- Re-reads `live_params` for dynamic TP/SL (updated by rate mode or config hot-reload)
-- Checks trailing stop — resets peak price on new highs
-- Triggers partial TP at `partial_tp_trigger`% gain (sells `partial_tp_pct`% of position)
-- Detects dump: 3 consecutive declining prices in fast phase → immediate exit
-- Falls back to AMM constant-product price: `out = (reserve_out × in × 9975) / (reserve_in × 10000 + in × 9975)`
-
-**Emergency controls:**
-- **Sell Mode** (`e` key or `scematica-sell-mode.json`): pauses all buys, sell-scans all wallet positions
-- **Dump Mode** (`d` key or `scematica-dump-mode.json`): `min_out = 0`, retries every 30s until all positions are gone
-- **Max drawdown guard**: auto-activates sell mode if wallet drops `max_drawdown_pct` from session start
-- **Daily loss limit**: halts new buys if daily SOL loss exceeds `daily_loss_limit_sol`
 
 ---
 
 ## Neural Network Agent (scematica-nn)
 
-The Deep Q* agent runs inside the sniper process and learns from every completed trade.
+The Dueling Deep Q* agent (v1.1.0) runs inside the sniper process.
 
-- **MLP**: STATE_DIM(18) → 128 → 64 → ACTION_DIM(5), He init, ReLU hidden, linear output
-- **State**: PnL%, position age, price momentum, win/loss streaks, liquidity score, open positions, regime, volatility, spread, time-of-day, SOL balance, …
-- **Actions**: `Hold`, `Buy`, `BuyAgg`, `SellPartial`, `SellAll`
-- **Double DQN**: online net selects next action; target net evaluates it (reduces Q-overestimation). Target sync every 200 steps.
-- **Reward shaping**: +PnL% × win/loss multiplier − hold penalty
-- **Replay**: 10,000-transition buffer, uniform random sampling, batch=64
-- **Epsilon-greedy**: starts 1.0, decays 0.9995/step, floor 0.05
-- **Checkpoints**: saved to `scematica-nn-agent.json` every 10 min
-- **Stats**: written to `scematica-nn-stats.json` every 30s (visible in Overview tab)
+**Architecture:** Shared trunk (STATE_DIM=24 → 128 → 64) → separate V(s) head (scalar) + A(s,a) head (5 actions). Q(s,a) = V(s) + A(s,a) − mean(A).
 
-### Regime-aware branching
+**State (24 features):** pool age, liquidity, price change, volume, buy/sell ratio, LP burned, mint renounced, PnL %, position age, daily PnL, win/loss streaks, SOL balance, regime, volatility, spread, time-of-day, open positions, **peak PnL, pool score, deployer rug rate, volume velocity, price velocity, price acceleration**.
 
-When `epsilon < 0.3` and the active regime is recognised, the agent routes Q-value lookups through a regime-specific `(online, target)` Q-network pair (`bull` / `bear` / `sideways` / `panic`). Each regime accumulates its own weights; this lets the agent specialise without forgetting.
+**Actions:** `Hold`, `Buy`, `BuyAgg`, `SellPartial`, `SellAll`
 
-### Adversarial scenario injection
+**Training:** Double DQN (online selects, target evaluates) + Dueling decomposition. N-step returns (n=5). Prioritized experience replay (10k buffer, batch=64). ε-greedy: 1.0 → 0.05, decay 0.9995.
 
-If `auto_inject_adversarial` is set, every 100 training steps the agent synthesises a small batch of rug / pump / honeypot transitions and inserts them into the replay buffer. This stress-tests learned policies against tail outcomes that natural play under-samples.
+**Buy gating:** When ε < 0.3, reads `scematica-nn-stats.json` to gate buys: BuyAgg=1.5×, Hold=0.5×, SellAll=skip.
 
-### Explainable trade decisions
-
-`select_action_with_reason()` returns the chosen action plus the full Q-value vector and a human-readable `top_reason` string (e.g. "Q(SellAll)=1.42 > Q(Hold)=0.91 — pnl_pct=42%, position_age=18s"). Surfaced in the dashboard logs and trade history.
-
-### Multi-agent tournament
-
-`AgentTournament` runs 3 hyperparameter variants in parallel against the same transition stream:
-
-| Variant | epsilon_decay | learning_rate | gamma |
-|---|---|---|---|
-| conservative | 0.9999 | 5e-4 | 0.95 |
-| balanced (default) | 0.9995 | 1e-3 | 0.99 |
-| aggressive | 0.999 | 2e-3 | 0.95 |
-
-Every 1,000 transitions the highest `total_reward` agent is promoted to primary; state is persisted in `scematica-nn-tournament.json`.
-
----
-
-## Signal Sources
-
-The sniper accepts pool candidates from multiple producers, all merged into one `ListenerEvent::NewPool` stream:
-
-1. **Raydium AMM V4 listener** — primary `logsSubscribe` on `initialize2` instructions.
-2. **Pump.fun monitor** (`pumpfun.rs`) — polls program accounts every 30 s; emits a synthetic pool when a bonding curve is within 10 SOL of the ~85 SOL graduation threshold.
-3. **Whale copy-trading** (`whale_copy.rs`) — `logsSubscribe` on each configured `copy_wallets[]`; their Raydium activity yields a synthetic pool for filter validation.
-4. **Pool cache pre-seed** — `tools/pool-seeder` scans on-chain state and pre-populates `pool-cache.json` so the sell-side lookup works from cold start.
-
-All candidates flow into the same filter pipeline; downstream code doesn't distinguish by source.
+**Tournament:** 3 variants (conservative / balanced / aggressive) run in parallel. Highest total_reward promotes every 1,000 steps. Losers mutate ±20% lr, ±0.005 ε-decay/γ.
 
 ---
 
 ## Risk Subsystems
 
-Independent breakers, each can be enabled or disabled in `config.toml`. They evaluate on every buy attempt; a single trip pauses buys until cleared.
-
 | Module | Trips when | Effect |
 |---|---|---|
 | Daily loss limit | session SOL loss > `daily_loss_limit_sol` | Pause buys |
-| Max drawdown | wallet < `(1 − max_drawdown_pct) × session_start_balance` | Activate Sell Mode |
-| ATH drawdown (`ath_tracker.rs`) | wallet < `(1 − ath_drawdown_pct) × session_ATH` | Pause buys |
-| Grief breaker (`grief_breaker.rs`) | cumulative loss in last `grief_loss_window_secs` > `grief_loss_limit_sol` | Pause buys |
-| Cooldown after losses | `cooldown_after_losses` consecutive losses | Pause buys for `cooldown_minutes` |
+| Max drawdown | wallet < (1 − `max_drawdown_pct`) × start | Sell Mode |
+| ATH drawdown | wallet < (1 − `ath_drawdown_pct`) × ATH | Pause buys |
+| Grief breaker | window loss > `grief_loss_limit_sol` | Pause buys |
+| Session heat | N losses in window | Pause for cooldown |
 | Portfolio heat | `max_concurrent_positions` reached | Skip new buys |
+| SOL floor | balance < `min_sol_reserve` + buy amount | Skip buy |
 
-### Profit extraction scheduler
+---
 
-When session PnL exceeds `profit_extraction_threshold_sol`, `profit_extraction_pct` of the profit is swept to `profit_extraction_wallet` automatically. Combined with the breakers above, this turns the bot into a self-managing capital allocator: it reduces exposure on losses *and* protects realised gains on wins.
+## Sell Mechanics
+
+Each position gets its own sell monitor task. Exit triggers (first to fire wins):
+
+1. **Take profit** — `current_value ≥ entry × (1 + dynamic_tp_pct/100)`
+2. **Stop loss** — `current_value ≤ entry × (1 − stop_loss_pct/100)`
+3. **Trailing stop** — `current_value ≤ peak × (1 − trailing_stop_loss_pct/100)`
+4. **Profit lock** — after N consecutive above-entry checks, SL floor → entry × 0.98
+5. **Tiered partial TP** — sells % of remaining position at each trigger level
+6. **Flash crash** — single-check drop ≥ `flash_crash_pct` from entry
+7. **Dump detection** — 3 consecutive declining checks (post fast phase)
+8. **Velocity-decay exit** — momentum second derivative negative in profit
+9. **Adaptive pullback** — `peak − current ≥ θ_eff` (θ scales with peak height)
+10. **Volume exhaustion** — volume < `volume_exhaustion_pct` × entry volume (while in profit)
+11. **Whale exit** — vault drops > `whale_exit_vault_drop_pct` in a single check
+12. **Sell/Dump Mode** — operator-triggered immediate exit
+13. **Position time cap** — `max_position_hold_mins` hard limit
+14. **Window expiry** — `price_check_duration_ms` elapsed
+
+Sell retries escalate slippage: normal → 2× → min_out=0 → final attempt.
 
 ---
 
@@ -549,86 +495,36 @@ When session PnL exceeds `profit_extraction_threshold_sol`, `profit_extraction_p
 cargo run --release --bin backtest -- --pools historical-pools.jsonl --tp 100 --sl 15
 ```
 
-The backtester (`crates/scematica-sniper/src/backtester.rs`) replays a JSONL file of `BacktestPool` records (one per line) through the static portion of the filter pipeline and a simple TP/SL simulator. It reports:
-
-- Pools considered / passed filters / simulated buys
-- Win rate, average win %, average loss %
-- Expected value: `win_rate × avg_win − (1 − win_rate) × avg_loss`
-
-RPC-bound filters (mint renounce, freeze, LP burn, social links) are skipped — backtesting validates static signal quality and TP/SL choices, not RPC state.
+Reports: pools evaluated / passed filters / win rate / avg win % / avg loss % / expected value.
 
 ---
 
-## Alerts (AlertManager)
+## Alerts
 
-`scematica-sniper/src/alerts.rs` fans every buy/sell event to all enabled channels in parallel:
-
-- **Telegram** — `telegram_bot_token` + `telegram_chat_id`; Markdown-formatted body
-- **Discord** — `discord_webhook_url`; embed with title + green accent
-- **Windows desktop** — `desktop_notifications = true`; `System.Windows.Forms.NotifyIcon` balloon (no WinRT, works on Win10/11). PowerShell stdout/stderr are nulled so the log panel stays clean.
-
----
-
-## Scematica Protocol
-
-A Rust-native implementation of the [x402 HTTP payment standard](https://github.com/x402-foundation/x402) for Solana.
-
-Clients pay per API call with a micro-SOL transfer embedded in the `X-Payment` request header. No subscription, no API key — just pay-per-use on-chain.
-
-### Paid endpoints
-
-| Route | Description |
-|---|---|
-| `GET /signals/pools` | Live pool signals from the sniper stream |
-| `GET /signals/trades` | Recent trade events |
-| `GET /stats/nn` | NN agent performance stats |
-| `GET /stats/metrics` | Bot metrics snapshot |
-
-### Free endpoints
-
-| Route | Description |
-|---|---|
-| `GET /health` | Liveness check |
-| `GET /supported` | Payment requirements (asset, amount, destination) |
-
-### How it works
-
-1. Client requests a paid route → server returns `402 Payment Required` with `X-Payment-Response` header
-2. Client builds a partial SPL `TransferChecked` transaction signed by their key
-3. Client base64-encodes the tx and includes it in the `X-Payment` header of the next request
-4. Server verifies the partial tx (mint, destination, amount, client sig)
-5. Server refreshes blockhash, signs as fee payer, submits — then returns the API response
+Every confirmed buy/sell fans out in parallel to:
+- **Telegram** — bot token + chat ID
+- **Discord** — webhook URL
+- **Windows desktop** — balloon notification (Works on Win 10/11)
 
 ---
 
-## State Files
+## Scematica Protocol (x402)
 
-The sniper and dashboard communicate via JSON files in the working directory:
+A Rust-native HTTP 402 payment server. Clients pay micro-SOL per API call via the `X-Payment` header.
 
-| File | Written by | Purpose |
-|---|---|---|
-| `scematica-sell-mode.json` | Dashboard / drawdown guard | Activates emergency sell mode |
-| `scematica-dump-mode.json` | Dashboard | Activates dump mode (zero slippage) |
-| `scematica-rate-mode.json` | Dashboard | Active rate mode + TP/SL/multiplier |
-| `pool-cache.json` | Sniper / pool-seeder | Pool → mint mapping for sell lookups |
-| `scematica-trades.jsonl` | Sniper | Trade history (append-only JSONL) |
-| `scematica-metrics.json` | Sniper | Metrics snapshot, flushed every 5s |
-| `scematica-strategy.json` | AI strategy agent | TP/SL/multiplier/regime snapshot |
-| `scematica-sniper.log` | Sniper | Log file tailed by dashboard |
-| `scematica-nn-agent.json` | NN agent | Model checkpoint (every 10 min) |
-| `scematica-nn-stats.json` | NN agent | ε, steps, replay size, total reward, last action |
-| `scematica-nn-tournament.json` | NN tournament | Per-variant rewards + active primary |
-| `scematica-deployer-reputation.json` | Reputation ledger | Per-deployer rug/success counts (EMA-blended) |
-| `scematica-filter-stats.json` | Filter pipeline | Per-filter pass/fail counts |
+**Paid endpoints:** `/signals/pools`, `/signals/trades`, `/stats/nn`, `/stats/metrics`
+
+**Free endpoints:** `/health`, `/supported`
 
 ---
 
 ## Security
 
 - Private keys never leave your machine
-- All SCEMA gate checks retry up to 5 times before failing (set `SCEMATICA_SKIP_GATE=1` to bypass during RPC outages)
-- Arbitrage uses the `scematica-swap` on-chain program with profit-or-revert: if the arb is not profitable, the transaction fails before any funds move
-- The Protocol server verifies every payment before settling — partial tx is validated for correct mint, destination, and amount
+- SCEMA gate checks retry up to 5 times (`SCEMATICA_SKIP_GATE=1` for RPC outages)
+- Arb uses `scematica-swap` on-chain program: profit-or-revert
+- Protocol server validates every payment before settling
+- Arb skips stale quotes (>800ms) and requires profit ≥ tx_fee × 3
 
 ---
 

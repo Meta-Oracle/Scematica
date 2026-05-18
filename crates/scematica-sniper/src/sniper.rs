@@ -176,6 +176,8 @@ pub struct Sniper {
     pub pool_scorer: PoolScorer,
     /// ATH drawdown % that pauses buying (0.0 = disabled)
     ath_drawdown_pct: f64,
+    /// Session heat loss timestamps (unix seconds) — rolling window for session_heat_losses check
+    pub loss_heat_timestamps: Arc<parking_lot::Mutex<Vec<u64>>>,
     /// Gas war mode: compute unit price escalation counter
     /// Stores timestamp of last pool detection in ms for burst detection
     pub gas_war_last_pool_ms: Arc<AtomicU64>,
@@ -271,7 +273,7 @@ impl Sniper {
         };
 
         let kelly_sizer = if config.kelly_sizing {
-            Some(KellySizer::new(config.kelly_fraction))
+            Some(KellySizer::with_min_trades(config.kelly_fraction, config.kelly_min_trades))
         } else {
             None
         };
@@ -315,6 +317,7 @@ impl Sniper {
             kelly_sizer,
             pool_scorer: PoolScorer,
             ath_drawdown_pct,
+            loss_heat_timestamps: Arc::new(parking_lot::Mutex::new(Vec::new())),
             gas_war_last_pool_ms: Arc::new(AtomicU64::new(0)),
             session_pnl_baseline_lamports: Arc::new(Mutex::new(0i64)),
             wallet_target_lamports_override: Arc::new(AtomicU64::new(0)),
@@ -610,6 +613,20 @@ impl Sniper {
             }
         }
 
+        // Session heat cooldown: if too many losses tripped the heat gate, pause buys
+        if self.config.session_heat_losses > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let until_ms = self.cooldown_until_ms.load(Ordering::Relaxed);
+            if until_ms > now_ms {
+                let remaining_secs = (until_ms - now_ms) / 1000;
+                debug!(mint = %pool.base_mint, remaining_secs, "Session heat cooldown active — skipping buy");
+                return;
+            }
+        }
+
         info!(mint = %pool.base_mint, pool = %pool.id, "New pool detected — evaluating");
 
         // Cache the pool
@@ -797,12 +814,12 @@ impl Sniper {
 
         // Execute buy — pass upfront reserves so buy() can compute a real min_out
         // without another RPC round-trip.
-        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports).await {
+        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, upfront_score).await {
             error!(mint = %pool.base_mint, "buy() error: {}", e);
         }
     }
 
-    async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64) -> Result<()> {
+    async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64, upfront_score: f64) -> Result<()> {
         // ── Compute effective quote amount with day-weight and Kelly multipliers ──
         let mut effective_quote_amount_raw = self.quote_amount_raw;
 
@@ -871,6 +888,65 @@ impl Sniper {
             }
         }
 
+        // NN agent gating: when epsilon < 0.3 (agent is confident), scale buy amount
+        // based on the recommended action. Uses file-based IPC consistent with the
+        // rest of this codebase — reads scematica-nn-stats.json (written every 5 s).
+        //
+        // Action → size multiplier:
+        //   BuyAgg (index 2): 1.5×  — agent sees a strong signal, upsize
+        //   Buy    (index 1): 1.0×  — baseline (no change)
+        //   Hold   (index 0): 0.5×  — agent is uncertain, downsize
+        //   SellPartial/SellAll: skip buy entirely (bearish signal)
+        if let Ok(nn_raw) = std::fs::read_to_string("scematica-nn-stats.json") {
+            if let Ok(nn_v) = serde_json::from_str::<serde_json::Value>(&nn_raw) {
+                let ready = nn_v["ready_to_advise"].as_bool().unwrap_or(false);
+                let epsilon = nn_v["epsilon"].as_f64().unwrap_or(1.0);
+                if ready && epsilon < 0.3 {
+                    let q_vals: Vec<f64> = nn_v["last_q_values"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default();
+                    if let Some(best_action) = q_vals.iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|(i, _)| i)
+                    {
+                        let nn_mult = match best_action {
+                            2 => { // BuyAgg
+                                info!(mint = %pool.base_mint, epsilon, "NN: BuyAgg signal — sizing up 1.5×");
+                                1.5
+                            }
+                            1 => 1.0, // Buy — no change
+                            0 => { // Hold — downsize
+                                info!(mint = %pool.base_mint, epsilon, "NN: Hold signal — sizing down 0.5×");
+                                0.5
+                            }
+                            _ => { // SellPartial or SellAll — skip buy
+                                info!(mint = %pool.base_mint, epsilon, "NN: Sell signal — skipping buy");
+                                return Ok(());
+                            }
+                        };
+                        effective_quote_amount_raw =
+                            (effective_quote_amount_raw as f64 * nn_mult) as u64;
+                    }
+                }
+            }
+        }
+
+        // Pool quality scaling: reduce position size on lower-quality pools
+        if self.config.pool_quality_sizing && upfront_score > 0.0 {
+            let quality_mult = (upfront_score / 100.0).clamp(0.1, 1.0);
+            effective_quote_amount_raw = (effective_quote_amount_raw as f64 * quality_mult) as u64;
+            if quality_mult < 0.95 {
+                info!(
+                    mint = %pool.base_mint,
+                    pool_score = %format!("{:.1}", upfront_score),
+                    quality_multiplier = %format!("{:.2}x", quality_mult),
+                    "Pool quality sizing applied"
+                );
+            }
+        }
+
         // Gas war: log escalation intent when pools arrive in rapid burst
         if self.config.gas_war_mode {
             let last_ms = self.gas_war_last_pool_ms.load(Ordering::Relaxed);
@@ -902,10 +978,12 @@ impl Sniper {
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
         let base_ata = get_ata(&wallet_pubkey, &pool.base_mint);
 
-        // Gate: ensure we have enough native SOL for quote amount + fees + ATA rent.
-        // 6_000_000 lamports (0.006 SOL) covers tx fee, compute budget, and 2× ATA rent.
+        // Gate: ensure we have enough native SOL for quote amount + fees + ATA rent + reserve floor.
+        // min_sol_reserve (config) is the absolute floor to keep in wallet; defaults to 0.02 SOL.
+        // Always keep at least 6_000_000 lamports (0.006 SOL) for tx fees even if reserve is lower.
         let native_balance = self.rpc.get_balance(&wallet_pubkey).await.unwrap_or(0);
-        let min_required = effective_quote_amount_raw + 6_000_000;
+        let reserve_lam = ((self.config.min_sol_reserve * 1e9) as u64).max(6_000_000);
+        let min_required = effective_quote_amount_raw + reserve_lam;
         if native_balance < min_required {
             warn!(
                 mint = %pool.base_mint,
@@ -925,6 +1003,37 @@ impl Sniper {
                 scematica_core::token::apply_slippage(expected, self.config.buy_slippage_pct)
             } else { 0 }
         } else { 0 };
+
+        // Confirmation window: wait briefly and verify price hasn't already pumped 15%+.
+        // Skipped in high-speed mode; skipped when confirmation_window_ms == 0 or quote
+        // reserves are unknown (can't compute the drain percentage without them).
+        if self.config.confirmation_window_ms > 0
+            && !self.high_speed_mode.load(Ordering::Relaxed)
+            && quote_reserve_lam > 0
+        {
+            tokio::time::sleep(tokio::time::Duration::from_millis(self.config.confirmation_window_ms)).await;
+            if let Ok(Ok(qb)) = tokio::time::timeout(
+                tokio::time::Duration::from_secs(2),
+                self.rpc.get_token_account_balance(&pool.quote_vault),
+            ).await {
+                if let Ok(current_q) = qb.amount.parse::<u64>() {
+                    // Quote vault draining = tokens bought out = price pumped.
+                    // Drain >15% means early buyers already front-ran us — skip.
+                    if current_q < quote_reserve_lam {
+                        let drain_pct = (quote_reserve_lam - current_q) as f64
+                            / quote_reserve_lam as f64 * 100.0;
+                        if drain_pct > 15.0 {
+                            info!(
+                                mint = %pool.base_mint,
+                                drain_pct = %format!("{:.1}%", drain_pct),
+                                "Confirmation window: price already pumped — skipping buy"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
 
         // Build swap instructions BEFORE acquiring the lock so a build failure
         // doesn't leave the lock permanently set (which would silently drop all
@@ -1670,6 +1779,7 @@ impl Sniper {
             wallet_target_lamports_override: self.wallet_target_lamports_override.clone(),
             moon_chase: self.moon_chase.clone(),
             live_positions: self.live_positions.clone(),
+            loss_heat_timestamps: self.loss_heat_timestamps.clone(),
         }
     }
 }
@@ -1719,6 +1829,8 @@ struct SellMonitor {
     moon_chase: Arc<AtomicBool>,
     /// Shared live position registry (dashboard reads via JSON file IPC).
     live_positions: Arc<DashMap<String, LivePositionSnapshot>>,
+    /// Session heat loss timestamps — updated on loss; drives the cooldown_until_ms gate
+    loss_heat_timestamps: Arc<parking_lot::Mutex<Vec<u64>>>,
 }
 
 impl SellMonitor {
@@ -1792,6 +1904,10 @@ impl SellMonitor {
         // Dump-detection: exit immediately on 3 consecutive declining price checks
         let mut prev_value: u64 = self.entry_amount_raw;
         let mut decline_streak: u32 = 0;
+
+        // Volume exhaustion / whale exit: track quote vault across checks
+        let mut entry_q: u64 = 0;
+        let mut prev_q: u64 = 0;
 
         // Momentum-hold state for long-term sniping. dynamic_tp_pct floats above
         // the configured TP via velocity-driven escalation. velocity_window stores
@@ -1964,6 +2080,53 @@ impl SellMonitor {
                             decline_streak += 1;
                         } else {
                             decline_streak = 0;
+                        }
+
+                        // Capture entry quote vault on the first valid check
+                        if entry_q == 0 { entry_q = q; }
+
+                        // ── Whale exit: single-check vault drop ─────────────────
+                        if self.config.whale_exit_vault_drop_pct > 0.0 && prev_q > 0 && q < prev_q {
+                            let vault_drop_pct = (prev_q - q) as f64 / prev_q as f64 * 100.0;
+                            if vault_drop_pct >= self.config.whale_exit_vault_drop_pct {
+                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_sol = pnl_lamports as f64 / 1e9;
+                                tracing::warn!(
+                                    mint = %pool.base_mint,
+                                    vault_drop_pct = %format!("{:.1}%", vault_drop_pct),
+                                    threshold = self.config.whale_exit_vault_drop_pct,
+                                    pnl_sol,
+                                    "🐋 Whale exit: vault drop detected — selling immediately"
+                                );
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                break;
+                            }
+                        }
+                        prev_q = q;
+
+                        // ── Volume exhaustion exit ───────────────────────────────
+                        // Only fires when in profit — if we're down, don't compound
+                        // a loss by selling into low volume (may be a temporary dip).
+                        if self.config.volume_exhaustion_pct > 0.0
+                            && entry_q > 0
+                            && current_value > self.entry_amount_raw
+                        {
+                            let exhaustion_floor =
+                                (entry_q as f64 * (1.0 - self.config.volume_exhaustion_pct / 100.0)) as u64;
+                            if q < exhaustion_floor {
+                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_sol = pnl_lamports as f64 / 1e9;
+                                tracing::info!(
+                                    mint = %pool.base_mint,
+                                    entry_q, current_q = q, exhaustion_floor,
+                                    pnl_sol,
+                                    "Volume exhaustion exit — locking profit before liquidity dries up"
+                                );
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.record_sell_outcome(true, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                break;
+                            }
                         }
 
                         // Update peak (used for both trailing stop AND momentum pullback exit)
@@ -2342,8 +2505,16 @@ impl SellMonitor {
                 }
                 break;
             }
-            // Fast-poll early, normal rate after
-            let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+            // Fast-poll early; accelerate on consecutive declines; normal rate otherwise
+            let sleep_dur = if checks < fast_phase_checks {
+                fast_interval
+            } else if self.config.check_interval_acceleration && decline_streak >= 3 {
+                // Halve the interval (floor 25ms) when consecutive declines signal a dump
+                let acc_ms = (self.config.price_check_interval_ms / 2).max(25);
+                tokio::time::Duration::from_millis(acc_ms)
+            } else {
+                normal_interval
+            };
             tokio::time::sleep(sleep_dur).await;
         }
 
@@ -2478,6 +2649,29 @@ impl SellMonitor {
             self.consecutive_losses.store(0, Ordering::Relaxed);
         } else {
             self.consecutive_losses.fetch_add(1, Ordering::Relaxed);
+
+            // Session heat: accumulate loss timestamps and trigger cooldown if threshold hit
+            if self.config.session_heat_losses > 0 && self.config.session_heat_window_secs > 0 {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let mut ts = self.loss_heat_timestamps.lock();
+                ts.push(now_secs);
+                let window = self.config.session_heat_window_secs;
+                ts.retain(|&t| now_secs.saturating_sub(t) < window);
+                if ts.len() >= self.config.session_heat_losses as usize {
+                    let cooldown_secs = self.config.session_heat_cooldown_mins as u64 * 60;
+                    let until_ms = (now_secs + cooldown_secs) * 1000;
+                    self.cooldown_until_ms.store(until_ms, Ordering::Relaxed);
+                    warn!(
+                        losses_in_window = ts.len(),
+                        window_secs = window,
+                        cooldown_mins = self.config.session_heat_cooldown_mins,
+                        "Session heat limit reached — pausing buys for cooldown"
+                    );
+                }
+            }
         }
 
         // Sell alert
@@ -2504,11 +2698,45 @@ impl SellMonitor {
     /// for the NN observer; pass 0.0 from call sites that don't track entry time.
     async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64) {
         // (delay_before_secs, sell_round passed to do_sell for slippage escalation)
+        //
+        // Timing tuned for rug-pull dynamics: the critical window is the first 3 s after
+        // a rug triggers. Getting to min_out=0 (round 2) within 4 s total means we can
+        // still exit into the residual liquidity rather than a drained pool. The old
+        // schedule (3 s, 8 s, 15 s) meant round 2 started 11 s in — often too late.
+        // Fast drain pre-check: if the pool quote vault is empty before we even
+        // start the retry loop, every round will fail on-chain. Skip them all.
+        if let Ok(qb) = self.rpc.get_token_account_balance(&pool.quote_vault).await {
+            let q: u64 = qb.amount.parse().unwrap_or(u64::MAX);
+            if q < 10_000 {
+                tracing::warn!(
+                    mint = %pool.base_mint,
+                    quote_vault_lamports = q,
+                    "Pool quote vault drained (sell_with_retry) — writing total-loss event"
+                );
+                self.metrics.record_trade_failed();
+                TradeEvent {
+                    timestamp: chrono::Utc::now(),
+                    kind: "SELL".into(),
+                    mint: pool.base_mint.to_string(),
+                    symbol: String::new(),
+                    amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+                    pnl: -(self.entry_amount_raw as f64) / 1_000_000_000.0,
+                    status: "✗".into(),
+                    signature: "pool_drained".into(),
+                    dex: "Raydium".into(),
+                    hops: 1,
+                    pnl_pct: -100.0,
+                    position_age_secs,
+                }.append_to_file(TRADES_FILE);
+                return;
+            }
+        }
+
         let rounds: &[(u64, u32)] = &[
-            (0,  0),   // immediate, normal slippage
-            (3,  1),   // 3 s wait, 2× slippage
-            (8,  2),   // 8 s wait, min_out=0
-            (15, 2),   // 15 s wait, min_out=0 final attempt
+            (0, 0),   // immediate, normal slippage
+            (1, 1),   // 1 s wait, 2× slippage
+            (3, 2),   // 3 s wait, min_out=0
+            (8, 2),   // 8 s wait, min_out=0 final attempt
         ];
 
         let mut current_amount = amount;
@@ -2560,7 +2788,8 @@ impl SellMonitor {
 
         // Estimate current quote output using the AMM constant-product formula with 0.25% fee.
         // Fetch both reserves in parallel to cut latency vs sequential calls.
-        let estimated_out = {
+        // Also capture the raw quote-vault balance for the drain guard below.
+        let (estimated_out, quote_vault_lamports) = {
             let (qb_res, bb_res) = tokio::join!(
                 self.rpc.get_token_account_balance(&pool.quote_vault),
                 self.rpc.get_token_account_balance(&pool.base_vault),
@@ -2568,11 +2797,41 @@ impl SellMonitor {
             if let (Ok(qb), Ok(bb)) = (qb_res, bb_res) {
                 let q: u64 = qb.amount.parse().unwrap_or(1);
                 let b: u64 = bb.amount.parse().unwrap_or(1);
-                amm_out(amount, b, q)
+                (amm_out(amount, b, q), q)
             } else {
-                0
+                (0, u64::MAX) // MAX = RPC failure, unknown — don't drain-gate
             }
         };
+
+        // Pool drain guard: if quote vault < 10_000 lamports the Raydium on-chain program
+        // rejects every swap regardless of min_out (constant-product denominator collapses).
+        // Writing a total-loss event and returning Ok(()) frees the processing lock so future
+        // pools can be bought. Burning 4 rounds × max_retries on a drained pool would lock
+        // the bot for 20+ seconds against a pool that can never fill the swap.
+        const DRAIN_THRESHOLD_LAMPORTS: u64 = 10_000;
+        if quote_vault_lamports < DRAIN_THRESHOLD_LAMPORTS {
+            tracing::warn!(
+                mint = %pool.base_mint,
+                quote_vault_lamports,
+                "Pool quote vault drained — marking total loss and freeing lock"
+            );
+            self.metrics.record_trade_failed();
+            TradeEvent {
+                timestamp: chrono::Utc::now(),
+                kind: "SELL".into(),
+                mint: pool.base_mint.to_string(),
+                symbol: String::new(),
+                amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
+                pnl: -(self.entry_amount_raw as f64) / 1_000_000_000.0,
+                status: "✗".into(),
+                signature: "pool_drained".into(),
+                dex: "Raydium".into(),
+                hops: 1,
+                pnl_pct: -100.0,
+                position_age_secs,
+            }.append_to_file(TRADES_FILE);
+            return Ok(());
+        }
 
         // Escalate slippage by retry round to avoid repeated tx rejections:
         //   round 0: normal (e.g., 2.5%)
@@ -2693,7 +2952,21 @@ impl SellMonitor {
                         || err.contains("slippage");
                     if is_slippage_or_timeout && !tried_zero_slippage {
                         tried_zero_slippage = true;
-                        tracing::warn!(mint = %pool.base_mint, error = %err, "Slippage/timeout — rebuilding sell with min_out=0");
+                        // Refresh balance: if the slippage error actually meant the tx
+                        // landed but we missed the confirmation, we'd be trying to sell
+                        // zero tokens. A fresh read here prevents a "no tokens to sell"
+                        // fail-loop that burns remaining retries uselessly.
+                        let live_amount = if let Ok(bal) = self.rpc.get_token_account_balance(base_ata).await {
+                            let fresh = bal.amount.parse::<u64>().unwrap_or(0);
+                            if fresh == 0 {
+                                tracing::info!(mint = %pool.base_mint, "Token already fully sold (zero-slippage rebuild) — exiting");
+                                return Ok(());
+                            }
+                            fresh
+                        } else {
+                            amount  // RPC failed — use original amount conservatively
+                        };
+                        tracing::warn!(mint = %pool.base_mint, error = %err, live_amount, "Slippage/timeout — rebuilding sell with min_out=0");
                         if let Ok(swap_rebuilt) = self.raydium_builder.build_swap(
                             &pool.id,
                             &wallet_pubkey,
@@ -2701,7 +2974,7 @@ impl SellMonitor {
                             &self.quote_mint,
                             base_ata,
                             &quote_ata,
-                            amount,
+                            live_amount,
                             0,
                         ).await {
                             let mut rebuilt: Vec<solana_sdk::instruction::Instruction> = Vec::new();

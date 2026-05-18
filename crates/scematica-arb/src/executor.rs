@@ -70,14 +70,35 @@ impl ArbExecutor {
 
     /// Execute an arbitrage path. Returns the transaction signature if successful.
     pub async fn execute(&self, path: &ArbPath) -> Result<Option<String>> {
-        // ... (rest of execute method)
-        // Sanity check: minimum profit threshold
-        if path.profit < self.min_profit_lamports as i128 {
+        // Gas-adjusted minimum profit: tx_fee × 3 (covers worst-case CU cost and leaves net profit).
+        // On Solana a 400k CU tx at 100k microlamports/CU costs ~40M microlamports = 40_000 lamports.
+        // We require 3× that so even failed retries don't erode capital.
+        let cu_fee_lamports = (self.compute_unit_limit as u64 * self.compute_unit_price) / 1_000_000;
+        let gas_adjusted_min = (cu_fee_lamports * 3).max(self.min_profit_lamports);
+        if path.profit < gas_adjusted_min as i128 {
             warn!(
-                "Skipping arb: profit {} < min {}",
-                path.profit, self.min_profit_lamports
+                "Skipping arb: profit {} < gas-adjusted min {} (cu_fee={} × 3)",
+                path.profit, gas_adjusted_min, cu_fee_lamports
             );
             return Ok(None);
+        }
+
+        // Stale quote check: >2 Solana slots (~800ms) means on-chain state may have moved.
+        // Executing on stale quotes risks negative-profit transactions that revert on-chain
+        // but still cost ~5000 lamports in priority fees.
+        if path.fetched_at_ms > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let quote_age_ms = now_ms.saturating_sub(path.fetched_at_ms);
+            if quote_age_ms > 800 {
+                warn!(
+                    quote_age_ms,
+                    "Skipping arb: quote is stale (>800ms = 2 slots) — reserves likely changed"
+                );
+                return Ok(None);
+            }
         }
 
         // AI evaluation

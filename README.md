@@ -1,10 +1,42 @@
-# Scematica v1.5.0
+# Scematica v1.5.2
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.5.2
+
+### Live-Data PnL Improvements — Overnight Session Analysis
+
+Four targeted improvements driven by overnight session data (628 trades, +77% ROI on 0.1597 SOL start):
+
+**DeployerWalletAge filter disabled by default** — Pump.fun ALWAYS creates fresh deployer wallets (0 hours old at pool creation). The 24h `deployer_min_age_hours` default was rejecting 100% of pump.fun pools at the current session start (3/3 rejections observed). Disabled in `config.toml`; deployer quality is now handled by the reputation scoring system (`scematica-deployer-reputation.json`) which uses EMA-blended rug history instead of wallet age.
+
+**`min_pool_score` raised 35 → 65** — Score-47 thin pools (≤0.9 SOL liquidity) caused -72% to -90% slippage losses from early sessions. The pool sweet spot confirmed by overnight data is 15–28 SOL (score 98). Setting `min_pool_score = 65` in `config.toml` blocks these thin pools while passing all high-conviction targets.
+
+**`no_pump_timeout_secs` reduced 45 → 30** — Overnight data showed zero profitable trades held past 30 seconds (all wins exited within 6 s via TP or fast-poll sell monitor). Reducing the dead-zone exit timeout from 45 → 30 s recycles capital ~33% faster with no effect on winning trades.
+
+**Dump-mode fresh-position protection (`min_dump_hold_secs`)** — New config field (default 0, set to 90 in `config.toml`). When `dump_mode` fires without `sell_mode`, positions younger than `min_dump_hold_secs` are held through normal TP/SL instead of being force-sold at `min_out=0`. Prevents dump mode from destroying a freshly-entered position mid-pump (observed: -60% loss on a 61-second position at session end). Full `sell_mode` still clears all positions immediately regardless of age.
+
+---
+
+## What's New in v1.5.1
+
+### Extended-Session Reliability — Bug Fixes
+
+Four bugs identified from live-session diagnostics that could cause the bot to silently stop buying or produce incorrect behavior after hours of runtime:
+
+**`open_positions` underflow on restart with existing positions** — Critical: `scan_existing_positions` spawned sell monitors for pre-existing wallet tokens WITHOUT incrementing `open_positions`. When those monitors closed they called `fetch_sub(1)` on a zero counter, wrapping to `u32::MAX`. This corrupted the buy-limit sell-mode auto-clear logic for the entire session (the `prev_open == 1` trigger could never fire). Fixed: the startup scan now increments `open_positions` before spawning each monitor, matching the behavior of the buy path.
+
+**Pool-cache.json unbounded growth** — After days of running, `pool-cache.json` could accumulate thousands of entries (2,367+ in one session). On persist (every 60 s), the JSON writer would serialize the full map, producing MB-sized files and slow atomic renames. Fixed: `persist_to_file` now caps at 1,000 entries, preventing multi-MB cache files over long multi-day sessions. Load is unchanged (all existing entries are still loaded at startup for cross-session dedup).
+
+**Buy-limit gate silent at INFO log level** — The `max_buys` gate at the top of `on_new_pool` used `debug!`, making it invisible at the default INFO log level. If `buy_count` was not reset correctly after a sell-mode cycle, every pool would be silently skipped with no log output. Changed to `warn!` so the gate is always visible when active.
+
+**Sell-mode skip message misleading** — The "press [b] on dashboard to clear" message fired for buy-limit-triggered sell mode, which actually auto-clears when all positions close. Updated to show `open_positions` count and explain the two clearing paths (auto-clear for buy_limit vs manual [b] for external triggers).
 
 ---
 

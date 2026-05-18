@@ -71,8 +71,11 @@ fn handle_rate_limit(err: &str) {
 }
 
 fn is_rate_limit_err(e: &str) -> bool {
+    // Groq: "429", "Rate limit reached", "try again in Xm Ys"
+    // Anthropic: "rate_limit_error", "overloaded_error"
     e.contains("429") || e.contains("rate_limit") || e.contains("Rate limit")
         || e.contains("quota") || e.contains("try again in ")
+        || e.contains("rate_limit_error") || e.contains("overloaded_error")
 }
 
 // ─── Risk Agent ───────────────────────────────────────────────────────────────
@@ -508,7 +511,7 @@ impl AiCoordinator {
             }
             Err(e) => {
                 tracing::warn!(
-                    "AI layer disabled: {}. Set GROQ_API_KEY for free AI features.",
+                    "AI layer disabled: {}. Set ANTHROPIC_API_KEY to enable Claude pool evaluation.",
                     e
                 );
                 None

@@ -563,10 +563,13 @@ impl Sniper {
                     .is_ok()
                 {
                     let mode = if dump_on { "DUMP" } else { "SELL" };
+                    let open = self.open_positions.load(Ordering::Relaxed);
                     info!(
                         mode,
-                        "Pools being skipped because {} mode is active — press [b] on dashboard Logs tab to clear",
+                        open_positions = open,
+                        "Pools being skipped: {} mode active (buy-limit sell mode auto-clears when all {} positions close; for dashboard/drawdown-triggered mode press [b] to clear)",
                         mode,
+                        open,
                     );
                 }
             }
@@ -577,7 +580,7 @@ impl Sniper {
         if self.config.max_buys > 0 {
             let count = self.buy_count.load(Ordering::Relaxed);
             if count >= self.config.max_buys {
-                debug!(mint = %pool.base_mint, count, limit = self.config.max_buys, "Buy limit reached — skipping");
+                warn!(mint = %pool.base_mint, count, limit = self.config.max_buys, "Buy limit reached — sell mode should be active");
                 return;
             }
         }
@@ -1627,6 +1630,12 @@ impl Sniper {
             // the real entry amount, so use the config baseline as the floor.
             // sell_mode / dump_mode handles these positions anyway; the entry
             // value here only affects the trailing-stop reference.
+            //
+            // CRITICAL: increment open_positions BEFORE spawning so the counter
+            // is balanced when monitor_and_sell calls fetch_sub on exit. Without
+            // this, startup-scan monitors underflow the u32 → wrap to u32::MAX,
+            // breaking the buy-limit sell-mode auto-clear logic for the whole session.
+            self.open_positions.fetch_add(1, Ordering::Relaxed);
             let monitor = self.clone_for_sell(self.quote_amount_raw);
             tokio::spawn(async move {
                 monitor.monitor_and_sell(pool, ata_pk).await;
@@ -2085,16 +2094,32 @@ impl SellMonitor {
                 }
             }
 
-            // Sell/dump mode activated mid-monitor → sell immediately
-            if self.sell_mode.load(Ordering::Relaxed) || self.dump_mode.load(Ordering::Relaxed) {
-                tracing::info!(mint = %pool.base_mint, "Sell/dump mode active — forcing immediate sell");
-                if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
-                    let amount: u64 = balance.amount.parse().unwrap_or(0);
-                    if amount > 0 {
-                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+            // Sell/dump mode activated mid-monitor → sell immediately.
+            // Exception: pure dump_mode (not sell_mode) respects min_dump_hold_secs —
+            // fresh positions get a chance to exit via normal TP/SL rather than being
+            // force-sold at min_out=0 mid-pump.
+            let sell_on = self.sell_mode.load(Ordering::Relaxed);
+            let dump_on = self.dump_mode.load(Ordering::Relaxed);
+            if sell_on || dump_on {
+                let hold_secs = self.config.min_dump_hold_secs;
+                let age_secs = position_started.elapsed().as_secs();
+                if dump_on && !sell_on && hold_secs > 0 && age_secs < hold_secs {
+                    tracing::info!(
+                        mint = %pool.base_mint,
+                        age_secs,
+                        min_hold = hold_secs,
+                        "Dump mode active but position too fresh — holding until min_dump_hold_secs"
+                    );
+                } else {
+                    tracing::info!(mint = %pool.base_mint, "Sell/dump mode active — forcing immediate sell");
+                    if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
+                        let amount: u64 = balance.amount.parse().unwrap_or(0);
+                        if amount > 0 {
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                        }
                     }
+                    break;
                 }
-                break;
             }
 
             // Re-read live_params every iteration — strategy agent adjustments apply mid-position
@@ -2506,7 +2531,19 @@ impl SellMonitor {
                             }
                             // Set legacy partial_tp_done so the fallback path below
                             // doesn't fire on top of the tiered ladder.
-                            if any_fired_this_check { partial_tp_done = true; }
+                            if any_fired_this_check {
+                                partial_tp_done = true;
+                                prev_value = current_value;
+                                // Re-read the balance on the next iteration before making
+                                // additional exit decisions. Without this, the main TP check
+                                // below fires in the SAME iteration against the pre-partial
+                                // token balance, causing a double-sell (partial + full exit).
+                                checks += 1;
+                                if checks >= max_checks { break; }
+                                let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+                                tokio::time::sleep(sleep_dur).await;
+                                continue;
+                            }
                         } else if partial_tp_enabled && !partial_tp_done && current_value >= partial_tp_target {
                             // Legacy single partial-TP path (fallback when tiered disabled)
                             let partial_amount = (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;

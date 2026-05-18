@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 /// Which AI provider to use
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AiProvider {
+    /// Anthropic Claude — native Messages API, best structured-output quality
+    Claude,
     /// Groq — free tier, 14,400 req/day, ultra-fast LPU inference
     Groq,
     /// xAI Grok
@@ -16,13 +18,14 @@ pub enum AiProvider {
 
 impl Default for AiProvider {
     fn default() -> Self {
-        AiProvider::Grok
+        AiProvider::Claude
     }
 }
 
 impl AiProvider {
     pub fn base_url(&self) -> &str {
         match self {
+            AiProvider::Claude => "https://api.anthropic.com/v1",
             AiProvider::Groq => "https://api.groq.com/openai/v1",
             AiProvider::Grok => "https://api.x.ai/v1",
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1",
@@ -32,6 +35,8 @@ impl AiProvider {
 
     pub fn default_model(&self) -> &str {
         match self {
+            // Haiku 4.5: fastest + cheapest Claude model, excellent for structured JSON tasks
+            AiProvider::Claude => "claude-haiku-4-5-20251001",
             AiProvider::Groq => "llama-3.3-70b-versatile",
             AiProvider::Grok => "grok-beta",
             AiProvider::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
@@ -39,6 +44,8 @@ impl AiProvider {
         }
     }
 }
+
+// ─── OpenAI-compatible types (Groq / Grok / OpenRouter / Ollama) ─────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallResponse {
@@ -86,14 +93,14 @@ impl ChatMessage {
     }
 }
 
-/// Request to the AI API
+/// Request to the AI API (OpenAI-compatible format used by Groq/Grok/OpenRouter/Ollama)
 #[derive(Debug, Clone, Serialize)]
 pub struct AiRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub temperature: f32,
     pub max_tokens: u32,
-    /// Request JSON output
+    /// Request JSON output (not sent to Anthropic — they use prompt instruction instead)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,7 +120,7 @@ impl AiRequest {
         Self {
             model: model.into(),
             messages,
-            temperature: 0.1, // low temp for consistent structured output
+            temperature: 0.1,
             max_tokens: 512,
             response_format: None,
             tools: None,
@@ -137,7 +144,7 @@ impl AiRequest {
     }
 }
 
-/// Raw response from the AI API
+/// Raw response from OpenAI-compatible AI APIs
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiResponse {
     pub choices: Vec<AiChoice>,
@@ -175,6 +182,130 @@ impl AiResponse {
     }
 }
 
+// ─── Anthropic Messages API types ─────────────────────────────────────────────
+
+/// Request body for POST https://api.anthropic.com/v1/messages
+#[derive(Debug, Clone, Serialize)]
+pub struct AnthropicRequest {
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    pub messages: Vec<AnthropicMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<AnthropicTool>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicMessage {
+    pub role: String,
+    pub content: AnthropicContent,
+}
+
+/// Content can be a plain string or a list of typed blocks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnthropicContent {
+    Text(String),
+    Blocks(Vec<AnthropicBlock>),
+}
+
+/// A single content block in an Anthropic message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    // text block
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    // tool_use block (assistant calling a tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    // tool_result block (user returning tool output)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Value>,
+}
+
+/// Anthropic tool definition (input_schema is JSON Schema)
+#[derive(Debug, Clone, Serialize)]
+pub struct AnthropicTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnthropicResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub role: String,
+    pub content: Vec<AnthropicBlock>,
+    pub model: String,
+    pub stop_reason: Option<String>,
+    pub usage: AnthropicUsage,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnthropicUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+impl AnthropicResponse {
+    /// Convert to the OpenAI-compatible AiResponse so all downstream agents are unchanged
+    pub fn into_ai_response(self) -> AiResponse {
+        let mut text_content = String::new();
+        let mut tool_calls: Vec<ToolCallResponse> = Vec::new();
+
+        for block in &self.content {
+            match block.block_type.as_str() {
+                "text" => {
+                    if let Some(t) = &block.text {
+                        text_content.push_str(t);
+                    }
+                }
+                "tool_use" => {
+                    if let (Some(id), Some(name), Some(input)) = (&block.id, &block.name, &block.input) {
+                        tool_calls.push(ToolCallResponse {
+                            id: id.clone(),
+                            call_type: "function".into(),
+                            function: ToolCallFunction {
+                                name: name.clone(),
+                                arguments: input.to_string(),
+                            },
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        AiResponse {
+            choices: vec![AiChoice {
+                message: AiMessage {
+                    role: "assistant".into(),
+                    content: text_content,
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                },
+                finish_reason: self.stop_reason,
+            }],
+            usage: Some(AiUsage {
+                prompt_tokens: self.usage.input_tokens,
+                completion_tokens: self.usage.output_tokens,
+                total_tokens: self.usage.input_tokens + self.usage.output_tokens,
+            }),
+        }
+    }
+}
+
 // ─── Agent Output Types ───────────────────────────────────────────────────────
 
 fn utc_now() -> DateTime<Utc> { Utc::now() }
@@ -196,12 +327,6 @@ pub struct TokenRiskScore {
 }
 
 impl TokenRiskScore {
-    /// Allow the buy unless the AI actively flags it as high-risk (score < 40).
-    /// "unknown symbol" / "no social links" are normal for fresh pump.fun graduates
-    /// and shouldn't gate a snipe — the AI here is a rug-pattern detector, not a
-    /// quality filter. Previously we required recommendation=="buy" AND score>=60,
-    /// which rejected every fresh-launch token because the LLM returns "watch"
-    /// when symbol/socials are blank.
     pub fn should_buy(&self) -> bool {
         !self.is_high_risk()
     }

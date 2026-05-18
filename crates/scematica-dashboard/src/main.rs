@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
             Ok(c) => c,
             Err(e) => {
                 ai_state.push_chat_line(ChatLine::Error(format!(
-                    "AI unavailable: {}. Set XAI_API_KEY or GROQ_API_KEY.",
+                    "AI unavailable: {}. Set ANTHROPIC_API_KEY in .env",
                     e
                 )));
                 return;

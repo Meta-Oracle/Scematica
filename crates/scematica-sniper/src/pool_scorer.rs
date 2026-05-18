@@ -71,6 +71,14 @@ impl PoolScorer {
         }
 
         // ── Pool size ─────────────────────────────────────────────────────────
+        // Ghost-pool guard: pool_size_lamports=0 means the RPC call for the quote
+        // vault returned nothing (pool not yet funded, draining, or propagation lag).
+        // Ultra-fresh pools already have +30 age bonus, giving them a raw score of 80
+        // which passes min_pool_score=65. Apply a hard -30 penalty so unfunded pools
+        // score 50 and never pass the gate, regardless of min_pool_score setting.
+        if pool_size_lamports == 0 {
+            score -= 30.0;
+        }
         if pool_size_lamports > 0 {
             const SOL: u64 = 1_000_000_000; // 1 SOL in lamports
 

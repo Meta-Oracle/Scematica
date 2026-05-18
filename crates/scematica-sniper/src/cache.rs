@@ -68,11 +68,23 @@ impl PoolCache {
     }
 
     /// Persist all cached pools to disk so sell lookups survive restarts.
+    /// Caps at MAX_POOL_CACHE_ENTRIES to prevent unbounded growth during
+    /// long multi-day sessions (2k+ entries → multi-MB JSON, slow atomic writes).
     pub fn persist_to_file(&self, path: &str) {
-        let map: std::collections::HashMap<String, CachedPool> = self.inner
+        const MAX_POOL_CACHE_ENTRIES: usize = 1000;
+        let mut entries: Vec<(String, CachedPool)> = self.inner
             .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
+        let original_len = entries.len();
+        if original_len > MAX_POOL_CACHE_ENTRIES {
+            // Keep the last MAX_POOL_CACHE_ENTRIES — most recent inserts are
+            // the actively-monitored positions the sell path needs.
+            entries.truncate(MAX_POOL_CACHE_ENTRIES);
+            tracing::debug!("Pool cache: trimmed {} → {} entries for persist", original_len, MAX_POOL_CACHE_ENTRIES);
+        }
+        let map: std::collections::HashMap<String, CachedPool> =
+            entries.into_iter().collect();
         if let Ok(json) = serde_json::to_string(&map) {
             let tmp = format!("{}.tmp", path);
             if std::fs::write(&tmp, &json).is_ok() {

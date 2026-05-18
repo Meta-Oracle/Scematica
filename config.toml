@@ -22,7 +22,8 @@ max_buy_retries = 3
 max_sell_retries = 5       # extra retries — thin pools need more attempts
 auto_sell = true
 auto_sell_delay_ms = 0
-take_profit_pct = 100.0   # Sell when up 100% — let winners run to 2x
+take_profit_pct = 500.0   # Full exit target: 5x (500%). Tiered partials de-risk
+                          # at 100% and 250% before this final exit fires.
 stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
 buy_slippage_pct = 1.0
 sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
@@ -44,6 +45,31 @@ cooldown_minutes = 20          # Cooldown duration in minutes
 daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
 max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
+
+# ── Live-data tuning (v1.5.3) ──────────────────────────────────────────────
+# Pool quality: only buy score≥88 pools. This eliminates:
+#   score=80 "ghost" pools (0 SOL confirmed liquidity — failed buys/sells)
+#   score=72 established pools (100–400 SOL, pump already over, -0.499% repeat loss)
+#   score=64 micro-caps (slippage -72 to -90%)
+# Score 88 = fresh pool (7–21 s old) in 6.5–65 SOL range — confirmed runner candidates.
+# Score 98 = ultra-fresh (0–7 s) + 15–28 SOL sweet spot — highest conviction.
+min_pool_score = 88
+
+# Tiered partial TP ladder: de-risk at 100% and 250%, hold remainder to 500%.
+#   Level 1 (+100%): sell 25% of position — lock a base 1× return, stop moves to breakeven
+#   Level 2 (+250%): sell 25% of remaining 75% — lock another layer while runner runs
+#   Full TP (500%): exit remaining ~56% at 5x target
+# Format: [[trigger_pct, sell_pct_of_remaining], ...]
+tiered_partial_tp_levels = [[100.0, 25.0], [250.0, 25.0]]
+
+# Dead-zone exit: all wins exited within 6 s; no profitable trade held past 30 s.
+# Reducing from 45 → 30 recycles capital ~33% faster without affecting winners.
+no_pump_timeout_secs = 30
+
+# Protect positions < 90 s from dump mode force-sell (min_out=0). Overnight data
+# showed dump mode destroying a 61-second position at -60%. sell_mode still clears
+# immediately (dump_mode-only respects this hold floor).
+min_dump_hold_secs = 90
 copy_wallets = []              # Wallet addresses to copy-trade (buy same tokens they buy)
 
 [sniper.filters]
@@ -77,6 +103,12 @@ max_price_impact_pct = 5.0        # Reject if our buy causes >5% price impact
 # Disabled here; re-enable with a high cap (e.g. 95%) if you want it as a softer guard.
 check_holder_concentration = false
 max_top10_holder_pct = 95.0
+
+# Deployer wallet age: disabled — pump.fun ALWAYS creates fresh deployer wallets
+# (0 hours old). The 24h default was rejecting 100% of pump.fun pools at the
+# current session start. Reputation scoring (scematica-deployer-reputation.json)
+# provides deployer-quality signal without the false-positive problem.
+check_deployer_wallet_age = false
 
 # ============================================================
 # Arbitrage Configuration

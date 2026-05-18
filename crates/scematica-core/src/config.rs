@@ -346,6 +346,13 @@ pub struct SniperConfig {
     /// `no_pump_timeout_secs`, exit at market to recycle capital.
     /// Default 3.0.
     pub no_pump_min_gain_pct: f64,
+
+    // ── Dump-mode fresh-position protection ──────────────────────────────────
+    /// If dump_mode fires but NOT sell_mode, protect positions younger than this
+    /// many seconds — let them run through normal TP/SL instead of force-selling
+    /// at min_out=0. Prevents dump mode from destroying a freshly-entered position
+    /// mid-pump. 0 = no protection (dump all immediately). Default 0.
+    pub min_dump_hold_secs: u64,
 }
 
 impl Default for SniperConfig {
@@ -528,6 +535,7 @@ impl Default for SniperConfig {
             // Positions flat beyond 45 s are dead — exit to redeploy capital.
             no_pump_timeout_secs: 45,
             no_pump_min_gain_pct: 3.0,
+            min_dump_hold_secs: 0,
         }
     }
 }

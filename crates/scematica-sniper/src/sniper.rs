@@ -195,6 +195,10 @@ pub struct Sniper {
     /// price check, removes on exit. A background flush task in main.rs writes
     /// this map to `scematica-positions.json` every 1s for the dashboard panel.
     pub live_positions: Arc<DashMap<String, LivePositionSnapshot>>,
+    /// Dedup guard: mint → Instant of last confirmed buy. Any pool event for the
+    /// same mint within 5 minutes is silently skipped. Prevents triple-buying the
+    /// same token when multiple listener sources fire for the same pool creation.
+    recently_bought: Arc<DashMap<Pubkey, std::time::Instant>>,
 }
 
 /// Per-position snapshot written to `scematica-positions.json`. Each running
@@ -326,7 +330,22 @@ impl Sniper {
             progressive_scaling: Arc::new(AtomicBool::new(false)),
             moon_chase: Arc::new(AtomicBool::new(false)),
             live_positions: Arc::new(DashMap::new()),
+            recently_bought: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Config base values — exposed so the builder-mode watcher in main.rs
+    /// can compute mode-specific TP/SL/mult relative to the configured baseline.
+    pub fn base_take_profit_pct(&self) -> f64 { self.config.take_profit_pct }
+    pub fn base_stop_loss_pct(&self)    -> f64 { self.config.stop_loss_pct  }
+
+    /// Approximate current wallet in SOL (session_start + realised daily PnL).
+    /// Avoids an RPC call; used by builder-mode compounding equations every 5 s.
+    pub fn approx_wallet_sol(&self) -> f64 {
+        use std::sync::atomic::Ordering;
+        let start = self.session_start_lamports.load(Ordering::Relaxed) as i64;
+        let pnl   = *self.daily_pnl_lamports.lock();
+        (start + pnl).max(0) as f64 / 1e9
     }
 
     /// Run the Strategy Agent adjustment loop.
@@ -974,6 +993,20 @@ impl Sniper {
             "Buy evaluation started"
         );
 
+        // Dedup: multiple listener sources (pumpfun, whale_copy, raydium listener) can
+        // all fire for the same pool creation within milliseconds. Without this guard
+        // the bot buys the same mint 2-3× before the processing_lock catches it.
+        {
+            if let Some(entry) = self.recently_bought.get(&pool.base_mint) {
+                if entry.elapsed().as_secs() < 300 {
+                    info!(mint = %pool.base_mint, "Dedup: mint purchased in last 5 min — skipping");
+                    return Ok(());
+                }
+            }
+            // Prune stale entries so the map doesn't grow unbounded during long sessions.
+            self.recently_bought.retain(|_, v| v.elapsed().as_secs() < 300);
+        }
+
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
         let base_ata = get_ata(&wallet_pubkey, &pool.base_mint);
@@ -1159,6 +1192,9 @@ impl Sniper {
                         "Buy confirmed"
                     );
                     self.metrics.record_trade_confirmed(0);
+                    // Stamp the dedup guard so any subsequent pool events for this
+                    // mint are skipped for the next 5 minutes.
+                    self.recently_bought.insert(pool.base_mint, std::time::Instant::now());
 
                     // Emit trade event for the dashboard
                     TradeEvent {
@@ -1477,6 +1513,16 @@ impl Sniper {
             }
         };
 
+        const NO_POOL_FILE: &str = "scematica-no-pool.json";
+
+        // Load mints previously confirmed unsellable (no Raydium pool) so we skip
+        // them without RPC calls on every subsequent sell-mode activation.
+        let mut no_pool_blacklist: std::collections::HashSet<String> =
+            std::fs::read_to_string(NO_POOL_FILE)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
         let skip_mints: std::collections::HashSet<Pubkey> = [
             self.quote_mint,
             known_tokens::WSOL_MINT,
@@ -1510,6 +1556,13 @@ impl Sniper {
                 continue;
             }
 
+            // Skip mints previously confirmed to have no Raydium pool — these are
+            // rugged tokens we can never sell; avoid wasting RPC calls on them.
+            if no_pool_blacklist.contains(&mint.to_string()) {
+                debug!(mint = %mint, "Startup scan: skipping blacklisted no-pool mint");
+                continue;
+            }
+
             info!(
                 mint = %mint,
                 amount = token_acct.amount,
@@ -1519,7 +1572,15 @@ impl Sniper {
             let pool = match self.find_raydium_pool_for_mint(&mint).await {
                 Some(p) => p,
                 None => {
-                    warn!(mint = %mint, "Startup scan: no Raydium pool found — cannot auto-sell");
+                    warn!(mint = %mint, "Startup scan: no Raydium pool found — blacklisting mint");
+                    no_pool_blacklist.insert(mint.to_string());
+                    // Persist the updated blacklist atomically
+                    if let Ok(json) = serde_json::to_string(&no_pool_blacklist) {
+                        let tmp = format!("{}.tmp", NO_POOL_FILE);
+                        if std::fs::write(&tmp, &json).is_ok() {
+                            let _ = std::fs::rename(&tmp, NO_POOL_FILE);
+                        }
+                    }
                     continue;
                 }
             };
@@ -2651,11 +2712,13 @@ impl SellMonitor {
             }
         }
 
-        // Daily PnL accumulator
+        // Daily PnL accumulator + total PnL metrics (was always 0 due to sell_with_retry
+        // calling record_trade_confirmed(0); now the real pnl_lamports flows through here).
         {
             let mut daily = self.daily_pnl_lamports.lock();
             *daily += pnl_lamports;
         }
+        self.metrics.record_trade_confirmed(pnl_lamports);
 
         // Consecutive loss / win tracking. Cooldown trigger removed by operator
         // decision — we keep the loss counter for the streak display + ledger, but
@@ -2922,7 +2985,9 @@ impl SellMonitor {
             match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
-                    self.metrics.record_trade_confirmed(0);
+                    // record_trade_confirmed (with real PnL) is called in record_sell_outcome,
+                    // which the caller always invokes after sell_with_retry returns. Calling it
+                    // here with 0 would double-count the trade and zero out the PnL.
 
                     // pnl_pct is the primary reward signal for the NN agent — fall back
                     // to 0 when estimated_out couldn't be computed (RPC failure path).

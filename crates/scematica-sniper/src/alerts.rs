@@ -1,6 +1,13 @@
 use scematica_core::config::AlertsConfig;
 use tracing::{debug, warn};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+// CREATE_NO_WINDOW: suppresses the console window at the Win32 CreateProcess level,
+// preventing any focus-steal / minimize of the foreground TUI window.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000_0000;
+
 /// Sends trade alerts via Telegram, Discord, and/or desktop notifications.
 #[derive(Clone)]
 pub struct AlertManager {
@@ -77,12 +84,17 @@ impl AlertManager {
              $n.Dispose()",
             title_safe, body_safe
         );
-        // Redirect both stdout and stderr to null so PowerShell output never
-        // appears in scematica-sniper.log and pollutes the dashboard log panel.
-        let _ = std::process::Command::new("powershell")
-            .args(["-WindowStyle", "Hidden", "-NonInteractive", "-Command", &script])
+        // -NoProfile skips profile scripts (faster startup).
+        // CREATE_NO_WINDOW (0x08000000) suppresses the console window at the
+        // Win32 CreateProcess level — this is what was causing the TUI to
+        // minimize on every buy. -WindowStyle Hidden only hides the window
+        // after it's created; CREATE_NO_WINDOW prevents it from ever existing.
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.spawn();
     }
 }

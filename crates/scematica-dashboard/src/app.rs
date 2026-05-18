@@ -183,14 +183,14 @@ pub struct AppState {
     pub alert_history: RwLock<VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
 }
 
-/// Wallet-growth ladder. Sets `wallet_target_sol` (profit-first stays on while
-/// the wallet is under target) and, for Super Builder, enables progressive
-/// rate-mode bumps as the wallet grows.
+/// Wallet-growth ladder. Each mode applies a live compounding algorithm that
+/// continuously recomputes position size, TP, and SL from the current wallet
+/// balance vs. target every 5 s, without restarting.
 ///
-///   Off          — operator-defined target from `config.toml` (default 0.2)
-///   Growth       — 0.2 SOL target (matches default)
-///   Builder      — 1.0 SOL target
-///   SuperBuilder — 3.0 SOL target + progressive scaling
+///   Off          — config.toml values (no algorithm override)
+///   Growth       — 0.2 SOL  Mild geometric: size 1.0–2.0×, base TP/SL
+///   Builder      — 1.0 SOL  Geometric compounding: size 1.5–3.5×, TP scales with distance
+///   SuperBuilder — 3.0 SOL  Parabolic compounding: size 2.0–8.0×, auto moon-chase early
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuilderMode {
     #[default]
@@ -203,14 +203,16 @@ pub enum BuilderMode {
 impl BuilderMode {
     pub fn target_sol(self) -> f64 {
         match self {
-            BuilderMode::Off          => 0.0, // sniper falls back to config value
+            BuilderMode::Off          => 0.0,
             BuilderMode::Growth       => 0.2,
             BuilderMode::Builder      => 1.0,
             BuilderMode::SuperBuilder => 3.0,
         }
     }
     pub fn progressive(self) -> bool {
-        matches!(self, BuilderMode::SuperBuilder)
+        // progressive_scaling in buy() is disabled for Builder modes — sizing
+        // is fully controlled by live_params.amount_multiplier from the watcher.
+        false
     }
     pub fn label(self) -> &'static str {
         match self {
@@ -226,6 +228,15 @@ impl BuilderMode {
             BuilderMode::Growth       => "growth",
             BuilderMode::Builder      => "builder",
             BuilderMode::SuperBuilder => "super_builder",
+        }
+    }
+    /// Short algorithm description shown in the Control tab.
+    pub fn algo_description(self) -> &'static str {
+        match self {
+            BuilderMode::Off          => "config.toml values (no algorithm override)",
+            BuilderMode::Growth       => "size 1.0–2.0×  TP base  SL base",
+            BuilderMode::Builder      => "size 1.5–3.5× (p^0.65)  TP 1.5×→1.0× base  SL widens early",
+            BuilderMode::SuperBuilder => "size 2.0–8.0× (p^0.35)  TP 2.0×→1.0× base  moon-chase p<25%",
         }
     }
 }

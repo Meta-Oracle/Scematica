@@ -975,38 +975,38 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Line::from(""),
         Line::from(vec![
             Span::styled("Builder Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("  (wallet growth target — profit-first SL until target reached)"),
+            Span::raw("  (compounding algorithm — live size/TP/SL from wallet progress)"),
         ]),
         {
             let active = builder_mode == BuilderMode::Off;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::DarkGray } else { Color::DarkGray })),
+                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(Color::DarkGray)),
                 Span::styled("[o] Off          ", Style::default().fg(if active { Color::White } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("use config.toml wallet_target_sol", Style::default().fg(Color::DarkGray)),
+                Span::styled(BuilderMode::Off.algo_description(), Style::default().fg(Color::DarkGray)),
             ])
         },
         {
             let active = builder_mode == BuilderMode::Growth;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[g] Growth       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("target 0.2 SOL — gentle build-up phase", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled("[g] Growth 0.2   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled(BuilderMode::Growth.algo_description(), Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
             ])
         },
         {
             let active = builder_mode == BuilderMode::Builder;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
-                Span::styled("[j] Builder      ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("target 1.0 SOL — scale up to a serious bag", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled("[j] Builder 1.0  ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled(BuilderMode::Builder.algo_description(), Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
             ])
         },
         {
             let active = builder_mode == BuilderMode::SuperBuilder;
             Line::from(vec![
                 Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
-                Span::styled("[k] SuperBuilder ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("target 3.0 SOL + progressive rate-mode scaling", Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+                Span::styled("[k] SuperBld 3.0 ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled(BuilderMode::SuperBuilder.algo_description(), Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
             ])
         },
         Line::from(""),

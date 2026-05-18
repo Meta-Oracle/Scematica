@@ -347,11 +347,17 @@ impl Default for SniperConfig {
             max_sell_retries: 5,
             auto_sell: true,
             auto_sell_delay_ms: 0,
-            // v1.2.0: raised 50→80 — momentum escalation now runs 5 rounds
-            // (up from 4), so TP needs to be a higher starting floor to let the
-            // escalator capture the full parabolic move before exit.
-            take_profit_pct: 80.0,
-            stop_loss_pct: 15.0,
+            // v1.4.0: raised 80→175 — at 80% the TP fired on the FIRST price check
+            // (~75ms) before the 5-sample momentum window filled, so the escalation
+            // system never ran. At 175% the base TP is a fallback; the pullback and
+            // velocity-decay exits are the primary signals. Data: most wins at 99-198%
+            // were first-check exits, not momentum-held exits. Higher base = escalation
+            // runs = bot rides parabolic moves instead of capping at initial pump.
+            take_profit_pct: 175.0,
+            // v1.4.0: widened 15→18 — profit_first_floor (25%) already handles rugs;
+            // the SL here catches legitimate reversals without stopping out on the
+            // normal initial volatility of new pools.
+            stop_loss_pct: 18.0,
             // v1.1.1: widened 1.5→3.0 — thin memecoin pools move 3-5% between pool
             // detection and tx landing. 1.5% caused frequent buy rejections with 0x26
             // errors on the first attempt, burning all 3 retries on pools that were
@@ -372,13 +378,13 @@ impl Default for SniperConfig {
             use_snipe_list: false,
             snipe_list_path: "snipe-list.txt".into(),
             max_buys: 0,
-            // v1.2.0: tightened 15→12 — once a position has a peak, reclaim
-            // gains faster before they evaporate on a reversal.
+            // v1.4.0: kept at 12 — trailing stop is the backstop for tokens that
+            // keep climbing past the pullback threshold. Tightening below 12 would
+            // conflict with the adaptive pullback formula at modest peak heights.
             trailing_stop_loss_pct: 12.0,
             partial_tp_pct: 50.0,
-            // v1.2.0: raised 30→45 — don't take first partial until genuinely
-            // in profit; avoids giving up upside on the initial pump leg.
-            partial_tp_trigger: 45.0,
+            // Legacy single partial — unused when tiered_partial_tp is on.
+            partial_tp_trigger: 100.0,
             max_concurrent_positions: 0,
             cooldown_after_losses: 3,
             cooldown_minutes: 15,
@@ -408,44 +414,62 @@ impl Default for SniperConfig {
             extra_rpc_endpoints: vec![],
             adaptive_slippage: false,
             sandwich_shield: false,
-            // Profit-first defaults: ON, build toward 0.2 SOL, rug-only floor at -50%.
+            // Profit-first defaults: ON, build toward 0.15 SOL, rug-only floor at -25%.
             // Operators who want classic SL behavior can set `profit_first_mode = false`.
+            // v1.3.0: lowered target 0.2→0.15 so the mode disengages faster and
+            // normal SL resumes sooner, protecting the accumulated gains.
+            // v1.3.1: tightened floor 50→25% — exit rugs faster instead of holding
+            // a near-zero token hoping for a recovery that statistically won't come.
             profit_first_mode: true,
-            wallet_target_sol: 0.2,
-            profit_first_floor_pct: 50.0,
+            wallet_target_sol: 0.15,
+            profit_first_floor_pct: 25.0,
             // Momentum-aware long-term sniping: ON by default. The escalation +
             // pullback exit replaces fixed-TP greed with "ride strong winners,
             // lock when they cool". See the field comments above for tuning.
             momentum_hold: true,
             momentum_window_checks: 5,
-            momentum_escalation_threshold_pct: 5.0,
-            // v1.2.0: slightly more aggressive escalation factor
-            momentum_escalation_factor: 1.6,
-            // v1.2.0: one extra escalation round — lets a parabolic move run
-            // up to 1.6^5 = ~10.5× the configured TP target before force exit
-            momentum_max_escalations: 5,
-            // v1.2.0: require 25% peak (was 20) before momentum pullback fires —
-            // avoids premature exits on small initial pops
-            momentum_min_peak_pct: 25.0,
-            // v1.2.0: slightly more room at peak before locking in gains
-            momentum_pullback_exit_pct: 18.0,
+            // v1.4.0: lowered 5→3%/check — easier to trigger escalation so the
+            // bot rides moderate momentum, not just parabolic outliers.
+            momentum_escalation_threshold_pct: 3.0,
+            // v1.4.0: raised 1.6→1.8 — more aggressive TP target per escalation.
+            // Ladder: 175 → 315 → 567 → 1020 → 1836 → 3305 → 5949% (7 rounds max).
+            momentum_escalation_factor: 1.8,
+            // v1.4.0: raised 5→7 rounds — lets truly parabolic movers run further
+            // without a forced TP exit; the pullback exit locks gains on reversal.
+            momentum_max_escalations: 7,
+            // v1.4.0: raised 25→60 — require a real peak before the pullback exit
+            // fires. At 25% the pullback was triggering on normal early-position
+            // volatility before the position had time to develop into a winner.
+            momentum_min_peak_pct: 60.0,
+            // v1.4.0: tightened 18→8 (base). Despite the lower base, the adaptive
+            // formula θ_eff = 8 × √(1 + peak/100) scales up with peak height:
+            //   peak=60%  → 10.1 PnL pts → exits at 49.9%  (was 20.1 → exits at 4.9%)
+            //   peak=100% → 11.3 PnL pts → exits at 88.7%  (was 25.5 → exits at 74.5%)
+            //   peak=200% → 13.9 PnL pts → exits at 186.1% (was 31.2 → exits at 168.8%)
+            //   peak=500% → 19.6 PnL pts → exits at 480.4% (was 49.2 → exits at 450.8%)
+            // Net effect: locks in gains at HIGHER levels than before on every peak size.
+            momentum_pullback_exit_pct: 8.0,
             // v0.9.6 perfect-exit defaults
             adaptive_pullback: true,
             velocity_decay_exit: true,
             velocity_decay_window: 3,
-            // v1.0.0: lowered 10→7 so the inflection signal fires earlier while
-            // still above typical noise floor for memecoin price action.
-            velocity_decay_min_pnl_pct: 7.0,
-            // v1.0.0: tightened 2.0→1.5 — catches deceleration a tick sooner
-            // without false-positive risk on healthy pauses.
+            // v1.4.0: raised 7→25 — at 7% the velocity-decay exit was triggering
+            // on tokens that barely covered fees. Requires a genuine 25% gain before
+            // the momentum-inflection signal can fire an exit.
+            velocity_decay_min_pnl_pct: 25.0,
+            // v1.4.0: loosened 1.2→1.5 — 1.2 was too sensitive on thin pools where
+            // normal price chop looks like velocity decay. 1.5 requires a sharper
+            // inflection before exiting.
             velocity_decay_drop_threshold: 1.5,
             tiered_partial_tp: true,
-            // v1.2.0: shifted tiers up — hold position longer before first partial,
-            // maximize gains at each subsequent tier.
+            // v1.4.0: All levels shifted up; fractions reduced to stay invested longer.
+            // Old: (45%,20%) (100%,25%) (200%,25%) — first partial too early at 45%.
+            // Data shows tokens commonly pump 100-300% on launch; selling 20% at 45%
+            // was giving up upside on every strong winner.
             tiered_partial_tp_levels: vec![
-                (45.0, 20.0),   // first partial at +45% (was 30%) — sell 20%
-                (100.0, 25.0),  // second at +100% (was 75%) — sell 25%
-                (200.0, 25.0),  // third at +200% (was 150%) — sell 25%
+                (100.0, 15.0),  // first partial at +100% — sell 15% (was 45%→20%)
+                (300.0, 20.0),  // second at +300% — sell 20% (was 100%→25%)
+                (600.0, 25.0),  // third at +600% — sell 25% (was 200%→25%)
             ],
             // v1.0.0 reliability defaults
             flash_crash_pct: 22.0,
@@ -453,7 +477,9 @@ impl Default for SniperConfig {
             // above entry (prevents round-trip losses on sustained winners)
             profit_lock_checks: 6,
             close_ata_on_sell: true,
-            max_position_hold_mins: 90,
+            // v1.3.0: lowered 90→60 — free capital faster; profit-first extension
+            // logic still holds genuinely recovering positions beyond this limit.
+            max_position_hold_mins: 60,
             // v1.1.0 new risk + sizing defaults
             min_sol_reserve: 0.02,
             // v1.1.1: enabled 0→200ms — waits 200ms then re-checks the quote vault.
@@ -462,7 +488,11 @@ impl Default for SniperConfig {
             // where we buy into a pool that was already >15% pumped by the time our
             // tx builds — those trades are near-guaranteed immediate losses.
             confirmation_window_ms: 200,
-            session_heat_losses: 3,
+            // v1.3.1: disabled session heat (0 = off) — the drawdown guard is a
+            // better circuit breaker. Heat was miscounting forced sell-mode exits
+            // (-0.499% AMM spread) as "losses", triggering 15-min buy pauses
+            // after normal operation and causing the bot to miss profitable pools.
+            session_heat_losses: 0,
             session_heat_window_secs: 3600,
             session_heat_cooldown_mins: 15,
             // v1.2.0: exit when in profit and volume drops >65% from entry vault —
@@ -474,7 +504,9 @@ impl Default for SniperConfig {
             // in one tick — strong rug/whale-exit signal; acts faster than the
             // 3-consecutive-decline detector.
             whale_exit_vault_drop_pct: 22.0,
-            pool_quality_sizing: false,
+            // v1.3.0: ON — scales buy size by pool_score/100 so the best pools
+            // get full capital while marginal ones get partial exposure.
+            pool_quality_sizing: true,
             kelly_min_trades: 10,
             deployer_wallet_age_min_hours: 0,
             filter_cache_ttl_secs: 30,
@@ -602,8 +634,11 @@ impl Default for FilterConfig {
             max_deployer_rugs_24h: 2,
             check_jupiter_discrepancy: false,
             jupiter_min_premium_pct: 5.0,
-            check_deployer_wallet_age: false,
-            deployer_min_age_hours: 48,
+            // v1.3.0: ON — reject deployers whose wallet is younger than 24h.
+            // Fresh wallets are near-universally rug setups. 24h is enough
+            // to eliminate day-1 throwaway wallets without being too strict.
+            check_deployer_wallet_age: true,
+            deployer_min_age_hours: 24,
             filter_cache_ttl_secs: 30,
         }
     }

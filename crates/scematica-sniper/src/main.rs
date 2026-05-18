@@ -431,43 +431,126 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Builder-mode file watcher — checks scematica-builder-mode.json every 5 s.
-    // The dashboard writes this when the operator presses [g]/[j]/[k]/[o]; we
-    // mirror it into atomic state so the sell-monitor's profit-first gate and the
-    // buy() progressive scaler pick up the change without a restart.
+    // ── Builder-mode watcher ──────────────────────────────────────────────────
+    // Polls `scematica-builder-mode.json` every 5 s (written by dashboard [g/j/k/o]).
+    //
+    // Beyond simply setting wallet_target_lamports_override, this watcher runs the
+    // two compounding algorithms that drive the Builder (1 SOL) and SuperBuilder
+    // (3 SOL) modes. On every tick it reads the current approximate wallet balance,
+    // computes progress toward the target, and writes optimal live_params so that
+    // position size, TP, and SL all evolve continuously as the wallet grows.
+    //
+    // ── Builder (1 SOL) — Geometric Compounding ──────────────────────────────
+    //   p = wallet_sol / 1.0  (0..1)
+    //   size_mult  = clamp(1.5 + 2.0 × p^0.65, 1.5, 3.5)
+    //     → 0%: 1.5×  |  25%: 2.26×  |  50%: 2.82×  |  100%: 3.5×
+    //   take_profit = base_tp × max(1.0, 1.5 − 0.5 × p)
+    //     → far from target: TP at 1.5× base (bigger wins compound faster)
+    //     → near target:     TP at base (accept moderate wins to lock in gains)
+    //   stop_loss  = base_sl × (1.2 − 0.2 × p)   (slightly wider when far)
+    //
+    // ── SuperBuilder (3 SOL) — Parabolic Compounding ─────────────────────────
+    //   p = wallet_sol / 3.0  (0..1)
+    //   size_mult  = clamp(2.0 + 6.0 × p^0.35, 2.0, 8.0)
+    //     → 0%: 2.0×  |  10%: 4.7×  |  25%: 5.6×  |  50%: 6.7×  |  100%: 8.0×
+    //   take_profit = base_tp × max(1.0, 2.0 − p)
+    //     → 0%: 2× base TP  |  50%: 1.5× base  |  100%: base
+    //   stop_loss  = base_sl × 1.4  (fixed wider floor; profit_first handles rugs)
+    //   moon_chase  = ON when p < 0.25 (early aggressive), OFF when p > 0.60
     {
         use std::sync::atomic::Ordering;
         let sniper_bm = sniper.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            let mut last_label = String::new();
+            let mut last_label  = String::new();
+            let mut last_mult   = 0.0f64;
             loop {
                 interval.tick().await;
-                let path = "scematica-builder-mode.json";
-                if !std::path::Path::new(path).exists() {
-                    // Cleared from dashboard → reset to defaults
+                const PATH: &str = "scematica-builder-mode.json";
+                if !std::path::Path::new(PATH).exists() {
                     if !last_label.is_empty() {
                         sniper_bm.wallet_target_lamports_override.store(0, Ordering::Relaxed);
                         sniper_bm.progressive_scaling.store(false, Ordering::Relaxed);
-                        info!("🏗️  Builder mode cleared — using config.wallet_target_sol");
+                        sniper_bm.moon_chase.store(false, Ordering::Relaxed);
+                        {
+                            let mut lp = sniper_bm.live_params.write();
+                            lp.amount_multiplier = 1.0;
+                        }
+                        info!("🏗️  Builder mode cleared — config.wallet_target_sol restored");
                         last_label.clear();
+                        last_mult = 0.0;
                     }
                     continue;
                 }
-                let Ok(data) = std::fs::read_to_string(path) else { continue };
+                let Ok(data) = std::fs::read_to_string(PATH) else { continue };
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
-                let label = v["mode"].as_str().unwrap_or("").to_string();
-                if label == last_label { continue; }
-                last_label = label.clone();
+                let label      = v["mode"].as_str().unwrap_or("").to_string();
                 let target_sol = v["target_sol"].as_f64().unwrap_or(0.0);
-                let progressive = v["progressive_scaling"].as_bool().unwrap_or(false);
-                let target_lam = (target_sol * 1e9) as u64;
-                sniper_bm.wallet_target_lamports_override.store(target_lam, Ordering::Relaxed);
-                sniper_bm.progressive_scaling.store(progressive, Ordering::Relaxed);
-                info!(
-                    "🏗️  Builder mode → {}  |  target {:.2} SOL  |  progressive: {}",
-                    label, target_sol, if progressive { "ON" } else { "OFF" },
-                );
+
+                // On label change: set target and log mode switch
+                if label != last_label {
+                    let target_lam = (target_sol * 1e9) as u64;
+                    sniper_bm.wallet_target_lamports_override.store(target_lam, Ordering::Relaxed);
+                    // Both Builder and SuperBuilder use live_params for sizing,
+                    // not the buy() progressive scaler (which is additive and
+                    // would double-multiply with live_params.amount_multiplier).
+                    sniper_bm.progressive_scaling.store(false, Ordering::Relaxed);
+                    info!("🏗️  Builder mode → {} | target {:.2} SOL", label, target_sol);
+                    last_label = label.clone();
+                }
+
+                // Every tick: recompute optimal live_params from current progress
+                let wallet_sol  = sniper_bm.approx_wallet_sol();
+                let base_tp     = sniper_bm.base_take_profit_pct();
+                let base_sl     = sniper_bm.base_stop_loss_pct();
+                let progress    = if target_sol > 0.0 {
+                    (wallet_sol / target_sol).clamp(0.0, 1.0)
+                } else { 0.0 };
+
+                let (mult, tp, sl, moon_on) = match label.as_str() {
+                    "builder" => {
+                        // Geometric Compounding — 1 SOL target
+                        let m = (1.5 + 2.0 * progress.powf(0.65)).clamp(1.5, 3.5);
+                        let t = base_tp * (1.5 - 0.5 * progress).max(1.0);
+                        let s = base_sl * (1.2 - 0.2 * progress);
+                        (m, t, s, false)
+                    }
+                    "super_builder" => {
+                        // Parabolic Compounding — 3 SOL target
+                        let m = (2.0 + 6.0 * progress.powf(0.35)).clamp(2.0, 8.0);
+                        let t = base_tp * (2.0 - progress).max(1.0);
+                        let s = base_sl * 1.4;
+                        // Auto moon-chase: on when early, off when protecting gains
+                        let mc = progress < 0.25;
+                        (m, t, s, mc)
+                    }
+                    "growth" => {
+                        // Growth — conservative 0.2 SOL target, mild scaling
+                        let m = (1.0 + 1.0 * progress.powf(0.8)).clamp(1.0, 2.0);
+                        let t = base_tp;
+                        let s = base_sl;
+                        (m, t, s, false)
+                    }
+                    _ => continue,
+                };
+
+                // Only log + write when multiplier changed by >5% (avoids log spam)
+                if (mult - last_mult).abs() / last_mult.max(1.0) > 0.05 || last_mult == 0.0 {
+                    info!(
+                        "🏗️  {} | progress {:.1}% | size {:.2}× | TP {:.0}% | SL {:.1}% | moon_chase {}",
+                        label, progress * 100.0, mult, tp, sl,
+                        if moon_on { "ON" } else { "OFF" }
+                    );
+                    last_mult = mult;
+                }
+
+                sniper_bm.moon_chase.store(moon_on, Ordering::Relaxed);
+                {
+                    let mut lp = sniper_bm.live_params.write();
+                    lp.amount_multiplier = mult;
+                    lp.take_profit_pct   = tp;
+                    lp.stop_loss_pct     = sl;
+                }
             }
         });
     }
@@ -588,9 +671,14 @@ async fn main() -> Result<()> {
                     if is_drawdown_trigger && no_open && recovered {
                         sniper_dd.sell_mode.store(false, Ordering::Relaxed);
                         let _ = std::fs::remove_file("scematica-sell-mode.json");
+                        // Reset the drawdown baseline to the current wallet balance so the
+                        // next drawdown measurement starts from now, not from the original
+                        // session start. Without this reset the guard re-trips immediately
+                        // on the next buy (wallet drops briefly below an already-low baseline).
+                        sniper_dd.session_start_lamports.store(current, Ordering::Relaxed);
                         info!(
-                            "🟢 Drawdown recovered ({:.1}% < {:.1}% threshold) and no open positions — sell mode lifted",
-                            drawdown_pct, max_dd,
+                            "🟢 Drawdown recovered ({:.1}% < {:.1}% threshold) — baseline reset to {:.4} SOL, sell mode lifted",
+                            drawdown_pct, max_dd, current as f64 / 1e9,
                         );
                     }
                 }

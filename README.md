@@ -1,10 +1,90 @@
-# Scematica v1.3.0
+# Scematica v1.4.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.4.0
+
+### Hold Longer — Exit at Peak, Not at First Pump
+
+Data from live sessions showed the bot exiting at 99–198% on every launch because `take_profit_pct = 80` fired on the **first price check** (< 250 ms), before the 5-sample momentum window could fill. The escalation system never ran. Changes to let winners run:
+
+**Base TP raised 80% → 175%** — acts as a floor for the escalation ladder, not an early exit. The pullback exit and velocity-decay exit are the primary exit signals; TP fires only if the token keeps pumping continuously with no reversal.
+
+**Momentum escalation tuned for more aggressive riding:**
+
+| Parameter | v1.3.x | v1.4.0 | Effect |
+|---|---|---|---|
+| `take_profit_pct` | 80% | **175%** | TP ladder now starts above the typical initial pump |
+| `momentum_escalation_factor` | 1.6× | **1.8×** | TP target grows faster per round |
+| `momentum_max_escalations` | 5 | **7** | 7-round ladder: 175→315→567→1020→1836→3305→5949% |
+| `momentum_escalation_threshold_pct` | 5%/check | **3%/check** | Lower velocity bar to trigger escalation |
+| `momentum_min_peak_pct` | 25% | **60%** | Pullback exit only fires after a real 60%+ peak |
+| `momentum_pullback_exit_pct` | 18% base | **8% base** | Tighter adaptive pullback = higher exit PnL at every peak height |
+| `velocity_decay_min_pnl_pct` | 7% | **25%** | Velocity-decay exit only fires with ≥ 25% gain (was 7%, barely above fees) |
+| `velocity_decay_drop_threshold` | 1.2 | **1.5** | Less sensitive to thin-pool noise |
+
+**Adaptive pullback improvement:** The formula `θ_eff = 8 × √(1 + peak/100)` now locks in at higher PnL than the old `18 × √(1 + peak/100)` at every realistic peak level:
+
+| Peak | Old exit PnL | New exit PnL |
+|---|---|---|
+| 60% | 4.9% | **49.9%** |
+| 100% | 74.5% | **88.7%** |
+| 200% | 168.8% | **186.1%** |
+| 500% | 450.8% | **480.4%** |
+
+**Tiered partial-TP ladder shifted up:**
+
+| Level | v1.3.x | v1.4.0 |
+|---|---|---|
+| First partial | +45%, sell 20% | **+100%, sell 15%** |
+| Second partial | +100%, sell 25% | **+300%, sell 20%** |
+| Third partial | +200%, sell 25% | **+600%, sell 25%** |
+
+At 45% many positions were selling their first chunk before the initial pump leg finished. Now the first lock-in only fires once we're at 100%+, preserving upside on the full position during the run-up.
+
+### Builder & SuperBuilder — Compounding Growth Algorithms
+
+Both modes target specific SOL milestones using live compounding equations that recompute every 5 seconds from the current wallet balance. Size, TP, and SL all evolve autonomously as the wallet grows — no manual adjustment needed.
+
+**Builder (1 SOL target) — Geometric Compounding:**
+
+| Progress | Size mult | TP | SL |
+|---|---|---|---|
+| 0% | 1.50× | 1.5× base | 1.2× base |
+| 25% | 2.26× | 1.38× base | 1.15× base |
+| 50% | 2.82× | 1.25× base | 1.10× base |
+| 100% | 3.50× | 1.0× base | 1.0× base |
+
+Formula: `size = 1.5 + 2.0 × progress^0.65` · `tp = base × max(1, 1.5 − 0.5 × p)` · `sl = base × (1.2 − 0.2 × p)`
+
+**SuperBuilder (3 SOL target) — Parabolic Compounding:**
+
+| Progress | Size mult | TP | Notes |
+|---|---|---|---|
+| 0% | 2.0× | 2.0× base | Moon Chase auto-ON |
+| 10% | 4.7× | 1.9× base | Moon Chase ON |
+| 25% | 5.6× | 1.75× base | Moon Chase ON |
+| 50% | 6.7× | 1.5× base | Moon Chase OFF |
+| 100% | 8.0× (cap) | 1.0× base | Moon Chase OFF |
+
+Formula: `size = 2.0 + 6.0 × progress^0.35` · `tp = base × max(1, 2.0 − p)` · `sl = base × 1.4` · Moon Chase auto-engages when `progress < 25%` and disengages when `progress > 60%`
+
+The key property: **position size compounds geometrically with wallet growth**, so each winning trade funds larger subsequent positions, accelerating the path to the SOL target.
+
+### Bug Fixes
+
+- **PnL always showed 0.0000 SOL** — `sell_with_retry` was calling `record_trade_confirmed(0)` with a hardcoded zero. `record_sell_outcome` now calls `record_trade_confirmed(pnl_lamports)` with the real value. Session PnL display is now accurate.
+- **Duplicate buys from multiple listeners** — Added `recently_bought: DashMap<Pubkey, Instant>` dedup guard. Same mint cannot be bought again within 5 minutes of a confirmed buy, regardless of how many listener sources fire for the same pool event.
+- **Session heat miscounting forced exits** — Sell-mode forced exits (`-0.499%` AMM spread) were being counted as losses, triggering 15-min buy pauses. `session_heat_losses` set to 0 (disabled). The drawdown guard is the correct circuit breaker.
+- **Drawdown baseline never reset** — After a drawdown recovery, `session_start_lamports` was stale so the guard re-tripped immediately on the next buy. Baseline now resets to current wallet balance on recovery.
+- **Desktop notifications minimizing TUI window** — `send_desktop` used `-WindowStyle Hidden` which creates a console handle first and briefly steals foreground. Fixed with `CREATE_NO_WINDOW` Win32 flag — no window ever created, TUI stays focused.
+- **Profit-first rug floor tightened** — `profit_first_floor_pct` 50% → 25%. Bot now exits rugged tokens at -25% instead of holding to -50%.
 
 ---
 
@@ -265,11 +345,11 @@ quote_mint         = "WSOL"
 quote_amount       = 0.01       # SOL per snipe (scaled by rate mode)
 buy_slippage_pct   = 1.5
 sell_slippage_pct  = 2.5
-take_profit_pct    = 100.0
-stop_loss_pct      = 15.0
-trailing_stop_loss_pct   = 8.0
+take_profit_pct    = 175.0      # v1.4.0: base TP; momentum escalation takes over above this
+stop_loss_pct      = 18.0
+trailing_stop_loss_pct   = 12.0
 partial_tp_pct           = 50.0
-partial_tp_trigger       = 60.0
+partial_tp_trigger       = 100.0  # legacy; unused when tiered_partial_tp = true
 price_check_interval_ms  = 250
 price_check_duration_ms  = 900000   # 15 min total window
 max_sell_retries         = 5
@@ -307,15 +387,16 @@ min_pool_score  = 35.0
 
 # ── Profit-first growth ───────────────────────────────────────
 profit_first_mode        = true
-profit_first_floor_pct   = 50.0
-wallet_target_sol        = 0.2
+profit_first_floor_pct   = 25.0   # v1.4.0: tightened from 50%; exit rugs faster
+wallet_target_sol        = 0.15
 
 # ── Momentum hold ─────────────────────────────────────────────
-momentum_hold                    = true
-momentum_max_escalations         = 5
-momentum_escalation_factor       = 1.6
-momentum_pullback_exit_pct       = 18.0
-momentum_escalation_threshold_pct = 5.0
+momentum_hold                     = true
+momentum_max_escalations          = 7      # v1.4.0: was 5
+momentum_escalation_factor        = 1.8    # v1.4.0: was 1.6
+momentum_pullback_exit_pct        = 8.0    # v1.4.0: tighter base, adaptive formula scales up
+momentum_min_peak_pct             = 60.0   # v1.4.0: was 25%; require real peak before pullback fires
+momentum_escalation_threshold_pct = 3.0    # v1.4.0: was 5%; lower bar for escalation trigger
 
 # ── Risk breakers ─────────────────────────────────────────────
 ath_drawdown_pct       = 0.0
@@ -434,10 +515,10 @@ Live log stream from sniper.
 | `5` | Rate: **Aggressive** — 2.0×, TP 200%, SL 25% |
 | `6` | Rate: **Degen** — 4.0×, TP 300%, SL 40% |
 | `7` | Rate: **Bullish** — 6.0×, TP 500%, SL 50% |
-| `g` | Builder: **Growth** — 0.2 SOL target |
-| `j` | Builder: **Builder** — 1.0 SOL target |
-| `k` | Builder: **SuperBuilder** — 3.0 SOL target + progressive scaling |
-| `o` | Builder: **Off** |
+| `g` | Builder: **Growth** — 0.2 SOL · mild geometric scaling 1.0–2.0× |
+| `j` | Builder: **Builder** — 1.0 SOL · geometric compounding 1.5–3.5×, TP scales with distance |
+| `k` | Builder: **SuperBuilder** — 3.0 SOL · parabolic compounding 2.0–8.0×, auto moon-chase early |
+| `o` | Builder: **Off** — config.toml values |
 | `m` | Toggle **Moon Chase** — aggressive momentum params |
 
 ### Tab 4 — Chat

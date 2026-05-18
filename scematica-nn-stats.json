@@ -1,1 +1,0 @@
-{"step_count":362,"train_steps":59,"epsilon":0.8343975887598746,"replay_size":109,"total_reward":30648.8207537689,"avg_loss":545236.3914409914,"target_updates":0,"ready_to_advise":false,"last_action":null,"last_q_values":[0.0,0.0,0.0,0.0,0.0]}

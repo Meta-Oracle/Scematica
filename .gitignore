@@ -1,32 +1,56 @@
-# Build artifacts
+# ── Build artifacts ──────────────────────────────────────────────────────────
 /target
+target/
 debug/
 release/
-*.exe
 *.pdb
 
-# Secrets and environment
+# ── Secrets / environment ─────────────────────────────────────────────────────
 .env
 .env.*
 *.json.key
+# Never commit wallet or program keypairs from target/deploy
+programs/*/target/
 
-# Runtime-generated data files
-scematica-metrics.json
-scematica-trades.jsonl
-scematica-strategy.json
-pools/
+# ── Runtime IPC and state files (written/rewritten on every session) ──────────
+# These are file-based IPC between sniper and dashboard processes.
+# They must not be tracked — they change on every run and contain no source history.
+scematica-*.json
+scematica-*.jsonl
+pool-cache.json
 
-# Operational config (may contain live addresses / paths)
+# ── Operational config (may contain live addresses / paths) ───────────────────
 snipe-list.txt
 
-# IDE / tool directories
+# ── Log files ─────────────────────────────────────────────────────────────────
+*.log
+
+# ── Process lock files ────────────────────────────────────────────────────────
+scematica-*.lock
+
+# ── Backup files (auto-created by filter-stats / reputation rollover) ─────────
+*.bak-*
+*.bak
+
+# ── JSONL backups (trade history backups, not the live append-only log) ───────
+*.jsonl.bak-*
+
+# ── Claude Code internal directories ──────────────────────────────────────────
+.claude/
+
+# ── IDE / tool directories ────────────────────────────────────────────────────
 .kiro/
 .vscode/
 .idea/
 *.iml
 
-# Shell scripts not needed in repo
+# ── Shell / test scripts not needed in repo ───────────────────────────────────
 stress_test.sh
+*.sh
 
-# Misc
+# ── OS-generated files ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md

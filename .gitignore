@@ -52,5 +52,11 @@ stress_test.sh
 .DS_Store
 Thumbs.db
 
+# ── Web app build artifacts ───────────────────────────────────────────────────
+web/.next/
+web/node_modules/
+web/.env.local
+web/out/
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md

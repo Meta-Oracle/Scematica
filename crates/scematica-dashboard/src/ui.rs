@@ -256,58 +256,86 @@ fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let rows: Vec<Row> = sorted
         .iter()
         .map(|p| {
-            let pnl = p.pnl_pct();
-            let peak = p.peak_pnl_pct();
-            let age = p.age_secs();
-            let entry_sol = p.entry_sol();
+            let pnl   = p.pnl_pct();
+            let peak  = p.peak_pnl_pct();
+            let age   = p.age_secs();
             let value_sol = p.value_sol();
             let staleness = now_unix.saturating_sub(p.last_check_unix_secs);
 
-            // PnL color thresholds: tuned so partial-TP territory (≥30 %) shows
-            // bright green, normal positive shows green, near-zero shows yellow,
-            // mild loss shows orange (light red), serious loss shows red.
-            let pnl_color = if pnl >= 30.0       { Color::LightGreen }
-                       else if pnl >= 5.0        { Color::Green }
+            let pnl_color = if pnl >= 45.0       { Color::LightGreen }
+                       else if pnl >= 10.0       { Color::Green }
                        else if pnl > -5.0        { Color::Yellow }
                        else if pnl > -25.0       { Color::LightRed }
                        else                      { Color::Red };
 
-            // Status column conveys WHY the position is in the state it's in.
-            // Order matters: escalation wins over momentum, partial-TP done
-            // overrides plain monitoring, staleness flag wins over all.
-            let status = if staleness > 5 {
-                "⏱ stale".to_string()
-            } else if p.escalations > 0 {
-                format!("🚀x{}", p.escalations)
-            } else if peak >= 30.0 {
-                "📈 riding".to_string()
-            } else if pnl > 5.0 {
-                "✓ green".to_string()
-            } else if pnl > -5.0 {
-                "· watch".to_string()
-            } else {
-                "▼ down".to_string()
+            // Decline streak indicator — prefix on status
+            let streak_pfx = match p.decline_streak {
+                3..=4 => "▼ ",
+                5..   => "▼▼ ",
+                _     => "",
             };
 
-            // Age formatting: <60 s in seconds, <60 min in minutes, else hours.
+            // Status: escalation > stale > momentum > normal
+            let status_body = if staleness > 5 {
+                format!("stale {}s", staleness)
+            } else if p.escalations > 0 {
+                format!("esc x{}", p.escalations)
+            } else if peak >= 45.0 {
+                "riding".to_string()
+            } else if pnl > 10.0 {
+                "green".to_string()
+            } else if pnl > -5.0 {
+                "watch".to_string()
+            } else {
+                "down".to_string()
+            };
+            let status = format!("{}{}", streak_pfx, status_body);
+            let status_color = if staleness > 5 { Color::DarkGray }
+                          else if p.decline_streak >= 5 { Color::Red }
+                          else if p.decline_streak >= 3 { Color::LightRed }
+                          else { pnl_color };
+
+            // Progress bar: SL ←|→ TP, 8 chars wide
+            let prog = p.progress_to_tp();
+            let bar_width: usize = 8;
+            let filled = ((prog * bar_width as f64).round() as usize).min(bar_width);
+            let bar: String = (0..bar_width).map(|i| {
+                if i < filled { '█' } else { '░' }
+            }).collect();
+            let bar_color = if prog >= 0.85 { Color::LightGreen }
+                       else if prog >= 0.5  { Color::Green }
+                       else if prog >= 0.25 { Color::Yellow }
+                       else                 { Color::Red };
+
+            // Age: <60 s → seconds, <60 min → Xm Ys, else Xh Ym
             let age_str = if age < 60 { format!("{}s", age) }
-                     else if age < 3600 { format!("{}m{}s", age / 60, age % 60) }
-                     else { format!("{}h{}m", age / 3600, (age % 3600) / 60) };
+                     else if age < 3600 { format!("{}m{}s", age/60, age%60) }
+                     else { format!("{}h{}m", age/3600, (age%3600)/60) };
+
+            // SL column: show as % from entry (negative = loss floor)
+            let sl_pct = p.current_sl_pct;
+            let sl_str = format!("{:+.0}%", sl_pct);
+            let sl_color = if sl_pct >= 0.0 { Color::Green }
+                      else if sl_pct > -10.0 { Color::Yellow }
+                      else { Color::LightRed };
 
             Row::new(vec![
                 Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
                 Cell::from(age_str),
-                Cell::from(format!("{:.4}", entry_sol))
-                    .style(Style::default().fg(Color::DarkGray)),
                 Cell::from(format!("{:.4}", value_sol))
                     .style(Style::default().fg(pnl_color)),
                 Cell::from(format!("{:+.1}%", pnl))
                     .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
                 Cell::from(format!("{:+.1}%", peak))
                     .style(Style::default().fg(Color::Cyan)),
+                Cell::from(sl_str)
+                    .style(Style::default().fg(sl_color)),
                 Cell::from(format!("{:.0}%", p.dynamic_tp_pct))
                     .style(Style::default().fg(Color::Magenta)),
-                Cell::from(status),
+                Cell::from(bar)
+                    .style(Style::default().fg(bar_color)),
+                Cell::from(status)
+                    .style(Style::default().fg(status_color)),
             ])
         })
         .collect();
@@ -315,23 +343,25 @@ fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let widths = [
         Constraint::Length(9),  // Mint
         Constraint::Length(7),  // Age
-        Constraint::Length(7),  // Entry SOL
-        Constraint::Length(7),  // Value SOL
+        Constraint::Length(8),  // Value SOL
         Constraint::Length(8),  // PnL %
         Constraint::Length(8),  // Peak %
+        Constraint::Length(6),  // SL floor %
         Constraint::Length(6),  // TP target %
-        Constraint::Length(10), // Status
+        Constraint::Length(10), // Progress bar
+        Constraint::Min(8),     // Status
     ];
     let table = Table::new(rows, widths)
         .header(
             Row::new(vec![
                 Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("Age").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Entry").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("Value").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("PnL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("Peak").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("SL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("TP").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
+                Cell::from("Progress").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
                 Cell::from("Status").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
             ]),
         )

@@ -32,8 +32,7 @@ pub struct TradeEntry {
 }
 
 /// Live position snapshot — written by the sniper's live-position registry
-/// every 1 s. Mirrors `scematica_sniper::sniper::LivePositionSnapshot` so the
-/// dashboard can deserialise without the heavy cross-crate dep.
+/// every ~250 ms. Mirrors `scematica_sniper::sniper::LivePositionSnapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LivePosition {
     pub mint: String,
@@ -44,6 +43,14 @@ pub struct LivePosition {
     pub dynamic_tp_pct: f64,
     pub escalations: u32,
     pub last_check_unix_secs: i64,
+    #[serde(default)]
+    pub current_sl_lamports: u64,
+    /// SL level as % from entry (negative = loss floor, 0 = breakeven)
+    #[serde(default)]
+    pub current_sl_pct: f64,
+    /// Consecutive declining price-check ticks
+    #[serde(default)]
+    pub decline_streak: u32,
 }
 
 impl LivePosition {
@@ -64,6 +71,16 @@ impl LivePosition {
     }
     pub fn entry_sol(&self) -> f64  { self.entry_lamports as f64 / 1e9 }
     pub fn value_sol(&self) -> f64  { self.current_value_lamports as f64 / 1e9 }
+    pub fn sl_sol(&self) -> f64     { self.current_sl_lamports as f64 / 1e9 }
+    /// 0.0–1.0: how far current value sits between SL (0) and TP (1)
+    pub fn progress_to_tp(&self) -> f64 {
+        if self.entry_lamports == 0 { return 0.5; }
+        let sl = self.current_sl_lamports as f64;
+        let tp = self.entry_lamports as f64 * (1.0 + self.dynamic_tp_pct / 100.0);
+        let cur = self.current_value_lamports as f64;
+        if tp <= sl { return 0.5; }
+        ((cur - sl) / (tp - sl)).clamp(0.0, 1.0)
+    }
 }
 
 /// Pool radar entry — written by the sniper when a pool is evaluated

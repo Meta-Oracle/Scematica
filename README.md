@@ -1,10 +1,33 @@
-# Scematica v1.2.0
+# Scematica v1.3.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.3.0
+
+### Multi-Position Trading — Unlimited Concurrent Positions
+
+- **Lock architecture rewrite** — the `ProcessingSlot` buy lock previously handed off to the sell monitor on buy confirmation, blocking all new buys for the entire monitoring window (up to 90 minutes per position). The lock now releases immediately after the buy transaction confirms (~2 s), so the next qualifying pool can be sniped without waiting for any open position to close.
+- **Unlimited concurrent positions** (`max_concurrent_positions = 0`) — the bot buys into every qualifying pool without a cap. The only serialisation is a brief buy-tx lock preventing two purchases from racing on the same WSOL ATA simultaneously.
+- **Parallel sell execution** — sell semaphore raised from 1 → 5 concurrent sell transactions. With many open positions all hitting stop-loss simultaneously (e.g. dump mode), exits now run 5-at-a-time rather than fully serialised, cutting mass-exit latency from minutes to seconds.
+- **Accurate metrics** — `record_trade_attempt()` was being called before the lock check, inflating the "failed buy" counter with pools that were correctly skipped (never actually attempted). Counter now increments only after the lock is secured and a real transaction is submitted.
+
+### Position Display — Real-Time Stats
+
+New columns replace the static Entry SOL field:
+
+| Column | Description |
+|---|---|
+| **SL%** | Live stop-loss floor as % from entry. Updates every 250 ms with trailing stop, profit-lock, and tiered-TP adjustments. Green = above breakeven, yellow = small loss floor, red = deep loss floor. |
+| **Progress** | 8-char `░░░███░░` bar: left edge = SL, right edge = TP, fill = current position. Instantly shows how close to exit in either direction. |
+| **Status** | Adds `▼ ` prefix on 3-tick decline streak, `▼▼ ` on 5-tick (rug warning), color-coded red. |
+
+The `LivePositionSnapshot` now carries `current_sl_lamports`, `current_sl_pct`, and `decline_streak` — all flushed to the positions file every price-check tick.
 
 ---
 
@@ -254,7 +277,7 @@ max_buy_retries          = 3
 auto_sell                = true
 one_token_at_a_time      = true
 max_buys                 = 0        # 0 = unlimited
-max_concurrent_positions = 3
+max_concurrent_positions = 0       # 0 = unlimited; set e.g. 5 to cap open positions
 daily_loss_limit_sol     = 0.05
 blacklist_path           = "blacklist.txt"
 

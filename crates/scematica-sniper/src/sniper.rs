@@ -70,11 +70,7 @@ impl<'a> ProcessingSlot<'a> {
         }
     }
 
-    /// Hand the slot off — the sell monitor will release it when the position closes.
-    /// After calling this, the Drop impl becomes a no-op.
-    fn release_to_sell_monitor(mut self) {
-        self.armed = false;
-    }
+
 }
 
 impl<'a> Drop for ProcessingSlot<'a> {
@@ -217,6 +213,12 @@ pub struct LivePositionSnapshot {
     pub escalations: u32,
     /// Unix seconds of last price-check update — staleness indicator
     pub last_check_unix_secs: i64,
+    /// Current active stop-loss level in lamports (reflects trailing stop + profit lock)
+    pub current_sl_lamports: u64,
+    /// Current SL as % from entry (negative = loss floor, positive = breakeven or above)
+    pub current_sl_pct: f64,
+    /// Consecutive declining price-check ticks (≥3 triggers dump-detection sell)
+    pub decline_streak: u32,
 }
 
 impl Sniper {
@@ -303,7 +305,7 @@ impl Sniper {
             dump_mode: Arc::new(AtomicBool::new(false)),
             high_speed_mode: Arc::new(AtomicBool::new(false)),
             skip_log_throttle_secs: Arc::new(AtomicU64::new(0)),
-            sell_sem: Arc::new(tokio::sync::Semaphore::new(1)),
+            sell_sem: Arc::new(tokio::sync::Semaphore::new(5)),
             buy_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             open_positions: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             consecutive_losses: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -969,10 +971,8 @@ impl Sniper {
             mint = %pool.base_mint,
             amount_sol = effective_quote_amount_raw as f64 / 1e9,
             quote = %self.config.quote_mint,
-            "Executing buy"
+            "Buy evaluation started"
         );
-
-        self.metrics.record_trade_attempt();
 
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
@@ -1056,20 +1056,31 @@ impl Sniper {
             }
         };
 
-        // High-speed bypasses the one_token_at_a_time gate so multiple snipes can
-        // race in parallel. Otherwise we hold the lock for the duration of the buy.
+        // One-buy-at-a-time gate: prevents two buy TRANSACTIONS from racing on the
+        // same WSOL ATA simultaneously. Released as soon as the buy tx confirms (NOT
+        // held for the duration of sell monitoring — see release below).
+        // High-speed mode bypasses so multiple pools can snipe in parallel.
         let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
         let slot = if self.config.one_token_at_a_time && !high_speed {
             match ProcessingSlot::try_acquire(&self.processing_lock) {
                 Some(g) => Some(g),
                 None => {
-                    debug!(mint = %pool.base_mint, "one_token_at_a_time: slot taken, skipping buy");
+                    debug!(mint = %pool.base_mint, "one_token_at_a_time: buy tx in flight, skipping");
                     return Ok(());
                 }
             }
         } else {
             None
         };
+
+        // Count this as a real attempt only after the lock is secured —
+        // pools skipped by try_acquire() above were never attempted.
+        self.metrics.record_trade_attempt();
+        info!(
+            mint = %pool.base_mint,
+            amount_sol = effective_quote_amount_raw as f64 / 1e9,
+            "Executing buy"
+        );
 
         // Build the final instruction list:
         // 1. Create WSOL ATA (idempotent)
@@ -1200,13 +1211,13 @@ impl Sniper {
                         }
                     }
 
-                    // Schedule auto-sell — the monitor task owns the lock release.
-                    // If auto_sell is disabled the slot is released by ProcessingSlot::Drop
-                    // when this function returns.
+                    // Release the buy lock immediately so the next pool can be
+                    // evaluated without waiting for this position to close.
+                    // Concurrent position count is gated by max_concurrent_positions
+                    // (checked before instruction-building) via open_positions atomic.
+                    drop(slot);
+
                     if self.config.auto_sell {
-                        // Hand off the slot to the spawned sell monitor; the monitor task
-                        // is responsible for storing(false) when the position closes.
-                        if let Some(s) = slot { s.release_to_sell_monitor(); }
                         let pool_clone = pool.clone();
                         // CRITICAL: pass the EFFECTIVE entry amount (post all
                         // multipliers) to the SellMonitor — not the config baseline.
@@ -1350,9 +1361,6 @@ impl Sniper {
             tokio::time::sleep(interval).await;
         }
 
-        if self.config.one_token_at_a_time {
-            self.processing_lock.store(false, Ordering::Relaxed);
-        }
     }
 
     #[allow(dead_code)]
@@ -1755,7 +1763,6 @@ impl Sniper {
             rpc: self.rpc.clone(),
             executor: self.executor.clone(),
             metrics: self.metrics.clone(),
-            processing_lock: self.processing_lock.clone(),
             quote_mint: self.quote_mint,
             quote_amount_raw: self.quote_amount_raw,
             entry_amount_raw,
@@ -1791,12 +1798,12 @@ struct SellMonitor {
     rpc: Arc<RpcClient>,
     executor: Arc<dyn TxExecutor>,
     metrics: Arc<BotMetrics>,
-    processing_lock: Arc<std::sync::atomic::AtomicBool>,
     quote_mint: Pubkey,
     /// Static config baseline — kept only for back-compat with paths that don't
     /// know the actual entry (auto_dump on pre-existing wallet positions).
     /// Inside monitor_and_sell, ALWAYS use `entry_amount_raw` instead so PnL/
     /// TP/SL math reflects what was actually spent on THIS position.
+    #[allow(dead_code)]
     quote_amount_raw: u64,
     /// Actual lamports spent on this specific buy (post all multipliers).
     /// This is the correct baseline for PnL %, TP target, SL trigger, and the
@@ -1814,6 +1821,7 @@ struct SellMonitor {
     cooldown_until_ms: Arc<std::sync::atomic::AtomicU64>,
     daily_pnl_lamports: Arc<parking_lot::Mutex<i64>>,
     alerts: Arc<AlertManager>,
+    #[allow(dead_code)]
     pool_cache: crate::cache::PoolCache,
     deployer_ledger: Arc<Mutex<DeployerLedger>>,
     grief_breaker: Option<Arc<GriefBreaker>>,
@@ -1844,6 +1852,8 @@ impl SellMonitor {
         // immediately. We update the entry on every price check below and
         // remove it when the monitor exits (any branch).
         let pos_key = pool.base_mint.to_string();
+        let initial_sl_lam = (self.entry_amount_raw as f64
+            * (1.0 - self.live_params.read().stop_loss_pct / 100.0)) as u64;
         self.live_positions.insert(pos_key.clone(), LivePositionSnapshot {
             mint: pos_key.clone(),
             entry_lamports: self.entry_amount_raw,
@@ -1853,6 +1863,9 @@ impl SellMonitor {
             dynamic_tp_pct: self.live_params.read().take_profit_pct,
             escalations: 0,
             last_check_unix_secs: entry_unix_secs,
+            current_sl_lamports: initial_sl_lam,
+            current_sl_pct: -(self.live_params.read().stop_loss_pct),
+            decline_streak: 0,
         });
         // RAII guard: ensure the position is removed from the registry no matter
         // which branch of monitor_and_sell exits the function.
@@ -2315,14 +2328,19 @@ impl SellMonitor {
                         }
 
                         // Update the live-position registry so the dashboard sees
-                        // current value / peak / dynamic TP / escalation count without
-                        // needing its own RPC reads. One tiny atomic write per check.
+                        // current value / peak / dynamic TP / SL / decline streak
+                        // without needing its own RPC reads. One tiny write per check.
                         if let Some(mut entry) = self.live_positions.get_mut(&pos_key) {
                             entry.current_value_lamports = current_value;
                             entry.peak_value_lamports    = peak_value;
                             entry.dynamic_tp_pct         = dynamic_tp_pct;
                             entry.escalations            = escalation_count;
                             entry.last_check_unix_secs   = chrono::Utc::now().timestamp();
+                            entry.current_sl_lamports    = stop_loss_amount;
+                            entry.current_sl_pct         = (stop_loss_amount as f64
+                                - self.entry_amount_raw as f64)
+                                / self.entry_amount_raw as f64 * 100.0;
+                            entry.decline_streak         = decline_streak;
                         }
 
                         prev_value = current_value;
@@ -2555,9 +2573,6 @@ impl SellMonitor {
             } else {
                 tracing::debug!("All positions closed (sell_mode external — not auto-resetting)");
             }
-        }
-        if self.config.one_token_at_a_time {
-            self.processing_lock.store(false, Ordering::Relaxed);
         }
     }
 

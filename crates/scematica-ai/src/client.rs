@@ -30,6 +30,8 @@ impl AiClient {
             AiProvider::OpenRouter => std::env::var("OPENROUTER_API_KEY")
                 .context("OPENROUTER_API_KEY not set")?,
             AiProvider::Ollama => String::new(),
+            AiProvider::Cerebras => std::env::var("CEREBRAS_API_KEY")
+                .context("CEREBRAS_API_KEY not set")?,
         };
 
         let model = std::env::var("AI_MODEL")
@@ -307,6 +309,12 @@ impl AiClient {
         .is_ok()
     }
 
+    /// Override the model used by this client (builder pattern).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
     pub fn provider_name(&self) -> &str {
         match self.provider {
             AiProvider::Claude => "Anthropic Claude",
@@ -314,6 +322,7 @@ impl AiClient {
             AiProvider::Grok => "xAI Grok",
             AiProvider::OpenRouter => "OpenRouter",
             AiProvider::Ollama => "Ollama (local)",
+            AiProvider::Cerebras => "Cerebras",
         }
     }
 }

@@ -38,9 +38,51 @@ use crate::{
 use scematica_core::metrics::{TradeEvent, TRADES_FILE};
 use scematica_core::metrics::{StrategySnapshot, STRATEGY_FILE};
 
+const MINT_COOLDOWN_FILE: &str = "scematica-mint-cooldown.json";
+
 /// Raydium constant-product AMM output with 0.25% fee.
 /// out = (reserve_out * amount_in * 9975) / (reserve_in * 10000 + amount_in * 9975)
 #[inline]
+
+/// Load the persistent mint cooldown map from disk. Returns empty map on any error.
+fn load_mint_cooldown() -> DashMap<Pubkey, u64> {
+    let map: DashMap<Pubkey, u64> = DashMap::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // 30 minutes — entries older than this are irrelevant even if we load them
+    const MAX_AGE_SECS: u64 = 1800;
+
+    let Ok(data) = std::fs::read_to_string(MINT_COOLDOWN_FILE) else { return map; };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) else { return map; };
+    if let Some(obj) = json.as_object() {
+        for (mint_str, ts_val) in obj {
+            if let (Ok(pubkey), Some(ts)) = (mint_str.parse::<Pubkey>(), ts_val.as_u64()) {
+                if now.saturating_sub(ts) < MAX_AGE_SECS {
+                    map.insert(pubkey, ts);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Persist the mint cooldown map atomically to MINT_COOLDOWN_FILE.
+fn save_mint_cooldown(map: &DashMap<Pubkey, u64>) {
+    let obj: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|e| (e.key().to_string(), serde_json::Value::from(*e.value())))
+        .collect();
+    let json = serde_json::Value::Object(obj);
+    if let Ok(s) = serde_json::to_string(&json) {
+        let tmp = format!("{}.tmp", MINT_COOLDOWN_FILE);
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, MINT_COOLDOWN_FILE);
+        }
+    }
+}
+
 fn amm_out(amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
     let num = (reserve_out as u128) * (amount_in as u128) * 9975u128;
     let den = (reserve_in as u128) * 10000u128 + (amount_in as u128) * 9975u128;
@@ -195,10 +237,10 @@ pub struct Sniper {
     /// price check, removes on exit. A background flush task in main.rs writes
     /// this map to `scematica-positions.json` every 1s for the dashboard panel.
     pub live_positions: Arc<DashMap<String, LivePositionSnapshot>>,
-    /// Dedup guard: mint → Instant of last confirmed buy. Any pool event for the
-    /// same mint within 5 minutes is silently skipped. Prevents triple-buying the
-    /// same token when multiple listener sources fire for the same pool creation.
-    recently_bought: Arc<DashMap<Pubkey, std::time::Instant>>,
+    /// Dedup guard: mint → unix-second of last confirmed buy. Persisted to
+    /// `scematica-mint-cooldown.json` so the guard survives process restarts.
+    /// Any pool event for the same mint within `mint_cooldown_secs` is skipped.
+    recently_bought: Arc<DashMap<Pubkey, u64>>,
 }
 
 /// Per-position snapshot written to `scematica-positions.json`. Each running
@@ -239,12 +281,18 @@ impl Sniper {
         let quote_amount_raw = ui_to_raw(config.quote_amount, quote_decimals);
 
         let deployer_ledger_shared = Arc::new(Mutex::new(DeployerLedger::load()));
+        let ai_chain_arg = if config.ai_chain.enabled {
+            Some((&config.ai_chain, config.quote_amount))
+        } else {
+            None
+        };
         let filter_pipeline = FilterPipeline::new(
             config.filters.clone(),
             rpc.clone(),
             quote_amount_raw,
             &config.blacklist_path,
             Some(Arc::clone(&deployer_ledger_shared)),
+            ai_chain_arg,
         );
 
         let executor: Arc<dyn TxExecutor> = match config.quote_mint.as_str() {
@@ -330,7 +378,7 @@ impl Sniper {
             progressive_scaling: Arc::new(AtomicBool::new(false)),
             moon_chase: Arc::new(AtomicBool::new(false)),
             live_positions: Arc::new(DashMap::new()),
-            recently_bought: Arc::new(DashMap::new()),
+            recently_bought: Arc::new(load_mint_cooldown()),
         }
     }
 
@@ -744,8 +792,10 @@ impl Sniper {
             }
         }
 
-        // AI risk assessment (if available, and not high-speed)
-        if !high_speed { if let Some(ai) = &self.ai {
+        // AI risk assessment (legacy single-layer agent — skipped when the 3-layer
+        // AiChainFilter is enabled, because that filter already evaluated the pool
+        // with three independent LLMs before it reached this point).
+        if !high_speed && !self.config.ai_chain.enabled { if let Some(ai) = &self.ai {
             // Reuse the upfront vault fetch — no extra RPC round-trip here.
             let pool_size_sol = scematica_core::token::raw_to_ui(upfront_pool_size_lamports, pool.quote_decimals);
 
@@ -975,6 +1025,25 @@ impl Sniper {
             }
         }
 
+        // Runner mode: ultra-high-conviction pools (score ≥ 98 = ultra-fresh ≤7 s AND
+        // sweet-spot 6.5–28 SOL) bypass all multiplier stacking and buy at a flat
+        // runner_scale_in_sol. This is the profile that produces runners in live data;
+        // sizing up here beats compounding uncertain Kelly/quality multipliers.
+        // Only overrides upward — never shrinks below the effective quote from above.
+        if self.config.runner_mode && upfront_score >= 98.0 {
+            let runner_raw = (self.config.runner_scale_in_sol * 1_000_000_000.0) as u64;
+            if runner_raw > effective_quote_amount_raw {
+                info!(
+                    mint = %pool.base_mint,
+                    score = %format!("{:.0}", upfront_score),
+                    standard_sol = %format!("{:.4}", effective_quote_amount_raw as f64 / 1e9),
+                    runner_sol = self.config.runner_scale_in_sol,
+                    "🏃 Runner mode: max-conviction pool — upsizing to runner_scale_in_sol"
+                );
+                effective_quote_amount_raw = runner_raw;
+            }
+        }
+
         // Gas war: log escalation intent when pools arrive in rapid burst
         if self.config.gas_war_mode {
             let last_ms = self.gas_war_last_pool_ms.load(Ordering::Relaxed);
@@ -1000,18 +1069,30 @@ impl Sniper {
             "Buy evaluation started"
         );
 
-        // Dedup: multiple listener sources (pumpfun, whale_copy, raydium listener) can
-        // all fire for the same pool creation within milliseconds. Without this guard
-        // the bot buys the same mint 2-3× before the processing_lock catches it.
+        // Dedup + re-entry guard: persists across process restarts via
+        // scematica-mint-cooldown.json. Prevents triple-buying same mint from
+        // multiple listener events AND prevents re-entering the same losing pool
+        // after a restart (live data: same mints bought 3× in 26 min, all losses).
         {
-            if let Some(entry) = self.recently_bought.get(&pool.base_mint) {
-                if entry.elapsed().as_secs() < 300 {
-                    info!(mint = %pool.base_mint, "Dedup: mint purchased in last 5 min — skipping");
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let cooldown = self.config.mint_cooldown_secs;
+            if let Some(last_buy) = self.recently_bought.get(&pool.base_mint) {
+                if now_secs.saturating_sub(*last_buy) < cooldown {
+                    let secs_ago = now_secs.saturating_sub(*last_buy);
+                    info!(
+                        mint = %pool.base_mint,
+                        secs_ago,
+                        cooldown,
+                        "Dedup: mint purchased recently — skipping (persistent cooldown)"
+                    );
                     return Ok(());
                 }
             }
-            // Prune stale entries so the map doesn't grow unbounded during long sessions.
-            self.recently_bought.retain(|_, v| v.elapsed().as_secs() < 300);
+            // Prune expired entries
+            self.recently_bought.retain(|_, last| now_secs.saturating_sub(*last) < cooldown);
         }
 
         let wallet_pubkey = self.wallet.pubkey();
@@ -1199,9 +1280,13 @@ impl Sniper {
                         "Buy confirmed"
                     );
                     self.metrics.record_trade_confirmed(0);
-                    // Stamp the dedup guard so any subsequent pool events for this
-                    // mint are skipped for the next 5 minutes.
-                    self.recently_bought.insert(pool.base_mint, std::time::Instant::now());
+                    // Stamp the persistent dedup guard — skips re-entry for mint_cooldown_secs.
+                    let buy_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    self.recently_bought.insert(pool.base_mint, buy_ts);
+                    save_mint_cooldown(&self.recently_bought);
 
                     // Emit trade event for the dashboard
                     TradeEvent {
@@ -2214,6 +2299,28 @@ impl SellMonitor {
 
                         // Capture entry quote vault on the first valid check
                         if entry_q == 0 { entry_q = q; }
+
+                        // ── Pool drain guard: cumulative vault retention ──────────
+                        // Distinct from whale_exit (single-check drop); this fires
+                        // when the pool has drained to X% of its entry-time balance,
+                        // catching slow rugs that bypass the single-check threshold.
+                        if self.config.pool_drain_exit_pct > 0.0 && entry_q > 0 {
+                            let retention_pct = q as f64 / entry_q as f64 * 100.0;
+                            if retention_pct < self.config.pool_drain_exit_pct {
+                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_sol = pnl_lamports as f64 / 1e9;
+                                tracing::warn!(
+                                    mint = %pool.base_mint,
+                                    retention_pct = %format!("{:.1}%", retention_pct),
+                                    threshold_pct = self.config.pool_drain_exit_pct,
+                                    pnl_sol,
+                                    "🚨 Pool drain detected — exiting before liquidity disappears"
+                                );
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                break;
+                            }
+                        }
 
                         // ── Whale exit: single-check vault drop ─────────────────
                         if self.config.whale_exit_vault_drop_pct > 0.0 && prev_q > 0 && q < prev_q {

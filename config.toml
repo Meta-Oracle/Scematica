@@ -24,7 +24,7 @@ auto_sell = true
 auto_sell_delay_ms = 0
 take_profit_pct = 500.0   # Full exit target: 5x (500%). Tiered partials de-risk
                           # at 100% and 250% before this final exit fires.
-stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
+stop_loss_pct = 8.0       # Sell when down 8% — tight stop, runners don't look back
 buy_slippage_pct = 1.0
 sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
                            # estimated_out computation and tx landing. 20% was
@@ -46,14 +46,27 @@ daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
 max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
 
-# ── Live-data tuning (v1.5.3) ──────────────────────────────────────────────
-# Pool quality: only buy score≥88 pools. This eliminates:
-#   score=80 "ghost" pools (0 SOL confirmed liquidity — failed buys/sells)
-#   score=72 established pools (100–400 SOL, pump already over, -0.499% repeat loss)
-#   score=64 micro-caps (slippage -72 to -90%)
-# Score 88 = fresh pool (7–21 s old) in 6.5–65 SOL range — confirmed runner candidates.
-# Score 98 = ultra-fresh (0–7 s) + 15–28 SOL sweet spot — highest conviction.
-min_pool_score = 88
+# ── Runner-theory tuning (v1.5.4) ──────────────────────────────────────────
+# Pool quality gate: AiChain (3-layer LLM) is now the primary discriminator.
+# min_pool_score is a pre-filter soft floor only — it runs before AI inference.
+# Lowered from 95 → 70 to avoid double-gating: score=95 + AiChain rejection was
+# blocking everything. Score=70 blocks ghost pools (0 SOL) and severely stale
+# pools while leaving AI to make the real selection call.
+#   score=98: ultra-fresh ≤7s + sweet-spot 6.5–28 SOL → AI evaluates → typically BUY
+#   score=80–94: borderline — AI judges on velocity, buy-pressure, rug signal
+#   score<70: ghost/stale pools → hard-rejected before AI (saves LLM quota)
+min_pool_score = 70
+
+# Runner mode: score≥98 pools (ultra-fresh ≤7 s AND sweet-spot 6.5–28 SOL) sized up to
+# runner_scale_in_sol instead of the base quote_amount. Live data showed the two biggest
+# wins (+0.0159, +0.0178 SOL) came from score=98 pools bought twice (accidental scale-in).
+# This intentionally replicates that pattern for max-conviction entries.
+runner_mode = true
+runner_scale_in_sol = 0.02
+
+# Pool drain guard: exit if quote vault falls below 15% of its entry-time balance.
+# Catches slow rugs that bypass the single-check whale_exit_vault_drop_pct threshold.
+pool_drain_exit_pct = 15.0
 
 # Tiered partial TP ladder: de-risk at 100% and 250%, hold remainder to 500%.
 #   Level 1 (+100%): sell 25% of position — lock a base 1× return, stop moves to breakeven
@@ -62,15 +75,39 @@ min_pool_score = 88
 # Format: [[trigger_pct, sell_pct_of_remaining], ...]
 tiered_partial_tp_levels = [[100.0, 25.0], [250.0, 25.0]]
 
-# Dead-zone exit: all wins exited within 6 s; no profitable trade held past 30 s.
-# Reducing from 45 → 30 recycles capital ~33% faster without affecting winners.
-no_pump_timeout_secs = 30
+# Dead-zone exit: all wins in live data exited within 6–20 s. 15 s recycles capital
+# faster than 30 s without cutting any observed winner short.
+no_pump_timeout_secs = 15
 
 # Protect positions < 90 s from dump mode force-sell (min_out=0). Overnight data
 # showed dump mode destroying a 61-second position at -60%. sell_mode still clears
 # immediately (dump_mode-only respects this hold floor).
 min_dump_hold_secs = 90
+
+# Persistent re-entry cooldown: after buying a mint, skip it for this many seconds,
+# even across process restarts (stored in scematica-mint-cooldown.json).
+# Live data showed the same losing pools re-entered 3× in 26 min after restarts.
+# 1800 = 30 min — long enough to outlast the typical pump cycle.
+mint_cooldown_secs = 1800
+
 copy_wallets = []              # Wallet addresses to copy-trade (buy same tokens they buy)
+
+# ── 3-Layer LLM pool-selection chain ───────────────────────────────────────────
+# Three genuinely different providers used as independent judges:
+#   L1 (fast screener)  — Groq / llama-3.1-8b-instant  → set GROQ_API_KEY in .env
+#   L2 (deep analyst)   — OpenRouter / gemma-2-9b-it:free → set OPENROUTER_API_KEY
+#   L3 (risk judge)     — Cerebras / llama-3.1-8b        → set CEREBRAS_API_KEY
+# All free tiers. Missing key = chain disabled, bot falls back to pool_scorer only.
+# Enable after adding keys to .env. The chain adds ~1.8s latency per pool
+# (L2+L3 run in parallel after L1 passes); timeout fallback is always fail-open.
+[sniper.ai_chain]
+enabled = true
+l1_model = "llama-3.1-8b-instant"
+l2_model = "google/gemma-2-9b-it:free"
+l3_model = "llama-3.1-8b"
+l1_timeout_ms = 1200
+l2l3_timeout_ms = 1800
+min_l2_score = 65            # L2 score threshold (0-100) — 65 = conservative
 
 [sniper.filters]
 check_interval_ms = 1000   # poll filters every 1s (was 2s)
@@ -84,10 +121,10 @@ check_freezable = true        # KEEP — freeze authority is a real honeypot sig
 check_burned = true           # KEEP — pool vault being non-empty is the real rug check
 check_mutable = true          # Metadata mutability check (cheap, keep)
 check_socials = false
-min_pool_size = 0.3           # Minimum pool SOL liquidity. Fresh pump.fun graduates
-                              # land at 0.4–3 SOL, so 5 was rejecting all of them.
-                              # 0.3 lets micro-cap snipes through while still cutting
-                              # the truly-dead pools that come back to life.
+min_pool_size = 5.0           # Minimum pool SOL liquidity. Runner-theory floor: 5 SOL
+                              # matches the bottom of the sweet-spot band (6.5 SOL scores
+                              # +18 bonus). Sub-5 SOL pools are micro-caps with extreme
+                              # slippage; none appear in the winning trade history.
 max_pool_size = 0.0           # 0 = disabled
 check_name = false            # Disabled: common substrings like "test"/"moon"/"fair
                               # launch" generate too many false positives on real

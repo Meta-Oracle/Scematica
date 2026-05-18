@@ -353,6 +353,34 @@ pub struct SniperConfig {
     /// at min_out=0. Prevents dump mode from destroying a freshly-entered position
     /// mid-pump. 0 = no protection (dump all immediately). Default 0.
     pub min_dump_hold_secs: u64,
+
+    // ── Mint re-entry cooldown ────────────────────────────────────────────────
+    /// After buying a mint, skip it for this many seconds on any subsequent pool
+    /// event. Persisted to `scematica-mint-cooldown.json` so it survives restarts.
+    /// Live data: same losing pools were re-entered 3× in 26 min after restarts.
+    /// Default 1800 (30 min).
+    pub mint_cooldown_secs: u64,
+
+    // ── AI chain pool selection ────────────────────────────────────────────────
+    /// 3-layer LLM chain for pool screening (Groq → OpenRouter → Cerebras).
+    /// When enabled, pools must pass all 3 layers to proceed to buy.
+    /// Falls back to pool_scorer if any API key is missing or times out.
+    #[serde(default)]
+    pub ai_chain: AiChainConfig,
+
+    // ── Runner detection ──────────────────────────────────────────────────────
+    /// When true, pools scoring ≥ 98 (ultra-fresh ≤7 s AND sweet-spot 6.5–28 SOL)
+    /// get a position sized at `runner_scale_in_sol` instead of `quote_amount`.
+    /// Score=98 is the highest-conviction pool profile in live data — the bot should
+    /// bet more on these than on borderline-qualifying pools (score 95–97). Default false.
+    pub runner_mode: bool,
+    /// Buy size in SOL for max-conviction (score ≥ 98) pools when runner_mode is on.
+    /// Typically 2–4× quote_amount. Default 0.02.
+    pub runner_scale_in_sol: f64,
+    /// If the pool's quote vault falls below this % of its balance at position entry,
+    /// exit immediately — the pool is actively draining (rug in progress).
+    /// 0.0 = disabled. Default 15.0 (pool retains < 15 % of entry liquidity = drain).
+    pub pool_drain_exit_pct: f64,
 }
 
 impl Default for SniperConfig {
@@ -536,6 +564,53 @@ impl Default for SniperConfig {
             no_pump_timeout_secs: 45,
             no_pump_min_gain_pct: 3.0,
             min_dump_hold_secs: 0,
+            runner_mode: false,
+            runner_scale_in_sol: 0.02,
+            pool_drain_exit_pct: 15.0,
+            mint_cooldown_secs: 1800,
+            ai_chain: AiChainConfig::default(),
+        }
+    }
+}
+
+/// Configuration for the 3-layer LLM pool-selection chain.
+///
+/// Layer assignment:
+///   L1 = Groq (llama-3.1-8b-instant) — fast binary screener, GROQ_API_KEY
+///   L2 = OpenRouter (gemma-2-9b-it:free) — deep analyst, OPENROUTER_API_KEY
+///   L3 = Cerebras (llama-3.1-8b) — risk judge, CEREBRAS_API_KEY
+///
+/// All three providers have free tiers. Missing keys = chain disabled, falls
+/// back to pool_scorer gating only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiChainConfig {
+    /// Enable the 3-layer LLM chain. Requires all three API keys.
+    pub enabled: bool,
+    /// Groq model for Layer 1 screener. Default: llama-3.1-8b-instant
+    pub l1_model: String,
+    /// OpenRouter model for Layer 2 analyst. Default: google/gemma-2-9b-it:free
+    pub l2_model: String,
+    /// Cerebras model for Layer 3 risk judge. Default: llama-3.1-8b
+    pub l3_model: String,
+    /// L1 timeout in ms. Default 600.
+    pub l1_timeout_ms: u64,
+    /// L2+L3 parallel timeout in ms. Default 1800.
+    pub l2l3_timeout_ms: u64,
+    /// Minimum L2 analyst score (0-100) required for a BUY. Default 65.
+    pub min_l2_score: u8,
+}
+
+impl Default for AiChainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            l1_model: "llama-3.1-8b-instant".into(),
+            l2_model: "google/gemma-2-9b-it:free".into(),
+            l3_model: "llama-3.1-8b".into(),
+            l1_timeout_ms: 600,
+            l2l3_timeout_ms: 1800,
+            min_l2_score: 65,
         }
     }
 }

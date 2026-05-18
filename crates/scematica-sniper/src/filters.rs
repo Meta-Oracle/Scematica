@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use scematica_core::config::FilterConfig;
+use chrono::Timelike;
+use scematica_core::config::{FilterConfig, AiChainConfig};
+use scematica_ai::{PoolChainJudge, PoolSignals};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::pubkey::Pubkey;
@@ -9,6 +11,7 @@ use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
 use crate::cache::CachedPool;
+use crate::pool_scorer::PoolScorer;
 use crate::reputation::DeployerLedger;
 
 /// Tracks per-filter rejection counts for dashboard stats
@@ -731,6 +734,165 @@ impl PoolFilter for DeployerWalletAgeFilter {
     }
 }
 
+// ── AI chain filter ──────────────────────────────────────────────────────────
+
+/// 3-layer LLM chain filter: Groq (screener) → OpenRouter (analyst) → Cerebras (judge).
+///
+/// Runs LAST in the pipeline after all deterministic filters pass. Falls back to
+/// pool_scorer-only logic if any API key is missing or all layers time out.
+/// Always fail-open on infrastructure errors — don't block a pool because an LLM
+/// is slow. Only block when the chain explicitly says SKIP.
+pub struct AiChainFilter {
+    judge: PoolChainJudge,
+    base_size_sol: f64,
+    deployer_ledger: Arc<parking_lot::Mutex<DeployerLedger>>,
+}
+
+impl AiChainFilter {
+    pub fn new(
+        config: &AiChainConfig,
+        base_size_sol: f64,
+        deployer_ledger: Arc<parking_lot::Mutex<DeployerLedger>>,
+    ) -> Option<Self> {
+        let judge = PoolChainJudge::try_new(
+            &config.l1_model,
+            &config.l2_model,
+            &config.l3_model,
+            config.min_l2_score,
+            config.l1_timeout_ms,
+            config.l2l3_timeout_ms,
+        )?;
+        Some(Self { judge, base_size_sol, deployer_ledger })
+    }
+}
+
+#[async_trait]
+impl PoolFilter for AiChainFilter {
+    fn name(&self) -> &str { "AiChain" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        // Fetch quote + base vault balances in parallel (reuse existing helper)
+        let (quote_bal, base_bal) = tokio::join!(
+            get_token_balance_retried(rpc, &pool.quote_vault, 2),
+            get_token_balance_retried(rpc, &pool.base_vault, 2),
+        );
+
+        let pool_size_sol = quote_bal.map(|b| b as f64 / 1e9).unwrap_or(0.0);
+
+        // Vault RPC propagation lag — balance not yet visible on-chain. Fail-open so
+        // we don't reject legitimate fresh pools that haven't propagated yet. Consistent
+        // with PoolSizeFilter and LiquidityDepthFilter behaviour.
+        if pool_size_sol == 0.0 {
+            debug!(mint = %pool.base_mint, "AiChain: vault unreadable (propagation lag) — skipping AI check, pass-through");
+            return FilterResult::pass();
+        }
+
+        let buy_pressure_ratio = match (quote_bal, base_bal) {
+            (Some(q), Some(b)) if b > 0 => q as f64 / b as f64,
+            _ => 0.0,
+        };
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let pool_age_secs = if pool.open_time > 0 && pool.open_time <= now_secs {
+            now_secs.saturating_sub(pool.open_time)
+        } else {
+            0
+        };
+
+        let velocity_sol_per_sec = if pool_age_secs > 0 {
+            pool_size_sol / pool_age_secs as f64
+        } else {
+            0.0
+        };
+
+        // Scorer-based grounding value (deterministic)
+        let scorer_score = PoolScorer::score(
+            pool,
+            quote_bal.unwrap_or(0),
+            base_bal.unwrap_or(0),
+            now_secs,
+        );
+
+        // Deployer rug score from in-memory ledger
+        let deployer_rug_score = {
+            let ledger = self.deployer_ledger.lock();
+            let owner = "unknown"; // ledger uses pool owner (program ID), always clean
+            1.0 - ledger.score(owner).clamp(0.0, 1.0)
+        };
+
+        // Recent trade stats from metrics file (best-effort, non-blocking)
+        let (recent_wins, recent_losses, open_positions, daily_pnl_sol) =
+            read_session_stats().await;
+
+        let utc_hour = chrono::Utc::now().hour() as u8;
+
+        let signals = PoolSignals {
+            pool_age_secs,
+            pool_size_sol,
+            scorer_score,
+            velocity_sol_per_sec,
+            buy_pressure_ratio,
+            deployer_rug_score,
+            time_of_day_utc_hour: utc_hour,
+            recent_wins,
+            recent_losses,
+            open_positions,
+            daily_pnl_sol,
+        };
+
+        let verdict = self.judge.judge(&signals, self.base_size_sol).await;
+
+        if verdict.fallback {
+            // Chain unavailable — pass through, scorer gating upstream handles it
+            debug!(
+                mint = %pool.base_mint,
+                scorer_score,
+                "AiChain: chain unavailable, falling back to pool_scorer"
+            );
+            return FilterResult::pass();
+        }
+
+        if verdict.buy {
+            info!(
+                mint = %pool.base_mint,
+                l1_confidence = verdict.l1_confidence,
+                l2_score = verdict.l2_score,
+                size_sol = verdict.size_sol,
+                max_hold = verdict.max_hold_secs,
+                reasoning = %verdict.reasoning,
+                "🤖 AiChain: BUY verdict"
+            );
+            FilterResult::pass()
+        } else {
+            FilterResult::fail(format!("AiChain SKIP: {}", verdict.reasoning))
+        }
+    }
+}
+
+/// Read session stats from scematica-metrics.json and scematica-filter-stats.json.
+/// Returns (wins, losses, open_positions, daily_pnl_sol). Non-blocking, best-effort.
+async fn read_session_stats() -> (u32, u32, u32, f64) {
+    tokio::task::spawn_blocking(|| {
+        let metrics: serde_json::Value = std::fs::read_to_string("scematica-metrics.json")
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
+
+        let wins = metrics["session_wins"].as_u64().unwrap_or(0) as u32;
+        let losses = metrics["session_losses"].as_u64().unwrap_or(0) as u32;
+        let open = metrics["open_positions"].as_u64().unwrap_or(0) as u32;
+        let pnl = metrics["session_pnl_sol"].as_f64().unwrap_or(0.0);
+
+        (wins, losses, open, pnl)
+    })
+    .await
+    .unwrap_or((0, 0, 0, 0.0))
+}
+
 // ── pipeline ──────────────────────────────────────────────────────────────────
 
 pub struct FilterPipeline {
@@ -749,6 +911,7 @@ impl FilterPipeline {
         quote_amount_raw: u64,
         blacklist_path: &str,
         deployer_ledger: Option<Arc<parking_lot::Mutex<DeployerLedger>>>,
+        ai_chain_config: Option<(&AiChainConfig, f64)>,
     ) -> Self {
         // ── Filter ordering: cheapest first so expensive RPC calls only run on
         // pools that pass the cheap guards. Each filter's RPC cost is noted below.
@@ -825,6 +988,20 @@ impl FilterPipeline {
             filters.push(Box::new(JupiterDiscrepancyFilter {
                 min_premium_pct: config.jupiter_min_premium_pct,
             }));
+        }
+
+        // [3 HTTP calls, parallel] 3-layer LLM chain — runs last after all cheap filters pass.
+        // Only active when enabled=true and all three API keys are present.
+        if let Some((ai_cfg, base_size_sol)) = ai_chain_config {
+            if ai_cfg.enabled {
+                let ledger_for_ai = deployer_ledger.clone().unwrap_or_else(|| {
+                    Arc::new(parking_lot::Mutex::new(DeployerLedger::load()))
+                });
+                if let Some(ai_filter) = AiChainFilter::new(ai_cfg, base_size_sol, ledger_for_ai) {
+                    info!("AI chain filter active (L1=Groq, L2=OpenRouter, L3=Cerebras)");
+                    filters.push(Box::new(ai_filter));
+                }
+            }
         }
 
         let cache_ttl_secs = config.filter_cache_ttl_secs.max(5);

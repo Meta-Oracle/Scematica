@@ -8,7 +8,9 @@ pub mod conversation;
 pub mod symbol_resolver;
 pub mod tool_dispatcher;
 pub mod chat_agent;
+pub mod pool_chain;
 
 pub use client::AiClient;
 pub use chat_agent::ChatAgent;
 pub use types::{AiProvider, AiRequest, AiResponse, TokenRiskScore, ArbScore, StrategyAdjustment, MarketReport};
+pub use pool_chain::{PoolChainJudge, PoolSignals, ChainVerdict};

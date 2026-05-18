@@ -1,10 +1,30 @@
-# Scematica v1.5.2
+# Scematica v1.5.3
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.5.3
+
+### Live-Data Bleed Diagnosis + Runner Detection Overhaul
+
+Three root causes of fund bleeding identified from live trade data (628 trades) and fixed:
+
+**Ghost pool bleed eliminated (`pool_scorer.rs`)** — Ultra-fresh pools with `pool_size_lamports=0` (RPC returned no confirmed liquidity) were scoring 80 (base 50 + ultra-fresh age bonus 30) and passing the `min_pool_score=65` gate. These "ghost" pools resulted in failed buy transactions and stuck dust positions. Fix: explicit `-30` penalty applied in `PoolScorer::score` when `pool_size_lamports==0`, dropping ghost pools to score 50 — blocked regardless of min_pool_score threshold.
+
+**Large established pool bleed eliminated (`config.toml`)** — Score=72 pools at 100-400 SOL liquidity (established tokens whose initial pump is over) were passing filters and producing repeated -0.499% dead-zone exit losses. `min_pool_score` raised from 65 → 88, restricting buys to fresh (7-21 s) 6.5-65 SOL pools (score 88) and ultra-fresh (0-7 s) 15-28 SOL sweet-spot pools (score 98).
+
+**Double-sell bug fixed (`sniper.rs`)** — When `take_profit_pct=100` matched the first tiered partial trigger (also 100%), the partial sold 15% of the position AND the main TP check fired in the **same iteration** with the pre-partial token balance, triggering a second sell against the full original amount. The second sell would fail on first attempt (insufficient tokens), burning 3-5 retries in wasted gas. Fix: after any tiered partial fires, increment `checks`, sleep one interval, and `continue` to re-read the balance before applying further exit logic.
+
+**Runner exit strategy: 100% + 500% targets (`config.toml`)** — `take_profit_pct` raised from 100 → 500. New tiered partial TP ladder:
+- **+100% → sell 25%** of position: locks a 1× base return, stop-loss moves to breakeven
+- **+250% → sell 25%** of remaining: de-risks further while runner continues  
+- **+500% → full TP exit**: remaining ~56% of original position exits at 5×
+- Adaptive pullback + momentum escalator catch parabolic moves beyond 500% (7-escalation ladder: 500 → 900 → 1620 → 2916 → 5249 → 9448 → 17007%)
 
 ---
 

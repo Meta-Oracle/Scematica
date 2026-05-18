@@ -14,6 +14,8 @@ pub enum AiProvider {
     OpenRouter,
     /// Local Ollama instance — no rate limits, requires local setup
     Ollama,
+    /// Cerebras — free tier, wafer-scale inference, OpenAI-compatible
+    Cerebras,
 }
 
 impl Default for AiProvider {
@@ -30,6 +32,7 @@ impl AiProvider {
             AiProvider::Grok => "https://api.x.ai/v1",
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1",
             AiProvider::Ollama => "http://localhost:11434/v1",
+            AiProvider::Cerebras => "https://api.cerebras.ai/v1",
         }
     }
 
@@ -41,6 +44,7 @@ impl AiProvider {
             AiProvider::Grok => "grok-beta",
             AiProvider::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
             AiProvider::Ollama => "llama3.3",
+            AiProvider::Cerebras => "llama-3.1-8b",
         }
     }
 }

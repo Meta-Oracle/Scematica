@@ -168,6 +168,8 @@ pub struct AppState {
     pub log_filter_active: RwLock<bool>,
     /// Per-token price samples for the mini price chart (mint → deque of price ratios)
     pub price_history: RwLock<std::collections::HashMap<String, VecDeque<f64>>>,
+    /// Vertical scroll offset for the Config tab (Up/Down arrows)
+    pub config_scroll: RwLock<u16>,
     /// Pool radar entries — populated by sniper writing to scematica-pool-radar.json
     pub radar_pools: RwLock<Vec<RadarPool>>,
     /// Live open positions — sniper updates `scematica-positions.json` every 1 s
@@ -406,6 +408,7 @@ impl AppState {
             nn_stats: RwLock::new(None),
             log_filter: RwLock::new(String::new()),
             log_filter_active: RwLock::new(false),
+            config_scroll: RwLock::new(0),
             price_history: RwLock::new(std::collections::HashMap::new()),
             radar_pools: RwLock::new(Vec::new()),
             live_positions: RwLock::new(Vec::new()),

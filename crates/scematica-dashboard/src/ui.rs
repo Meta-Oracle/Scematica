@@ -1075,14 +1075,15 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mut all_lines = text;
     all_lines.extend(extra_lines);
 
+    let scroll = *state.config_scroll.read();
     let para = Paragraph::new(all_lines)
         .block(
             Block::default()
-                .title(" ⚙️  Configuration ")
+                .title(" ⚙️  Configuration  (↑/↓ scroll) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_ACCENT)),
         )
-        .wrap(Wrap { trim: true });
+        .scroll((scroll, 0));
     f.render_widget(para, area);
 }
 
@@ -1090,7 +1091,7 @@ fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
         1 => " [x] Export CSV  [R] Reset Positions  [Tab] Switch  [q] Quit  [←/→] Navigate ",
         2 => " [/] Filter  [e] Sell  [b] Buy  [h] High-Speed  [d] DUMP ALL  [Tab] Switch  [q] Quit ",
-        3 => " [s] Sniper  [a] Arb  [b] Both  [x] Stop  [1-4] Rate Mode  [Tab] Switch tab  [q] Quit ",
+        3 => " [s/a/b/x] Bot  [1-8] Rate  [g] Growth  [j] Builder  [k] SuperBld  [o] Off  [↑↓] Scroll  [Tab] Switch  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
         5 => " Pool Radar — live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
         _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",

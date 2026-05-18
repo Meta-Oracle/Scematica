@@ -403,6 +403,14 @@ async fn main() -> Result<()> {
                                 state.log_filter.write().clear();
                                 *state.log_filter_active.write() = false;
                             }
+                            DashboardAction::ConfigScrollUp => {
+                                let mut s = state.config_scroll.write();
+                                *s = s.saturating_sub(2);
+                            }
+                            DashboardAction::ConfigScrollDown => {
+                                let mut s = state.config_scroll.write();
+                                *s = s.saturating_add(2);
+                            }
                             DashboardAction::SetRateMode(mode) => {
                                 *state.rate_mode.write() = mode;
                                 let json = serde_json::json!({

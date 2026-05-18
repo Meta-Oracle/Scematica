@@ -58,6 +58,9 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool, log_filt
             KeyCode::Char('q') | KeyCode::Esc => Some(DashboardAction::Quit),
             KeyCode::Tab | KeyCode::Right => Some(DashboardAction::NextTab),
             KeyCode::BackTab | KeyCode::Left => Some(DashboardAction::PrevTab),
+            // Config tab scroll — Up/Down arrows scroll the content panel
+            KeyCode::Up   if current_tab == 3 => Some(DashboardAction::ConfigScrollUp),
+            KeyCode::Down if current_tab == 3 => Some(DashboardAction::ConfigScrollDown),
             // Bot process controls — active on the Config tab (index 3)
             KeyCode::Char('s') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Sniper)),
             KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
@@ -131,4 +134,6 @@ pub enum DashboardAction {
     LogFilterChar(char),
     LogFilterBackspace,
     LogFilterClear,
+    ConfigScrollUp,
+    ConfigScrollDown,
 }

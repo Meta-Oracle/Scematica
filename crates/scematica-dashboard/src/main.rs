@@ -108,6 +108,33 @@ async fn main() -> Result<()> {
             }
         });
 
+        // SOL/USD price feed — polls CoinGecko simple-price endpoint every 60 s.
+        // Runs in a separate task so a slow/failing API never stalls the UI tick.
+        {
+            let price_state = s.clone();
+            tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .unwrap_or_default();
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    let result = client
+                        .get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")
+                        .send()
+                        .await;
+                    if let Ok(resp) = result {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            if let Some(price) = json["solana"]["usd"].as_f64() {
+                                *price_state.sol_price_usd.write() = price;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         s.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
 
         // Process manager — owns child process handles, responds to BotCommand via mpsc

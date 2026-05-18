@@ -31,6 +31,7 @@ ratatui.workspace = true
 crossterm.workspace = true
 solana-sdk.workspace = true
 solana-client.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 proptest = "1.0"

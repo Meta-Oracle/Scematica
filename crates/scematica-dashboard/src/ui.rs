@@ -132,6 +132,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mode = *state.active_mode.read();
     let wallet = state.wallet_address.read().clone();
     let sol = *state.sol_balance.read();
+    let price_usd = *state.sol_price_usd.read();
     let scema = *state.scematica_balance.read();
     let regime = state.strategy_regime.read().clone();
     let open_pos = state.open_position_count();
@@ -147,11 +148,17 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         _ => "◆NEU",
     };
 
+    let sol_display = if price_usd > 0.0 {
+        format!("{:.4} (${:.2})", sol, sol * price_usd)
+    } else {
+        format!("{:.4}", sol)
+    };
+
     let header_text = format!(
-        " SCEMATICA  │  {}  │  Wallet: {}  │  SOL: {:.4}  │  SCEMA: {:.0}  │  Regime: {}  │  Pos: {}",
+        " SCEMATICA  │  {}  │  Wallet: {}  │  SOL: {}  │  SCEMA: {:.0}  │  Regime: {}  │  Pos: {}",
         mode,
         if wallet.len() > 12 { &wallet[..12] } else { &wallet },
-        sol,
+        sol_display,
         scema,
         regime_indicator,
         open_pos,
@@ -373,6 +380,23 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let m = state.effective_snapshot();
     let scema = *state.scematica_balance.read();
     let sol = *state.sol_balance.read();
+    let price_usd = *state.sol_price_usd.read();
+
+    let sol_usd_str = if price_usd > 0.0 {
+        format!("{:.4} SOL  (${:.2})", sol, sol * price_usd)
+    } else {
+        format!("{:.4} SOL", sol)
+    };
+    let price_str = if price_usd > 0.0 {
+        format!("${:.2} / SOL", price_usd)
+    } else {
+        "fetching…".to_string()
+    };
+    let pnl_usd_str = if price_usd > 0.0 {
+        format!("{:.6} SOL  (${:.4})", m.total_pnl_sol(), m.total_pnl_sol() * price_usd)
+    } else {
+        format!("{:.6} SOL", m.total_pnl_sol())
+    };
 
     let rows: Vec<Row> = vec![
         Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
@@ -381,13 +405,16 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Row::new(vec![Cell::from("Win Rate"), Cell::from(format!("{:.1}%", m.win_rate()))]),
         Row::new(vec![Cell::from("Arbs Found"), Cell::from(m.arb_opportunities_found.to_string())]),
         Row::new(vec![Cell::from("Arbs Executed"), Cell::from(m.arb_executed.to_string())]),
-        Row::new(vec![Cell::from("Total PnL"), Cell::from(format!("{:.6} SOL", m.total_pnl_sol()))]),
+        Row::new(vec![Cell::from("Total PnL"), Cell::from(pnl_usd_str)]),
         Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
         Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
         Row::new(vec![
             Cell::from("SOL Balance"),
-            Cell::from(format!("{:.4} SOL", sol))
-                .style(Style::default().fg(Color::Cyan)),
+            Cell::from(sol_usd_str).style(Style::default().fg(Color::Cyan)),
+        ]),
+        Row::new(vec![
+            Cell::from("SOL Price"),
+            Cell::from(price_str).style(Style::default().fg(Color::Yellow)),
         ]),
         Row::new(vec![
             Cell::from("SCEMA Balance"),
@@ -707,6 +734,12 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let sell_mode = *state.sell_mode_active.read();
     let dump_mode = *state.dump_mode_active.read();
     let sol = *state.sol_balance.read();
+    let price_usd = *state.sol_price_usd.read();
+    let sol_label = if price_usd > 0.0 {
+        format!("{:.4} (${:.2})", sol, sol * price_usd)
+    } else {
+        format!("{:.4}", sol)
+    };
     let filter_active = *state.log_filter_active.read();
     let filter_text = state.log_filter.read().clone();
 
@@ -726,22 +759,24 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     if dump_mode {
         let banner_text = format!(
-            " DUMP MODE ACTIVE  |  SOL: {:.4}  |  Force-selling ALL positions (zero slippage)  |  [d] to deactivate ",
-            sol
+            " DUMP MODE ACTIVE  |  SOL: {}  |  Force-selling ALL positions  |  [d] to deactivate ",
+            sol_label
         );
         let banner = Paragraph::new(banner_text)
             .style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)));
         f.render_widget(banner, chunks[0]);
     }
 
     if sell_mode {
         let banner_text = format!(
-            " SELL MODE ACTIVE  |  SOL: {:.4}  |  Buying paused — selling all positions  |  [e] to deactivate ",
-            sol
+            " SELL MODE ACTIVE  |  SOL: {}  |  Buying paused — selling all positions  |  [e] to deactivate ",
+            sol_label
         );
         let banner = Paragraph::new(banner_text)
             .style(Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
         f.render_widget(banner, chunks[1]);
     }
@@ -760,35 +795,70 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let log_area = chunks[3];
     let logs = state.log_lines.read();
-    let inner_width = log_area.width.saturating_sub(2).max(1) as usize;
+    // inner_width: subtract 2 for borders, clamp to at least 10 so we always make progress.
+    let inner_width = log_area.width.saturating_sub(2).max(10) as usize;
     let max_rows = log_area.height.saturating_sub(2) as usize;
     let filter_lower = filter_text.to_lowercase();
+    // Prefix for wrapped continuation lines — keeps visual structure clear.
+    let cont_prefix = "  ↪ ";
+    // inner_width for continuation lines (shorter by prefix len)
+    let cont_width = inner_width.saturating_sub(cont_prefix.len()).max(4);
 
     let mut lines: Vec<Line> = Vec::new();
     'outer: for raw in logs.iter().rev() {
         if !filter_lower.is_empty() && !raw.to_lowercase().contains(&filter_lower) {
             continue;
         }
-        let color = if raw.contains("DUMP MODE") {
+        // Classify line color by keywords that survive any prefix we prepend.
+        let color = if raw.contains("DUMP MODE") || raw.contains("[DUMP]") {
             Color::Yellow
-        } else if raw.contains("ERROR") || raw.contains("SELL MODE") {
+        } else if raw.contains("ERROR") || raw.contains("[ERROR]") || raw.contains("SELL MODE") {
             COLOR_ACCENT
-        } else if raw.contains("WARN") {
+        } else if raw.contains("WARN") || raw.contains("[WARN]") {
             Color::Yellow
-        } else if raw.contains("confirmed") || raw.contains("Sell confirmed") {
+        } else if raw.contains("confirmed") || raw.contains("Sell confirmed") || raw.contains("[INFO] sell") {
             Color::Green
+        } else if raw.contains("[INFO]") || raw.contains("[TRADE]") {
+            COLOR_TEXT
         } else {
             COLOR_TEXT
         };
-        let style = Style::default().fg(color);
-        let chars: Vec<char> = raw.chars().collect();
+        let style      = Style::default().fg(color);
+        let cont_style = Style::default().fg(color).add_modifier(Modifier::DIM);
+
+        // Safety-clip absurdly long lines before processing so we don't spend
+        // microseconds chunking a 10 000-char corrupt entry.
+        let raw_clipped: &str = if raw.chars().count() > 1000 {
+            &raw[..raw.char_indices().nth(1000).map(|(i, _)| i).unwrap_or(raw.len())]
+        } else {
+            raw.as_str()
+        };
+
+        let chars: Vec<char> = raw_clipped.chars().collect();
         if chars.is_empty() {
+            // blank separator — still push so timestamp gaps are visible
             lines.push(Line::from(Span::styled(String::new(), style)));
             if lines.len() >= max_rows { break; }
         } else {
-            for chunk in chars.chunks(inner_width) {
-                lines.push(Line::from(Span::styled(chunk.iter().collect::<String>(), style)));
+            // First chunk: full inner_width
+            let first_end = inner_width.min(chars.len());
+            lines.push(Line::from(Span::styled(
+                chars[..first_end].iter().collect::<String>(),
+                style,
+            )));
+            if lines.len() >= max_rows { break 'outer; }
+
+            // Continuation chunks: slightly narrower with "  ↪ " prefix
+            let mut pos = first_end;
+            while pos < chars.len() {
+                let end = (pos + cont_width).min(chars.len());
+                let chunk: String = chars[pos..end].iter().collect();
+                lines.push(Line::from(vec![
+                    Span::styled(cont_prefix, cont_style),
+                    Span::styled(chunk, style),
+                ]));
                 if lines.len() >= max_rows { break 'outer; }
+                pos = end;
             }
         }
     }

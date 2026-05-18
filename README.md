@@ -1,10 +1,86 @@
-# Scematica v1.4.0
+# Scematica v1.5.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.5.0
+
+### Sell Reliability — Token-2022 Positions Now Visible
+
+The sniper's `scan_existing_positions` startup scan previously only queried the legacy SPL Token program. All pump.fun mints use the **Token-2022** program (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`). After a restart, every pump.fun position was invisible to the scanner, so no sell monitor was attached and positions would hold for the full 15-minute window (or until a manual drawdown sell). Fix: startup now scans both programs in sequence and merges results, so all open positions — SPL Token and Token-2022 — are picked up immediately.
+
+### Sell Reliability — Drain Guard Raised + Retry Rounds Accelerated
+
+**Drain threshold raised 10k → 500k lamports** — the previous 10k lamport floor passed severely drained pools that still returned zero output from the swap. The new threshold (0.0005 SOL) correctly detects near-empty pools and immediately writes a `pool_drained` loss event instead of exhausting retry rounds.
+
+**`sell_with_retry` rounds tightened from 12s → 3s total:**
+
+| Round | Old delay | New delay | Slippage |
+|---|---|---|---|
+| 1 | 0s | 0s | Normal |
+| 2 | 3s | 0s | 2× |
+| 3 | 3s | 1s | `min_out=0` |
+| 4 | 6s | 2s | `min_out=0` |
+
+On pump.fun rugs — which typically complete in under 3 seconds — the old schedule was reaching `min_out=0` only after the pool was already drained. The new schedule hits all four retry variants in ≤3 seconds, matching rug cadence.
+
+**`max_sell_retries` reduced 5 → 3** — 3 inner retries × 4 outer rounds = 12 total transaction attempts per position (was 20). Each confirmation timeout costs up to 30 seconds; fewer retries on confirmed failures frees the executor faster for live positions.
+
+### Dead-Zone Early Exit — Recycle Capital Fast
+
+**Root cause identified from live data**: winning trades exit at +99–397% within 0.1–6 seconds. Positions that don't pump sit flat at −0.499% (the AMM spread) for 148–322 seconds with zero exit signals — none of SL, trailing stop, flash-crash, or dump detection ever fires because the price never moves.
+
+**Fix**: new `no_pump_timeout_secs` (default 45) / `no_pump_min_gain_pct` (default 3.0) gate in the sell monitor. If the position's best price seen (peak) is below +3% after 45 seconds, exit immediately. Suppressed if any upward momentum was observed — a token that hit +3% at any point continues through the normal TP/SL/pullback/escalation path as before.
+
+**Effect**: dead positions recycled in ~45 seconds instead of 148–322 seconds, freeing capital for the next buy. Profitable trades are unaffected (they exit in <6 seconds, long before the gate fires).
+
+Config:
+```toml
+no_pump_timeout_secs = 45   # seconds before dead-zone exit fires (0 = disabled)
+no_pump_min_gain_pct = 3.0  # peak gain % required to suppress the exit
+```
+
+### Momentum / Volume Scoring — PoolScorer v0.8.1
+
+Two new signals added to the 0–100 pool score alongside existing pool-age and pool-size components:
+
+**Velocity bonus (up to +22)** — `quote_vault_SOL / age_seconds`. High SOL-per-second inflow means buyers are piling in fast, indicating a runner candidate.
+
+| Velocity | Bonus |
+|---|---|
+| ≥ 15 SOL/s | +22 — crowd piling in |
+| ≥ 5 SOL/s | +14 — strong inflow |
+| ≥ 1.5 SOL/s | +7 — moderate |
+| ≥ 0.4 SOL/s | +2 — mild |
+| < 0.4 SOL/s | 0 |
+
+**Buy-pressure ratio bonus (up to +12)** — `quote_vault / base_vault`. On a Raydium AMM, as buyers accumulate tokens the SOL side grows and the token side shrinks, pushing the ratio above the launch baseline (~0.001). A ratio ≥ 0.5 confirms heavy buying already in progress.
+
+| Ratio | Bonus |
+|---|---|
+| ≥ 0.5 | +12 — heavily bought up |
+| ≥ 0.05 | +6 |
+| ≥ 0.005 | +2 |
+| < 0.005 | 0 |
+
+Pools with both high velocity and a rising buy-pressure ratio now score near the ceiling, giving the `min_pool_score` gate a much sharper signal for catching runners at detection time — before the price chart shows anything.
+
+**Detection-time freshness fallback**: Pump.fun always sets `open_time=0` meaning "open immediately", which caused the +30 ultra-fresh age bonus to never fire — all pump.fun pools scored 50/56/68 with no differentiation. The scorer now accepts a `detected_at_secs` timestamp; when `open_time=0` and the pool was detected within the last 60 seconds, the detection time is used as the effective open time. Result: fresh pump.fun pools now score 95–100 (50 base + 30 fresh + 18 sweet spot) rather than a flat 68.
+
+**Size bands retuned** (v1.5.0): sweet spot extended from 6.5–22 → 6.5–28 SOL based on live winner data (18–28 SOL). Pools over 100 SOL now penalised: −8 for 100–400 SOL (likely established/pumped), −20 for >400 SOL.
+
+### Log Panel — Visual Glitch Fixes
+
+- **Compact log format** — verbose tracing timestamps (`2026-05-18T05:17:50.123456Z  INFO target::module: msg`) are reformatted to `[SNIPER] HH:MM:SS [LEVEL] message`. Log panel no longer shows raw tracing prefixes.
+- **Exact byte-offset tracking** — replaced `BufReader::lines()` + approximate offset arithmetic with `read_line()` which returns the exact byte count including line terminators. Eliminates the offset drift that caused duplicate or skipped lines on re-reads after the file was partially consumed.
+- **Blank line suppression** — empty lines and lines that consist only of whitespace are filtered before pushing to the display buffer.
+- **Continuation markers** — lines wider than the panel are split at character boundaries with a `↪` prefix (dimmed) on each continuation chunk. Previously, ratatui's text wrapping could leave unformatted overflow.
+- **Banner wrapping** — `Wrap { trim: true }` added to status banner paragraphs; previously the "NO LOG FILE" message was truncated on narrow terminals.
 
 ---
 
@@ -352,7 +428,7 @@ partial_tp_pct           = 50.0
 partial_tp_trigger       = 100.0  # legacy; unused when tiered_partial_tp = true
 price_check_interval_ms  = 250
 price_check_duration_ms  = 900000   # 15 min total window
-max_sell_retries         = 5
+max_sell_retries         = 3        # v1.5.0: was 5; 3×4 rounds = 12 total attempts
 max_buy_retries          = 3
 auto_sell                = true
 one_token_at_a_time      = true
@@ -589,7 +665,7 @@ Each position gets its own sell monitor task. Exit triggers (first to fire wins)
 13. **Position time cap** — `max_position_hold_mins` hard limit
 14. **Window expiry** — `price_check_duration_ms` elapsed
 
-Sell retries escalate slippage: normal → 2× → min_out=0 → final attempt.
+Sell retries escalate slippage across 4 rounds (3s total): normal → 2× → min_out=0 → min_out=0 final. Pool-drained check before each round writes an immediate loss event and skips remaining attempts.
 
 ---
 

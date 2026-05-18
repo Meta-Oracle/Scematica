@@ -334,6 +334,18 @@ pub struct SniperConfig {
     /// avoid repeated RPC calls when the same pool fires multiple events.
     /// Default 30.
     pub filter_cache_ttl_secs: u64,
+
+    // ── Dead-zone early exit ──────────────────────────────────────────────────
+    /// Exit a position if no meaningful upward momentum has been observed within
+    /// this many seconds of entry. Live data: winning pump.fun trades exit within
+    /// 6 s; positions still flat after 45 s are statistically dead capital.
+    /// 0 = disabled. Default 45.
+    pub no_pump_timeout_secs: u64,
+    /// Minimum peak gain % that must have been seen to suppress the dead-zone
+    /// exit. If the position's best price ever seen is below this threshold after
+    /// `no_pump_timeout_secs`, exit at market to recycle capital.
+    /// Default 3.0.
+    pub no_pump_min_gain_pct: f64,
 }
 
 impl Default for SniperConfig {
@@ -344,7 +356,9 @@ impl Default for SniperConfig {
             quote_amount: 0.1,
             buy_delay_ms: 0,
             max_buy_retries: 3,
-            max_sell_retries: 5,
+            // 3 inner retries × 4 outer rounds = 12 total tx attempts per position.
+            // Was 5 (= 20 total, up to 30s per round on timeouts).
+            max_sell_retries: 3,
             auto_sell: true,
             auto_sell_delay_ms: 0,
             // v1.4.0: raised 80→175 — at 80% the TP fired on the FIRST price check
@@ -510,6 +524,10 @@ impl Default for SniperConfig {
             kelly_min_trades: 10,
             deployer_wallet_age_min_hours: 0,
             filter_cache_ttl_secs: 30,
+            // v1.5.0: live data shows all profitable pump.fun trades exit within 6 s.
+            // Positions flat beyond 45 s are dead — exit to redeploy capital.
+            no_pump_timeout_secs: 45,
+            no_pump_min_gain_pct: 3.0,
         }
     }
 }

@@ -108,6 +108,8 @@ pub struct AppState {
     pub trades: RwLock<VecDeque<TradeEntry>>,
     pub wallet_address: RwLock<String>,
     pub sol_balance: RwLock<f64>,
+    /// Latest SOL/USD price from CoinGecko — refreshed every 60 s. 0.0 = not yet loaded.
+    pub sol_price_usd: RwLock<f64>,
     pub quote_balance: RwLock<f64>,
     /// SCEMATICA token balance (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump)
     pub scematica_balance: RwLock<f64>,
@@ -365,6 +367,52 @@ impl std::fmt::Display for BotMode {
     }
 }
 
+/// Reformat a raw tracing-subscriber log line into a compact TUI-friendly string.
+///
+/// Tracing default format: "2026-05-18T05:17:50.123456Z  INFO target::module: message"
+/// Output:                 "[SNIPER] 05:17:50 [INFO] message"
+///
+/// Returns None for blank/whitespace-only lines (suppresses empty log entries).
+fn format_sniper_log_line(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() { return None; }
+
+    // Detect tracing-subscriber compact timestamp format:
+    // starts with 4-digit year, has 'T' at position 10.
+    let bytes = s.as_bytes();
+    if bytes.len() > 25
+        && bytes[0].is_ascii_digit()
+        && bytes[4] == b'-'
+        && bytes.get(10) == Some(&b'T')
+    {
+        // time portion starts at index 11: "HH:MM:SS"
+        let time = &s[11..19.min(s.len())];
+
+        // Find the 'Z' that ends the timestamp (always within first 30 chars)
+        if let Some(z_rel) = s[19..s.len().min(30)].find('Z') {
+            let z_abs = 19 + z_rel;
+            let after = s[z_abs + 1..].trim_start(); // "INFO target::path: message"
+
+            // Level is the first word; target ends at ": "
+            let (level, message) = if let Some(colon) = after.find(": ") {
+                let level_and_target = &after[..colon];
+                let level = level_and_target.split_whitespace().next().unwrap_or("INFO");
+                let msg = &after[colon + 2..];
+                (level, msg)
+            } else {
+                ("INFO", after)
+            };
+
+            let msg = message.trim();
+            if msg.is_empty() { return None; }
+            return Some(format!("[SNIPER] {} [{}] {}", time, level, msg));
+        }
+    }
+
+    // Non-tracing line (continuation, panic output, etc.) — pass through.
+    Some(format!("[SNIPER] {}", s))
+}
+
 impl AppState {
     pub fn new(metrics: Arc<BotMetrics>, rpc: Arc<RpcConnection>) -> Arc<Self> {
         Arc::new(Self {
@@ -374,6 +422,7 @@ impl AppState {
             trades: RwLock::new(VecDeque::new()),
             wallet_address: RwLock::new(String::new()),
             sol_balance: RwLock::new(0.0),
+            sol_price_usd: RwLock::new(0.0),
             quote_balance: RwLock::new(0.0),
             scematica_balance: RwLock::new(0.0),
             active_mode: RwLock::new(BotMode::default()),
@@ -519,6 +568,7 @@ impl AppState {
         }
     }
     /// Tail scematica-sniper.log and push new lines to the log panel.
+
     /// Used when the sniper runs as a separate process (not dashboard-managed).
     pub fn poll_log_file(&self) {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -550,14 +600,23 @@ impl AppState {
         }
 
         if file.seek(SeekFrom::Start(offset)).is_err() { return }
+        let mut reader = BufReader::new(&mut file);
         let mut new_offset = offset;
-        let reader = BufReader::new(&mut file);
-        for line in reader.lines().map_while(Result::ok) {
-            // BufReader::lines() strips trailing \n AND \r\n; advance by len + 1
-            // (we approximate, since we don't know which terminator was used). Any
-            // 1-byte/line drift is bounded by the file-shrink reset above.
-            new_offset += line.len() as u64 + 1;
-            self.push_log(format!("[SNIPER] {}", line));
+        loop {
+            let mut raw_line = String::new();
+            match reader.read_line(&mut raw_line) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    // read_line returns exact byte count including \n or \r\n —
+                    // use it directly rather than approximating with len+1.
+                    new_offset += n as u64;
+                    let content = raw_line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    if let Some(formatted) = format_sniper_log_line(content) {
+                        self.push_log(formatted);
+                    }
+                }
+                Err(_) => break,
+            }
         }
         if new_offset != offset {
             *self.sniper_log_offset.write() = new_offset;

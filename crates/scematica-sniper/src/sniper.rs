@@ -705,7 +705,11 @@ impl Sniper {
             (q, b)
         };
         let upfront_pool_size_sol = upfront_pool_size_lamports as f64 / 1e9;
-        let upfront_score = PoolScorer::score(&pool, upfront_pool_size_lamports);
+        let detected_at_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let upfront_score = PoolScorer::score(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, detected_at_secs);
 
         // High-speed mode: skip filters, AI, scorer — go straight to buy. The operator
         // has explicitly opted in to extra rugs / failed buys / 429s in exchange for
@@ -1494,24 +1498,31 @@ impl Sniper {
     /// Called once at startup so tokens bought in a previous run can be sold.
     pub async fn scan_existing_positions(&self) {
         use solana_client::rpc_request::TokenAccountsFilter;
-        use solana_sdk::program_pack::Pack;
+        use solana_sdk::{program_pack::Pack, pubkey};
+
+        // Token-2022 program — all Pump.fun meme coins use this, NOT legacy SPL Token.
+        // Without scanning it, the sniper starts blind to existing pump.fun positions and
+        // spawns no sell monitors for them — they sit unmonitored until sell_mode fires.
+        const TOKEN_2022_PROGRAM: solana_sdk::pubkey::Pubkey =
+            pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
         let wallet_pubkey = self.wallet.pubkey();
-        info!("Startup scan: checking wallet for existing token positions...");
+        info!("Startup scan: checking wallet for existing token positions (SPL + Token-2022)...");
 
-        let keyed_accounts = match self.rpc
-            .get_token_accounts_by_owner(
-                &wallet_pubkey,
-                TokenAccountsFilter::ProgramId(spl_token::id()),
-            )
-            .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                warn!("Startup scan: failed to list token accounts: {}", e);
-                return;
+        let mut all_keyed = Vec::new();
+        for program_id in [spl_token::id(), TOKEN_2022_PROGRAM] {
+            match self.rpc
+                .get_token_accounts_by_owner(
+                    &wallet_pubkey,
+                    TokenAccountsFilter::ProgramId(program_id),
+                )
+                .await
+            {
+                Ok(a) => { info!("Startup scan: {} accounts under {}", a.len(), program_id); all_keyed.extend(a); }
+                Err(e) => { warn!("Startup scan: failed to list accounts under {}: {}", program_id, e); }
             }
-        };
+        }
+        let keyed_accounts = all_keyed;
 
         const NO_POOL_FILE: &str = "scematica-no-pool.json";
 
@@ -1538,20 +1549,35 @@ impl Sniper {
                 Err(_) => continue,
             };
 
-            // Unpack the raw SPL token account to get mint and balance
+            // Unpack the raw token account to get mint and balance.
+            // Token-2022 accounts have extension bytes after the base 165 bytes, so
+            // spl_token::state::Account::unpack (which requires exactly 165 bytes) may
+            // fail. Fall back to reading mint (bytes 0..32) and amount (bytes 64..72)
+            // from the raw layout which is identical for both programs.
             let raw = match self.rpc.get_account(&ata_pk).await {
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            let token_acct = match spl_token::state::Account::unpack(&raw.data) {
-                Ok(a) => a,
-                Err(_) => continue,
+            let (mint, amount) = if let Ok(acct) = spl_token::state::Account::unpack(&raw.data) {
+                (acct.mint, acct.amount)
+            } else if raw.data.len() >= 72 {
+                // Token-2022 base layout: mint at 0..32, owner at 32..64, amount at 64..72
+                let mint_bytes: [u8; 32] = match raw.data[0..32].try_into() {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let amount = u64::from_le_bytes(match raw.data[64..72].try_into() {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                });
+                (Pubkey::from(mint_bytes), amount)
+            } else {
+                continue;
             };
 
-            if token_acct.amount == 0 {
+            if amount == 0 {
                 continue;
             }
-            let mint = token_acct.mint;
             if skip_mints.contains(&mint) {
                 continue;
             }
@@ -1565,7 +1591,7 @@ impl Sniper {
 
             info!(
                 mint = %mint,
-                amount = token_acct.amount,
+                amount,
                 "Startup scan: found existing position — looking up Raydium pool"
             );
 
@@ -1593,7 +1619,7 @@ impl Sniper {
             info!(
                 mint = %mint,
                 pool = %pool.id,
-                amount = token_acct.amount,
+                amount,
                 "Startup scan: spawning sell monitor"
             );
 
@@ -1901,6 +1927,11 @@ struct SellMonitor {
     /// Session heat loss timestamps — updated on loss; drives the cooldown_until_ms gate
     loss_heat_timestamps: Arc<parking_lot::Mutex<Vec<u64>>>,
 }
+
+/// Minimum quote-vault balance considered viable for a swap.
+/// 10_000 lamports was too low — pools with up to 500k lamports (≈$0.10) can still
+/// produce near-zero output that Raydium AMM rejects, burning all retry rounds.
+const DRAIN_THRESHOLD_LAMPORTS: u64 = 500_000;
 
 impl SellMonitor {
     async fn monitor_and_sell(&self, pool: CachedPool, base_ata: Pubkey) {
@@ -2406,6 +2437,34 @@ impl SellMonitor {
 
                         prev_value = current_value;
 
+                        // Dead-zone early exit: live data shows all profitable pump.fun
+                        // trades exit within 6 s of entry. A position that never reached
+                        // `no_pump_min_gain_pct` after `no_pump_timeout_secs` is dead
+                        // capital — exit and redeploy rather than holding through the
+                        // full monitoring window at a -0.5% AMM-spread loss.
+                        if self.config.no_pump_timeout_secs > 0 {
+                            let age_secs = position_started.elapsed().as_secs();
+                            if age_secs >= self.config.no_pump_timeout_secs {
+                                let peak_pnl_pct = (peak_value as f64 - self.entry_amount_raw as f64)
+                                    / self.entry_amount_raw as f64 * 100.0;
+                                if peak_pnl_pct < self.config.no_pump_min_gain_pct {
+                                    let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                    let pnl_sol = pnl_lamports as f64 / 1e9;
+                                    tracing::info!(
+                                        mint = %pool.base_mint,
+                                        age_secs,
+                                        peak_pnl_pct = %format!("{:.2}%", peak_pnl_pct),
+                                        threshold_pct = self.config.no_pump_min_gain_pct,
+                                        pnl_sol,
+                                        "No pump detected — recycling dead position"
+                                    );
+                                    self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                    self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                    break;
+                                }
+                            }
+                        }
+
                         // Tiered partial-TP ladder (v0.9.6) — preferred over the
                         // legacy single partial when `tiered_partial_tp` is on.
                         // Sells `sell_pct` of REMAINING position at each trigger
@@ -2785,11 +2844,11 @@ impl SellMonitor {
         // start the retry loop, every round will fail on-chain. Skip them all.
         if let Ok(qb) = self.rpc.get_token_account_balance(&pool.quote_vault).await {
             let q: u64 = qb.amount.parse().unwrap_or(u64::MAX);
-            if q < 10_000 {
+            if q < DRAIN_THRESHOLD_LAMPORTS {
                 tracing::warn!(
                     mint = %pool.base_mint,
                     quote_vault_lamports = q,
-                    "Pool quote vault drained (sell_with_retry) — writing total-loss event"
+                    "Pool quote vault effectively drained (sell_with_retry) — writing total-loss event"
                 );
                 self.metrics.record_trade_failed();
                 TradeEvent {
@@ -2810,11 +2869,19 @@ impl SellMonitor {
             }
         }
 
+        // Sell rounds: (delay_secs, sell_round).
+        // sell_round 0 = normal slippage, 1 = 2× slippage, 2+ = min_out=0.
+        // Speed optimised for pump.fun rugs that drain in <3 s:
+        //   round 0 – immediate, normal slippage (fast confirmation attempt)
+        //   round 1 – immediate, 2× slippage (catch small price moves)
+        //   round 2 – 1 s wait, min_out=0 (accept any residual liquidity)
+        //   round 3 – 2 s wait, min_out=0 (last resort before writing ✗)
+        // Total wall-clock budget is now 3 s instead of 12 s.
         let rounds: &[(u64, u32)] = &[
             (0, 0),   // immediate, normal slippage
-            (1, 1),   // 1 s wait, 2× slippage
-            (3, 2),   // 3 s wait, min_out=0
-            (8, 2),   // 8 s wait, min_out=0 final attempt
+            (0, 1),   // immediate, 2× slippage
+            (1, 2),   // 1 s wait, min_out=0
+            (2, 2),   // 2 s wait, min_out=0 final attempt
         ];
 
         let mut current_amount = amount;
@@ -2881,12 +2948,8 @@ impl SellMonitor {
             }
         };
 
-        // Pool drain guard: if quote vault < 10_000 lamports the Raydium on-chain program
-        // rejects every swap regardless of min_out (constant-product denominator collapses).
-        // Writing a total-loss event and returning Ok(()) frees the processing lock so future
-        // pools can be bought. Burning 4 rounds × max_retries on a drained pool would lock
-        // the bot for 20+ seconds against a pool that can never fill the swap.
-        const DRAIN_THRESHOLD_LAMPORTS: u64 = 10_000;
+        // Pool drain guard: if quote vault < DRAIN_THRESHOLD_LAMPORTS the Raydium on-chain
+        // program rejects every swap regardless of min_out. Returns Ok(()) to free the lock.
         if quote_vault_lamports < DRAIN_THRESHOLD_LAMPORTS {
             tracing::warn!(
                 mint = %pool.base_mint,

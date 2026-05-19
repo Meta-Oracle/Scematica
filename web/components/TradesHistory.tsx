@@ -70,7 +70,7 @@ export function TradesHistory() {
                       : '—'}
                   </td>
                   <td className="px-2 py-1 text-right tabular-nums text-scema-muted font-mono">
-                    {t.amount_sol.toFixed(4)}
+                    {(t.amount_sol ?? 0).toFixed(4)}
                   </td>
                 </tr>
               ))}

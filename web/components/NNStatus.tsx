@@ -20,7 +20,11 @@ export function NNStatus() {
 
   if (!data) return null
 
-  const epsilonPct = (data.epsilon * 100).toFixed(1)
+  const epsilon     = data.epsilon ?? 1
+  const stepCount   = data.step_count ?? 0
+  const replaySize  = data.replay_size ?? 0
+  const totalReward = data.total_reward ?? 0
+  const epsilonPct  = (epsilon * 100).toFixed(1)
   const advisorColor = data.ready_to_advise ? 'text-scema-green' : 'text-scema-amber'
 
   return (
@@ -34,7 +38,7 @@ export function NNStatus() {
       <div className="grid grid-cols-4 divide-x divide-scema-border text-xs">
         <div className="flex flex-col items-center py-2 px-3 gap-0.5">
           <span className="text-scema-dim tracking-wider text-xs">STEPS</span>
-          <span className="text-scema-text font-bold tabular-nums">{data.step_count.toLocaleString()}</span>
+          <span className="text-scema-text font-bold tabular-nums">{stepCount.toLocaleString()}</span>
         </div>
         <div className="flex flex-col items-center py-2 px-3 gap-0.5">
           <span className="text-scema-dim tracking-wider text-xs">ε</span>
@@ -42,12 +46,12 @@ export function NNStatus() {
         </div>
         <div className="flex flex-col items-center py-2 px-3 gap-0.5">
           <span className="text-scema-dim tracking-wider text-xs">REPLAY</span>
-          <span className="text-scema-text font-bold tabular-nums">{data.replay_size}</span>
+          <span className="text-scema-text font-bold tabular-nums">{replaySize}</span>
         </div>
         <div className="flex flex-col items-center py-2 px-3 gap-0.5">
           <span className="text-scema-dim tracking-wider text-xs">REWARD</span>
-          <span className={`font-bold tabular-nums ${data.total_reward >= 0 ? 'text-scema-green' : 'text-scema-red-hi'}`}>
-            {data.total_reward >= 0 ? '+' : ''}{(data.total_reward / 1000).toFixed(1)}k
+          <span className={`font-bold tabular-nums ${totalReward >= 0 ? 'text-scema-green' : 'text-scema-red-hi'}`}>
+            {totalReward >= 0 ? '+' : ''}{(totalReward / 1000).toFixed(1)}k
           </span>
         </div>
       </div>
@@ -60,7 +64,7 @@ export function NNStatus() {
         <div className="w-full h-0.5 bg-scema-dim">
           <div
             className="h-full bg-gradient-to-r from-scema-red-hi to-scema-red transition-all duration-1000"
-            style={{ width: `${data.epsilon * 100}%` }}
+            style={{ width: `${epsilon * 100}%` }}
           />
         </div>
       </div>

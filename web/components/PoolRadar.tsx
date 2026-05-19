@@ -81,7 +81,7 @@ export function PoolRadar() {
                     {p.score}
                   </td>
                   <td className="px-2 py-1 text-right text-scema-text tabular-nums">
-                    {p.size_sol.toFixed(1)}
+                    {(p.size_sol ?? 0).toFixed(1)}
                   </td>
                   <td className="px-2 py-1 text-right text-scema-muted tabular-nums">
                     {fmtAge(p.timestamp)}

@@ -66,37 +66,46 @@ export function MetricsPanel() {
     )
   }
 
-  const winRate = data.session_wins + data.session_losses > 0
-    ? ((data.session_wins / (data.session_wins + data.session_losses)) * 100).toFixed(0)
+  const pnl      = data.pnl_sol ?? 0
+  const dailyPnl = data.daily_pnl_sol ?? 0
+  const walletBal = data.wallet_balance_sol ?? 0
+  const wins     = data.session_wins ?? 0
+  const losses   = data.session_losses ?? 0
+  const attempted = data.trades_attempted ?? 0
+  const confirmed = data.trades_confirmed ?? 0
+  const open      = data.open_positions ?? 0
+
+  const winRate = wins + losses > 0
+    ? ((wins / (wins + losses)) * 100).toFixed(0)
     : '—'
 
-  const pnlKind = data.pnl_sol > 0 ? 'positive' : data.pnl_sol < 0 ? 'negative' : 'neutral'
+  const pnlKind = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral'
 
   return (
     <>
       <MetricCard
         label="PnL (Session)"
-        value={`${data.pnl_sol >= 0 ? '+' : ''}${data.pnl_sol.toFixed(4)} SOL`}
-        sub={`Daily: ${data.daily_pnl_sol >= 0 ? '+' : ''}${data.daily_pnl_sol.toFixed(4)} SOL`}
+        value={`${pnl >= 0 ? '+' : ''}${pnl.toFixed(4)} SOL`}
+        sub={`Daily: ${dailyPnl >= 0 ? '+' : ''}${dailyPnl.toFixed(4)} SOL`}
         kind={pnlKind}
       />
       <MetricCard
         label="Trades"
-        value={`${data.trades_confirmed}/${data.trades_attempted}`}
+        value={`${confirmed}/${attempted}`}
         sub={`${winRate}% win rate`}
         kind="neutral"
       />
       <MetricCard
         label="W / L"
-        value={`${data.session_wins} / ${data.session_losses}`}
-        sub={`${data.open_positions} open`}
-        kind={data.session_wins > data.session_losses ? 'positive' : data.session_losses > 0 ? 'negative' : 'neutral'}
+        value={`${wins} / ${losses}`}
+        sub={`${open} open`}
+        kind={wins > losses ? 'positive' : losses > 0 ? 'negative' : 'neutral'}
       />
       <MetricCard
         label="Wallet"
-        value={`${data.wallet_balance_sol.toFixed(4)} SOL`}
+        value={`${walletBal.toFixed(4)} SOL`}
         sub="Balance"
-        kind={data.wallet_balance_sol < 0.05 ? 'negative' : 'neutral'}
+        kind={walletBal < 0.05 ? 'negative' : 'neutral'}
       />
       <MetricCard
         label="Uptime"

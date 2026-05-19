@@ -934,6 +934,11 @@ impl Sniper {
                         .as_array()
                         .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
                         .unwrap_or_default();
+                    // Skip gating when Q-values are all zero — NN hasn't observed
+                    // this pool yet. max_by on equal values returns the last index
+                    // (SellAll), which would block every buy with no real signal.
+                    let has_signal = !q_vals.is_empty() && !q_vals.iter().all(|&v| v == 0.0);
+                    if has_signal {
                     if let Some(best_action) = q_vals.iter()
                         .enumerate()
                         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
@@ -956,6 +961,7 @@ impl Sniper {
                         };
                         effective_quote_amount_raw =
                             (effective_quote_amount_raw as f64 * nn_mult) as u64;
+                    }
                     }
                 }
             }

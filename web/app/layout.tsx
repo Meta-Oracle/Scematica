@@ -11,7 +11,7 @@ export const metadata: Metadata = {
     description: 'AI-powered Solana sniper. 250k $SCEMA required.',
     type: 'website',
   },
-  icons: { icon: '/favicon.ico' },
+  icons: { icon: '/favicon.svg' },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

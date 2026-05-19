@@ -10,7 +10,6 @@ import { TradesHistory } from '@/components/TradesHistory'
 import { TopUpWallet } from '@/components/TopUpWallet'
 import { WalletStatus } from '@/components/WalletStatus'
 import { GatedControls } from '@/components/GatedControls'
-import { TradeFee } from '@/components/TradeFee'
 
 export default function Home() {
   return (
@@ -39,7 +38,6 @@ export default function Home() {
             <span className="text-scema-dim mx-1">·</span>
             <span className="text-scema-dim">3-LAYER AI CHAIN</span>
           </div>
-          <TradeFee />
           <WalletStatus />
         </div>
       </header>

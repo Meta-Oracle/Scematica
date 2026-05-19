@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token'
+import { getAssociatedTokenAddress, getAccount, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
 
 const SCEMA_MINT = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
 const SCEMA_REQUIRED = 250_000
@@ -35,8 +35,8 @@ export function WalletStatus() {
       } catch {}
 
       try {
-        const ata = await getAssociatedTokenAddress(SCEMA_MINT, publicKey!, false)
-        const acct = await getAccount(connection, ata)
+        const ata = await getAssociatedTokenAddress(SCEMA_MINT, publicKey!, false, TOKEN_2022_PROGRAM_ID)
+        const acct = await getAccount(connection, ata, undefined, TOKEN_2022_PROGRAM_ID)
         const amount = Number(acct.amount) / 1e6
         if (!cancelled) {
           setScema(amount)

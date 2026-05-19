@@ -11,11 +11,16 @@ const LEVEL_COLOR: Record<string, string> = {
 }
 
 function parseLine(line: string) {
-  // ISO timestamp prefix: 2026-05-18T14:01:23.000000Z  LEVEL target: message
-  const m = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(INFO|WARN|ERROR|DEBUG)\s+(\S+):\s+(.*)/)
+  // Full ISO:   2026-05-18T22:28:03.228Z  INFO  target: msg
+  let m = line.match(/^(\d{4}-\d{2}-\d{2}T([\d:]{8})[\d.]*Z)\s+(INFO|WARN|ERROR|DEBUG)\s+(\S+):\s+(.*)/)
   if (m) {
-    const [, ts, level, target, msg] = m
-    const time = ts.slice(11, 19) // HH:MM:SS
+    const [,, time, level, target, msg] = m
+    return { time, level, target, msg }
+  }
+  // Short time: 22:28:03.228163Z  INFO  target: msg  (tracing omits date on same-day lines)
+  m = line.match(/^(\d{1,2}:\d{2}:\d{2})[\d.]*Z?\s+(INFO|WARN|ERROR|DEBUG)\s+(\S+):\s+(.*)/)
+  if (m) {
+    const [, time, level, target, msg] = m
     return { time, level, target, msg }
   }
   return { time: '', level: 'INFO', target: '', msg: line }
@@ -45,7 +50,6 @@ export function LogStream() {
     return () => { alive = false; clearInterval(iv) }
   }, [])
 
-  // Auto-scroll only when pinned to bottom
   useEffect(() => {
     if (pinned && !paused && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: 'instant' })
@@ -68,7 +72,6 @@ export function LogStream() {
       <div className="panel-header justify-between">
         <span>Log Stream</span>
         <div className="flex items-center gap-2 ml-auto">
-          {/* Filter input */}
           <input
             type="text"
             placeholder="filter…"
@@ -114,7 +117,7 @@ export function LogStream() {
           const color = LEVEL_COLOR[level] || 'text-scema-text'
           return (
             <div key={i} className="flex gap-2 hover:bg-scema-red-bg/10 px-1 py-0.5 font-mono">
-              <span className="text-scema-dim shrink-0 tabular-nums">{time || '──:──:──'}</span>
+              <span className="text-scema-dim shrink-0 tabular-nums w-16">{time || '──:──:──'}</span>
               <span className={`shrink-0 w-10 ${color} font-bold`}>{level}</span>
               <span className={`${color} break-all`}>{msg}</span>
             </div>

@@ -1,56 +1,22 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
-import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { getAssociatedTokenAddress, getAccount, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
-
-const SCEMA_MINT = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
-const SCEMA_REQUIRED = 250_000
+import { useScemaGate, SCEMA_REQUIRED } from '@/lib/ScemaGateContext'
 
 function shortAddr(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`
 }
 
+function fmtScema(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`
+  return n.toFixed(0)
+}
+
 export function WalletStatus() {
   const { publicKey, connected } = useWallet()
-  const { connection } = useConnection()
-  const [sol, setSol] = useState<number | null>(null)
-  const [scema, setScema] = useState<number | null>(null)
-  const [gated, setGated] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    if (!publicKey || !connected) {
-      setSol(null); setScema(null); setGated(null)
-      return
-    }
-
-    let cancelled = false
-
-    async function fetchBalances() {
-      try {
-        const lamports = await connection.getBalance(publicKey!)
-        if (!cancelled) setSol(lamports / LAMPORTS_PER_SOL)
-      } catch {}
-
-      try {
-        const ata = await getAssociatedTokenAddress(SCEMA_MINT, publicKey!, false, TOKEN_2022_PROGRAM_ID)
-        const acct = await getAccount(connection, ata, undefined, TOKEN_2022_PROGRAM_ID)
-        const amount = Number(acct.amount) / 1e6
-        if (!cancelled) {
-          setScema(amount)
-          setGated(amount >= SCEMA_REQUIRED)
-        }
-      } catch {
-        if (!cancelled) { setScema(0); setGated(false) }
-      }
-    }
-
-    fetchBalances()
-    const iv = setInterval(fetchBalances, 15_000)
-    return () => { cancelled = true; clearInterval(iv) }
-  }, [publicKey, connected, connection])
+  const { scemaBalance, solBalance, gated } = useScemaGate()
 
   return (
     <div className="flex items-center gap-3">
@@ -65,23 +31,27 @@ export function WalletStatus() {
               : 'border-scema-dim text-scema-muted'
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full inline-block ${
-              gated === true ? 'bg-scema-green animate-pulse' :
-              gated === false ? 'bg-scema-red-hi' : 'bg-scema-muted'
+              gated === true  ? 'bg-scema-green animate-pulse' :
+              gated === false ? 'bg-scema-red-hi' : 'bg-scema-muted animate-pulse'
             }`}/>
-            {gated === true ? 'GATED ✓' : gated === false ? 'NO SCEMA' : '...'}
+            {gated === true ? 'GATED ✓' : gated === false ? 'NO SCEMA' : '…'}
           </div>
 
           {/* Balances */}
           <div className="hidden md:flex flex-col items-end gap-0 leading-tight">
-            <span className="text-scema-muted text-xs">{shortAddr(publicKey.toBase58())}</span>
-            <div className="flex gap-2 text-xs">
-              {sol !== null && (
-                <span className="text-scema-text">{sol.toFixed(3)} <span className="text-scema-muted">SOL</span></span>
-              )}
-              {scema !== null && (
-                <span className={scema >= SCEMA_REQUIRED ? 'text-scema-green' : 'text-scema-red-hi'}>
-                  {scema >= 1000 ? `${(scema/1000).toFixed(0)}k` : scema.toFixed(0)} <span className="text-scema-muted">SCEMA</span>
+            <span className="text-scema-muted text-xs font-mono">{shortAddr(publicKey.toBase58())}</span>
+            <div className="flex gap-2 text-xs font-mono">
+              {solBalance !== null && (
+                <span className="text-scema-text tabular-nums">
+                  {solBalance.toFixed(3)} <span className="text-scema-dim">SOL</span>
                 </span>
+              )}
+              {scemaBalance !== null ? (
+                <span className={`tabular-nums ${scemaBalance >= SCEMA_REQUIRED ? 'text-scema-green' : 'text-scema-red-hi'}`}>
+                  {fmtScema(scemaBalance)} <span className="text-scema-dim">SCEMA</span>
+                </span>
+              ) : (
+                <span className="text-scema-dim">… SCEMA</span>
               )}
             </div>
           </div>

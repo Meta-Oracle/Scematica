@@ -12,8 +12,22 @@ import { PoolRadar }        from '@/components/PoolRadar'
 import { SniperControls }   from '@/components/SniperControls'
 import { TradeFee }         from '@/components/TradeFee'
 import { TradesHistory }    from '@/components/TradesHistory'
-import { TopUpWallet }      from '@/components/TopUpWallet'
 import { WalletStatus }     from '@/components/WalletStatus'
+
+// Panel row: grid children need both h-full and min-h-0 so that
+// panels can resolve h-full and overflow-y-auto constrains correctly.
+function Row2({ left, right, height = 'h-72' }: {
+  left: React.ReactNode
+  right: React.ReactNode
+  height?: string
+}) {
+  return (
+    <section className={`grid grid-cols-1 lg:grid-cols-3 gap-3 ${height} overflow-hidden`}>
+      <div className="lg:col-span-2 h-full min-h-0 overflow-hidden">{left}</div>
+      <div className="h-full min-h-0 overflow-hidden">{right}</div>
+    </section>
+  )
+}
 
 export default function Home() {
   return (
@@ -22,8 +36,6 @@ export default function Home() {
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b border-scema-border bg-scema-black/95 backdrop-blur-sm">
         <div className="flex items-center justify-between px-4 py-3 max-w-[1600px] mx-auto gap-4">
-
-          {/* Logo */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="relative w-7 h-7 flex items-center justify-center">
               <div className="absolute inset-0 border border-scema-red rotate-45 animate-glow-pulse" />
@@ -36,8 +48,6 @@ export default function Home() {
               <span className="text-scema-dim text-xs tracking-widest">SOLANA SNIPER PROTOCOL</span>
             </div>
           </div>
-
-          {/* Center info */}
           <div className="hidden lg:flex items-center gap-2 text-xs text-scema-muted">
             <span className="w-1.5 h-1.5 rounded-full bg-scema-red-hi animate-pulse" />
             MAINNET
@@ -46,8 +56,6 @@ export default function Home() {
             <span className="text-scema-dim mx-1">·</span>
             <span className="text-scema-dim">3-LAYER AI</span>
           </div>
-
-          {/* Right cluster */}
           <div className="flex items-center gap-3 ml-auto">
             <HealthBadge />
             <TradeFee />
@@ -56,13 +64,11 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ── CA Banner ──────────────────────────────────────────────────── */}
       <CABanner />
 
-      {/* ── Main ───────────────────────────────────────────────────────── */}
       <main className="flex-1 max-w-[1600px] mx-auto w-full px-3 py-4 flex flex-col gap-4">
 
-        {/* Live metrics — 5 cards */}
+        {/* Live metrics */}
         <section>
           <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">◈ Live Metrics</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
@@ -70,10 +76,9 @@ export default function Home() {
           </div>
         </section>
 
-        {/* NN agent status */}
         <NNStatus />
 
-        {/* Sniper controls — gated */}
+        {/* Controls */}
         <section>
           <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">
             ◈ Controls <span className="text-scema-dim ml-1">(connect wallet to unlock)</span>
@@ -84,37 +89,24 @@ export default function Home() {
         </section>
 
         {/* Pool Radar + Filter Stats */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-3 h-80">
-          <div className="lg:col-span-2 min-h-0">
-            <PoolRadar />
-          </div>
-          <div className="min-h-0">
-            <FilterStatsPanel />
-          </div>
-        </section>
+        <Row2 height="h-80"
+          left={<PoolRadar />}
+          right={<FilterStatsPanel />}
+        />
 
         {/* Trades + Open Positions */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-3 h-72">
-          <div className="lg:col-span-2 min-h-0">
-            <TradesHistory />
-          </div>
-          <div className="min-h-0">
-            <OpenPositions />
-          </div>
-        </section>
+        <Row2 height="h-72"
+          left={<TradesHistory />}
+          right={<OpenPositions />}
+        />
 
-        {/* PnL Chart + Top Up */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-3 h-52">
-          <div className="lg:col-span-2 min-h-0">
-            <PnlChart />
-          </div>
-          <div className="min-h-0">
-            <TopUpWallet />
-          </div>
+        {/* PnL Chart */}
+        <section className="h-52 overflow-hidden">
+          <PnlChart />
         </section>
 
         {/* Log Stream */}
-        <section className="h-72">
+        <section className="h-72 overflow-hidden">
           <LogStream />
         </section>
 

@@ -348,6 +348,285 @@ taskkill /F /IM sniper.exe
 
 ---
 
+---
+
+## Web Dashboard
+
+The web dashboard is a browser-based interface for the sniper. It shows live metrics, pool radar, trade history, PnL chart, log stream, and control buttons — all in a modern dark UI you can open in any browser. It works alongside the sniper and connects your Phantom wallet to gate access and collect per-trade fees.
+
+> **TUI vs Web:** The ratatui TUI dashboard (Steps 10–12) and the web dashboard are two separate ways to monitor and control the same sniper process. You can use one or both — they read the same files.
+
+---
+
+### Web Step 1 — Install Node.js
+
+The web dashboard is a Next.js app, which requires Node.js.
+
+1. Go to **https://nodejs.org** and download the **LTS** version (the left button — "Recommended For Most Users").
+2. Run the downloaded installer (`node-vXX.X.X-x64.msi`).
+3. Click **Next** through all screens — defaults are fine. Click **Install**, then **Finish**.
+4. Close any open PowerShell windows and open a new one.
+
+**Verify it worked:**
+```powershell
+node --version
+npm --version
+```
+You should see version numbers for both (e.g. `v20.11.0` and `10.4.0`).
+
+---
+
+### Web Step 2 — Install Web Dependencies
+
+The web app is inside the `web` folder in the project.
+
+```powershell
+cd "$env:USERPROFILE\Documents\scematica\web"
+npm install
+```
+
+This downloads all the packages the web app needs. It takes 1–3 minutes and only needs to be done once (or again after updates).
+
+---
+
+### Web Step 3 — Configure the RPC Endpoint (Optional)
+
+By default the web app uses a Helius RPC endpoint already embedded in the code. If you want it to use your own Helius key (recommended for production), create a local environment file:
+
+1. In PowerShell, while in the `web` folder:
+```powershell
+notepad .env.local
+```
+2. Notepad will ask to create a new file — click **Yes**.
+3. Add this line (replace with your Helius API key from Step 6 of the main guide):
+```
+NEXT_PUBLIC_RPC_ENDPOINT=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+```
+4. Save and close.
+
+> **Why this matters:** The web app connects your Phantom wallet to Solana mainnet to check your SCEMA balance and send per-trade fees. Using your own RPC key prevents rate-limit issues.
+
+---
+
+### Web Step 4 — Build and Run the Rust API Server
+
+The web dashboard talks to a small Rust HTTP server that reads the sniper's data files and accepts control commands. You need to run this alongside the sniper.
+
+**Build it once** (if you haven't already built the full project):
+```powershell
+cd "$env:USERPROFILE\Documents\scematica"
+cargo build --release --bin api
+```
+
+**Run the API server** (keep this window open):
+```powershell
+cd "$env:USERPROFILE\Documents\scematica"
+.\target\release\api.exe
+```
+
+You should see:
+```
+INFO scematica_api: Scematica API listening on http://0.0.0.0:3001
+```
+
+> The API server runs on **port 3001**. Leave this terminal window open — closing it stops the API.
+
+---
+
+### Web Step 5 — Start the Sniper
+
+The web dashboard shows live data from the sniper. Open a second terminal window and start the sniper:
+
+```powershell
+cd "$env:USERPROFILE\Documents\scematica"
+.\target\release\sniper.exe
+```
+
+Or if you prefer to use the TUI dashboard at the same time, start that instead — it also manages the sniper:
+```powershell
+.\target\release\dashboard.exe
+```
+
+> The web dashboard and TUI dashboard can run simultaneously. Both read the same sniper data files.
+
+---
+
+### Web Step 6 — Start the Web Dashboard
+
+Open a third terminal window and run:
+
+```powershell
+cd "$env:USERPROFILE\Documents\scematica\web"
+npm run dev
+```
+
+You should see:
+```
+  ▲ Next.js 14.x.x
+  - Local:        http://localhost:3000
+  - Ready in 2.3s
+```
+
+Now open **http://localhost:3000** in your browser (Chrome or Firefox recommended).
+
+**For a production-grade server** (faster, no dev overhead):
+```powershell
+npm run build
+npm start
+```
+
+---
+
+### Web Step 7 — Connect Your Phantom Wallet
+
+When you open the web dashboard you'll see the Scematica interface. In the top-right corner:
+
+1. Click the **Select Wallet** button.
+2. Choose **Phantom** from the popup.
+3. Approve the connection in Phantom.
+
+The header will now show your wallet address, your SOL balance, and your SCEMA balance.
+
+> **Phantom required:** Install Phantom from **https://phantom.app** if you don't have it. Backpack and Solflare also work — they auto-register via the Wallet Standard protocol.
+
+---
+
+### Web Step 8 — The SCEMA Token Gate
+
+The **Controls** section of the web dashboard (Sell Mode, Dump Mode, High Speed, and rate buttons) requires you to hold **250,000 SCEMA** in your connected wallet.
+
+If your wallet has enough SCEMA, the controls unlock immediately and the header shows **GATED ✓** in green.
+
+If you don't have enough, the controls section shows:
+- How many SCEMA you currently hold
+- How many more you need
+- A **Buy $SCEMA on Jupiter** link
+
+The gate re-checks your balance every 15 seconds automatically.
+
+**To get SCEMA:**
+- Mint address: `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`
+- Buy on Jupiter (https://jup.ag) or pump.fun — search the mint address above.
+- Always verify the mint address before buying.
+
+---
+
+### Web Step 9 — Using the Controls
+
+Once gated, the **Controls** panel gives you these buttons (keyboard shortcuts work anywhere on the page):
+
+| Button | Key | What it does |
+|--------|-----|--------------|
+| SELL | `S` | Pauses new buys, sells all open positions through normal TP/SL |
+| DUMP | `D` | Force-sells everything immediately with no slippage protection |
+| FAST | `H` | High-speed mode — bypasses slower filters for faster entries |
+| CONSERVATIVE | `1` | 0.5× position size multiplier |
+| NORMAL | `2` | 1× multiplier (default) |
+| AGGRESSIVE | `3` | 2× multiplier |
+| RUNNER | `4` | 3× multiplier |
+| Cycle mode | `R` | Cycles through rate modes in order |
+
+> **Keyboard shortcuts** work as long as you are not typing in a text field. Press the key anywhere on the page.
+
+---
+
+### Web Step 10 — Understanding the Panels
+
+**Live Metrics** — Five cards at the top showing session PnL, trade counts, win/loss ratio, pools tracked, and uptime. Updates every 3 seconds.
+
+**Deep Q* Agent** — Shows the neural network's training progress: steps trained, epsilon (how exploratory vs. exploitative), replay buffer size, and total reward signal.
+
+**Pool Radar** — Live feed of every pool detected on Raydium. Shows score, liquidity, and age. Green rows passed the filter pipeline; dim rows were rejected.
+
+**Filter Stats** — Counts how many pools each filter has rejected. Useful for tuning — if one filter is blocking nearly everything, it may be too strict.
+
+**Trade History** — Every buy and sell the sniper has made this session, newest first. Shows time, token, type, SOL amount, and PnL percentage.
+
+**Open Positions** — Tokens the sniper currently holds. Shows entry amount and how long the position has been open.
+
+**PnL Curve** — Cumulative profit/loss over the session as a chart. Green line = net positive, red = net negative.
+
+**Log Stream** — Live log output from the sniper process, same as the TUI Logs tab.
+
+---
+
+### Web Step 11 — The Fee System
+
+Every time the sniper confirms a sell trade, the web dashboard tracks a small fee owed:
+
+- **1% of the SOL received** from that sell
+- **1% of the same value in $SCEMA** (priced live via Jupiter)
+
+Fees from multiple trades are batched together and sent in a single transaction when the total reaches **0.0005 SOL** — or you can click the fee indicator in the header to pay immediately at any time.
+
+Both the SOL fee and the SCEMA fee go out in a single Solana transaction signed by your Phantom wallet. Phantom will prompt you to approve it.
+
+> The fee only applies to **confirmed sell trades** — not buys, not failed trades, and not arb trades.
+
+---
+
+### Web Troubleshooting
+
+**"API server unreachable" / panels show no data**
+The Rust API server isn't running. Open a new terminal and start it:
+```powershell
+cd "$env:USERPROFILE\Documents\scematica"
+.\target\release\api.exe
+```
+
+**Health badge shows red / sniper offline**
+The sniper isn't running, or it crashed. Start it:
+```powershell
+.\target\release\sniper.exe
+```
+
+**Controls show "Insufficient $SCEMA"**
+Your connected Phantom wallet doesn't have 250,000 SCEMA. Buy SCEMA on Jupiter using the mint address `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump` and then reconnect.
+
+**Panels show data but controls do nothing**
+Make sure the API server (`api.exe`) is running — it's what receives control POST requests from the web UI.
+
+**"npm: command not found" in PowerShell**
+Close all PowerShell windows and reopen one. Node.js updates the system PATH on install, but existing windows don't see it. If still not found, restart your computer.
+
+**Web dashboard is blank or shows a React error**
+Run `npm run build` in the `web` folder and look at the error output — it will tell you what's wrong. Common cause: a missing package. Fix with `npm install`.
+
+**Phantom wallet shows wrong SCEMA balance**
+The web app queries on-chain state directly — it bypasses Phantom's cached balance. If Phantom shows a different number, the web app is correct.
+
+---
+
+### Web Quick Reference
+
+```powershell
+# Open the web folder
+cd "$env:USERPROFILE\Documents\scematica\web"
+
+# Install dependencies (once, or after updates)
+npm install
+
+# Start the web dashboard (development)
+npm run dev
+
+# Start the web dashboard (production — faster)
+npm run build
+npm start
+
+# Start the Rust API server (separate terminal, from project root)
+cd "$env:USERPROFILE\Documents\scematica"
+.\target\release\api.exe
+```
+
+Three processes to keep running simultaneously:
+1. **Sniper** — `.\target\release\sniper.exe` (or `dashboard.exe` for the TUI)
+2. **API server** — `.\target\release\api.exe`
+3. **Web app** — `npm run dev` (or `npm start` after a build)
+
+Then open **http://localhost:3000** in your browser.
+
+---
+
 ## Getting Help
 
 - **GitHub Issues:** https://github.com/Deadsg/scematica/issues
@@ -366,18 +645,37 @@ For questions, open a GitHub issue with:
 # Navigate to the project folder
 cd "$env:USERPROFILE\Documents\scematica"
 
-# Build the project (do this after any code changes)
+# Build everything (do this after any code changes)
 cargo build --release
 
 # Run in demo mode (no real money, for testing)
 cargo run --release --bin dashboard -- --demo
 
-# Run the real dashboard
+# Run the TUI dashboard
 cargo run --release --bin dashboard
+
+# Run just the sniper (no TUI)
+.\target\release\sniper.exe
+
+# Run the Rust API server (required for web dashboard)
+.\target\release\api.exe
 
 # Kill the sniper if it gets stuck
 taskkill /F /IM sniper.exe
 
 # Check if sniper is running
 tasklist | Select-String "sniper"
+
+# ── Web dashboard ─────────────────────────────────────────────
+cd "$env:USERPROFILE\Documents\scematica\web"
+
+# Install web dependencies (once)
+npm install
+
+# Start web dashboard — dev mode
+npm run dev
+
+# Start web dashboard — production mode
+npm run build && npm start
+# Then open http://localhost:3000 in your browser
 ```

@@ -16,8 +16,9 @@
 
 use axum::{
     extract::Query,
-    http::{Method, StatusCode},
-    response::{IntoResponse, Json},
+    http::{Method, Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -29,7 +30,42 @@ use std::{
     net::SocketAddr,
 };
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, debug};
+
+// ── x402 payment gate ─────────────────────────────────────────────────────────
+
+const FEE_LAMPORTS: u64 = 10_000_000; // 0.01 SOL
+const FEE_RECIPIENT: &str = "CvLUHUooCN8k3vJunor9qwX7oJNCt8Q6VhyKi5EMBKet";
+const X_PAYMENT_HEADER: &str = "x-payment";
+
+async fn x402_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
+    if req.headers().contains_key(X_PAYMENT_HEADER) {
+        let payment_proof = req.headers()
+            .get(X_PAYMENT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        debug!(proof = payment_proof, "x402 payment accepted");
+        next.run(req).await
+    } else {
+        let body = json!({
+            "x402_version": 2,
+            "resource": {
+                "url": req.uri().to_string(),
+                "method": "POST",
+                "description": "Scematica control command — pay 0.01 SOL to execute"
+            },
+            "accepts": [{
+                "scheme": "sol-transfer",
+                "network": "solana-mainnet",
+                "asset": "native",
+                "amount": FEE_LAMPORTS,
+                "pay_to": FEE_RECIPIENT,
+                "max_timeout_seconds": 120
+            }]
+        });
+        (StatusCode::PAYMENT_REQUIRED, Json(body)).into_response()
+    }
+}
 
 // ── file paths ────────────────────────────────────────────────────────────────
 
@@ -254,20 +290,25 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
+    // POST control routes — each requires a valid X-Payment header (x402)
+    let control_routes = Router::new()
+        .route("/api/controls/sell-mode",  post(sell_mode_handler))
+        .route("/api/controls/dump-mode",  post(dump_mode_handler))
+        .route("/api/controls/rate-mode",  post(rate_mode_handler))
+        .route("/api/controls/high-speed", post(high_speed_handler))
+        .layer(axum::middleware::from_fn(x402_middleware));
+
     let app = Router::new()
-        .route("/health",                      get(api_health))
-        .route("/api/metrics",                 get(metrics_handler))
-        .route("/api/pools",                   get(pools_handler))
-        .route("/api/filters",                 get(filters_handler))
-        .route("/api/logs",                    get(logs_handler))
-        .route("/api/trades",                  get(trades_handler))
-        .route("/api/nn",                      get(nn_handler))
-        .route("/api/health",                  get(health_handler))
-        .route("/api/controls",                get(controls_get_handler))
-        .route("/api/controls/sell-mode",      post(sell_mode_handler))
-        .route("/api/controls/dump-mode",      post(dump_mode_handler))
-        .route("/api/controls/rate-mode",      post(rate_mode_handler))
-        .route("/api/controls/high-speed",     post(high_speed_handler))
+        .route("/health",           get(api_health))
+        .route("/api/metrics",      get(metrics_handler))
+        .route("/api/pools",        get(pools_handler))
+        .route("/api/filters",      get(filters_handler))
+        .route("/api/logs",         get(logs_handler))
+        .route("/api/trades",       get(trades_handler))
+        .route("/api/nn",           get(nn_handler))
+        .route("/api/health",       get(health_handler))
+        .route("/api/controls",     get(controls_get_handler))
+        .merge(control_routes)
         .layer(cors);
 
     let port: u16 = std::env::var("PORT")

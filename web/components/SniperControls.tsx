@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js'
 
 // Rate modes matching the TUI dashboard
 const RATE_MODES = ['conservative', 'normal', 'aggressive', 'runner'] as const
@@ -27,17 +29,14 @@ const MODE_MULT: Record<RateMode, string> = {
   runner:       '3×',
 }
 
-async function postControl(endpoint: string, body: object) {
-  try {
-    await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-  } catch {}
-}
+const FEE_RECIPIENT = new PublicKey('CvLUHUooCN8k3vJunor9qwX7oJNCt8Q6VhyKi5EMBKet')
+const FEE_LAMPORTS  = Math.floor(0.01 * LAMPORTS_PER_SOL)
+const SESSION_KEY   = 'scema_x402_payment'
 
 export function SniperControls() {
+  const { publicKey, sendTransaction } = useWallet()
+  const { connection } = useConnection()
+
   const [state, setState] = useState<ControlState>({
     sell_mode: false,
     dump_mode: false,
@@ -45,8 +44,80 @@ export function SniperControls() {
     high_speed: false,
   })
   const [lastKey, setLastKey] = useState('')
+  const [payStatus, setPayStatus] = useState<'idle' | 'paying' | 'error'>('idle')
   const stateRef = useRef(state)
   useEffect(() => { stateRef.current = state }, [state])
+
+  // Retrieve cached X-Payment proof for this session
+  function getCachedPayment(): string | null {
+    try { return sessionStorage.getItem(SESSION_KEY) } catch { return null }
+  }
+  function cachePayment(xPayment: string) {
+    try { sessionStorage.setItem(SESSION_KEY, xPayment) } catch {}
+  }
+
+  // Pay 0.01 SOL via x402 and return the X-Payment header value
+  async function acquirePayment(): Promise<string | null> {
+    const cached = getCachedPayment()
+    if (cached) return cached
+
+    if (!publicKey || !sendTransaction) return null
+    setPayStatus('paying')
+    try {
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: FEE_RECIPIENT,
+          lamports: FEE_LAMPORTS,
+        })
+      )
+      const { blockhash } = await connection.getLatestBlockhash()
+      tx.recentBlockhash = blockhash
+      tx.feePayer = publicKey
+
+      const sig = await sendTransaction(tx, connection)
+      await connection.confirmTransaction(sig, 'confirmed')
+
+      const xPayment = btoa(JSON.stringify({
+        x402_version: 2,
+        scheme: 'sol-transfer',
+        network: 'solana-mainnet',
+        payload: { transaction: sig },
+      }))
+      cachePayment(xPayment)
+      setPayStatus('idle')
+      return xPayment
+    } catch {
+      setPayStatus('error')
+      setTimeout(() => setPayStatus('idle'), 4000)
+      return null
+    }
+  }
+
+  async function postControl(endpoint: string, body: object) {
+    try {
+      // Try without payment first; if 402, acquire x402 payment and retry
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.status !== 402) return
+
+      // x402 flow: pay 0.01 SOL then retry
+      const xPayment = await acquirePayment()
+      if (!xPayment) return
+
+      await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment': xPayment,
+        },
+        body: JSON.stringify(body),
+      })
+    } catch {}
+  }
 
   // Poll control state from API
   useEffect(() => {
@@ -120,7 +191,13 @@ export function SniperControls() {
     <div className="panel">
       <div className="panel-header justify-between">
         <span>Sniper Controls</span>
-        {lastKey && (
+        {payStatus === 'paying' && (
+          <span className="text-scema-amber text-xs animate-pulse">◈ x402 — paying 0.01 SOL…</span>
+        )}
+        {payStatus === 'error' && (
+          <span className="text-scema-red-hi text-xs">✗ Payment failed</span>
+        )}
+        {lastKey && payStatus === 'idle' && (
           <span className="text-scema-red-hi text-xs font-bold animate-fade-in">
             KEY: [{lastKey.toUpperCase()}]
           </span>

@@ -68,7 +68,7 @@ export function FilterStatsPanel() {
       </div>
 
       {/* Rejection breakdown */}
-      <div className="flex-1 overflow-y-auto divide-y divide-scema-border/40">
+      <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-scema-border/40">
         {rejections.map(([name, count]) => (
           <div key={name} className="flex items-center justify-between px-3 py-1.5 hover:bg-scema-red-bg/10 transition-colors">
             <span className="text-scema-muted text-xs font-mono truncate max-w-[60%]">{name}</span>

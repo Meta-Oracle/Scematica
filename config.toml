@@ -24,7 +24,7 @@ auto_sell = true
 auto_sell_delay_ms = 0
 take_profit_pct = 500.0   # Full exit target: 5x (500%). Tiered partials de-risk
                           # at 100% and 250% before this final exit fires.
-stop_loss_pct = 15.0      # Sell when down 15% — tighter to protect capital
+stop_loss_pct = 8.0       # Sell when down 8% — data: losses that hit 15% never recovered (median exit -90%)
 buy_slippage_pct = 1.0
 sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
                            # estimated_out computation and tx landing. 20% was
@@ -36,9 +36,9 @@ one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
 max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
-trailing_stop_loss_pct = 8.0   # Trail stop 8% below peak price (0 = use fixed stop_loss_pct)
+trailing_stop_loss_pct = 5.0   # Trail stop 5% below peak price — tighter lock-in on runners
 partial_tp_pct = 50.0          # Sell 50% of position at partial TP trigger
-partial_tp_trigger = 60.0      # Trigger partial TP when up 60%
+partial_tp_trigger = 40.0      # Trigger partial TP when up 40% — secure earlier on 50-200% movers
 max_concurrent_positions = 5   # Max open positions at once (0 = unlimited)
 cooldown_after_losses = 3      # Pause buying after 3 consecutive losses
 cooldown_minutes = 20          # Cooldown duration in minutes
@@ -47,13 +47,11 @@ max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
 
 # ── Live-data tuning (v1.5.3) ──────────────────────────────────────────────
-# Pool quality: only buy score≥88 pools. This eliminates:
-#   score=80 "ghost" pools (0 SOL confirmed liquidity — failed buys/sells)
-#   score=72 established pools (100–400 SOL, pump already over, -0.499% repeat loss)
-#   score=64 micro-caps (slippage -72 to -90%)
-# Score 88 = fresh pool (7–21 s old) in 6.5–65 SOL range — confirmed runner candidates.
-# Score 98 = ultra-fresh (0–7 s) + 15–28 SOL sweet spot — highest conviction.
-min_pool_score = 88
+# Pool quality: only buy score≥98 pools. Live data (834 trades) shows:
+#   score=88 pools correlated with the loss bucket (median exit -40% to -90%)
+#   score=98 pools = ultra-fresh (0–7 s) + 15–28 SOL sweet spot — all wins came from here
+# Raising threshold eliminates the bulk of losing trades at the cost of fewer entries.
+min_pool_score = 98
 
 # Tiered partial TP ladder: de-risk at 100% and 250%, hold remainder to 500%.
 #   Level 1 (+100%): sell 25% of position — lock a base 1× return, stop moves to breakeven
@@ -62,9 +60,9 @@ min_pool_score = 88
 # Format: [[trigger_pct, sell_pct_of_remaining], ...]
 tiered_partial_tp_levels = [[100.0, 25.0], [250.0, 25.0]]
 
-# Dead-zone exit: all wins exited within 6 s; no profitable trade held past 30 s.
-# Reducing from 45 → 30 recycles capital ~33% faster without affecting winners.
-no_pump_timeout_secs = 30
+# Dead-zone exit: all wins exited within 6 s; 144 losses occurred in the 30–120 s window.
+# Cutting to 10 s exits the dead-zone before the loss accumulates with zero impact on winners.
+no_pump_timeout_secs = 10
 
 # Protect positions < 90 s from dump mode force-sell (min_out=0). Overnight data
 # showed dump mode destroying a 61-second position at -60%. sell_mode still clears

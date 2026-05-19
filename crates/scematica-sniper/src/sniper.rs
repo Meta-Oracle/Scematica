@@ -820,6 +820,7 @@ impl Sniper {
                     "Pool score too low — skipping buy"
                 );
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                self.filter_pipeline.stats.record_rejection("pool_scorer");
                 return;
             }
             info!(

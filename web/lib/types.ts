@@ -36,13 +36,18 @@ export interface NNStats {
 }
 
 export interface Trade {
+  timestamp: string          // ISO-8601 from Rust
+  kind: 'BUY' | 'SELL' | 'ARB'
   mint: string
-  type: 'BUY' | 'SELL'
-  amount_sol: number
-  pnl_sol?: number
-  pnl_pct?: number
-  timestamp: number
-  confirmed: boolean
+  symbol: string
+  amount: number             // quote SOL spent / received
+  pnl: number                // realised PnL in SOL (0 for buys)
+  pnl_pct: number
+  status: string             // "✓" confirmed | "✗" failed
+  signature: string          // tx signature
+  dex: string
+  hops: number
+  position_age_secs: number
 }
 
 export interface HealthStatus {

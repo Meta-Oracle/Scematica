@@ -39,10 +39,14 @@ export function TradesHistory() {
                 <th className="text-center px-2 py-1.5 font-normal">TYPE</th>
                 <th className="text-right px-2 py-1.5 font-normal">PnL</th>
                 <th className="text-right px-2 py-1.5 font-normal">SOL</th>
+                <th className="text-center px-2 py-1.5 font-normal">OK</th>
               </tr>
             </thead>
             <tbody>
-              {trades.map((t, i) => (
+              {trades.map((t, i) => {
+                const pnl = t.pnl ?? 0
+                const confirmed = t.status === '✓'
+                return (
                 <tr key={i} className="border-b border-scema-border/30 hover:bg-scema-red-bg/10">
                   <td className="px-3 py-1 font-mono">
                     <a
@@ -56,24 +60,36 @@ export function TradesHistory() {
                   </td>
                   <td className="px-2 py-1 text-center">
                     <span className={`font-bold text-xs ${
-                      t.type === 'BUY' ? 'text-scema-green' : 'text-scema-red-hi'
+                      t.kind === 'BUY' ? 'text-scema-green' : 'text-scema-red-hi'
                     }`}>
-                      {t.type}
+                      {t.kind}
                     </span>
                   </td>
                   <td className={`px-2 py-1 text-right tabular-nums font-mono ${
-                    (t.pnl_sol ?? 0) > 0 ? 'text-scema-green' :
-                    (t.pnl_sol ?? 0) < 0 ? 'text-scema-red-hi' : 'text-scema-muted'
+                    pnl > 0 ? 'text-scema-green' : pnl < 0 ? 'text-scema-red-hi' : 'text-scema-muted'
                   }`}>
-                    {t.pnl_sol !== undefined
-                      ? `${t.pnl_sol >= 0 ? '+' : ''}${t.pnl_sol.toFixed(4)}`
-                      : '—'}
+                    {t.kind === 'SELL' ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(4)}` : '—'}
                   </td>
                   <td className="px-2 py-1 text-right tabular-nums text-scema-muted font-mono">
-                    {(t.amount_sol ?? 0).toFixed(4)}
+                    {(t.amount ?? 0).toFixed(4)}
+                  </td>
+                  <td className="px-2 py-1 text-center">
+                    {t.signature && t.signature !== 'pool_drained' ? (
+                      <a
+                        href={`https://solscan.io/tx/${t.signature}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`text-xs ${confirmed ? 'text-scema-green' : 'text-scema-dim'} hover:underline`}
+                      >
+                        {t.status}
+                      </a>
+                    ) : (
+                      <span className="text-scema-dim text-xs">{t.status}</span>
+                    )}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}

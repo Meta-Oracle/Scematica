@@ -1,14 +1,13 @@
+// Matches MetricsSnapshot in crates/scematica-core/src/metrics.rs
 export interface Metrics {
   trades_attempted: number
   trades_confirmed: number
-  pnl_sol: number
-  win_rate: number
+  trades_failed: number
+  arb_opportunities_found: number
+  arb_executed: number
+  total_pnl_lamports: number   // divide by 1e9 for SOL
+  pools_tracked: number
   uptime_secs: number
-  open_positions: number
-  daily_pnl_sol: number
-  session_wins: number
-  session_losses: number
-  wallet_balance_sol: number
 }
 
 export interface Pool {
@@ -28,23 +27,26 @@ export interface FilterStats {
 
 export interface NNStats {
   step_count: number
+  train_steps: number
   epsilon: number
   ready_to_advise: boolean
   total_reward: number
   replay_size: number
-  train_steps: number
+  avg_loss: number
+  target_updates: number
+  last_q_values: number[]
 }
 
 export interface Trade {
-  timestamp: string          // ISO-8601 from Rust
+  timestamp: string          // ISO-8601
   kind: 'BUY' | 'SELL' | 'ARB'
   mint: string
   symbol: string
-  amount: number             // quote SOL spent / received
-  pnl: number                // realised PnL in SOL (0 for buys)
-  pnl_pct: number
-  status: string             // "✓" confirmed | "✗" failed
-  signature: string          // tx signature
+  amount: number             // SOL for BUY/ARB; token units for SELL
+  pnl: number                // realised SOL (0 for buys)
+  pnl_pct: number            // percentage (e.g. -0.5 means -0.5%)
+  status: string             // "✓" | "✗"
+  signature: string
   dex: string
   hops: number
   position_age_secs: number

@@ -53,10 +53,16 @@ export function TopUpWallet() {
     }
   }
 
-  if (!connected) return null
+  if (!connected) {
+    return (
+      <div className="panel flex items-center justify-center h-full text-scema-dim text-xs">
+        Connect wallet to top up
+      </div>
+    )
+  }
 
   return (
-    <div className="panel">
+    <div className="panel h-full">
       <div className="panel-header">Top Up Bot Wallet</div>
       <div className="p-3 flex flex-col gap-2">
         <p className="text-scema-dim text-xs">

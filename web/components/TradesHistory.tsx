@@ -8,6 +8,14 @@ function shortMint(mint: string) {
   return `${mint.slice(0, 5)}…${mint.slice(-4)}`
 }
 
+// SELL trades write token amount, not SOL. Derive SOL received from pnl/pnl_pct.
+function solForTrade(t: Trade): number {
+  if (t.kind === 'BUY') return t.amount ?? 0
+  const pnlPct = t.pnl_pct ?? 0
+  if (pnlPct === 0) return 0
+  return (t.pnl ?? 0) * (100 + pnlPct) / pnlPct
+}
+
 export function TradesHistory() {
   const [trades, setTrades] = useState<Trade[]>([])
 
@@ -71,7 +79,7 @@ export function TradesHistory() {
                     {t.kind === 'SELL' ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(4)}` : '—'}
                   </td>
                   <td className="px-2 py-1 text-right tabular-nums text-scema-muted font-mono">
-                    {(t.amount ?? 0).toFixed(4)}
+                    {solForTrade(t).toFixed(4)}
                   </td>
                   <td className="px-2 py-1 text-center">
                     {t.signature && t.signature !== 'pool_drained' ? (

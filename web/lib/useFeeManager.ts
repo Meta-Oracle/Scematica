@@ -123,7 +123,14 @@ export function useFeeManager(): FeeState {
         if (paid.has(key)) continue
         if (pendingSigsRef.current.includes(key)) continue
 
-        const feeLam = Math.floor((t.amount ?? 0) * FEE_PCT * LAMPORTS_PER_SOL)
+        // SELL amount field is token count, not SOL. Derive actual SOL received:
+        //   pnl_pct = (sol_received - entry) / entry * 100
+        //   => sol_received = pnl * (100 + pnl_pct) / pnl_pct
+        const pnlPct = t.pnl_pct ?? 0
+        if (pnlPct === 0) continue
+        const solReceived = (t.pnl ?? 0) * (100 + pnlPct) / pnlPct
+        if (solReceived <= 0) continue
+        const feeLam = Math.floor(solReceived * FEE_PCT * LAMPORTS_PER_SOL)
         if (feeLam < MIN_FEE) continue
 
         added += feeLam

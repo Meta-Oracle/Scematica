@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import { WalletProviderWrapper } from '@/components/WalletProvider'
+import { Providers } from '@/components/Providers'
 
 export const metadata: Metadata = {
   title: 'SCEMATICA — Solana Sniper Protocol',
@@ -19,9 +19,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="bg-scema-black min-h-screen font-mono antialiased">
         <div className="crt-vignette" />
-        <WalletProviderWrapper>
+        <Providers>
           {children}
-        </WalletProviderWrapper>
+        </Providers>
       </body>
     </html>
   )

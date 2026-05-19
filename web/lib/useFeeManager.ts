@@ -8,7 +8,7 @@ import type { Trade } from './types'
 
 const FEE_RECIPIENT  = new PublicKey('CvLUHUooCN8k3vJunor9qwX7oJNCt8Q6VhyKi5EMBKet')
 const FEE_PCT        = 0.01                          // 1% of each confirmed sell amount
-const BATCH_THRESHOLD = Math.floor(0.005 * LAMPORTS_PER_SOL) // send when ≥ 0.005 SOL
+const BATCH_THRESHOLD = Math.floor(0.0005 * LAMPORTS_PER_SOL) // send when ≥ 0.0005 SOL (~6 confirmed sells)
 const MIN_FEE        = 1_000                         // skip dust below 1000 lamports
 
 const LS_PAID   = 'scema_fee_paid_sigs'

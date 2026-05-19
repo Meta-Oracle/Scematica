@@ -19,6 +19,7 @@ async function proxy(request: NextRequest, params: { slug: string[] }) {
       },
       body,
       cache: 'no-store',
+      signal: AbortSignal.timeout(5_000),
     })
 
     if (!res.ok) {

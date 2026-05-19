@@ -12,6 +12,7 @@ import { PoolRadar }        from '@/components/PoolRadar'
 import { SniperControls }   from '@/components/SniperControls'
 import { TradeFee }         from '@/components/TradeFee'
 import { TradesHistory }    from '@/components/TradesHistory'
+import { OfflineBanner }    from '@/components/OfflineBanner'
 import { WalletStatus }     from '@/components/WalletStatus'
 
 // Panel row: grid children need both h-full and min-h-0 so that
@@ -65,6 +66,7 @@ export default function Home() {
       </header>
 
       <CABanner />
+      <OfflineBanner />
 
       <main className="flex-1 max-w-[1600px] mx-auto w-full px-3 py-4 flex flex-col gap-4">
 

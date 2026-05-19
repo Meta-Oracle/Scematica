@@ -11,15 +11,15 @@ import {
 } from '@solana/spl-token'
 import { api } from './api'
 import type { Trade } from './types'
+import { getScemaPriceInSol } from './scemaPrice'
 
 const FEE_RECIPIENT  = new PublicKey('CvLUHUooCN8k3vJunor9qwX7oJNCt8Q6VhyKi5EMBKet')
 const SCEMA_MINT     = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
 const SCEMA_DECIMALS = 6
 
-const SOL_FEE_PCT         = 0.01                                    // 1% of SOL received
-const SCEMA_FEE_PER_TRADE = 1_000 * 10 ** SCEMA_DECIMALS            // 1000 SCEMA per confirmed sell
-const BATCH_THRESHOLD     = Math.floor(0.0005 * LAMPORTS_PER_SOL)   // auto-send at 0.0005 SOL
-const MIN_SOL_FEE         = 1_000                                    // skip dust
+const FEE_PCT         = 0.01                                  // 1% in both SOL and SCEMA
+const BATCH_THRESHOLD = Math.floor(0.0005 * LAMPORTS_PER_SOL) // auto-send at 0.0005 SOL
+const MIN_SOL_FEE     = 1_000                                  // skip dust
 
 const LS_PAID = 'scema_fee_paid_sigs'
 
@@ -166,11 +166,15 @@ export function useFeeManager(): FeeState {
         const solReceived = (t.pnl ?? 0) * (100 + pnlPct) / pnlPct
         if (solReceived <= 0) continue
 
-        const feeLam = Math.floor(solReceived * SOL_FEE_PCT * LAMPORTS_PER_SOL)
+        const feeLam = Math.floor(solReceived * FEE_PCT * LAMPORTS_PER_SOL)
         if (feeLam < MIN_SOL_FEE) continue
 
+        // 1% of the same SOL value, denominated in SCEMA at current market price
+        const scemaPriceInSol = await getScemaPriceInSol()
+        const scemaRaw = Math.floor((solReceived * FEE_PCT) / scemaPriceInSol * 10 ** SCEMA_DECIMALS)
+
         addedSol   += feeLam
-        addedScema += SCEMA_FEE_PER_TRADE
+        addedScema += scemaRaw
         newSigs.push(key)
       }
 

@@ -746,56 +746,67 @@ impl Sniper {
 
         // AI risk assessment (if available, and not high-speed)
         if !high_speed { if let Some(ai) = &self.ai {
-            // Reuse the upfront vault fetch — no extra RPC round-trip here.
             let pool_size_sol = scematica_core::token::raw_to_ui(upfront_pool_size_lamports, pool.quote_decimals);
-
-            // UTC hour from open_time (unix timestamp)
             let open_hour = (pool.open_time % 86400 / 3600) as u8;
 
-            // The pool has already passed every ENABLED filter at this point. When a
-            // filter is disabled, the operator opted out of caring — feed the AI the
-            // "safe" value rather than the disabled flag, otherwise the LLM scores it
-            // as risky for things we explicitly chose not to check (e.g., we disabled
-            // check_mint_renounced because pump.fun graduates renounce *after* the WS
-            // notification; the AI was scoring them 30/100 with "mint not renounced"
-            // as the top reason, and rejecting every buy).
-            let mint_renounced = true;
-            let freezable = false;
-            let lp_burned = true;
-            let mutable_metadata = false;
+            // Compute quantitative AMM signals to pass to the AI — these are the
+            // real predictors of profitability, not just binary safety flags.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let pool_age_secs = if pool.open_time > 0 && pool.open_time <= now_secs {
+                now_secs.saturating_sub(pool.open_time)
+            } else { 0 };
+            let velocity_sol_per_sec = if pool.open_time > 0 && pool_age_secs > 0 {
+                pool_size_sol / pool_age_secs as f64
+            } else { 0.0 };
+            let buy_pressure_ratio = if upfront_base_vault_lamports > 0 {
+                upfront_pool_size_lamports as f64 / upfront_base_vault_lamports as f64
+            } else { 0.0 };
+            let amm_expected_inflow_pct = if pool_size_sol > 0.0 && velocity_sol_per_sec > 0.0 {
+                (velocity_sol_per_sec * 10.0 / pool_size_sol) * 100.0
+            } else { 0.0 };
 
-            let risk = ai.risk.score_token(
+            // Feed safe values for disabled on-chain filters: the AI should evaluate
+            // momentum signals, not re-check things the filter pipeline already handled.
+            let risk = ai.risk.score_token_v2(
                 &pool.base_mint.to_string(),
                 "UNKNOWN",
                 "UNKNOWN",
                 pool_size_sol,
-                mint_renounced,
-                freezable,
-                lp_burned,
-                mutable_metadata,
+                true,   // mint_renounced (disabled filter — treated as safe)
+                false,  // freezable     (disabled filter — treated as safe)
+                true,   // lp_burned     (disabled filter — treated as safe)
+                false,  // mutable_metadata
                 self.config.filters.check_socials,
                 open_hour,
+                velocity_sol_per_sec,
+                buy_pressure_ratio,
+                amm_expected_inflow_pct,
+                pool_age_secs,
             ).await;
 
             info!(
                 mint = %pool.base_mint,
                 score = risk.score,
                 recommendation = %risk.recommendation,
+                velocity = %format!("{:.3} SOL/s", velocity_sol_per_sec),
+                pressure = %format!("{:.4}", buy_pressure_ratio),
                 reasoning = %risk.reasoning,
                 "AI risk assessment"
             );
 
+            // Only block on a genuine AI rejection (low score, real flags).
+            // When AI infrastructure fails (no key, rate limit, network), the
+            // default_pass function returns score=70/buy — we proceed on on-chain filters.
             if !risk.should_buy() {
-                // If the AI API itself failed (rate limit, network, etc.) the token
-                // already passed all on-chain filters — don't let an infrastructure
-                // outage block every trade.  Only hard-skip on a genuine AI rejection.
                 let ai_failed = risk.red_flags.iter()
-                    .any(|f| f.contains("AI assessment failed"));
+                    .any(|f| f.contains("AI assessment failed") || f.contains("AI unavailable"));
                 if ai_failed {
                     warn!(
                         mint = %pool.base_mint,
-                        reasoning = %risk.reasoning,
-                        "AI unavailable — proceeding on on-chain filters"
+                        "AI infrastructure unavailable — proceeding on on-chain filters"
                     );
                 } else {
                     info!(
@@ -804,6 +815,7 @@ impl Sniper {
                         flags = ?risk.red_flags,
                         "AI rejected token — skipping buy"
                     );
+                    self.filter_pipeline.stats.record_rejection("ai_risk");
                     return;
                 }
             }
@@ -1415,54 +1427,92 @@ impl Sniper {
 
     #[allow(dead_code)]
     async fn sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64) {
+        self.sell_with_min_out(pool, base_ata, amount, None).await;
+    }
+
+    /// Sell with escalating slippage: each retry uses a looser min_out so that
+    /// even a rugged pool (near-zero liquidity) eventually gets closed.
+    ///
+    /// Slippage ladder per attempt:
+    ///   0: config.sell_slippage_pct (e.g. 85%)
+    ///   1: 95%
+    ///   2+: min_out = 1 lamport (accept any return, just close the position)
+    ///
+    /// The goal is to ALWAYS exit, even at a total loss, rather than hold a dead
+    /// position for hours. A confirmed 100% loss is better than an unconfirmed
+    /// position that blocks capital and generates retry noise.
+    #[allow(dead_code)]
+    async fn sell_with_min_out(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, forced_min_out: Option<u64>) {
         info!(mint = %pool.base_mint, amount, "Executing sell");
         self.metrics.record_trade_attempt();
 
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
 
-        let min_out = apply_slippage(
-            // rough estimate
-            (amount as f64 * 0.99) as u64,
-            self.config.sell_slippage_pct,
-        );
+        let max_retries = self.config.max_sell_retries.max(3);
 
-        let ixs = match self.raydium_builder.build_swap(
-            &pool.id,
-            &wallet_pubkey,
-            &pool.base_mint,
-            &self.quote_mint,
-            base_ata,
-            &quote_ata,
-            amount,
-            min_out,
-        ).await {
-            Ok(ixs) => ixs,
-            Err(e) => {
-                error!("Failed to build sell instructions: {}", e);
-                return;
-            }
-        };
+        for attempt in 0..max_retries {
+            // Escalating slippage: wide on first try, near-zero min_out by attempt 2
+            let min_out = if let Some(forced) = forced_min_out {
+                forced
+            } else {
+                match attempt {
+                    0 => {
+                        // Estimate expected SOL return via AMM formula then apply slippage
+                        // Use pool vault data if available; fall back to 1 lamport floor
+                        let expected = self.estimate_sell_out(pool, amount).await;
+                        apply_slippage(expected.max(1), self.config.sell_slippage_pct)
+                    }
+                    1 => {
+                        // 95% slippage — accept almost any return
+                        let expected = self.estimate_sell_out(pool, amount).await;
+                        apply_slippage(expected.max(1), 95.0)
+                    }
+                    _ => {
+                        // Fully drained pool: accept 1 lamport to close position
+                        1
+                    }
+                }
+            };
 
-        for attempt in 0..self.config.max_sell_retries {
-            info!("Sell attempt {}/{}", attempt + 1, self.config.max_sell_retries);
+            let ixs = match self.raydium_builder.build_swap(
+                &pool.id,
+                &wallet_pubkey,
+                &pool.base_mint,
+                &self.quote_mint,
+                base_ata,
+                &quote_ata,
+                amount,
+                min_out,
+            ).await {
+                Ok(ixs) => ixs,
+                Err(e) => {
+                    error!("Failed to build sell instructions (attempt {}): {}", attempt + 1, e);
+                    if attempt + 1 >= max_retries { break; }
+                    continue;
+                }
+            };
+
+            info!(
+                "Sell attempt {}/{} (min_out={})",
+                attempt + 1, max_retries, min_out
+            );
             match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
                 Ok(result) if result.confirmed => {
                     info!(
                         mint = %pool.base_mint,
                         sig = ?result.signature,
+                        attempt = attempt + 1,
                         "Sell confirmed"
                     );
                     self.metrics.record_trade_confirmed(0);
-
-                    // Emit trade event for the dashboard
                     TradeEvent {
                         timestamp: chrono::Utc::now(),
                         kind: "SELL".into(),
                         mint: pool.base_mint.to_string(),
                         symbol: String::new(),
                         amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
-                        pnl: 0.0, // PnL calculated post-confirmation in production
+                        pnl: 0.0,
                         status: "✓".into(),
                         signature: result.signature
                             .map(|s| s.to_string())
@@ -1475,15 +1525,21 @@ impl Sniper {
                     return;
                 }
                 Ok(result) => {
-                    warn!(error = ?result.error, "Sell attempt failed");
+                    warn!(
+                        attempt = attempt + 1,
+                        min_out,
+                        error = ?result.error,
+                        "Sell attempt failed — escalating slippage next retry"
+                    );
                 }
                 Err(e) => {
-                    error!("Sell error: {}", e);
+                    error!(attempt = attempt + 1, "Sell error: {}", e);
                 }
             }
         }
 
         self.metrics.record_trade_failed();
+        warn!(mint = %pool.base_mint, "All sell attempts exhausted — position may be stuck in dead pool");
         TradeEvent {
             timestamp: chrono::Utc::now(),
             kind: "SELL".into(),
@@ -1498,6 +1554,31 @@ impl Sniper {
             pnl_pct: -100.0,
             position_age_secs: 0.0,
         }.append_to_file(TRADES_FILE);
+    }
+
+    /// Estimate SOL return for a sell via Raydium constant-product AMM.
+    /// Returns 0 if vault data is unavailable (caller should use min_out=1).
+    async fn estimate_sell_out(&self, pool: &CachedPool, token_amount_in: u64) -> u64 {
+        let q = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            self.rpc.get_token_account_balance(&pool.quote_vault),
+        ).await {
+            Ok(Ok(b)) => b.amount.parse::<u64>().unwrap_or(0),
+            _ => return 0,
+        };
+        let b = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            self.rpc.get_token_account_balance(&pool.base_vault),
+        ).await {
+            Ok(Ok(b)) => b.amount.parse::<u64>().unwrap_or(1),
+            _ => return 0,
+        };
+        if q == 0 || b == 0 { return 0; }
+        // AMM out: out = q * amount_in * 9975 / (b * 10000 + amount_in * 9975)
+        let num = (q as u128) * (token_amount_in as u128) * 9975u128;
+        let den = (b as u128) * 10000u128 + (token_amount_in as u128) * 9975u128;
+        if den == 0 { return 0; }
+        (num / den) as u64
     }
 
     async fn on_wallet_update(&self, account: Pubkey, mint: Pubkey, amount: u64) {

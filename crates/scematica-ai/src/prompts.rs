@@ -1,30 +1,37 @@
 /// System prompt for the token risk scoring agent
-pub const RISK_AGENT_SYSTEM: &str = r#"You are a Solana token risk analyst for a trading bot.
-Your job is to assess whether a newly launched token/pool is safe to buy or likely a rug pull/honeypot.
+pub const RISK_AGENT_SYSTEM: &str = r#"You are a Solana memecoin rug-pull detector for a high-frequency trading bot.
+You receive on-chain pool metrics and must assess whether a newly launched token will pump or rug.
 
-You will be given token metadata and pool information. Analyze it and respond with ONLY valid JSON in this exact format:
+You will be given token metadata, pool size, velocity, buy pressure, and AMM data.
+Respond with ONLY valid JSON in this exact format:
 {
-  "score": <integer 0-100, where 0=certain rug, 100=very safe>,
+  "score": <integer 0-100, where 0=certain rug, 100=very high conviction buy>,
   "recommendation": "<buy|skip|watch>",
-  "reasoning": "<1-2 sentence explanation>",
+  "reasoning": "<1-2 sentence explanation focusing on the key signal>",
   "red_flags": ["<flag1>", "<flag2>"]
 }
 
 Scoring guidelines:
-- score >= 70: buy (low risk)
-- score 40-69: watch (medium risk, proceed with caution)
-- score < 40: skip (high risk, likely rug)
+- score >= 70: buy (strong signal)
+- score 50-69: watch (weak signal, small position)
+- score < 50: skip (rug risk or no momentum)
 
-Red flag patterns to detect:
-- Token name contains: "elon", "moon", "safe", "inu", "shib", "pepe" variants with suspicious modifiers
-- Mint authority not renounced
-- Freeze authority present
-- LP not burned
-- Pool opened at unusual hours (2-6 AM UTC)
-- Very small pool size (< 1 SOL)
-- Token symbol is all caps random letters
-- Metadata is mutable
-- No social links
+Key signals that STRONGLY predict a runner (weight heavily):
+1. Pool velocity > 1 SOL/s: crowd is buying fast — high conviction buy
+2. Pool size 6-28 SOL: sweet spot for pump.fun momentum plays
+3. Buy pressure > 0.5 (quote/base ratio): already have net buyers
+4. AMM expected inflow (velocity × timeout) > pool size: can reach 2x in time window
+5. Pool age < 10 seconds: first-mover advantage window
+
+Key signals that predict a RUG (reject immediately):
+1. Pool size < 5 SOL: empirically ~0% profitable — hard skip
+2. No velocity data AND pool < 15 SOL: dead pool
+3. Token name contains scam keywords: "safe", "moon100x", "elon", random ALL_CAPS
+4. Metadata mutable + no socials + no LP burn: maximum rug setup
+5. Pool opened 2-6 AM UTC: overnight rug pattern
+
+Critical rule: IF pool_size_sol < 5 AND velocity < 0.5 SOL/s, ALWAYS score < 30 and recommend "skip".
+Critical rule: IF velocity_sol_per_sec > 2.0, give this signal the most weight regardless of other factors.
 
 Always respond with valid JSON only. No markdown, no explanation outside the JSON."#;
 
@@ -128,7 +135,8 @@ Be concise and direct. Use actual numbers from tool results.
 For swap or mode-change requests, always confirm the details before marking them ready.
 Do not invent numbers — always fetch real data with tools."#;
 
-/// Build the user prompt for token risk scoring
+/// Build the user prompt for token risk scoring, including quantitative AMM signals
+#[allow(clippy::too_many_arguments)]
 pub fn build_risk_prompt(
     mint: &str,
     symbol: &str,
@@ -141,21 +149,76 @@ pub fn build_risk_prompt(
     has_socials: bool,
     open_time_utc_hour: u8,
 ) -> String {
-    format!(
-        r#"Analyze this new Solana token:
+    build_risk_prompt_v2(
+        mint, symbol, name, pool_size_sol,
+        mint_renounced, freezable, lp_burned, mutable_metadata, has_socials,
+        open_time_utc_hour, 0.0, 0.0, 0.0, 0,
+    )
+}
 
-Token mint: {mint}
+/// Extended risk prompt with AMM quantitative signals
+#[allow(clippy::too_many_arguments)]
+pub fn build_risk_prompt_v2(
+    mint: &str,
+    symbol: &str,
+    name: &str,
+    pool_size_sol: f64,
+    mint_renounced: bool,
+    freezable: bool,
+    lp_burned: bool,
+    mutable_metadata: bool,
+    has_socials: bool,
+    open_time_utc_hour: u8,
+    velocity_sol_per_sec: f64,
+    buy_pressure_ratio: f64,
+    amm_expected_inflow_pct: f64,  // expected_inflow / pool_size × 100
+    pool_age_secs: u64,
+) -> String {
+    let vel_str = if velocity_sol_per_sec > 0.0 {
+        format!("{:.3} SOL/s", velocity_sol_per_sec)
+    } else {
+        "unknown (pool.open_time not set)".to_string()
+    };
+    let pressure_str = if buy_pressure_ratio > 0.0 {
+        format!("{:.4} (quote/base ratio)", buy_pressure_ratio)
+    } else {
+        "unknown".to_string()
+    };
+    let inflow_str = if amm_expected_inflow_pct > 0.0 {
+        format!("{:.1}% of pool size in next 10s at current velocity", amm_expected_inflow_pct)
+    } else {
+        "unknown".to_string()
+    };
+    let age_str = if pool_age_secs > 0 {
+        format!("{}s ago", pool_age_secs)
+    } else {
+        "just now (pump.fun open_time=0)".to_string()
+    };
+
+    format!(
+        r#"Analyze this new Solana memecoin pool:
+
+=== TOKEN IDENTITY ===
+Mint: {mint}
 Symbol: {symbol}
 Name: {name}
+
+=== POOL METRICS (most important) ===
 Pool size: {pool_size_sol:.4} SOL
+SOL inflow velocity: {vel_str}
+Buy pressure ratio: {pressure_str}
+Expected inflow (AMM model): {inflow_str}
+Pool age: {age_str}
+Pool opened at UTC hour: {open_time_utc_hour}
+
+=== SAFETY FLAGS ===
 Mint authority renounced: {mint_renounced}
 Has freeze authority: {freezable}
 LP burned: {lp_burned}
 Metadata mutable: {mutable_metadata}
 Has social links: {has_socials}
-Pool opened at UTC hour: {open_time_utc_hour}
 
-Provide your risk assessment as JSON."#
+Provide your risk assessment as JSON. Weight pool metrics heavily — they are real-time on-chain data."#
     )
 }
 

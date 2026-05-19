@@ -26,10 +26,9 @@ take_profit_pct = 500.0   # Full exit target: 5x (500%). Tiered partials de-risk
                           # at 100% and 250% before this final exit fires.
 stop_loss_pct = 8.0       # Sell when down 8% — data: losses that hit 15% never recovered (median exit -90%)
 buy_slippage_pct = 1.0
-sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
-                           # estimated_out computation and tx landing. 20% was
-                           # getting dropped by leader before the 0x26 fallback
-                           # could trigger.
+sell_slippage_pct = 85.0   # Wide slippage ensures position exit. Sell function now
+                           # escalates to 95% on retry 2 and min_out=1 on retry 3+
+                           # so even completely drained pools get closed.
 price_check_interval_ms = 1000    # check price every 1s (was 2s) — catches TP/SL 2x faster
 price_check_duration_ms = 180000  # 3 min monitor window (was 5 min) — force-sell sooner
 one_token_at_a_time = true
@@ -47,11 +46,13 @@ max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
 
 # ── Live-data tuning (v1.5.3) ──────────────────────────────────────────────
-# Pool quality: only buy score≥98 pools. Live data (834 trades) shows:
-#   score=88 pools correlated with the loss bucket (median exit -40% to -90%)
-#   score=98 pools = ultra-fresh (0–7 s) + 15–28 SOL sweet spot — all wins came from here
-# Raising threshold eliminates the bulk of losing trades at the cost of fewer entries.
-min_pool_score = 98
+# Pool quality gate using the new Bayesian scorer (pool_scorer.rs v2).
+# The new model uses multiplicative likelihood ratios calibrated on 834 trades.
+# Score 65 = P(win)≈0.09 posterior — requires 6+ SOL + fresh + some velocity.
+# Score 75 = P(win)≈0.18 — requires sweet spot + ultra-fresh + buy pressure.
+# Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
+# Set to 65 so the new model's calibration is meaningful without being too tight.
+min_pool_score = 65
 
 # Tiered partial TP ladder: de-risk at 100% and 250%, hold remainder to 500%.
 #   Level 1 (+100%): sell 25% of position — lock a base 1× return, stop moves to breakeven
@@ -82,10 +83,11 @@ check_freezable = true        # KEEP — freeze authority is a real honeypot sig
 check_burned = true           # KEEP — pool vault being non-empty is the real rug check
 check_mutable = true          # Metadata mutability check (cheap, keep)
 check_socials = false
-min_pool_size = 0.3           # Minimum pool SOL liquidity. Fresh pump.fun graduates
-                              # land at 0.4–3 SOL, so 5 was rejecting all of them.
-                              # 0.3 lets micro-cap snipes through while still cutting
-                              # the truly-dead pools that come back to life.
+min_pool_size = 6.0           # EMPIRICAL: pools < 3 SOL had ~0% profit rate in 834
+                              # live trades (all near-total losses). Raise to 6 SOL to
+                              # enforce the sweet spot (6.5-28 SOL) where winners live.
+                              # This rejects ~80% of pump.fun launches but those 80%
+                              # were all losing money.
 max_pool_size = 0.0           # 0 = disabled
 check_name = false            # Disabled: common substrings like "test"/"moon"/"fair
                               # launch" generate too many false positives on real

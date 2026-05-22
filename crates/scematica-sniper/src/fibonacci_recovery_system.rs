@@ -40,7 +40,7 @@ pub struct FibonacciRecoveryConfig {
 impl Default for FibonacciRecoveryConfig {
     fn default() -> Self {
         Self {
-            min_entry_score: 0.35, // Permissive gate — safety filters already screened hard rejects
+            min_entry_score: 0.50, // Moderate gate — velocity bypass handles exceptional pools below this
             dead_pool_timeout_secs: 3, // Exit dead pools fast
             dead_pool_min_gain_pct: 5.0, // Above AMM spread
             tp_levels: vec![
@@ -230,37 +230,33 @@ impl FibonacciRecoverySystem {
             };
         }
 
-        // Check Fibonacci signal for exit conditions
+        // Fibonacci signals: only dead-pool detection triggers an exit here.
+        // TP and retracement exits are handled by the main momentum-escalation ladder
+        // (trailing stop + pullback exit) so we never cut runners short at 61.8%.
         match signal {
             FibonacciSignal::TakeProfitAtFib { gain_pct, fib_level } => {
+                // Log the level but let the main system decide when to exit
                 FibonacciExitDecision {
-                    should_exit: true,
-                    exit_reason: format!(
-                        "FIBONACCI TP: Level {} hit at {:.1}% gain",
-                        fib_level, gain_pct
-                    ),
+                    should_exit: false,
+                    exit_reason: format!("FIB TP signal {:.0}% (level {}) — deferring to momentum ladder", gain_pct, fib_level),
                     expected_pnl_pct: gain_pct,
                     is_dead_pool: false,
                 }
             }
             FibonacciSignal::ExitGoldenRetrace { peak_gain_pct, current_gain_pct, retrace_pct } => {
+                // Log but defer — main trailing stop handles retracements
                 FibonacciExitDecision {
-                    should_exit: true,
-                    exit_reason: format!(
-                        "GOLDEN RETRACEMENT: {:.1}% pullback from {:.1}% peak",
-                        retrace_pct, peak_gain_pct
-                    ),
+                    should_exit: false,
+                    exit_reason: format!("Golden retrace {:.1}% from {:.1}% peak — deferring to trailing stop", retrace_pct, peak_gain_pct),
                     expected_pnl_pct: current_gain_pct,
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::ExitVelocityCollapse { peak_gain_pct, current_gain_pct, velocity_ratio } => {
+            FibonacciSignal::ExitVelocityCollapse { peak_gain_pct: _, current_gain_pct, velocity_ratio } => {
+                // Velocity collapse — defer to main system
                 FibonacciExitDecision {
-                    should_exit: true,
-                    exit_reason: format!(
-                        "VELOCITY COLLAPSE: Momentum dying at {:.1}% (ratio {:.2})",
-                        current_gain_pct, velocity_ratio
-                    ),
+                    should_exit: false,
+                    exit_reason: format!("Velocity collapse at {:.1}% (ratio {:.2}) — deferring", current_gain_pct, velocity_ratio),
                     expected_pnl_pct: current_gain_pct,
                     is_dead_pool: false,
                 }

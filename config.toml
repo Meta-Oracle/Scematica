@@ -19,31 +19,28 @@ quote_mint = "WSOL"       # WSOL or USDC
 quote_amount = 0.01       # Base amount per snipe (in SOL) — scaled by rate mode multiplier
 buy_delay_ms = 0
 max_buy_retries = 3
-max_sell_retries = 5       # extra retries — thin pools need more attempts
+max_sell_retries = 3       # 3 retries max — more wastes time in drained pools
 auto_sell = true
 auto_sell_delay_ms = 0
-take_profit_pct = 500.0   # v1.6.0: Exit gate — momentum exits only fire at/above this level
-                          # Guarantees ≥0.05 SOL profit per win (0.01 SOL × 6× = 0.06 SOL)
-stop_loss_pct = 12.0      # Phase 1: Tighter risk for faster scalp exits
+take_profit_pct = 175.0   # Baseline TP (Balanced mode starting point); momentum escalator rides from here
+stop_loss_pct = 10.0      # Tighter SL — exit before pool drains further
 buy_slippage_pct = 1.0
-sell_slippage_pct = 2.5   # Realistic slippage tolerance (was 85%!)
-                          # Escalates to 5% on retry, then min_out=0
-                          # Prevents accepting terrible prices from drained pools
-price_check_interval_ms = 250    # Phase 1: 4× faster polling (250ms) to catch TP hits
-price_check_duration_ms = 60000   # 60s monitor window (was 180s) — exits losers faster
+sell_slippage_pct = 5.0   # Start at 5% — lands first attempt, avoids 2.5%→fail→5%→fail→min_out=0 chain
+price_check_interval_ms = 250    # 4× faster polling to catch momentum peaks
+price_check_duration_ms = 600000  # 10 min monitor window — hold runners long enough for 1000x
 one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
 max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
-trailing_stop_loss_pct = 12.0  # Phase 1: Aggressive scaling (tightens on dump)
+trailing_stop_loss_pct = 50.0  # Wide: allow 50% retracement so runners can breathe toward 1000x
 partial_tp_pct = 0.0           # Disabled — single full exit at take_profit_pct
 partial_tp_trigger = 0.0       # Disabled — no partial sells below the 0.05 SOL target
 
 # ── v1.6.0 Exit Gate — Guaranteed ≥0.05 SOL Exits ───────────────────────────
 # All momentum/timing exits are gated behind take_profit_pct (500%).
 # Once position hits TP, profit floor locks at that level permanently.
-momentum_min_peak_pct = 500.0       # Pullback exit only fires after peak >= 500%
-velocity_decay_min_pnl_pct = 500.0  # Decay exit only fires when PnL >= 500%
+momentum_min_peak_pct = 200.0       # Arm pullback exit once position peaks at 200%+ gain
+velocity_decay_min_pnl_pct = 200.0  # Arm decay exit once PnL hits 200%
 volume_exhaustion_pct = 0.0         # Disabled — swell-based exit gate handles vault drain
 whale_exit_vault_drop_pct = 0.0     # Disabled in profit zone
 flash_crash_pct = 0.0               # Disabled in profit zone; SL handles crashes
@@ -53,10 +50,10 @@ profit_lock_checks = 0              # Disabled — profit floor in code locks 0.
 momentum_hold = true
 momentum_max_escalations = 7        # 7-round ladder: 175→315→567→1020→1836→3305→5949%
 momentum_escalation_factor = 1.8    # TP grows 1.8× per round
-momentum_escalation_threshold_pct = 3.0  # Lower velocity bar (was 5%)
-momentum_pullback_exit_pct = 8.0    # Adaptive: 8 × √(1 + peak/100)
-max_concurrent_positions = 5   # Max open positions at once (0 = unlimited)
-cooldown_after_losses = 3      # Pause buying after 3 consecutive losses
+momentum_escalation_threshold_pct = 8.0  # Only escalate TP on strong momentum — prevents noise escalations
+momentum_pullback_exit_pct = 40.0   # Wide pullback allowance — at 1000% peak allows 40×√11=133% swing room
+max_concurrent_positions = 1   # 1 at a time — prevents RPC overload causing sell timeouts on multiple open positions
+cooldown_after_losses = 0      # No pause after losses — keep recycling capital
 cooldown_minutes = 20          # Cooldown duration in minutes
 daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
 max_drawdown_pct =  50.0      # Halt if wallet drops 30% below session start
@@ -113,8 +110,8 @@ extra_rpc_endpoints = []            # Add backup RPC URLs here
 tiered_partial_tp = false         # Set true to enable tiered ladder above
 
 # v1.6.0: Dead-zone exit reduced 45→30s (winners exit in <6s, recycle capital faster)
-no_pump_timeout_secs = 45        # Phase 1: Give TP ladders time to work (was 30)
-no_pump_min_gain_pct = 3.0          # Peak gain % required to suppress dead-zone exit
+no_pump_timeout_secs = 20        # Exit dead pools fast — 20s with no move is a dead pool
+no_pump_min_gain_pct = 5.0          # Suppress timeout if position already up 5%+
 
 # v1.5.2: Protect fresh positions from dump-mode force-sell
 min_dump_hold_secs = 90             # Positions younger than 90s held through normal TP/SL
@@ -140,9 +137,9 @@ min_volume_txns = 1           # Minimum transactions — 1 lets ultra-fresh pool
 check_liquidity_depth = true      # Check price impact before buying
 max_price_impact_pct = 15.0       # Allow up to 15% impact — wallet-pct sizing needs room
 
-# v1.2.0: Holder concentration check with realistic threshold
-check_holder_concentration = true
-max_top10_holder_pct = 90.0       # Relaxed: brand-new pools almost always have high initial concentration (was 75%)
+# v1.2.0: Holder concentration check
+check_holder_concentration = false  # Disabled: top-10 on new pools always includes the pool vault (near 100%); false signal
+max_top10_holder_pct = 99.0
 
 # v1.1.0: Liquidity momentum check
 check_liquidity_momentum = false  # Disabled: Prevents false-rejecting consolidating runners
@@ -295,7 +292,7 @@ amount_levels = 4         # Try 4 sizes: 100, 50, 25, 12.5 USDC
 executor = "default"      # default | jito
 custom_fee_sol = 0.001
 compute_unit_limit = 400000
-compute_unit_price = 200000  # higher priority fee — faster block inclusion
+compute_unit_price = 500000  # high priority — sells land before pool drains
 skip_preflight = true
 jito_url = "https://mainnet.block-engine.jito.wtf"
 

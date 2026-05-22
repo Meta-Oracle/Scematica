@@ -61,27 +61,28 @@ pub fn handle_key(key: KeyEvent, current_tab: usize, has_pending: bool, log_filt
             // Config tab scroll — Up/Down arrows scroll the content panel
             KeyCode::Up   if current_tab == 3 => Some(DashboardAction::ConfigScrollUp),
             KeyCode::Down if current_tab == 3 => Some(DashboardAction::ConfigScrollDown),
-            // Bot process controls — active on the Config tab (index 3)
-            KeyCode::Char('s') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Sniper)),
-            KeyCode::Char('a') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Arb)),
+            // [b] start both / [x] stop — kept tab-3 only to avoid conflict with Logs [b]=BuyMode, Trades [x]=ExportCsv
             KeyCode::Char('b') if current_tab == 3 => Some(DashboardAction::StartBot(BotMode::Both)),
             KeyCode::Char('x') if current_tab == 3 => Some(DashboardAction::StopBot),
-            // Rate mode presets — [1]–[7] on Config tab (least → most aggressive)
-            KeyCode::Char('1') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Bearish)),
-            KeyCode::Char('2') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Micro)),
-            KeyCode::Char('3') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Safe)),
-            KeyCode::Char('4') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Balanced)),
-            KeyCode::Char('5') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Aggressive)),
-            KeyCode::Char('6') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Degen)),
-            KeyCode::Char('7') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Bullish)),
-            KeyCode::Char('8') if current_tab == 3 => Some(DashboardAction::SetRateMode(RateMode::Moon)),
-            // Builder modes — [g] Growth (0.2), [j] Builder (1.0), [k] Super Builder (3.0), [o] Off
-            KeyCode::Char('g') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Growth)),
-            KeyCode::Char('j') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Builder)),
-            KeyCode::Char('k') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::SuperBuilder)),
-            KeyCode::Char('o') if current_tab == 3 => Some(DashboardAction::SetBuilderMode(BuilderMode::Off)),
-            // [m] toggles Moon Chase — momentum-hold escalator goes parabolic-greedy
-            KeyCode::Char('m') if current_tab == 3 => Some(DashboardAction::ToggleMoonChase),
+            // Bot start keys — global (work from any tab)
+            KeyCode::Char('s') => Some(DashboardAction::StartBot(BotMode::Sniper)),
+            KeyCode::Char('a') => Some(DashboardAction::StartBot(BotMode::Arb)),
+            // Rate mode presets — [1]–[8] global
+            KeyCode::Char('1') => Some(DashboardAction::SetRateMode(RateMode::Bearish)),
+            KeyCode::Char('2') => Some(DashboardAction::SetRateMode(RateMode::Micro)),
+            KeyCode::Char('3') => Some(DashboardAction::SetRateMode(RateMode::Safe)),
+            KeyCode::Char('4') => Some(DashboardAction::SetRateMode(RateMode::Balanced)),
+            KeyCode::Char('5') => Some(DashboardAction::SetRateMode(RateMode::Aggressive)),
+            KeyCode::Char('6') => Some(DashboardAction::SetRateMode(RateMode::Degen)),
+            KeyCode::Char('7') => Some(DashboardAction::SetRateMode(RateMode::Bullish)),
+            KeyCode::Char('8') => Some(DashboardAction::SetRateMode(RateMode::Moon)),
+            // Builder modes — global
+            KeyCode::Char('g') => Some(DashboardAction::SetBuilderMode(BuilderMode::Growth)),
+            KeyCode::Char('j') => Some(DashboardAction::SetBuilderMode(BuilderMode::Builder)),
+            KeyCode::Char('k') => Some(DashboardAction::SetBuilderMode(BuilderMode::SuperBuilder)),
+            KeyCode::Char('o') => Some(DashboardAction::SetBuilderMode(BuilderMode::Off)),
+            // [m] toggles Moon Chase — global
+            KeyCode::Char('m') => Some(DashboardAction::ToggleMoonChase),
             // [e] on the Logs tab toggles emergency sell mode
             KeyCode::Char('e') if current_tab == 2 && !log_filter_active => Some(DashboardAction::ToggleSellMode),
             // [b] on the Logs tab force-clears sell mode (resume buying). Deletes the

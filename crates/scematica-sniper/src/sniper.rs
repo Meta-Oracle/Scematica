@@ -916,6 +916,17 @@ impl Sniper {
         // Evaluate pool against Fibonacci golden ratio patterns. This gate runs BEFORE
         // the pool scorer so we filter out dead pools (thin liquidity, stale age, low
         // velocity) as early as possible. High-speed mode and DexScreener-boosted tokens bypass.
+        // Exceptional velocity (≥ φ² = 2.618 SOL/s) also bypasses: these are confirmed runners.
+        let exceptional_velocity = {
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs();
+            let age_s = if pool.open_time > 0 && pool.open_time <= now_s {
+                now_s.saturating_sub(pool.open_time).max(1)
+            } else { 1 };
+            let v = (upfront_pool_size_lamports as f64 / 1e9) / age_s as f64;
+            v >= 2.618 // φ² threshold from Fibonacci Protocol
+        };
         if !high_speed && !dex_boosted {
             let fib_decision = self.fib_system.evaluate_entry(
                 upfront_pool_size_lamports,
@@ -923,7 +934,7 @@ impl Sniper {
                 detected_at_secs,
             );
 
-            if !fib_decision.should_enter {
+            if !fib_decision.should_enter && !exceptional_velocity {
                 info!(
                     mint = %pool.base_mint,
                     score = fib_decision.fibonacci_score,
@@ -933,6 +944,13 @@ impl Sniper {
                 self.filter_pipeline.stats.record_rejection("fibonacci_gate");
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
                 return;
+            }
+            if exceptional_velocity && !fib_decision.should_enter {
+                info!(
+                    mint = %pool.base_mint,
+                    score = fib_decision.fibonacci_score,
+                    "⚡ Fibonacci gate bypassed — exceptional velocity (≥2.618 SOL/s)"
+                );
             }
 
             info!(
@@ -981,6 +999,69 @@ impl Sniper {
             );
         }
 
+        // ── Regime gate: in bear/panic, only buy exceptional-velocity or high-score pools ──
+        if !high_speed && !dex_boosted {
+            let regime = self.live_params.read().market_regime.clone();
+            if regime == "bear" || regime == "panic" {
+                let min_regime_score = 65.0;
+                if upfront_score < min_regime_score && !exceptional_velocity {
+                    info!(
+                        mint = %pool.base_mint,
+                        regime = %regime,
+                        score = %format!("{:.1}", upfront_score),
+                        "Regime gate: bear/panic — skipping low-score pool"
+                    );
+                    self.filter_pipeline.stats.record_rejection("regime_gate");
+                    return;
+                }
+            }
+        }
+
+        // ── Momentum confirmation: require vault to have grown since detection ──────
+        // The filter pipeline takes 400–800 ms to run. By the time we get here,
+        // a gaining pool has had active buyers adding SOL. A dead pool shows zero
+        // growth. We compare the vault NOW to the upfront snapshot — no sleep needed,
+        // the evaluation latency is the observation window.
+        //
+        // Skip for: exceptional velocity (≥2.618 SOL/s), DexScreener-boosted, high-speed.
+        if !high_speed && !dex_boosted && !exceptional_velocity && upfront_pool_size_lamports > 0 {
+            let vault_now = tokio::time::timeout(
+                tokio::time::Duration::from_millis(800),
+                self.rpc.get_token_account_balance(&pool.quote_vault),
+            ).await;
+            let confirmed = match vault_now {
+                Ok(Ok(qb)) => {
+                    let current = qb.amount.parse::<u64>().unwrap_or(0);
+                    let grew = current > upfront_pool_size_lamports;
+                    let growth_sol = (current as f64 - upfront_pool_size_lamports as f64) / 1e9;
+                    if grew {
+                        info!(
+                            mint = %pool.base_mint,
+                            growth_sol = %format!("+{:.4}", growth_sol),
+                            "✅ Momentum confirmed — vault grew since detection, buyers active"
+                        );
+                    } else {
+                        let drift = current as f64 / 1e9 - upfront_pool_size_sol;
+                        info!(
+                            mint = %pool.base_mint,
+                            drift_sol = %format!("{:.4}", drift),
+                            "❌ Momentum check failed — vault flat/declining, no active buyers"
+                        );
+                        self.filter_pipeline.stats.record_rejection("no_momentum");
+                    }
+                    grew
+                }
+                _ => {
+                    // RPC timeout — fail open, don't block on a slow node
+                    debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding");
+                    true
+                }
+            };
+            if !confirmed {
+                return;
+            }
+        }
+
         // Track last pool time for gas war burst detection
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -989,7 +1070,6 @@ impl Sniper {
         self.gas_war_last_pool_ms.store(now_ms, Ordering::Relaxed);
 
         // Write pool radar entry — pool passed all checks and is about to be bought
-        // Reuse upfront values; no new RPC call needed.
         self.write_radar_entry(&pool, upfront_pool_size_sol, true, upfront_score);
 
         // Execute buy — pass upfront reserves so buy() can compute a real min_out
@@ -1237,14 +1317,13 @@ impl Sniper {
             self.recently_bought.retain(|_, v| v.elapsed().as_secs() < 300);
         }
 
-        let wallet_pubkey = self.wallet.pubkey();
+        let wallet_pubkey = wallet_pubkey_early; // reuse — same key, already fetched above
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
         let base_ata = get_ata(&wallet_pubkey, &pool.base_mint);
 
         // Gate: ensure we have enough native SOL for quote amount + fees + ATA rent + reserve floor.
-        // min_sol_reserve (config) is the absolute floor to keep in wallet; defaults to 0.02 SOL.
-        // Always keep at least 6_000_000 lamports (0.006 SOL) for tx fees even if reserve is lower.
-        let native_balance = self.rpc.get_balance(&wallet_pubkey).await.unwrap_or(0);
+        // Reuse native_balance_early — fetched moments ago for wallet-pct sizing, still fresh.
+        let native_balance = native_balance_early;
         let reserve_lam = ((self.config.min_sol_reserve * 1e9) as u64).max(6_000_000);
         let min_required = effective_quote_amount_raw + reserve_lam;
         if native_balance < min_required {
@@ -1318,6 +1397,31 @@ impl Sniper {
                 return Err(e);
             }
         };
+
+        // ── Pre-send vault re-check — abort if pool drained since filter evaluation ──
+        // This catches the most common -100% rug pattern: pool passes filters then
+        // gets drained in the 50-200ms between evaluation and tx send.
+        if quote_reserve_lam > 0 {
+            if let Ok(Ok(qb)) = tokio::time::timeout(
+                tokio::time::Duration::from_millis(800),
+                self.rpc.get_token_account_balance(&pool.quote_vault),
+            ).await {
+                if let Ok(current_q) = qb.amount.parse::<u64>() {
+                    let drain_pct = if current_q < quote_reserve_lam {
+                        (quote_reserve_lam - current_q) as f64 / quote_reserve_lam as f64 * 100.0
+                    } else { 0.0 };
+                    if drain_pct > 50.0 {
+                        info!(
+                            mint = %pool.base_mint,
+                            drain_pct = %format!("{:.1}%", drain_pct),
+                            "Pre-send vault check: pool drained >50% — aborting buy (rug in progress)"
+                        );
+                        self.filter_pipeline.stats.record_rejection("pre_send_drain");
+                        return Ok(());
+                    }
+                }
+            }
+        }
 
         // One-buy-at-a-time gate: prevents two buy TRANSACTIONS from racing on the
         // same WSOL ATA simultaneously. Released as soon as the buy tx confirms (NOT
@@ -2671,15 +2775,10 @@ impl SellMonitor {
                         if exit_gate_met && stop_loss_amount < min_profit_floor_lamports {
                             stop_loss_amount = min_profit_floor_lamports;
                         }
-                        // Trailing stop: only activates at/above TP to prevent sub-0.05 exits.
-                        // When vault is actively draining, tighten to 2 % to lock gains faster.
+                        // Trailing stop: only activates at/above TP to prevent sub-entry exits.
+                        // Uses configured trailing_stop_loss_pct (wide for 1000x riding).
                         if trailing_enabled && exit_gate_met {
-                            let trail_pct = if pool_is_draining {
-                                2.0f64
-                            } else {
-                                self.config.trailing_stop_loss_pct
-                            };
-                            let trail = (peak_value as f64 * (1.0 - trail_pct / 100.0)) as u64;
+                            let trail = (peak_value as f64 * (1.0 - self.config.trailing_stop_loss_pct / 100.0)) as u64;
                             if trail > stop_loss_amount { stop_loss_amount = trail; }
                         }
 
@@ -3186,7 +3285,25 @@ impl SellMonitor {
         });
     }
 
+    /// Atomically append a mint to the blacklist file so it is never bought again.
+    fn auto_blacklist_mint(path: &str, mint: &str) {
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        if existing.lines().any(|l| l.trim() == mint) { return; }
+        let new_content = format!("{}\n{}\n", existing.trim_end(), mint);
+        let tmp = format!("{}.tmp", path);
+        if std::fs::write(&tmp, &new_content).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+        tracing::warn!(mint = %&mint[..12.min(mint.len())], "🚫 Auto-blacklisted rug mint");
+    }
+
     async fn record_sell_outcome(&self, profitable: bool, pnl_lamports: i64, pnl_sol: f64, mint: &str) {
+        // Auto-blacklist mints that rug us completely — pnl ≤ −0.001 SOL and not profitable.
+        // Prevents re-buying the same rugged pool (which caused 32 -100% losses from 14 mints).
+        if !profitable && pnl_lamports <= -1_000_000 {
+            Self::auto_blacklist_mint(&self.config.blacklist_path, mint);
+        }
+
         // Strategy agent history
         {
             let mut history = self.trade_history.lock();

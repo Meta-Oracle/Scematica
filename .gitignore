@@ -7,7 +7,8 @@ release/
 
 # ── Secrets / environment ─────────────────────────────────────────────────────
 .env
-.env.*
+.env.local
+.env.*.local
 *.json.key
 # Never commit wallet or program keypairs from target/deploy
 programs/*/target/
@@ -51,6 +52,12 @@ stress_test.sh
 # ── OS-generated files ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Web app build artifacts ───────────────────────────────────────────────────
+web/.next/
+web/node_modules/
+web/.env.local
+web/out/
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md

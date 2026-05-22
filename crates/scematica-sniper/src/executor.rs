@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -298,7 +299,7 @@ impl TxExecutor for JitoExecutor {
 
         // Serialize and base64-encode
         let tx_bytes = bincode::serialize(&tx)?;
-        let tx_b64 = base64::encode(&tx_bytes);
+        let tx_b64 = general_purpose::STANDARD.encode(&tx_bytes);
 
         // Send to Jito block engine
         let payload = serde_json::json!({

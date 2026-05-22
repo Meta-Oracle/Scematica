@@ -4,7 +4,6 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     signature::Keypair,
-    signer::Signer,
     transaction::Transaction,
 };
 use std::sync::Arc;

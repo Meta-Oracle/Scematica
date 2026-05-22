@@ -1,6 +1,7 @@
 use crate::SwapInstructionBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose};
 use scematica_core::types::DexKind;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey, transaction::VersionedTransaction};
 
@@ -72,7 +73,7 @@ impl JupiterBuilder {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No swapTransaction in Jupiter response"))?;
 
-        Ok(base64::decode(tx_b64)?)
+        Ok(general_purpose::STANDARD.decode(tx_b64)?)
     }
 
     /// Deserialize a bincode-encoded `VersionedTransaction` from raw bytes.

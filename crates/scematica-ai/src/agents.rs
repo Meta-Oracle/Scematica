@@ -90,10 +90,10 @@ impl RiskAgent {
         Self { client }
     }
 
-    /// Assess a token and return a risk score.
-    /// Returns a default "skip" score if the AI call fails (fail-safe).
-    /// Rate-limit aware: skips the HTTP call during cached blackout windows
-    /// and automatically retries with the fallback provider on 429 errors.
+    /// Assess a token and return a risk score with full AMM quantitative signals.
+    /// Returns a default "pass" score if the AI call fails (infrastructure failure
+    /// should not block trades — on-chain filters are the real gate).
+    #[allow(clippy::too_many_arguments)]
     pub async fn score_token(
         &self,
         mint: &str,
@@ -107,15 +107,40 @@ impl RiskAgent {
         has_socials: bool,
         open_time_utc_hour: u8,
     ) -> TokenRiskScore {
+        self.score_token_v2(
+            mint, symbol, name, pool_size_sol,
+            mint_renounced, freezable, lp_burned, mutable_metadata, has_socials,
+            open_time_utc_hour, 0.0, 0.0, 0.0, 0,
+        ).await
+    }
+
+    /// Full scoring with AMM velocity and momentum signals.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn score_token_v2(
+        &self,
+        mint: &str,
+        symbol: &str,
+        name: &str,
+        pool_size_sol: f64,
+        mint_renounced: bool,
+        freezable: bool,
+        lp_burned: bool,
+        mutable_metadata: bool,
+        has_socials: bool,
+        open_time_utc_hour: u8,
+        velocity_sol_per_sec: f64,
+        buy_pressure_ratio: f64,
+        amm_expected_inflow_pct: f64,
+        pool_age_secs: u64,
+    ) -> TokenRiskScore {
         // Skip the HTTP round-trip entirely if we know the primary is rate-limited
         if is_rate_limited() {
-            // Try fallback before giving up
             if get_fallback().is_none() {
-                return Self::default_skip(mint, "rate-limited (cached)");
+                return Self::default_pass(mint, "rate-limited (cached)");
             }
         }
 
-        let prompt = prompts::build_risk_prompt(
+        let prompt = prompts::build_risk_prompt_v2(
             mint,
             symbol,
             name,
@@ -126,6 +151,10 @@ impl RiskAgent {
             mutable_metadata,
             has_socials,
             open_time_utc_hour,
+            velocity_sol_per_sec,
+            buy_pressure_ratio,
+            amm_expected_inflow_pct,
+            pool_age_secs,
         );
 
         // Choose primary or fallback client based on rate-limit state
@@ -133,7 +162,7 @@ impl RiskAgent {
             if let Some(fb) = get_fallback() {
                 fb.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await
             } else {
-                return Self::default_skip(mint, "rate-limited, no fallback");
+                return Self::default_pass(mint, "rate-limited, no fallback");
             }
         } else {
             let res = self.client.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await;
@@ -146,7 +175,7 @@ impl RiskAgent {
                         warn!(mint = %mint, "Primary AI rate-limited — trying fallback provider");
                         fb.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await
                     } else {
-                        return Self::default_skip(mint, "rate-limited, no fallback configured");
+                        return Self::default_pass(mint, "rate-limited, no fallback configured");
                     }
                 } else {
                     res
@@ -171,7 +200,7 @@ impl RiskAgent {
                     }
                     Err(e) => {
                         warn!("Failed to parse AI risk response: {} | raw: {}", e, json_str);
-                        Self::default_skip(mint, "Failed to parse AI response")
+                        Self::default_pass(mint, "Failed to parse AI response")
                     }
                 }
             }
@@ -181,17 +210,20 @@ impl RiskAgent {
                     handle_rate_limit(&err_str);
                 }
                 warn!("AI risk agent error: {}", e);
-                Self::default_skip(mint, &err_str)
+                Self::default_pass(mint, &err_str)
             }
         }
     }
 
-    fn default_skip(_mint: &str, reason: &str) -> TokenRiskScore {
+    /// When the AI INFRASTRUCTURE fails (rate limit, network, no key), pass the
+    /// token through to the on-chain filter result.  Only hard-skip when the AI
+    /// itself returns a genuine low-score recommendation.
+    fn default_pass(_mint: &str, reason: &str) -> TokenRiskScore {
         TokenRiskScore {
-            score: 0,
-            recommendation: "skip".into(),
-            reasoning: format!("AI unavailable: {}", reason),
-            red_flags: vec!["AI assessment failed — defaulting to skip".into()],
+            score: 70,
+            recommendation: "buy".into(),
+            reasoning: format!("AI unavailable ({}); on-chain filters decide", reason),
+            red_flags: vec![format!("AI assessment failed: {}", reason)],
             timestamp: Utc::now(),
         }
     }

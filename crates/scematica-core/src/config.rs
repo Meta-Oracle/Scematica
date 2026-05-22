@@ -2,6 +2,25 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use anyhow::Result;
 
+/// Rate mode profile: defines entry size, TP%, SL% for a specific risk posture
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateMode {
+    /// Human-readable name: "Micro", "Bearish", "Safe", "Balanced", "Aggressive", "Degen", "Moon"
+    pub name: String,
+    /// Menu order (1–7)
+    pub order: u32,
+    /// Entry amount in quote token (e.g. 0.01 SOL)
+    pub quote_amount: f64,
+    /// Take profit % for this mode
+    pub take_profit_pct: f64,
+    /// Stop loss % for this mode
+    pub stop_loss_pct: f64,
+    /// Max TP escalations allowed in momentum mode
+    pub momentum_max_escalations: u32,
+    /// Is this mode enabled?
+    pub enabled: bool,
+}
+
 /// Top-level bot configuration loaded from .env / config file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotConfig {
@@ -99,6 +118,12 @@ pub struct SniperConfig {
     /// Wallet addresses to copy-trade (buy same tokens they buy)
     pub copy_wallets: Vec<String>,
     pub filters: FilterConfig,
+
+    // ── Rate Modes: 7 trading profiles with individual entry sizes and TP/SL ──
+    /// 7 rate mode profiles: Micro, Bearish, Safe, Balanced, Aggressive, Degen, Moon
+    pub rate_modes: Vec<RateMode>,
+    /// Currently active rate mode name (e.g., "Balanced")
+    pub active_mode_name: String,
 
     // ── Kelly position sizing ─────────────────────────────────────────────────
     /// Enable Kelly Criterion position sizing
@@ -442,6 +467,74 @@ impl Default for SniperConfig {
             blacklist_path: "blacklist.txt".into(),
             copy_wallets: vec![],
             filters: FilterConfig::default(),
+            // v1.6.0: Rate modes — 7 profiles from Micro (0.001 SOL) to Moon (0.1 SOL)
+            // Default to Balanced (0.01 SOL, 40% win rate from Phase 1 analysis)
+            rate_modes: vec![
+                RateMode {
+                    name: "Micro".to_string(),
+                    order: 1,
+                    quote_amount: 0.001,
+                    take_profit_pct: 50.0,
+                    stop_loss_pct: 8.0,
+                    momentum_max_escalations: 3,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Bearish".to_string(),
+                    order: 2,
+                    quote_amount: 0.003,
+                    take_profit_pct: 75.0,
+                    stop_loss_pct: 10.0,
+                    momentum_max_escalations: 4,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Safe".to_string(),
+                    order: 3,
+                    quote_amount: 0.005,
+                    take_profit_pct: 100.0,
+                    stop_loss_pct: 12.0,
+                    momentum_max_escalations: 5,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Balanced".to_string(),
+                    order: 4,
+                    quote_amount: 0.01,
+                    take_profit_pct: 175.0,
+                    stop_loss_pct: 12.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Aggressive".to_string(),
+                    order: 5,
+                    quote_amount: 0.02,
+                    take_profit_pct: 300.0,
+                    stop_loss_pct: 15.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Degen".to_string(),
+                    order: 6,
+                    quote_amount: 0.04,
+                    take_profit_pct: 450.0,
+                    stop_loss_pct: 25.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Moon".to_string(),
+                    order: 7,
+                    quote_amount: 0.1,
+                    take_profit_pct: 1200.0,
+                    stop_loss_pct: 60.0,
+                    momentum_max_escalations: 8,
+                    enabled: true,
+                },
+            ],
+            active_mode_name: "Balanced".to_string(),
             kelly_sizing: false,
             kelly_fraction: 0.25,
             kelly_lookback: 20,
@@ -612,6 +705,25 @@ impl Default for AiChainConfig {
             l2l3_timeout_ms: 1800,
             min_l2_score: 65,
         }
+    }
+}
+
+impl SniperConfig {
+    /// Retrieve the active rate mode by name, or None if not found
+    pub fn get_active_rate_mode(&self) -> Option<&RateMode> {
+        self.rate_modes
+            .iter()
+            .find(|m| m.name == self.active_mode_name && m.enabled)
+    }
+
+    /// List all enabled rate modes sorted by order
+    pub fn enabled_rate_modes(&self) -> Vec<&RateMode> {
+        let mut modes: Vec<_> = self.rate_modes
+            .iter()
+            .filter(|m| m.enabled)
+            .collect();
+        modes.sort_by_key(|m| m.order);
+        modes
     }
 }
 

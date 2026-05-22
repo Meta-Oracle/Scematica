@@ -22,130 +22,253 @@ max_buy_retries = 3
 max_sell_retries = 5       # extra retries — thin pools need more attempts
 auto_sell = true
 auto_sell_delay_ms = 0
-take_profit_pct = 500.0   # Full exit target: 5x (500%). Tiered partials de-risk
-                          # at 100% and 250% before this final exit fires.
-stop_loss_pct = 8.0       # Sell when down 8% — tight stop, runners don't look back
+take_profit_pct = 500.0   # v1.6.0: Exit gate — momentum exits only fire at/above this level
+                          # Guarantees ≥0.05 SOL profit per win (0.01 SOL × 6× = 0.06 SOL)
+stop_loss_pct = 12.0      # Phase 1: Tighter risk for faster scalp exits
 buy_slippage_pct = 1.0
-sell_slippage_pct = 50.0   # wide slippage — pump.fun pools move 30–60% between
-                           # estimated_out computation and tx landing. 20% was
-                           # getting dropped by leader before the 0x26 fallback
-                           # could trigger.
-price_check_interval_ms = 1000    # check price every 1s (was 2s) — catches TP/SL 2x faster
-price_check_duration_ms = 180000  # 3 min monitor window (was 5 min) — force-sell sooner
+sell_slippage_pct = 2.5   # Realistic slippage tolerance (was 85%!)
+                          # Escalates to 5% on retry, then min_out=0
+                          # Prevents accepting terrible prices from drained pools
+price_check_interval_ms = 250    # Phase 1: 4× faster polling (250ms) to catch TP hits
+price_check_duration_ms = 60000   # 60s monitor window (was 180s) — exits losers faster
 one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
 max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
-trailing_stop_loss_pct = 8.0   # Trail stop 8% below peak price (0 = use fixed stop_loss_pct)
-partial_tp_pct = 50.0          # Sell 50% of position at partial TP trigger
-partial_tp_trigger = 60.0      # Trigger partial TP when up 60%
+trailing_stop_loss_pct = 12.0  # Phase 1: Aggressive scaling (tightens on dump)
+partial_tp_pct = 0.0           # Disabled — single full exit at take_profit_pct
+partial_tp_trigger = 0.0       # Disabled — no partial sells below the 0.05 SOL target
+
+# ── v1.6.0 Exit Gate — Guaranteed ≥0.05 SOL Exits ───────────────────────────
+# All momentum/timing exits are gated behind take_profit_pct (500%).
+# Once position hits TP, profit floor locks at that level permanently.
+momentum_min_peak_pct = 500.0       # Pullback exit only fires after peak >= 500%
+velocity_decay_min_pnl_pct = 500.0  # Decay exit only fires when PnL >= 500%
+volume_exhaustion_pct = 0.0         # Disabled — swell-based exit gate handles vault drain
+whale_exit_vault_drop_pct = 0.0     # Disabled in profit zone
+flash_crash_pct = 0.0               # Disabled in profit zone; SL handles crashes
+profit_lock_checks = 0              # Disabled — profit floor in code locks 0.05 SOL
+
+# ── v1.6.0 Momentum Escalation (Hold Longer) ──────────────────────────────────
+momentum_hold = true
+momentum_max_escalations = 7        # 7-round ladder: 175→315→567→1020→1836→3305→5949%
+momentum_escalation_factor = 1.8    # TP grows 1.8× per round
+momentum_escalation_threshold_pct = 3.0  # Lower velocity bar (was 5%)
+momentum_pullback_exit_pct = 8.0    # Adaptive: 8 × √(1 + peak/100)
 max_concurrent_positions = 5   # Max open positions at once (0 = unlimited)
 cooldown_after_losses = 3      # Pause buying after 3 consecutive losses
 cooldown_minutes = 20          # Cooldown duration in minutes
 daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
-max_drawdown_pct = 30.0        # Halt if wallet drops 30% below session start
+max_drawdown_pct =  50.0      # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
 
-# ── Runner-theory tuning (v1.5.4) ──────────────────────────────────────────
-# Pool quality gate: AiChain (3-layer LLM) is now the primary discriminator.
-# min_pool_score is a pre-filter soft floor only — it runs before AI inference.
-# Lowered from 95 → 70 to avoid double-gating: score=95 + AiChain rejection was
-# blocking everything. Score=70 blocks ghost pools (0 SOL) and severely stale
-# pools while leaving AI to make the real selection call.
-#   score=98: ultra-fresh ≤7s + sweet-spot 6.5–28 SOL → AI evaluates → typically BUY
-#   score=80–94: borderline — AI judges on velocity, buy-pressure, rug signal
-#   score<70: ghost/stale pools → hard-rejected before AI (saves LLM quota)
-min_pool_score = 70
+# ── v1.5.2 Live-Data Improvements ──────────────────────────────────────────────
+# Pool quality gate using the new Bayesian scorer (pool_scorer.rs v2).
+# Score 65 = P(win)≈0.09 posterior — requires 6+ SOL + fresh + some velocity.
+# Score 75 = P(win)≈0.18 — requires sweet spot + ultra-fresh + buy pressure.
+# Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
+min_pool_score = 60              # Balanced: Catch runners & early movers (was 72 too strict)
 
-# Runner mode: score≥98 pools (ultra-fresh ≤7 s AND sweet-spot 6.5–28 SOL) sized up to
-# runner_scale_in_sol instead of the base quote_amount. Live data showed the two biggest
-# wins (+0.0159, +0.0178 SOL) came from score=98 pools bought twice (accidental scale-in).
-# This intentionally replicates that pattern for max-conviction entries.
-runner_mode = true
-runner_scale_in_sol = 0.02
+# ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
+kelly_sizing = false
+kelly_fraction = 0.25
+kelly_lookback = 20
+kelly_min_trades = 10               # Trades required before Kelly activates
 
-# Pool drain guard: exit if quote vault falls below 15% of its entry-time balance.
-# Catches slow rugs that bypass the single-check whale_exit_vault_drop_pct threshold.
-pool_drain_exit_pct = 15.0
+# ── v1.1.0 Session Heat Cooldown ────────────────────────────────────────────────
+session_heat_losses = 0             # 0=disabled; losses in window to trigger pause
+session_heat_window_secs = 3600     # Rolling window for loss counting
+session_heat_cooldown_mins = 15     # Pause duration when heat trips
 
-# Tiered partial TP ladder: de-risk at 100% and 250%, hold remainder to 500%.
-#   Level 1 (+100%): sell 25% of position — lock a base 1× return, stop moves to breakeven
-#   Level 2 (+250%): sell 25% of remaining 75% — lock another layer while runner runs
-#   Full TP (500%): exit remaining ~56% at 5x target
-# Format: [[trigger_pct, sell_pct_of_remaining], ...]
-tiered_partial_tp_levels = [[100.0, 25.0], [250.0, 25.0]]
+# ── v1.1.0 Buy Improvements ─────────────────────────────────────────────────────
+min_sol_reserve = 0.02              # Keep at least this SOL in wallet after buy
+confirmation_window_ms = 0          # 0=disabled; check vault drain before buying
+pool_quality_sizing = false         # Scale position by pool_score/100
+check_interval_acceleration = true  # Halve poll interval on 3 consecutive declines
 
-# Dead-zone exit: all wins in live data exited within 6–20 s. 15 s recycles capital
-# faster than 30 s without cutting any observed winner short.
-no_pump_timeout_secs = 15
+# ── v1.4.0 Builder & SuperBuilder Modes ─────────────────────────────────────────
+profit_first_mode = true
+profit_first_floor_pct = 25.0       # v1.4.0: Exit rugs at -25% (was -50%)
+wallet_target_sol = 0.15            # Target for Growth mode
 
-# Protect positions < 90 s from dump mode force-sell (min_out=0). Overnight data
-# showed dump mode destroying a 61-second position at -60%. sell_mode still clears
-# immediately (dump_mode-only respects this hold floor).
-min_dump_hold_secs = 90
+# ── v1.4.0 Risk Breakers ────────────────────────────────────────────────────────
+ath_drawdown_pct = 0.0              # 0=disabled; halt if wallet drops X% from ATH
+grief_loss_window_secs = 300
+grief_loss_limit_sol = 0.0          # 0=disabled
 
-# Persistent re-entry cooldown: after buying a mint, skip it for this many seconds,
-# even across process restarts (stored in scematica-mint-cooldown.json).
-# Live data showed the same losing pools re-entered 3× in 26 min after restarts.
-# 1800 = 30 min — long enough to outlast the typical pump cycle.
-mint_cooldown_secs = 1800
+# ── Multi-RPC Failover ──────────────────────────────────────────────────────────
+extra_rpc_endpoints = []            # Add backup RPC URLs here
 
+# v1.4.0: Tiered partial TP ladder (currently disabled for 500% full-exit strategy)
+# When enabled, these levels lock in profits incrementally:
+# [[sniper.tiered_partial_tp_levels]]
+# trigger_pct = 100.0
+# sell_pct = 15.0
+# [[sniper.tiered_partial_tp_levels]]
+# trigger_pct = 300.0
+# sell_pct = 20.0
+# [[sniper.tiered_partial_tp_levels]]
+# trigger_pct = 600.0
+# sell_pct = 25.0
+tiered_partial_tp = false         # Set true to enable tiered ladder above
+
+# v1.6.0: Dead-zone exit reduced 45→30s (winners exit in <6s, recycle capital faster)
+no_pump_timeout_secs = 45        # Phase 1: Give TP ladders time to work (was 30)
+no_pump_min_gain_pct = 3.0          # Peak gain % required to suppress dead-zone exit
+
+# v1.5.2: Protect fresh positions from dump-mode force-sell
+min_dump_hold_secs = 90             # Positions younger than 90s held through normal TP/SL
 copy_wallets = []              # Wallet addresses to copy-trade (buy same tokens they buy)
 
-# ── 3-Layer LLM pool-selection chain ───────────────────────────────────────────
-# Three genuinely different providers used as independent judges:
-#   L1 (fast screener)  — Groq / llama-3.1-8b-instant  → set GROQ_API_KEY in .env
-#   L2 (deep analyst)   — OpenRouter / gemma-2-9b-it:free → set OPENROUTER_API_KEY
-#   L3 (risk judge)     — Cerebras / llama-3.1-8b        → set CEREBRAS_API_KEY
-# All free tiers. Missing key = chain disabled, bot falls back to pool_scorer only.
-# Enable after adding keys to .env. The chain adds ~1.8s latency per pool
-# (L2+L3 run in parallel after L1 passes); timeout fallback is always fail-open.
-[sniper.ai_chain]
-enabled = true
-l1_model = "llama-3.1-8b-instant"
-l2_model = "google/gemma-2-9b-it:free"
-l3_model = "llama-3.1-8b"
-l1_timeout_ms = 1200
-l2l3_timeout_ms = 1800
-min_l2_score = 65            # L2 score threshold (0-100) — 65 = conservative
-
 [sniper.filters]
-check_interval_ms = 1000   # poll filters every 1s (was 2s)
-check_duration_ms = 12000  # filter window 12s (was 20s) — accept good pools faster
-consecutive_matches = 1    # one confirmed pass is enough with all filters enabled
-check_mint_renounced = false  # Disabled: many pump.fun graduates haven't renounced
-                              # at the moment the WS programNotification fires —
-                              # the renounce tx is still in flight. Keeping this on
-                              # rejects 30–40% of legitimate fresh launches.
-check_freezable = true        # KEEP — freeze authority is a real honeypot signal
-check_burned = true           # KEEP — pool vault being non-empty is the real rug check
-check_mutable = true          # Metadata mutability check (cheap, keep)
-check_socials = false
-min_pool_size = 5.0           # Minimum pool SOL liquidity. Runner-theory floor: 5 SOL
-                              # matches the bottom of the sweet-spot band (6.5 SOL scores
-                              # +18 bonus). Sub-5 SOL pools are micro-caps with extreme
-                              # slippage; none appear in the winning trade history.
-max_pool_size = 0.0           # 0 = disabled
-check_name = false            # Disabled: common substrings like "test"/"moon"/"fair
-                              # launch" generate too many false positives on real
-                              # memecoin names. Re-enable if your snipe list is
-                              # specifically curated against scam-word patterns.
-check_volume = false       # Require recent transaction activity (off by default)
-min_volume_txns = 3        # Minimum transactions in last 60s
+check_interval_ms = 1000
+check_duration_ms = 12000
+consecutive_matches = 1
+check_mint_renounced = true         # v1.6.0: Re-enabled with social enrichment
+check_freezable = true
+check_burned = true
+check_mutable = true
+check_socials = false               # v1.6.0: Set true to hard-reject tokens with zero social links
+                                    # Social enrichment now reads Metaplex + off-chain URI
+                                    # Scorer applies −4 to +10 boost based on social count
+filter_cache_ttl_secs = 30          # Cache filter results per pool
+min_pool_size = 8.0           # Catch runners from launch (was 10, allows earlier entry)
+                              # Median winning trades: ~14 SOL
+                              # Sweet spot: 8-40 SOL for momentum builds
+max_pool_size = 100.0         # Expanded: Runners grow 8→50+→100 SOL; catch momentum (was 30)
+check_name = true             # v1.2.0: Enabled — zero-cost scam-word filter
+check_volume = true           # v1.2.0: Require recent transaction activity
+min_volume_txns = 3           # Minimum transactions in last 60s
 check_liquidity_depth = true      # Check price impact before buying
-max_price_impact_pct = 5.0        # Reject if our buy causes >5% price impact
+max_price_impact_pct = 6.0        # Balanced: Allow runner volatility (was 3.5 too tight)
 
-# Holder concentration: fresh memecoins consistently have >80% top-10 concentration
-# in their first minutes (dev + early buyers). 70% cap was killing every pool.
-# Disabled here; re-enable with a high cap (e.g. 95%) if you want it as a softer guard.
-check_holder_concentration = false
-max_top10_holder_pct = 95.0
+# v1.2.0: Holder concentration check with realistic threshold
+check_holder_concentration = true
+max_top10_holder_pct = 75.0       # Balanced: Allow some initial concentration (was 67%, runners concentrate)
 
-# Deployer wallet age: disabled — pump.fun ALWAYS creates fresh deployer wallets
-# (0 hours old). The 24h default was rejecting 100% of pump.fun pools at the
-# current session start. Reputation scoring (scematica-deployer-reputation.json)
-# provides deployer-quality signal without the false-positive problem.
+# v1.1.0: Liquidity momentum check
+check_liquidity_momentum = false  # Disabled: Prevents false-rejecting consolidating runners
+
+# v1.1.0: Cross-pool correlation check
+check_cross_pool_correlation = true
+
+# v1.2.0: Deployer rug history check
+max_deployer_rugs_24h = 2         # Block deployers with >2 rugs in 24h
+
+# v1.5.2: Deployer wallet age disabled by default (pump.fun uses fresh wallets)
+# Reputation scoring provides better deployer-quality signal
 check_deployer_wallet_age = false
+deployer_min_age_hours = 24         # Only used if check_deployer_wallet_age = true
+
+# ============================================================
+# Rate Modes: 7 Trading Profiles
+# ============================================================
+# Each mode defines: entry size (SOL), take-profit %, stop-loss %
+# Switch between modes LIVE on the dashboard: [1]=Micro, [2]=Bearish, [3]=Safe, [4]=Balanced, [5]=Aggressive, [6]=Degen, [7]=Moon
+# Dashboard reads the active mode and applies the corresponding parameters immediately (no restart needed).
+#
+# Phase 1 Optimization Context:
+# - Entry size 0.01 SOL is the "sweet spot" (40% win rate from 521 trades)
+# - Smaller entries (0.001–0.005) get sandwiched: 25% win rate
+# - Larger entries (0.012+) hit slippage: 30% win rate
+# - Each mode scales around the sweet spot based on risk appetite
+#
+# Recommended starting points:
+# - New traders: [3] Safe (0.005 SOL, conservative)
+# - Standard running: [4] Balanced (0.01 SOL, proven)
+# - Aggressive days: [5] Aggressive (0.02 SOL, for momentum)
+# - Emergency: [6] Degen (0.04 SOL, last-resort capital push)
+# - Pursuit: [7] Moon (0.1 SOL, chasing a banger)
+
+# Micro mode: smallest entry, maximum risk aversion
+# Use when: testing, low SOL balance (<0.15 SOL), or ultra-bearish market
+# Position sizing: ~1k tokens on fresh pools, 1-2 trades before reload
+[[sniper.rate_modes]]
+name = "Micro"
+order = 1
+quote_amount = 0.001       # Entry: 1 milliSOL
+take_profit_pct = 50.0     # Exit goal: 50% profit
+stop_loss_pct = 8.0        # Exit pain: 8% loss
+momentum_max_escalations = 3
+enabled = true
+
+# Bearish mode: defensive entry, tight stop
+# Use when: market showing weakness, awaiting reversal, or preserving capital
+# Position sizing: 2-3k tokens
+[[sniper.rate_modes]]
+name = "Bearish"
+order = 2
+quote_amount = 0.003       # Entry: 3 milliSOL
+take_profit_pct = 75.0     # Exit goal: 75% profit
+stop_loss_pct = 10.0       # Exit pain: 10% loss
+momentum_max_escalations = 4
+enabled = true
+
+# Safe mode: conservative entry, baseline risk
+# Use when: steady market conditions, testing new filters, or learning
+# Position sizing: 5-7k tokens
+[[sniper.rate_modes]]
+name = "Safe"
+order = 3
+quote_amount = 0.005       # Entry: 5 milliSOL
+take_profit_pct = 100.0    # Exit goal: 100% profit (double entry)
+stop_loss_pct = 12.0       # Exit pain: 12% loss
+momentum_max_escalations = 5
+enabled = true
+
+# Balanced mode: sweet-spot entry (Phase 1 optimized)
+# Use when: normal conditions, or as the baseline mode
+# Position sizing: 10-15k tokens (proven winner from data)
+# Data: 40% win rate, +57.4% average PnL on 0.01 SOL entries
+[[sniper.rate_modes]]
+name = "Balanced"
+order = 4
+quote_amount = 0.01        # Entry: 10 milliSOL (SWEET SPOT!)
+take_profit_pct = 175.0    # Exit goal: 175% profit (escalator starting point)
+stop_loss_pct = 12.0       # Exit pain: 12% loss
+momentum_max_escalations = 7
+enabled = true
+
+# Aggressive mode: 2× entry, accepting more volatility
+# Use when: clear bull signal, pool quality excellent, or after winning streak
+# Position sizing: 20-30k tokens
+[[sniper.rate_modes]]
+name = "Aggressive"
+order = 5
+quote_amount = 0.02        # Entry: 20 milliSOL
+take_profit_pct = 300.0    # Exit goal: 300% profit
+stop_loss_pct = 15.0       # Exit pain: 15% loss
+momentum_max_escalations = 7
+enabled = true
+
+# Degen mode: 4× entry, maximum conviction
+# Use when: exceptional pool signals, wallet at target, or capitalization blitz
+# Position sizing: 40-60k tokens
+# WARNING: Losses are amplified 4×
+[[sniper.rate_modes]]
+name = "Degen"
+order = 6
+quote_amount = 0.04        # Entry: 40 milliSOL
+take_profit_pct = 450.0    # Exit goal: 450% profit
+stop_loss_pct = 25.0       # Exit pain: 25% loss (wider for volatility)
+momentum_max_escalations = 7
+enabled = true
+
+# Moon mode: maximum bet, chasing 10×+ runners
+# Use when: pursuing a known banger, wallet at 3 SOL target, or moon-mode enabled
+# Position sizing: 100+ milliSOL (can be entire wallet on confirmed pump)
+[[sniper.rate_modes]]
+name = "Moon"
+order = 7
+quote_amount = 0.1         # Entry: 100 milliSOL
+take_profit_pct = 1200.0   # Exit goal: 1200% profit (12× runway)
+stop_loss_pct = 60.0       # Exit pain: 60% loss (wide for moon chasing)
+momentum_max_escalations = 8
+enabled = true
+
+# Active rate mode (set to one of the above names)
+# This is what the dashboard reads. Change it here OR use dashboard hotkeys [1–7]
+active_mode_name = "Balanced"   # Start with the sweet-spot mode
 
 # ============================================================
 # Arbitrage Configuration

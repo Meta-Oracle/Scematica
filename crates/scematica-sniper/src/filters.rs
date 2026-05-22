@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use chrono::Timelike;
-use scematica_core::config::{FilterConfig, AiChainConfig};
-use scematica_ai::{PoolChainJudge, PoolSignals};
+use scematica_core::config::FilterConfig;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::pubkey::Pubkey;
@@ -11,7 +9,6 @@ use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
 use crate::cache::CachedPool;
-use crate::pool_scorer::PoolScorer;
 use crate::reputation::DeployerLedger;
 
 /// Tracks per-filter rejection counts for dashboard stats
@@ -47,6 +44,20 @@ impl FilterStats {
 }
 
 pub const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
+
+/// On-chain and off-chain metadata enrichment for a token.
+/// Written by SocialLinksFilter; read by sniper AI call + pool scorer.
+#[derive(Debug, Clone, Default)]
+pub struct TokenSocials {
+    pub name: String,
+    pub symbol: String,
+    pub twitter: bool,
+    pub telegram: bool,
+    pub website: bool,
+    pub discord: bool,
+    /// 0–4: how many distinct social channels were found
+    pub social_count: u8,
+}
 
 #[derive(Debug, Clone)]
 pub struct FilterResult {
@@ -734,163 +745,123 @@ impl PoolFilter for DeployerWalletAgeFilter {
     }
 }
 
-// ── AI chain filter ──────────────────────────────────────────────────────────
-
-/// 3-layer LLM chain filter: Groq (screener) → OpenRouter (analyst) → Cerebras (judge).
-///
-/// Runs LAST in the pipeline after all deterministic filters pass. Falls back to
-/// pool_scorer-only logic if any API key is missing or all layers time out.
-/// Always fail-open on infrastructure errors — don't block a pool because an LLM
-/// is slow. Only block when the chain explicitly says SKIP.
-pub struct AiChainFilter {
-    judge: PoolChainJudge,
-    base_size_sol: f64,
-    deployer_ledger: Arc<parking_lot::Mutex<DeployerLedger>>,
+/// Fetch off-chain token metadata JSON from the Metaplex URI.
+/// Hard 1.5 s wall-clock cap so a slow CDN can't stall the filter pipeline.
+async fn fetch_token_uri_metadata(uri: &str) -> Option<serde_json::Value> {
+    if !uri.starts_with("http") { return None; }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .user_agent("scematica-sniper/1.0")
+        .build()
+        .ok()?;
+    let resp = tokio::time::timeout(
+        tokio::time::Duration::from_millis(1800),
+        client.get(uri).send(),
+    ).await.ok()?.ok()?;
+    tokio::time::timeout(
+        tokio::time::Duration::from_millis(1500),
+        resp.json::<serde_json::Value>(),
+    ).await.ok()?.ok()
 }
 
-impl AiChainFilter {
-    pub fn new(
-        config: &AiChainConfig,
-        base_size_sol: f64,
-        deployer_ledger: Arc<parking_lot::Mutex<DeployerLedger>>,
-    ) -> Option<Self> {
-        let judge = PoolChainJudge::try_new(
-            &config.l1_model,
-            &config.l2_model,
-            &config.l3_model,
-            config.min_l2_score,
-            config.l1_timeout_ms,
-            config.l2l3_timeout_ms,
-        )?;
-        Some(Self { judge, base_size_sol, deployer_ledger })
-    }
+/// Enriches pool metadata with on-chain name/symbol and off-chain social links.
+///
+/// Always runs so that `FilterPipeline::metadata` is populated for the AI call
+/// and pool scorer even when `require_socials = false`. When `require_socials`
+/// is true, rejects pools that have zero social presence.
+pub struct SocialLinksFilter {
+    pub metadata_cache: Arc<DashMap<String, TokenSocials>>,
+    /// If true, reject pools with no social links. If false, only enrich.
+    pub require_socials: bool,
 }
 
 #[async_trait]
-impl PoolFilter for AiChainFilter {
-    fn name(&self) -> &str { "AiChain" }
+impl PoolFilter for SocialLinksFilter {
+    fn name(&self) -> &str { "SocialLinks" }
 
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        // Fetch quote + base vault balances in parallel (reuse existing helper)
-        let (quote_bal, base_bal) = tokio::join!(
-            get_token_balance_retried(rpc, &pool.quote_vault, 2),
-            get_token_balance_retried(rpc, &pool.base_vault, 2),
-        );
+        const METADATA_PROGRAM: Pubkey =
+            solana_sdk::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+        let seeds: &[&[u8]] = &[b"metadata", METADATA_PROGRAM.as_ref(), pool.base_mint.as_ref()];
+        let (metadata_pda, _) = Pubkey::find_program_address(seeds, &METADATA_PROGRAM);
 
-        let pool_size_sol = quote_bal.map(|b| b as f64 / 1e9).unwrap_or(0.0);
+        let acct = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_account(&metadata_pda),
+        ).await {
+            Ok(Ok(a)) if a.data.len() > 120 => a,
+            _ => {
+                debug!(mint = %pool.base_mint, "SocialLinks: no metadata account — skipping enrichment");
+                self.metadata_cache.insert(pool.base_mint.to_string(), TokenSocials::default());
+                return FilterResult::pass();
+            }
+        };
 
-        // Vault RPC propagation lag — balance not yet visible on-chain. Fail-open so
-        // we don't reject legitimate fresh pools that haven't propagated yet. Consistent
-        // with PoolSizeFilter and LiquidityDepthFilter behaviour.
-        if pool_size_sol == 0.0 {
-            debug!(mint = %pool.base_mint, "AiChain: vault unreadable (propagation lag) — skipping AI check, pass-through");
-            return FilterResult::pass();
+        let data = &acct.data;
+        let name = read_metaplex_string(data, 65);
+        let symbol_offset = 65 + 4 + name.len().min(32);
+        let symbol = read_metaplex_string(data, symbol_offset);
+        let uri_offset = symbol_offset + 4 + symbol.len().min(10);
+        let uri_raw = read_metaplex_string(data, uri_offset);
+        let uri = uri_raw.trim().to_string();
+
+        let mut socials = TokenSocials {
+            name: name.trim().to_string(),
+            symbol: symbol.trim().to_string(),
+            ..TokenSocials::default()
+        };
+
+        // Off-chain URI fetch — pump.fun stores twitter/telegram/website in JSON
+        if !uri.is_empty() {
+            if let Some(meta) = fetch_token_uri_metadata(&uri).await {
+                let check = |key: &str| {
+                    meta.get(key)
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                        || meta.get("extensions")
+                            .and_then(|e| e.get(key))
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false)
+                };
+                socials.twitter  = check("twitter");
+                socials.telegram = check("telegram");
+                socials.website  = check("website");
+                socials.discord  = check("discord");
+                // pump.fun also uses "createdOn" and root-level socials
+                if !socials.twitter  { socials.twitter  = check("twitter_url"); }
+                if !socials.telegram { socials.telegram = check("telegram_url"); }
+            }
         }
 
-        let buy_pressure_ratio = match (quote_bal, base_bal) {
-            (Some(q), Some(b)) if b > 0 => q as f64 / b as f64,
-            _ => 0.0,
-        };
+        socials.social_count = [socials.twitter, socials.telegram, socials.website, socials.discord]
+            .iter()
+            .filter(|&&b| b)
+            .count() as u8;
 
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let pool_age_secs = if pool.open_time > 0 && pool.open_time <= now_secs {
-            now_secs.saturating_sub(pool.open_time)
-        } else {
-            0
-        };
-
-        let velocity_sol_per_sec = if pool_age_secs > 0 {
-            pool_size_sol / pool_age_secs as f64
-        } else {
-            0.0
-        };
-
-        // Scorer-based grounding value (deterministic)
-        let scorer_score = PoolScorer::score(
-            pool,
-            quote_bal.unwrap_or(0),
-            base_bal.unwrap_or(0),
-            now_secs,
+        tracing::debug!(
+            mint = %pool.base_mint,
+            name = %socials.name,
+            symbol = %socials.symbol,
+            social_count = socials.social_count,
+            twitter = socials.twitter,
+            telegram = socials.telegram,
+            website = socials.website,
+            "SocialLinks metadata enriched"
         );
 
-        // Deployer rug score from in-memory ledger
-        let deployer_rug_score = {
-            let ledger = self.deployer_ledger.lock();
-            let owner = "unknown"; // ledger uses pool owner (program ID), always clean
-            1.0 - ledger.score(owner).clamp(0.0, 1.0)
-        };
+        self.metadata_cache.insert(pool.base_mint.to_string(), socials.clone());
 
-        // Recent trade stats from metrics file (best-effort, non-blocking)
-        let (recent_wins, recent_losses, open_positions, daily_pnl_sol) =
-            read_session_stats().await;
-
-        let utc_hour = chrono::Utc::now().hour() as u8;
-
-        let signals = PoolSignals {
-            pool_age_secs,
-            pool_size_sol,
-            scorer_score,
-            velocity_sol_per_sec,
-            buy_pressure_ratio,
-            deployer_rug_score,
-            time_of_day_utc_hour: utc_hour,
-            recent_wins,
-            recent_losses,
-            open_positions,
-            daily_pnl_sol,
-        };
-
-        let verdict = self.judge.judge(&signals, self.base_size_sol).await;
-
-        if verdict.fallback {
-            // Chain unavailable — pass through, scorer gating upstream handles it
-            debug!(
-                mint = %pool.base_mint,
-                scorer_score,
-                "AiChain: chain unavailable, falling back to pool_scorer"
-            );
-            return FilterResult::pass();
-        }
-
-        if verdict.buy {
-            info!(
-                mint = %pool.base_mint,
-                l1_confidence = verdict.l1_confidence,
-                l2_score = verdict.l2_score,
-                size_sol = verdict.size_sol,
-                max_hold = verdict.max_hold_secs,
-                reasoning = %verdict.reasoning,
-                "🤖 AiChain: BUY verdict"
-            );
+        if self.require_socials && socials.social_count == 0 {
+            FilterResult::fail(format!(
+                "Zero social links — '{}' ({}) is likely anonymous rug",
+                socials.name, socials.symbol,
+            ))
+        } else {
             FilterResult::pass()
-        } else {
-            FilterResult::fail(format!("AiChain SKIP: {}", verdict.reasoning))
         }
     }
-}
-
-/// Read session stats from scematica-metrics.json and scematica-filter-stats.json.
-/// Returns (wins, losses, open_positions, daily_pnl_sol). Non-blocking, best-effort.
-async fn read_session_stats() -> (u32, u32, u32, f64) {
-    tokio::task::spawn_blocking(|| {
-        let metrics: serde_json::Value = std::fs::read_to_string("scematica-metrics.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(serde_json::Value::Null);
-
-        let wins = metrics["session_wins"].as_u64().unwrap_or(0) as u32;
-        let losses = metrics["session_losses"].as_u64().unwrap_or(0) as u32;
-        let open = metrics["open_positions"].as_u64().unwrap_or(0) as u32;
-        let pnl = metrics["session_pnl_sol"].as_f64().unwrap_or(0.0);
-
-        (wins, losses, open, pnl)
-    })
-    .await
-    .unwrap_or((0, 0, 0, 0.0))
 }
 
 // ── pipeline ──────────────────────────────────────────────────────────────────
@@ -902,6 +873,9 @@ pub struct FilterPipeline {
     /// Pool-id → (passed, timestamp) cache to avoid repeating RPC calls on duplicate events.
     result_cache: Arc<DashMap<String, (bool, std::time::Instant)>>,
     cache_ttl_secs: u64,
+    /// mint → enriched metadata (name, symbol, social links). Written by SocialLinksFilter,
+    /// read by sniper AI call and pool scorer for quantitative signal enrichment.
+    pub metadata: Arc<DashMap<String, TokenSocials>>,
 }
 
 impl FilterPipeline {
@@ -911,7 +885,6 @@ impl FilterPipeline {
         quote_amount_raw: u64,
         blacklist_path: &str,
         deployer_ledger: Option<Arc<parking_lot::Mutex<DeployerLedger>>>,
-        ai_chain_config: Option<(&AiChainConfig, f64)>,
     ) -> Self {
         // ── Filter ordering: cheapest first so expensive RPC calls only run on
         // pools that pass the cheap guards. Each filter's RPC cost is noted below.
@@ -990,19 +963,15 @@ impl FilterPipeline {
             }));
         }
 
-        // [3 HTTP calls, parallel] 3-layer LLM chain — runs last after all cheap filters pass.
-        // Only active when enabled=true and all three API keys are present.
-        if let Some((ai_cfg, base_size_sol)) = ai_chain_config {
-            if ai_cfg.enabled {
-                let ledger_for_ai = deployer_ledger.clone().unwrap_or_else(|| {
-                    Arc::new(parking_lot::Mutex::new(DeployerLedger::load()))
-                });
-                if let Some(ai_filter) = AiChainFilter::new(ai_cfg, base_size_sol, ledger_for_ai) {
-                    info!("AI chain filter active (L1=Groq, L2=OpenRouter, L3=Cerebras)");
-                    filters.push(Box::new(ai_filter));
-                }
-            }
-        }
+        // Shared metadata cache — populated by SocialLinksFilter, read by sniper AI + scorer.
+        let metadata: Arc<DashMap<String, TokenSocials>> = Arc::new(DashMap::new());
+
+        // SocialLinksFilter always runs for metadata enrichment (name/symbol/socials).
+        // It only rejects when require_socials = true (check_socials in config).
+        filters.push(Box::new(SocialLinksFilter {
+            metadata_cache: Arc::clone(&metadata),
+            require_socials: config.check_socials,
+        }));
 
         let cache_ttl_secs = config.filter_cache_ttl_secs.max(5);
         Self {
@@ -1011,6 +980,7 @@ impl FilterPipeline {
             stats: FilterStats::default(),
             result_cache: Arc::new(DashMap::new()),
             cache_ttl_secs,
+            metadata,
         }
     }
 

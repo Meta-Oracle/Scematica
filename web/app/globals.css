@@ -1,0 +1,195 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary:  #080808;
+  --bg-dark:     #0f0f0f;
+  --bg-panel:    #111111;
+  --red-bright:  #ff2020;
+  --red-mid:     #cc1111;
+  --red-dark:    #661111;
+  --red-bg:      #1a0000;
+  --text:        #c8c8c8;
+  --text-muted:  #666666;
+  --green:       #00cc44;
+  --amber:       #ffaa00;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg-primary);
+  color: var(--text);
+  font-family: 'Space Mono', 'JetBrains Mono', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scanlines overlay ─────────────────────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.18) 2px,
+    rgba(0, 0, 0, 0.18) 4px
+  );
+  pointer-events: none;
+  z-index: 9998;
+}
+
+/* Moving scan bar */
+body::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(
+    transparent 0%,
+    rgba(204, 17, 17, 0.015) 50%,
+    transparent 100%
+  );
+  animation: scanBar 6s linear infinite;
+  pointer-events: none;
+  z-index: 9997;
+}
+
+@keyframes scanBar {
+  0%   { top: -120px; }
+  100% { top: 100vh; }
+}
+
+/* ── CRT vignette ──────────────────────────────────────────────────────────── */
+.crt-vignette {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 60%,
+    rgba(0,0,0,0.7) 100%
+  );
+  pointer-events: none;
+  z-index: 9996;
+}
+
+/* ── Terminal panel ────────────────────────────────────────────────────────── */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid #1a0000;
+  border-top: 1px solid #330000;
+  position: relative;
+}
+
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(204,17,17,0.03) 0%, transparent 30%);
+  pointer-events: none;
+}
+
+.panel-header {
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--red-mid);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid #1a0000;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.panel-header::before {
+  content: '◈';
+  color: var(--red-bright);
+  font-size: 0.55rem;
+}
+
+/* ── Red glow text ─────────────────────────────────────────────────────────── */
+.glow-red {
+  color: var(--red-bright);
+  text-shadow: 0 0 8px rgba(255,32,32,0.6), 0 0 20px rgba(204,17,17,0.3);
+}
+
+.glow-text {
+  text-shadow: 0 0 6px rgba(200,200,200,0.3);
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #0a0a0a; }
+::-webkit-scrollbar-thumb { background: #330000; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #660000; }
+
+/* ── Blinking cursor ───────────────────────────────────────────────────────── */
+.cursor::after {
+  content: '█';
+  animation: blink 1s step-end infinite;
+  color: var(--red-bright);
+  font-size: 0.8em;
+  margin-left: 2px;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* ── Value colors ──────────────────────────────────────────────────────────── */
+.positive { color: var(--green); text-shadow: 0 0 6px rgba(0,204,68,0.4); }
+.negative { color: var(--red-bright); text-shadow: 0 0 6px rgba(255,32,32,0.4); }
+.neutral  { color: var(--amber); }
+
+/* ── Wallet adapter overrides ──────────────────────────────────────────────── */
+.wallet-adapter-button {
+  background: transparent !important;
+  border: 1px solid #661111 !important;
+  color: #c8c8c8 !important;
+  font-family: 'Space Mono', monospace !important;
+  font-size: 0.7rem !important;
+  letter-spacing: 0.1em !important;
+  padding: 0.4rem 0.9rem !important;
+  border-radius: 2px !important;
+  transition: all 0.2s !important;
+  text-transform: uppercase !important;
+}
+
+.wallet-adapter-button:hover {
+  background: rgba(102,17,17,0.3) !important;
+  border-color: #cc1111 !important;
+  box-shadow: 0 0 8px rgba(204,17,17,0.3) !important;
+  color: #ff2020 !important;
+}
+
+.wallet-adapter-button-trigger {
+  background: rgba(26,0,0,0.6) !important;
+  border-color: #cc1111 !important;
+  color: #ff2020 !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: #0f0f0f !important;
+  border: 1px solid #330000 !important;
+  font-family: 'Space Mono', monospace !important;
+}
+
+.wallet-adapter-modal-title {
+  color: #cc1111 !important;
+  font-family: 'Space Mono', monospace !important;
+  letter-spacing: 0.1em !important;
+}
+
+.wallet-adapter-modal-list li { border-color: #1a0000 !important; }
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.font-mono { font-family: 'Space Mono', monospace; }
+.border-red { border-color: #1a0000; }

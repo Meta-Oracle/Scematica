@@ -40,7 +40,7 @@ pub struct FibonacciRecoveryConfig {
 impl Default for FibonacciRecoveryConfig {
     fn default() -> Self {
         Self {
-            min_entry_score: 0.55, // Accept moderate-quality pools (was 0.75 — too strict)
+            min_entry_score: 0.35, // Permissive gate — safety filters already screened hard rejects
             dead_pool_timeout_secs: 3, // Exit dead pools fast
             dead_pool_min_gain_pct: 5.0, // Above AMM spread
             tp_levels: vec![
@@ -483,7 +483,7 @@ mod tests {
             now - 3,
         );
 
-        assert!(decision.fibonacci_score >= 0.55, "Should have high Fibonacci score");
+        assert!(decision.fibonacci_score >= 0.35, "Should have high Fibonacci score");
         assert!(decision.should_enter, "Should enter high-quality pool");
     }
 

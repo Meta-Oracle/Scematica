@@ -445,11 +445,13 @@ async fn main() -> Result<()> {
                                     "multiplier": mode.multiplier(),
                                     "tp_pct": mode.tp_pct(),
                                     "sl_pct": mode.sl_pct(),
+                                    "quote_amount": mode.buy_sol(),
+                                    "wallet_pct": mode.wallet_pct(),
                                 });
                                 let _ = std::fs::write("scematica-rate-mode.json", json.to_string());
                                 state.push_log(format!(
-                                    "[RATE] Mode → {}  |  {:.1}x buy ({:.3} SOL/trade)  |  TP {:.0}%  SL {:.0}%",
-                                    mode.label(), mode.multiplier(), mode.buy_sol(), mode.tp_pct(), mode.sl_pct()
+                                    "[RATE] Mode → {}  |  {:.1}% wallet ({:.3} SOL base)  |  TP {:.0}%  SL {:.0}%",
+                                    mode.label(), mode.wallet_pct(), mode.buy_sol(), mode.tp_pct(), mode.sl_pct()
                                 ));
                             }
                             DashboardAction::ToggleMoonChase => {

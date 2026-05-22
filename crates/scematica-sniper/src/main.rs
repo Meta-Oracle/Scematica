@@ -423,9 +423,11 @@ async fn main() -> Result<()> {
                 if let Some(tp)   = v["tp_pct"].as_f64()    { params.take_profit_pct  = tp; }
                 if let Some(sl)   = v["sl_pct"].as_f64()    { params.stop_loss_pct    = sl; }
                 if let Some(mult) = v["multiplier"].as_f64() { params.amount_multiplier = mult; }
+                if let Some(qa)   = v["quote_amount"].as_f64() { params.quote_amount_mode = qa; }
+                if let Some(wp)   = v["wallet_pct"].as_f64() { params.wallet_pct = wp; }
                 info!(
-                    "⚡ Rate mode → {}  |  {:.1}x  TP {:.0}%  SL {:.0}%",
-                    mode_str, params.amount_multiplier, params.take_profit_pct, params.stop_loss_pct
+                    "⚡ Rate mode → {}  |  {:.1}% wallet  TP {:.0}%  SL {:.0}%",
+                    mode_str, params.wallet_pct, params.take_profit_pct, params.stop_loss_pct
                 );
             }
         });

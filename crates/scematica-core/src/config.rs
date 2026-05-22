@@ -19,6 +19,9 @@ pub struct RateMode {
     pub momentum_max_escalations: u32,
     /// Is this mode enabled?
     pub enabled: bool,
+    /// Wallet % to use per trade (0.0 = use quote_amount instead)
+    #[serde(default)]
+    pub wallet_pct: f64,
 }
 
 /// Top-level bot configuration loaded from .env / config file
@@ -470,69 +473,13 @@ impl Default for SniperConfig {
             // v1.6.0: Rate modes — 7 profiles from Micro (0.001 SOL) to Moon (0.1 SOL)
             // Default to Balanced (0.01 SOL, 40% win rate from Phase 1 analysis)
             rate_modes: vec![
-                RateMode {
-                    name: "Micro".to_string(),
-                    order: 1,
-                    quote_amount: 0.001,
-                    take_profit_pct: 50.0,
-                    stop_loss_pct: 8.0,
-                    momentum_max_escalations: 3,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Bearish".to_string(),
-                    order: 2,
-                    quote_amount: 0.003,
-                    take_profit_pct: 75.0,
-                    stop_loss_pct: 10.0,
-                    momentum_max_escalations: 4,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Safe".to_string(),
-                    order: 3,
-                    quote_amount: 0.005,
-                    take_profit_pct: 100.0,
-                    stop_loss_pct: 12.0,
-                    momentum_max_escalations: 5,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Balanced".to_string(),
-                    order: 4,
-                    quote_amount: 0.01,
-                    take_profit_pct: 175.0,
-                    stop_loss_pct: 12.0,
-                    momentum_max_escalations: 7,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Aggressive".to_string(),
-                    order: 5,
-                    quote_amount: 0.02,
-                    take_profit_pct: 300.0,
-                    stop_loss_pct: 15.0,
-                    momentum_max_escalations: 7,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Degen".to_string(),
-                    order: 6,
-                    quote_amount: 0.04,
-                    take_profit_pct: 450.0,
-                    stop_loss_pct: 25.0,
-                    momentum_max_escalations: 7,
-                    enabled: true,
-                },
-                RateMode {
-                    name: "Moon".to_string(),
-                    order: 7,
-                    quote_amount: 0.1,
-                    take_profit_pct: 1200.0,
-                    stop_loss_pct: 60.0,
-                    momentum_max_escalations: 8,
-                    enabled: true,
-                },
+                RateMode { name: "Micro".into(),      order: 1, quote_amount: 0.001, wallet_pct: 0.3,  take_profit_pct: 50.0,     stop_loss_pct: 8.0,  momentum_max_escalations: 3,  enabled: true },
+                RateMode { name: "Bearish".into(),    order: 2, quote_amount: 0.003, wallet_pct: 0.5,  take_profit_pct: 75.0,     stop_loss_pct: 10.0, momentum_max_escalations: 4,  enabled: true },
+                RateMode { name: "Safe".into(),       order: 3, quote_amount: 0.005, wallet_pct: 0.8,  take_profit_pct: 100.0,    stop_loss_pct: 12.0, momentum_max_escalations: 5,  enabled: true },
+                RateMode { name: "Balanced".into(),   order: 4, quote_amount: 0.01,  wallet_pct: 1.5,  take_profit_pct: 175.0,    stop_loss_pct: 12.0, momentum_max_escalations: 7,  enabled: true },
+                RateMode { name: "Aggressive".into(), order: 5, quote_amount: 0.02,  wallet_pct: 3.0,  take_profit_pct: 300.0,    stop_loss_pct: 15.0, momentum_max_escalations: 7,  enabled: true },
+                RateMode { name: "Degen".into(),      order: 6, quote_amount: 0.04,  wallet_pct: 6.0,  take_profit_pct: 450.0,    stop_loss_pct: 25.0, momentum_max_escalations: 7,  enabled: true },
+                RateMode { name: "Moon".into(),       order: 7, quote_amount: 0.1,   wallet_pct: 12.0, take_profit_pct: 100000.0, stop_loss_pct: 60.0, momentum_max_escalations: 12, enabled: true },
             ],
             active_mode_name: "Balanced".to_string(),
             kelly_sizing: false,

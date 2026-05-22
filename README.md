@@ -1,14 +1,117 @@
-# Scematica v1.6.0
+# Scematica v1.7.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
-> **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed. The guide includes a dedicated **Web Dashboard** section covering Node.js setup, the browser UI, Phantom wallet integration, and the SCEMA token gate.
+> **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.7.0
+
+### DexScreener Paid Boost — Guaranteed Buy Override
+
+A new `dexscreener.rs` module queries the DexScreener API for each incoming pool's base mint. If the token has an active **paid boost** (non-zero `boostAmount`), it is treated as a guaranteed buy signal and skips both the Fibonacci entry gate and the Bayesian pool score gate.
+
+**Why this works:** A project that has purchased DexScreener advertising has spent verifiable USD on marketing. Rug teams do not buy ads before rugging. Boosted tokens have real visitor traffic and demonstrated team commitment — empirically the strongest pre-launch signal available off-chain.
+
+**How it's implemented:**
+- `DexScreenerCache` caches results per-mint for 5 minutes (one HTTP call per token, not per pool event)
+- API call has a hard 1.5 s timeout; any failure is fail-open (normal evaluation continues)
+- When boost is detected: `🚀 DEXSCREENER PAID BOOST — skipping Fibonacci + pool score gates (guaranteed buy)` is logged with the USD boost amount
+- All on-chain fraud filters (freeze authority, vault drained, LP burned) still apply — only the scoring gates are bypassed
+
+**Config:** No config change needed. The boost check runs automatically in normal mode (not high-speed).
+
+### Pool Evaluation — Calibrated Loosening
+
+Three filter thresholds were tightened too aggressively in previous versions, causing good pools to be rejected:
+
+| Parameter | Old value | New value | Reason |
+|---|---|---|---|
+| `min_pool_score` | 60 | **45** | Score-60 required near-ideal conditions; score-45 still rejects dead pools while accepting moderate runners |
+| Fibonacci `min_entry_score` | 0.75 | **0.55** | A 12 SOL pool at 10 s with 0.8 SOL/s inflow scored 0.53 and was always rejected — now accepted |
+| `max_top10_holder_pct` | 75% | **90%** | Brand-new pools always have high initial concentration (LP vault + deployer); 75% was rejecting legitimate launches |
+
+**What "not too broad" means in practice:** The Fibonacci gate still rejects pools older than 13 seconds, pools with zero velocity, and pools outside the 3–55 SOL band. The Bayesian score gate still rejects pools scoring below 45 (roughly: sub-3 SOL, completely stale age, or ghost pools).
+
+### Fibonacci Protocol Whitepaper
+
+See [FIBONACCI_PROTOCOL_WHITEPAPER.md](FIBONACCI_PROTOCOL_WHITEPAPER.md) for the full mathematical specification of the scoring model, entry gate, position sizing ladder, exit strategy, and live data calibration.
 
 ---
 
 ## What's New in v1.6.0
+
+### Fibonacci Protocol — Entry/Exit Framework
+
+A new mathematical entry/exit framework built on the golden ratio (φ ≈ 1.618) and Fibonacci sequence applied to AMM pool dynamics. See the full spec in [FIBONACCI_PROTOCOL_WHITEPAPER.md](FIBONACCI_PROTOCOL_WHITEPAPER.md).
+
+**New modules:**
+- `fibonacci_momentum.rs` — per-position momentum tracker with Fibonacci TP levels, golden retracement, and velocity-collapse detection
+- `fibonacci_pool_scorer.rs` — combines the existing Bayesian scorer with Fibonacci pattern bonuses (+0 to +15 points additive)
+- `fibonacci_recovery_system.rs` — entry gate + position sizing + exit ladder coordinator
+
+**Entry gate (composite Fibonacci score, threshold 0.55):**
+
+| Signal | Weight | Key thresholds |
+|---|---|---|
+| Pool size | 35% | Sweet spot: 8–21 SOL (F₆–F₈) |
+| Pool age | 30% | Peak: ≤3 s (F₄); acceptable: ≤13 s (F₇) |
+| Inflow velocity | 25% | Strong: ≥φ SOL/s (1.618); exceptional: ≥φ² SOL/s (2.618) |
+| Buy pressure | 10% | Golden: quote/base ratio ≥ φ |
+
+**Fibonacci Runner fast-lane:** pools that hit all four criteria at maximum strength (`8–21 SOL`, `≤5 s`, `≥2.618 SOL/s`, `ratio ≥ 1.618`) skip normal scheduling and execute immediately.
+
+**Position sizing multipliers:** 2.0× for score ≥ 0.90 (exceptional), 1.618× for ≥ 0.75 (strong), 1.0× baseline, down to 0.5× for weak patterns.
+
+**Fibonacci exit ladder:**
+- Dead-pool exit: no movement after 3 s with < 5% peak gain → immediate sell
+- TP₁: 61.8% gain (sell 30%)
+- TP₂: 161.8% gain (sell 40%)
+- TP₃: 261.8% gain (sell 30%)
+- Golden retracement: 61.8% pullback from peak → exit
+
+### Guaranteed ≥0.05 SOL Exits — Swell-Based Exit Gate
+
+All momentum/timing exits (trailing stop, adaptive pullback, velocity decay, volume exhaustion, whale exit, flash crash, 3-consecutive-decline dump detection) are now **gated behind the initial take-profit level (500%)**.
+
+**What this fixes:** Previous behavior allowed the trailing stop (5%), pullback exit (15%), velocity decay, and dump detection to fire at +50–300% gains, returning sub-0.05 SOL profit on a 0.01 SOL buy. With the exit gate, the bot holds through all market noise below the 500% target and only activates timing exits once the position has reached ≥500% gain.
+
+**Live swell signal:** The sell monitor now tracks a 6-check sliding window of quote vault deltas (net SOL flow). When the vault is actively draining (pool is selling off) AND the position is at/above TP, the trailing stop tightens to 2% (from the configured value) to lock gains before the reversal completes.
+
+**Profit floor:** Once the position first hits the TP price (500% gain), the stop-loss floor is raised to exactly that level. Any subsequent exit — whether from trailing stop, pullback, or time-cap — is guaranteed to return ≥0.05 SOL profit.
+
+**Hard SL and no-pump timeout are exempt** — they still fire at their configured levels to protect against rugs and dead positions.
+
+### Social Link Enrichment — "Biggest Hitters" Pool Selection
+
+Every pool now runs through a new `SocialLinksFilter` that:
+
+1. **Reads Metaplex on-chain metadata** — extracts real name and symbol (instead of "UNKNOWN" in logs)
+2. **Fetches off-chain URI JSON** (1.5s timeout) — checks for Twitter, Telegram, website, Discord links in pump.fun and Metaplex extension format
+3. **Populates `FilterPipeline::metadata`** cache with enriched token info for downstream use
+
+**Pool scorer boost:** `score_with_socials()` applies additive score adjustments based on social count (−4 for zero socials → +10 for all four platforms). Anonymous tokens with zero social presence are penalised; well-connected projects are promoted.
+
+**AI enrichment:** The risk-scoring AI now receives real token name and symbol instead of "UNKNOWN", producing more meaningful context-aware analysis.
+
+**Social rejection (opt-in):** Enable `check_socials = true` in `config.toml` to hard-reject tokens with zero social links. Currently off by default to avoid false-positives on legitimate projects that haven't set their URI yet at pool creation time.
+
+**New config fields** (in `[sniper]` section):
+```toml
+momentum_min_peak_pct = 500.0       # Pullback exit only fires after peak >= 500%
+velocity_decay_min_pnl_pct = 500.0  # Decay exit only fires when PnL >= 500%
+volume_exhaustion_pct = 0.0         # Disabled — swell gate handles vault drain
+whale_exit_vault_drop_pct = 0.0     # Disabled in profit zone
+flash_crash_pct = 0.0               # Disabled in profit zone; SL handles crashes
+profit_lock_checks = 0              # Disabled — profit floor in code locks 0.05 SOL
+```
+
+Enable `check_socials = true` in `[sniper.filters]` to require social presence.
+
+---
 
 ### Guaranteed ≥0.05 SOL Exits — Swell-Based Exit Gate
 

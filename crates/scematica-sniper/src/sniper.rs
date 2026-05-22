@@ -95,7 +95,7 @@ pub struct LiveParams {
     pub market_regime: String,
     /// Current active rate mode name
     pub active_mode_name: String,
-    /// Entry size in SOL for the active rate mode
+    /// Entry size in SOL for the active rate mode (used when wallet_pct == 0)
     pub quote_amount_mode: f64,
     /// TP% for the active rate mode
     pub take_profit_pct_mode: f64,
@@ -103,17 +103,21 @@ pub struct LiveParams {
     pub stop_loss_pct_mode: f64,
     /// Max TP escalations for the active rate mode
     pub momentum_max_escalations_mode: u32,
+    /// Wallet-percentage sizing: position = wallet_balance × wallet_pct / 100.
+    /// 0.0 = use fixed quote_amount_mode instead.
+    pub wallet_pct: f64,
 }
 
 impl LiveParams {
     pub fn from_config(config: &SniperConfig) -> Self {
         let active_mode = config.get_active_rate_mode().cloned();
-        let (quote_amount, tp_pct, sl_pct, momentum_max) = if let Some(mode) = active_mode {
+        let (quote_amount, tp_pct, sl_pct, momentum_max, wallet_pct) = if let Some(mode) = active_mode {
             (
                 mode.quote_amount,
                 mode.take_profit_pct,
                 mode.stop_loss_pct,
                 mode.momentum_max_escalations,
+                mode.wallet_pct,
             )
         } else {
             (
@@ -121,9 +125,10 @@ impl LiveParams {
                 config.take_profit_pct,
                 config.stop_loss_pct,
                 config.momentum_max_escalations,
+                0.0,
             )
         };
-        
+
         Self {
             take_profit_pct: config.take_profit_pct,
             stop_loss_pct: config.stop_loss_pct,
@@ -134,6 +139,7 @@ impl LiveParams {
             take_profit_pct_mode: tp_pct,
             stop_loss_pct_mode: sl_pct,
             momentum_max_escalations_mode: momentum_max,
+            wallet_pct,
         }
     }
 }
@@ -1018,11 +1024,23 @@ impl Sniper {
             return Ok(());
         }
 
-        // ── Compute effective quote amount with day-weight and Kelly multipliers ──
-        // Read rate mode's quote_amount from live_params (updated by mode switches)
+        // ── Fetch wallet balance early — needed for wallet-pct sizing and reserve check ──
+        let wallet_pubkey_early = self.wallet.pubkey();
+        let native_balance_early = self.rpc.get_balance(&wallet_pubkey_early).await.unwrap_or(0);
+
+        // ── Compute effective quote amount ─────────────────────────────────────
+        // When wallet_pct > 0 the position is a true percentage of the current wallet
+        // balance so it grows (and shrinks) automatically as the wallet compounds.
+        // When wallet_pct == 0 use the fixed quote_amount_mode from the rate mode.
+        // Floor: 0.001 SOL — always enough for ATA rent + tx fees.
         let mode_quote_amount_raw = {
             let lp = self.live_params.read();
-            ui_to_raw(lp.quote_amount_mode, self.quote_decimals)
+            if lp.wallet_pct > 0.0 {
+                let pct_raw = (native_balance_early as f64 * lp.wallet_pct / 100.0) as u64;
+                pct_raw.max(1_000_000) // 0.001 SOL floor
+            } else {
+                ui_to_raw(lp.quote_amount_mode, self.quote_decimals)
+            }
         };
         let mut effective_quote_amount_raw = mode_quote_amount_raw;
 

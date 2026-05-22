@@ -62,12 +62,12 @@ daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
 max_drawdown_pct =  50.0      # Halt if wallet drops 30% below session start
 blacklist_path = "blacklist.txt"
 
-# ── v1.5.2 Live-Data Improvements ──────────────────────────────────────────────
-# Pool quality gate using the new Bayesian scorer (pool_scorer.rs v2).
-# Score 65 = P(win)≈0.09 posterior — requires 6+ SOL + fresh + some velocity.
-# Score 75 = P(win)≈0.18 — requires sweet spot + ultra-fresh + buy pressure.
+# ── v1.7.0 Pool Quality Gate ───────────────────────────────────────────────────
+# Bayesian pool scorer (pool_scorer.rs). DexScreener-boosted tokens bypass this gate entirely.
+# Score 45 = P(win)≈0.06 posterior — minimum bar; still rejects ghost/dead/tiny pools.
+# Score 65 = P(win)≈0.09 — requires 6+ SOL + fresh + some velocity.
 # Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
-min_pool_score = 45              # Relaxed: catch more pools; DexScreener-boosted tokens bypass entirely (was 60)
+min_pool_score = 20              # Low floor — Fibonacci gate is the primary quality gate
 
 # ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
 kelly_sizing = false
@@ -132,15 +132,13 @@ check_socials = false               # v1.6.0: Set true to hard-reject tokens wit
                                     # Social enrichment now reads Metaplex + off-chain URI
                                     # Scorer applies −4 to +10 boost based on social count
 filter_cache_ttl_secs = 30          # Cache filter results per pool
-min_pool_size = 8.0           # Catch runners from launch (was 10, allows earlier entry)
-                              # Median winning trades: ~14 SOL
-                              # Sweet spot: 8-40 SOL for momentum builds
-max_pool_size = 100.0         # Expanded: Runners grow 8→50+→100 SOL; catch momentum (was 30)
+min_pool_size = 5.0           # Allow 5+ SOL pools — runners can launch from 5 SOL
+max_pool_size = 100.0         # Catch momentum: pools can grow 5→50→100 SOL
 check_name = true             # v1.2.0: Enabled — zero-cost scam-word filter
 check_volume = true           # v1.2.0: Require recent transaction activity
-min_volume_txns = 3           # Minimum transactions in last 60s
+min_volume_txns = 1           # Minimum transactions — 1 lets ultra-fresh pools through
 check_liquidity_depth = true      # Check price impact before buying
-max_price_impact_pct = 6.0        # Balanced: Allow runner volatility (was 3.5 too tight)
+max_price_impact_pct = 15.0       # Allow up to 15% impact — wallet-pct sizing needs room
 
 # v1.2.0: Holder concentration check with realistic threshold
 check_holder_concentration = true
@@ -150,7 +148,7 @@ max_top10_holder_pct = 90.0       # Relaxed: brand-new pools almost always have 
 check_liquidity_momentum = false  # Disabled: Prevents false-rejecting consolidating runners
 
 # v1.1.0: Cross-pool correlation check
-check_cross_pool_correlation = true
+check_cross_pool_correlation = false  # Disabled: keys off Raydium program ID (not deployer) — blocks all pools after 2 rugs
 
 # v1.2.0: Deployer rug history check
 max_deployer_rugs_24h = 2         # Block deployers with >2 rugs in 24h
@@ -186,7 +184,8 @@ deployer_min_age_hours = 24         # Only used if check_deployer_wallet_age = t
 [[sniper.rate_modes]]
 name = "Micro"
 order = 1
-quote_amount = 0.001       # Entry: 1 milliSOL
+quote_amount = 0.001       # Entry: 1 milliSOL (fallback if wallet_pct=0)
+wallet_pct = 0.3           # 0.3% of wallet per trade
 take_profit_pct = 50.0     # Exit goal: 50% profit
 stop_loss_pct = 8.0        # Exit pain: 8% loss
 momentum_max_escalations = 3
@@ -198,7 +197,8 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Bearish"
 order = 2
-quote_amount = 0.003       # Entry: 3 milliSOL
+quote_amount = 0.003       # Entry: 3 milliSOL (fallback)
+wallet_pct = 0.5           # 0.5% of wallet per trade
 take_profit_pct = 75.0     # Exit goal: 75% profit
 stop_loss_pct = 10.0       # Exit pain: 10% loss
 momentum_max_escalations = 4
@@ -210,7 +210,8 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Safe"
 order = 3
-quote_amount = 0.005       # Entry: 5 milliSOL
+quote_amount = 0.005       # Entry: 5 milliSOL (fallback)
+wallet_pct = 0.8           # 0.8% of wallet per trade
 take_profit_pct = 100.0    # Exit goal: 100% profit (double entry)
 stop_loss_pct = 12.0       # Exit pain: 12% loss
 momentum_max_escalations = 5
@@ -223,7 +224,8 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Balanced"
 order = 4
-quote_amount = 0.01        # Entry: 10 milliSOL (SWEET SPOT!)
+quote_amount = 0.01        # Entry: 10 milliSOL (fallback)
+wallet_pct = 1.5           # 1.5% of wallet per trade (SWEET SPOT!)
 take_profit_pct = 175.0    # Exit goal: 175% profit (escalator starting point)
 stop_loss_pct = 12.0       # Exit pain: 12% loss
 momentum_max_escalations = 7
@@ -235,7 +237,8 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Aggressive"
 order = 5
-quote_amount = 0.02        # Entry: 20 milliSOL
+quote_amount = 0.02        # Entry: 20 milliSOL (fallback)
+wallet_pct = 3.0           # 3% of wallet per trade
 take_profit_pct = 300.0    # Exit goal: 300% profit
 stop_loss_pct = 15.0       # Exit pain: 15% loss
 momentum_max_escalations = 7
@@ -248,7 +251,8 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Degen"
 order = 6
-quote_amount = 0.04        # Entry: 40 milliSOL
+quote_amount = 0.04        # Entry: 40 milliSOL (fallback)
+wallet_pct = 6.0           # 6% of wallet per trade
 take_profit_pct = 450.0    # Exit goal: 450% profit
 stop_loss_pct = 25.0       # Exit pain: 25% loss (wider for volatility)
 momentum_max_escalations = 7
@@ -260,10 +264,11 @@ enabled = true
 [[sniper.rate_modes]]
 name = "Moon"
 order = 7
-quote_amount = 0.1         # Entry: 100 milliSOL
-take_profit_pct = 1200.0   # Exit goal: 1200% profit (12× runway)
-stop_loss_pct = 60.0       # Exit pain: 60% loss (wide for moon chasing)
-momentum_max_escalations = 8
+quote_amount = 0.1          # Entry: 100 milliSOL (fallback)
+wallet_pct = 12.0           # 12% of wallet per trade — max conviction
+take_profit_pct = 100000.0  # Exit goal: 1000× (99900% gain) — ride parabolic pumps
+stop_loss_pct = 60.0        # Exit pain: 60% loss (wide; escalation ladder protects)
+momentum_max_escalations = 12   # 12-round ladder: 100000→200000→400000% ...
 enabled = true
 
 # Active rate mode (set to one of the above names)

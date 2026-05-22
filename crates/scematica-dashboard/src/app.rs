@@ -294,24 +294,29 @@ impl RateMode {
         }
     }
     pub fn tp_pct(self) -> f64 {
-        // v0.9.0: base TP targets bumped to take advantage of momentum-hold
-        // escalation. The values below are entry triggers — once hit, the
-        // sell monitor escalates them if velocity is still strong, so a
-        // Balanced trade can ride 150 % → 225 % → 337 % → 506 % before
-        // capping out (4 escalations × 1.5×).
-        //
-        // Moon (v0.9.1) sits at 1200 % — high enough that the escalator only
-        // engages on legitimate parabolic moves, so we don't waste capital
-        // chasing small bumps with the most expensive position size.
         match self {
-            RateMode::Bearish    =>   45.0,
-            RateMode::Micro      =>   60.0,
-            RateMode::Safe       =>   75.0,
-            RateMode::Balanced   =>  150.0,
-            RateMode::Aggressive =>  300.0,
-            RateMode::Degen      =>  450.0,
-            RateMode::Bullish    =>  750.0,
-            RateMode::Moon       => 1200.0,
+            RateMode::Bearish    =>    45.0,
+            RateMode::Micro      =>    60.0,
+            RateMode::Safe       =>    75.0,
+            RateMode::Balanced   =>   150.0,
+            RateMode::Aggressive =>   300.0,
+            RateMode::Degen      =>   450.0,
+            RateMode::Bullish    =>   750.0,
+            // Moon targets 1000× — escalation ladder rides from 10000% → 20000% → 40000% → ...
+            RateMode::Moon       => 100000.0,
+        }
+    }
+    /// Wallet % to use per trade — 0.0 means use fixed quote_amount instead
+    pub fn wallet_pct(self) -> f64 {
+        match self {
+            RateMode::Micro      => 0.3,
+            RateMode::Bearish    => 0.5,
+            RateMode::Safe       => 0.8,
+            RateMode::Balanced   => 1.5,
+            RateMode::Aggressive => 3.0,
+            RateMode::Degen      => 6.0,
+            RateMode::Bullish    => 8.0,
+            RateMode::Moon       => 12.0,
         }
     }
     pub fn sl_pct(self) -> f64 {

@@ -3,6 +3,7 @@ pub mod ath_tracker;
 pub mod backtester;
 pub mod cache;
 pub mod day_weight;
+pub mod dexscreener;
 pub mod executor;
 pub mod fibonacci_momentum;
 pub mod fibonacci_pool_scorer;

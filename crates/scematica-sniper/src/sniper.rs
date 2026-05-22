@@ -237,6 +237,8 @@ pub struct Sniper {
     pub fib_system: Arc<FibonacciRecoverySystem>,
     /// Fibonacci recovery statistics
     pub fib_stats: Arc<Mutex<FibonacciRecoveryStats>>,
+    /// DexScreener boost cache — tokens with active paid boosts bypass Fibonacci + pool score gates
+    dex_cache: Arc<crate::dexscreener::DexScreenerCache>,
 }
 
 /// Per-position snapshot written to `scematica-positions.json`. Each running
@@ -327,6 +329,7 @@ impl Sniper {
         let fib_config = FibonacciRecoveryConfig::default();
         let fib_system = Arc::new(FibonacciRecoverySystem::new(fib_config));
         let fib_stats = Arc::new(Mutex::new(FibonacciRecoveryStats::default()));
+        let dex_cache = Arc::new(crate::dexscreener::DexScreenerCache::new());
 
         Self {
             config,
@@ -375,6 +378,7 @@ impl Sniper {
             recently_bought: Arc::new(DashMap::new()),
             fib_system,
             fib_stats,
+            dex_cache,
         }
     }
 
@@ -799,6 +803,29 @@ impl Sniper {
         let display_name  = if token_name.is_empty()   { "UNKNOWN".to_string() } else { token_name };
         let display_symbol = if token_symbol.is_empty() { "UNKNOWN".to_string() } else { token_symbol };
 
+        // ── DexScreener paid-boost check ───────────────────────────────────────
+        // A non-zero boostAmount means the team has purchased DexScreener advertising.
+        // This is a paid, verified marketing signal: the team spent real money, DexScreener
+        // visitors are being directed to the token, and rug probability drops sharply.
+        // Boosted tokens bypass both the Fibonacci entry gate and the pool score gate.
+        let (dex_boosted, dex_boost_usd) = if !high_speed {
+            match self.dex_cache.check_boost(&pool.base_mint.to_string()).await {
+                Some(usd) => (true, usd),
+                None => (false, 0.0),
+            }
+        } else {
+            (false, 0.0)
+        };
+        if dex_boosted {
+            info!(
+                mint = %pool.base_mint,
+                name = %display_name,
+                symbol = %display_symbol,
+                boost_usd = %format!("${:.0}", dex_boost_usd),
+                "🚀 DEXSCREENER PAID BOOST — skipping Fibonacci + pool score gates (guaranteed buy)"
+            );
+        }
+
         // AI risk assessment (if available, and not high-speed)
         if !high_speed { if let Some(ai) = &self.ai {
             let pool_size_sol = scematica_core::token::raw_to_ui(upfront_pool_size_lamports, pool.quote_decimals);
@@ -882,8 +909,8 @@ impl Sniper {
         // ── Fibonacci entry gate ────────────────────────────────────────────────
         // Evaluate pool against Fibonacci golden ratio patterns. This gate runs BEFORE
         // the pool scorer so we filter out dead pools (thin liquidity, stale age, low
-        // velocity) as early as possible. High-speed mode bypasses to minimize latency.
-        if !high_speed {
+        // velocity) as early as possible. High-speed mode and DexScreener-boosted tokens bypass.
+        if !high_speed && !dex_boosted {
             let fib_decision = self.fib_system.evaluate_entry(
                 upfront_pool_size_lamports,
                 upfront_base_vault_lamports,
@@ -915,8 +942,8 @@ impl Sniper {
             self.fib_stats.lock().record_entry(fib_decision.fibonacci_score);
         }
 
-        // ── Pool predictive scoring (skipped in high-speed mode) ───────────────
-        if !high_speed && self.config.min_pool_score > 0.0 {
+        // ── Pool predictive scoring (skipped in high-speed mode and for boosted tokens) ──
+        if !high_speed && !dex_boosted && self.config.min_pool_score > 0.0 {
             // Re-score with social_count bonus now that SocialLinksFilter has enriched metadata.
             let final_score = if social_count > 0 {
                 crate::pool_scorer::PoolScorer::score_with_socials(
@@ -1123,8 +1150,8 @@ impl Sniper {
             .as_secs();
         if !high_speed {
             let fib_decision = self.fib_system.evaluate_entry(
-                upfront_pool_size_lamports,
-                upfront_base_vault_lamports,
+                quote_reserve_lam,
+                base_reserve_lam,
                 detected_at_secs,
             );
             if fib_decision.position_multiplier != 1.0 {

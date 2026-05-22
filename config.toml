@@ -67,7 +67,7 @@ blacklist_path = "blacklist.txt"
 # Score 65 = P(win)≈0.09 posterior — requires 6+ SOL + fresh + some velocity.
 # Score 75 = P(win)≈0.18 — requires sweet spot + ultra-fresh + buy pressure.
 # Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
-min_pool_score = 60              # Balanced: Catch runners & early movers (was 72 too strict)
+min_pool_score = 45              # Relaxed: catch more pools; DexScreener-boosted tokens bypass entirely (was 60)
 
 # ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
 kelly_sizing = false
@@ -144,7 +144,7 @@ max_price_impact_pct = 6.0        # Balanced: Allow runner volatility (was 3.5 t
 
 # v1.2.0: Holder concentration check with realistic threshold
 check_holder_concentration = true
-max_top10_holder_pct = 75.0       # Balanced: Allow some initial concentration (was 67%, runners concentrate)
+max_top10_holder_pct = 90.0       # Relaxed: brand-new pools almost always have high initial concentration (was 75%)
 
 # v1.1.0: Liquidity momentum check
 check_liquidity_momentum = false  # Disabled: Prevents false-rejecting consolidating runners

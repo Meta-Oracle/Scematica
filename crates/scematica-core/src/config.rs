@@ -396,6 +396,17 @@ pub struct SniperConfig {
     #[serde(default)]
     pub ai_chain: AiChainConfig,
 
+    // ── Peak stagnation exit ──────────────────────────────────────────────────
+    /// Exit if peak gain hasn't improved in this many seconds AND current pnl
+    /// exceeds `peak_stagnation_min_pnl_pct`. Catches flat pools that pumped once
+    /// then stopped — they bleed slowly back while capital sits idle.
+    /// 0 = disabled. Default 90.
+    pub peak_stagnation_secs: u64,
+    /// Minimum current pnl % required to arm the stagnation exit.
+    /// Prevents exiting breakeven positions too early during normal chop.
+    /// Default 20.0.
+    pub peak_stagnation_min_pnl_pct: f64,
+
     // ── Runner detection ──────────────────────────────────────────────────────
     /// When true, pools scoring ≥ 98 (ultra-fresh ≤7 s AND sweet-spot 6.5–28 SOL)
     /// get a position sized at `runner_scale_in_sol` instead of `quote_amount`.
@@ -604,6 +615,8 @@ impl Default for SniperConfig {
             no_pump_timeout_secs: 45,
             no_pump_min_gain_pct: 3.0,
             min_dump_hold_secs: 0,
+            peak_stagnation_secs: 90,
+            peak_stagnation_min_pnl_pct: 20.0,
             runner_mode: false,
             runner_scale_in_sol: 0.02,
             pool_drain_exit_pct: 15.0,

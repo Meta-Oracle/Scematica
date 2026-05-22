@@ -1,10 +1,100 @@
-# Scematica v1.7.0
+# Scematica v1.8.1
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.8.2
+
+### Exit Strategy — 99% PnL Glitch + Dead Capital Fixes
+
+**Root-cause analysis of the 99% exits (7–11 min holds):**
+
+The live data showed 86 all-time trades exiting at ~99% gain despite a 175% take-profit target. These positions hit 175%+ early, locked in the profit-floor SL at 2.75× entry, then slowly bled back over 7–11 minutes. The `velocity_decay_exit` was supposed to catch this but was gated behind `velocity_decay_min_pnl_pct = 175%` — so once the pool dropped below 175% (while still at 100–174%), the decay exit was silently disarmed. The pool eventually hit the 2.75× floor from below, executing at 99% market price.
+
+**Fix 1: Lower velocity decay threshold (config — no rebuild)**
+
+`velocity_decay_min_pnl_pct = 100.0` (was 175%). Velocity decay now fires at 100%+ gain, catching bleeder pools while they're still between 100% and 175%, before they bleed through the profit floor.
+
+**Fix 2: Peak stagnation exit (code — requires rebuild)**
+
+New config keys `peak_stagnation_secs = 90` and `peak_stagnation_min_pnl_pct = 20.0`. If the position's all-time peak hasn't improved in 90 seconds AND current PnL is above 20%, the monitor exits at market. This catches flat pools that pumped once then stopped — previously these would hold for 7–11 minutes before hitting the SL floor. Logged as `⏱ Peak stagnation exit`.
+
+**Fix 3: Tighter trailing stop (config — no rebuild)**
+
+`trailing_stop_loss_pct = 25.0` (was 50%). At 300%+ peaks, the trailing stop now becomes the binding constraint (not the floor), exiting sooner on parabolic reversals.
+
+**30–120s dead zone (data pattern):**
+
+156 trades (27% of all) in the 30–120s hold bucket with only 6% win rate contributed +0.054 SOL total. These are pools that gained >5% early (suppressing the 20s no-pump timeout), then oscillated. The peak stagnation exit with `peak_stagnation_secs=90` captures most of these.
+
+**Config changes:**
+```toml
+trailing_stop_loss_pct = 25.0
+velocity_decay_min_pnl_pct = 100.0
+peak_stagnation_secs = 90
+peak_stagnation_min_pnl_pct = 20.0
+```
+
+---
+
+## What's New in v1.8.1
+
+### Exit Strategy — Stuck-Position Fixes
+
+Two bugs were preventing positions from exiting cleanly in the 175–315% gain window.
+
+**Bug 1: Adaptive pullback formula made exits impossible (198% glitch)**
+
+With `adaptive_pullback = true` and `momentum_pullback_exit_pct = 40.0`, the effective pullback threshold at a 198% peak was `40 × √(1 + 198/100) = 69.1%`. The pullback exit required `current ≤ 129%`, but `exit_gate_met` required `current ≥ 175%` (the profit floor). These two conditions can never both be true — the position held indefinitely between 175% and 315% (the next escalation level).
+
+**Fix:** `adaptive_pullback = false` + `momentum_pullback_exit_pct = 15.0` + `momentum_min_peak_pct = 200.0`.
+
+At 200% peak, the pullback fires at 185% — above the 175% profit floor (satisfiable). The invariant `momentum_min_peak_pct > initial_tp_pct + momentum_pullback_exit_pct` (200 > 175 + 15) must always hold when changing these values.
+
+**Bug 2: Position tracking — tokens falling through the cracks**
+
+The sell monitor exited immediately on the first zero-balance read after a buy confirmation. Solana RPC nodes can lag 1–3 checks behind a confirmed transaction, so the monitor would see `amount = 0`, silently quit, and leave tokens unmonitored in the wallet (recovered only on next bot restart via the startup scan).
+
+**Fix:** Zero-balance grace period — the monitor now requires 5 consecutive zero-balance reads before exiting. Single-check RPC lag no longer loses a position.
+
+**Config changes** (`config.toml` — no rebuild needed):
+```toml
+adaptive_pullback = false
+momentum_pullback_exit_pct = 15.0   # was 40.0
+momentum_min_peak_pct = 200.0       # unchanged; satisfies the invariant with pullback=15
+velocity_decay_min_pnl_pct = 175.0  # was 200.0 — arms decay exit at initial TP
+```
+
+---
+
+## What's New in v1.8.0
+
+### Exit Strategy Overhaul — Escalation Ladder Working
+
+Three bugs were blocking the momentum escalation ladder entirely, causing trades to cluster at discrete TP thresholds (99%, 298%, 398%) rather than riding the full 175→315→567→1021→1837% ladder.
+
+**Bug 1: Stale `target_profit` (critical)**
+
+`target_profit` was computed once per loop iteration at the top. When escalation fired and raised `dynamic_tp_pct` (e.g., 175→315%), the TP check at the bottom of the same iteration still used the old `target_profit`. The bot escalated AND immediately sold at the old threshold in the same tick.
+
+**Fix:** Made `target_profit` `mut` and refreshed it in-place after every escalation.
+
+**Bug 2: Velocity window blocked fast pumps**
+
+Escalation required `velocity_window.len() >= 5` (1.25s of samples). 87 of 176 winners exit in <2s — they pump in <500ms and the window never fills before TP is already hit.
+
+**Fix:** Require only 1 sample (`!velocity_window.is_empty()`). Added `single_jump` override: if the pool gains 50%+ past TP in one check, escalate unconditionally.
+
+**Bug 3: PnL used pre-swap AMM estimate**
+
+`do_sell` logged the AMM `estimated_out` rather than actual received tokens. A 2× pool shows 99% gain (not 100%) due to the 0.25% swap fee applied against pre-swap reserves.
+
+**Fix:** After sell confirms, fetch the quote ATA balance for actual received amount.
 
 ---
 

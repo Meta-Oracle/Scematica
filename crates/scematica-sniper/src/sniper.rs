@@ -2503,6 +2503,19 @@ impl SellMonitor {
         let mut profit_lock_counter: u32 = 0;
         let profit_lock_floor = (self.entry_amount_raw as f64 * 0.98) as u64;
 
+        // Zero-balance grace: RPC nodes can lag by 1-3 checks after a confirmed buy.
+        // Don't exit immediately on 0 balance — require 5 consecutive zeros before
+        // treating the position as closed. This prevents "falling through the cracks"
+        // where the monitor exits before the token transfer propagates.
+        let mut consecutive_zero_balance: u32 = 0;
+        const ZERO_BALANCE_EXIT_THRESHOLD: u32 = 5;
+
+        // Peak stagnation: track the last time peak_value improved. If it hasn't
+        // advanced in `peak_stagnation_secs` AND current pnl > threshold → exit.
+        // Catches flat pools that pumped once then stopped making new highs — they
+        // bleed slowly back while capital sits idle (the 7-11 min 99% exit pattern).
+        let mut last_peak_improved = std::time::Instant::now();
+
         let mut checks = 0u64;
         loop {
             // Hard position time cap: force-sell if we've held longer than the
@@ -2566,7 +2579,7 @@ impl SellMonitor {
             if take_profit_pct > dynamic_tp_pct {
                 dynamic_tp_pct = take_profit_pct;
             }
-            let target_profit    = (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
+            let mut target_profit = (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
 
             // Profit-first growth mode: while the wallet is still being built up to
             // `wallet_target_sol`, gate the stop-loss so the bot doesn't bleed out
@@ -2629,7 +2642,25 @@ impl SellMonitor {
             match ata_res {
                 Ok(balance) => {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
-                    if amount == 0 { break; }
+                    if amount == 0 {
+                        consecutive_zero_balance += 1;
+                        if consecutive_zero_balance >= ZERO_BALANCE_EXIT_THRESHOLD {
+                            tracing::info!(
+                                mint = %pool.base_mint,
+                                consecutive_zero_balance,
+                                "Token balance zero for {} consecutive checks — exiting monitor",
+                                ZERO_BALANCE_EXIT_THRESHOLD
+                            );
+                            break;
+                        }
+                        // Grace period: skip the rest of this iteration but stay in loop
+                        checks += 1;
+                        if checks >= max_checks { break; }
+                        let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+                        tokio::time::sleep(sleep_dur).await;
+                        continue;
+                    }
+                    consecutive_zero_balance = 0;
 
                     if let (Ok(qb), Ok(bb)) = (qb_res, bb_res) {
                         let q: u64 = qb.amount.parse().unwrap_or(1);
@@ -2768,7 +2799,10 @@ impl SellMonitor {
                         }
 
                         // Update peak (used for both trailing stop AND momentum pullback exit)
-                        if current_value > peak_value { peak_value = current_value; }
+                        if current_value > peak_value {
+                            peak_value = current_value;
+                            last_peak_improved = std::time::Instant::now();
+                        }
 
                         // Profit floor: once position reaches initial TP, raise SL to
                         // min_profit_floor so every exit is >= the 0.05 SOL target.
@@ -2854,12 +2888,24 @@ impl SellMonitor {
                             let pullback_pct = peak_pnl_pct - current_pnl_pct;
 
                             // (A) TP escalation: position is at/above current TP, momentum
-                            //     is still strong → raise TP rather than exit. Capped at
-                            //     `mom_max_esc` so the bot still books.
+                            //     is still strong → raise TP rather than exit.
+                            //
+                            // Window requirement: 1 sample minimum (not full window).
+                            // Fast pumps reach TP in the first check — waiting for 5 samples
+                            // means the sell fires before escalation ever runs. A single check
+                            // showing strong velocity (or a direct jump 50%+ past TP) is
+                            // sufficient evidence to escalate.
+                            //
+                            // CRITICAL: target_profit is updated immediately after escalation
+                            // so the TP check at the bottom of this iteration uses the NEW
+                            // threshold. Without this, the bot escalated TP to 315% then
+                            // immediately sold at 175% because target_profit was stale.
+                            let single_jump = current_pnl_pct >= dynamic_tp_pct + 50.0;
+                            let velocity_ok = avg_velocity > mom_threshold || single_jump;
                             if current_pnl_pct >= dynamic_tp_pct
-                                && avg_velocity > mom_threshold
+                                && velocity_ok
                                 && escalation_count < mom_max_esc
-                                && velocity_window.len() >= momentum_window_cap
+                                && !velocity_window.is_empty()
                             {
                                 let new_tp = dynamic_tp_pct * mom_factor;
                                 tracing::info!(
@@ -2868,13 +2914,15 @@ impl SellMonitor {
                                     new_tp_pct = %format!("{:.0}%", new_tp),
                                     avg_velocity_pct = %format!("{:.2}%", avg_velocity),
                                     escalation = escalation_count + 1,
+                                    single_jump,
                                     moon_chase,
                                     "🚀 TP escalated — momentum strong, holding for bigger move"
                                 );
                                 dynamic_tp_pct = new_tp;
                                 escalation_count += 1;
-                                // Recompute target_profit on the NEXT iteration; this one
-                                // still uses the old target so we don't double-fire.
+                                // Refresh target_profit so the TP check at the bottom of THIS
+                                // iteration uses the new (higher) threshold — not the stale one.
+                                target_profit = (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
                             }
 
                             // (B) Adaptive pullback-from-peak exit. The threshold
@@ -3101,6 +3149,31 @@ impl SellMonitor {
                                 mint = %pool.base_mint,
                                 decline_streak, current_value, pnl_sol,
                                 "Dump momentum detected — exiting position"
+                            );
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            break;
+                        }
+
+                        // Peak stagnation exit: pool pumped once then went flat. If peak
+                        // hasn't made a new high in `peak_stagnation_secs` AND the position
+                        // is still above `peak_stagnation_min_pnl_pct`, exit now rather than
+                        // waiting for a slow bleed back through the profit floor to sub-floor
+                        // prices. This eliminates the 7-11 min 99%-exit pattern where velocity
+                        // decay is disarmed once current drops below velocity_decay_min_pnl_pct.
+                        if self.config.peak_stagnation_secs > 0
+                            && last_peak_improved.elapsed().as_secs() >= self.config.peak_stagnation_secs
+                            && current_pnl_pct_raw >= self.config.peak_stagnation_min_pnl_pct
+                        {
+                            let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                            let pnl_sol = pnl_lamports as f64 / 1e9;
+                            tracing::info!(
+                                mint = %pool.base_mint,
+                                stagnant_secs = last_peak_improved.elapsed().as_secs(),
+                                current_pnl_pct = %format!("{:.1}%", current_pnl_pct_raw),
+                                peak_pnl_pct = %format!("{:.1}%", (peak_value as f64 - self.entry_amount_raw as f64) / self.entry_amount_raw as f64 * 100.0),
+                                pnl_sol,
+                                "⏱ Peak stagnation exit — pool flat, recycling capital"
                             );
                             self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
                             self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
@@ -3628,15 +3701,18 @@ impl SellMonitor {
             match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
-                    // record_trade_confirmed (with real PnL) is called in record_sell_outcome,
-                    // which the caller always invokes after sell_with_retry returns. Calling it
-                    // here with 0 would double-count the trade and zero out the PnL.
 
-                    // pnl_pct is the primary reward signal for the NN agent — fall back
-                    // to 0 when estimated_out couldn't be computed (RPC failure path).
-                    let pnl_pct = if self.entry_amount_raw > 0 && estimated_out > 0 {
-                        (estimated_out as f64 - self.entry_amount_raw as f64)
-                            / self.entry_amount_raw as f64 * 100.0
+                    // Fetch actual received amount from quote ATA for accurate pnl.
+                    // quote_ata was recreated before the swap (idempotent) and holds the
+                    // swap output. Falls back to estimated_out if the RPC call fails.
+                    let actual_received: u64 = if let Ok(qb) = self.rpc.get_token_account_balance(&quote_ata).await {
+                        qb.amount.parse::<u64>().unwrap_or(estimated_out)
+                    } else {
+                        estimated_out
+                    };
+                    let pnl_raw = actual_received as i64 - self.entry_amount_raw as i64;
+                    let pnl_pct = if self.entry_amount_raw > 0 {
+                        pnl_raw as f64 / self.entry_amount_raw as f64 * 100.0
                     } else { 0.0 };
                     TradeEvent {
                         timestamp: chrono::Utc::now(),
@@ -3644,7 +3720,7 @@ impl SellMonitor {
                         mint: pool.base_mint.to_string(),
                         symbol: String::new(),
                         amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
-                        pnl: (estimated_out as f64 - self.entry_amount_raw as f64) / 1_000_000_000.0,
+                        pnl: pnl_raw as f64 / 1_000_000_000.0,
                         status: "✓".into(),
                         signature: result.signature.map(|s| s.to_string()).unwrap_or_default(),
                         dex: "Raydium".into(),

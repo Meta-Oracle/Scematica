@@ -32,15 +32,15 @@ one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
 max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
-trailing_stop_loss_pct = 50.0  # Wide: allow 50% retracement so runners can breathe toward 1000x
+trailing_stop_loss_pct = 25.0  # Tightened: 25% trail catches bleed from peak; still gives parabolic pumps room
 partial_tp_pct = 0.0           # Disabled — single full exit at take_profit_pct
 partial_tp_trigger = 0.0       # Disabled — no partial sells below the 0.05 SOL target
 
 # ── v1.6.0 Exit Gate — Guaranteed ≥0.05 SOL Exits ───────────────────────────
 # All momentum/timing exits are gated behind take_profit_pct (500%).
 # Once position hits TP, profit floor locks at that level permanently.
-momentum_min_peak_pct = 200.0       # Arm pullback exit once position peaks at 200%+ gain
-velocity_decay_min_pnl_pct = 200.0  # Arm decay exit once PnL hits 200%
+momentum_min_peak_pct = 200.0       # Arm pullback exit at 200%+ peak (ensures peak-25>175 so exit_gate_met is satisfiable)
+velocity_decay_min_pnl_pct = 100.0  # Arm decay exit at 100%+ gain — catches bleeders before they fall from 175% to 99%
 volume_exhaustion_pct = 0.0         # Disabled — swell-based exit gate handles vault drain
 whale_exit_vault_drop_pct = 0.0     # Disabled in profit zone
 flash_crash_pct = 0.0               # Disabled in profit zone; SL handles crashes
@@ -50,8 +50,9 @@ profit_lock_checks = 0              # Disabled — profit floor in code locks 0.
 momentum_hold = true
 momentum_max_escalations = 7        # 7-round ladder: 175→315→567→1020→1836→3305→5949%
 momentum_escalation_factor = 1.8    # TP grows 1.8× per round
-momentum_escalation_threshold_pct = 8.0  # Only escalate TP on strong momentum — prevents noise escalations
-momentum_pullback_exit_pct = 40.0   # Wide pullback allowance — at 1000% peak allows 40×√11=133% swing room
+momentum_escalation_threshold_pct = 8.0  # Escalate on 8%/check avg velocity OR any single-check jump 50%+ past TP
+momentum_pullback_exit_pct = 15.0   # At peak 200%: 15% pullback fires at 185%, above 175% floor → satisfiable
+adaptive_pullback = false            # Disabled: adaptive formula makes pullback unreachable at 175-250% peak
 max_concurrent_positions = 1   # 1 at a time — prevents RPC overload causing sell timeouts on multiple open positions
 cooldown_after_losses = 0      # No pause after losses — keep recycling capital
 cooldown_minutes = 20          # Cooldown duration in minutes
@@ -112,6 +113,8 @@ tiered_partial_tp = false         # Set true to enable tiered ladder above
 # v1.6.0: Dead-zone exit reduced 45→30s (winners exit in <6s, recycle capital faster)
 no_pump_timeout_secs = 20        # Exit dead pools fast — 20s with no move is a dead pool
 no_pump_min_gain_pct = 5.0          # Suppress timeout if position already up 5%+
+peak_stagnation_secs = 90           # Exit if peak hasn't improved in 90s AND current pnl > threshold
+peak_stagnation_min_pnl_pct = 20.0  # Only fire stagnation exit when up 20%+ (above noise floor)
 
 # v1.5.2: Protect fresh positions from dump-mode force-sell
 min_dump_hold_secs = 90             # Positions younger than 90s held through normal TP/SL

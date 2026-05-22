@@ -28,6 +28,8 @@ use crate::{
     cache::{CachedPool, MarketCache, PoolCache, SnipeListCache},
     day_weight::DayWeighter,
     executor::{DefaultExecutor, JitoExecutor, TxExecutor},
+    fibonacci_momentum::FibonacciMomentum,
+    fibonacci_recovery_system::{FibonacciRecoveryConfig, FibonacciRecoveryStats, FibonacciRecoverySystem},
     filters::FilterPipeline,
     grief_breaker::GriefBreaker,
     kelly::KellySizer,
@@ -91,15 +93,47 @@ pub struct LiveParams {
     pub amount_multiplier: f64,
     /// Human-readable market regime label from the AI
     pub market_regime: String,
+    /// Current active rate mode name
+    pub active_mode_name: String,
+    /// Entry size in SOL for the active rate mode
+    pub quote_amount_mode: f64,
+    /// TP% for the active rate mode
+    pub take_profit_pct_mode: f64,
+    /// SL% for the active rate mode
+    pub stop_loss_pct_mode: f64,
+    /// Max TP escalations for the active rate mode
+    pub momentum_max_escalations_mode: u32,
 }
 
 impl LiveParams {
     pub fn from_config(config: &SniperConfig) -> Self {
+        let active_mode = config.get_active_rate_mode().cloned();
+        let (quote_amount, tp_pct, sl_pct, momentum_max) = if let Some(mode) = active_mode {
+            (
+                mode.quote_amount,
+                mode.take_profit_pct,
+                mode.stop_loss_pct,
+                mode.momentum_max_escalations,
+            )
+        } else {
+            (
+                config.quote_amount,
+                config.take_profit_pct,
+                config.stop_loss_pct,
+                config.momentum_max_escalations,
+            )
+        };
+        
         Self {
             take_profit_pct: config.take_profit_pct,
             stop_loss_pct: config.stop_loss_pct,
             amount_multiplier: 1.0,
             market_regime: "neutral".into(),
+            active_mode_name: config.active_mode_name.clone(),
+            quote_amount_mode: quote_amount,
+            take_profit_pct_mode: tp_pct,
+            stop_loss_pct_mode: sl_pct,
+            momentum_max_escalations_mode: momentum_max,
         }
     }
 }
@@ -199,6 +233,10 @@ pub struct Sniper {
     /// same mint within 5 minutes is silently skipped. Prevents triple-buying the
     /// same token when multiple listener sources fire for the same pool creation.
     recently_bought: Arc<DashMap<Pubkey, std::time::Instant>>,
+    /// Fibonacci recovery system for entry/exit optimization
+    pub fib_system: Arc<FibonacciRecoverySystem>,
+    /// Fibonacci recovery statistics
+    pub fib_stats: Arc<Mutex<FibonacciRecoveryStats>>,
 }
 
 /// Per-position snapshot written to `scematica-positions.json`. Each running
@@ -286,6 +324,10 @@ impl Sniper {
 
         let ath_drawdown_pct = config.ath_drawdown_pct;
 
+        let fib_config = FibonacciRecoveryConfig::default();
+        let fib_system = Arc::new(FibonacciRecoverySystem::new(fib_config));
+        let fib_stats = Arc::new(Mutex::new(FibonacciRecoveryStats::default()));
+
         Self {
             config,
             wallet,
@@ -331,6 +373,8 @@ impl Sniper {
             moon_chase: Arc::new(AtomicBool::new(false)),
             live_positions: Arc::new(DashMap::new()),
             recently_bought: Arc::new(DashMap::new()),
+            fib_system,
+            fib_stats,
         }
     }
 
@@ -744,6 +788,17 @@ impl Sniper {
             }
         }
 
+        // Read social metadata populated by SocialLinksFilter during filter execution.
+        // Provides real name/symbol for AI and social_count for pool scorer enrichment.
+        let (token_name, token_symbol, social_count) = {
+            let key = pool.base_mint.to_string();
+            self.filter_pipeline.metadata.get(&key)
+                .map(|m| (m.name.clone(), m.symbol.clone(), m.social_count))
+                .unwrap_or_default()
+        };
+        let display_name  = if token_name.is_empty()   { "UNKNOWN".to_string() } else { token_name };
+        let display_symbol = if token_symbol.is_empty() { "UNKNOWN".to_string() } else { token_symbol };
+
         // AI risk assessment (if available, and not high-speed)
         if !high_speed { if let Some(ai) = &self.ai {
             let pool_size_sol = scematica_core::token::raw_to_ui(upfront_pool_size_lamports, pool.quote_decimals);
@@ -772,8 +827,8 @@ impl Sniper {
             // momentum signals, not re-check things the filter pipeline already handled.
             let risk = ai.risk.score_token_v2(
                 &pool.base_mint.to_string(),
-                "UNKNOWN",
-                "UNKNOWN",
+                &display_name,
+                &display_symbol,
                 pool_size_sol,
                 true,   // mint_renounced (disabled filter — treated as safe)
                 false,  // freezable     (disabled filter — treated as safe)
@@ -789,6 +844,9 @@ impl Sniper {
 
             info!(
                 mint = %pool.base_mint,
+                name = %display_name,
+                symbol = %display_symbol,
+                social_count,
                 score = risk.score,
                 recommendation = %risk.recommendation,
                 velocity = %format!("{:.3} SOL/s", velocity_sol_per_sec),
@@ -821,23 +879,71 @@ impl Sniper {
             }
         } } // close `if let Some(ai)` and the outer `if !high_speed` guard
 
-        // ── Pool predictive scoring (skipped in high-speed mode) ───────────────
-        if !high_speed && self.config.min_pool_score > 0.0 {
-            // upfront_score was computed above from the same vault fetch — free.
-            if upfront_score < self.config.min_pool_score {
+        // ── Fibonacci entry gate ────────────────────────────────────────────────
+        // Evaluate pool against Fibonacci golden ratio patterns. This gate runs BEFORE
+        // the pool scorer so we filter out dead pools (thin liquidity, stale age, low
+        // velocity) as early as possible. High-speed mode bypasses to minimize latency.
+        if !high_speed {
+            let fib_decision = self.fib_system.evaluate_entry(
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                detected_at_secs,
+            );
+
+            if !fib_decision.should_enter {
                 info!(
                     mint = %pool.base_mint,
-                    score = %format!("{:.1}", upfront_score),
+                    score = fib_decision.fibonacci_score,
+                    reason = %fib_decision.reason,
+                    "❌ Fibonacci gate: REJECTED"
+                );
+                self.filter_pipeline.stats.record_rejection("fibonacci_gate");
+                self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                return;
+            }
+
+            info!(
+                mint = %pool.base_mint,
+                score = fib_decision.fibonacci_score,
+                multiplier = fib_decision.position_multiplier,
+                expected_tp = fib_decision.expected_tp_pct,
+                reason = %fib_decision.reason,
+                "✅ Fibonacci gate: PASSED"
+            );
+
+            // Record entry for stats tracking
+            self.fib_stats.lock().record_entry(fib_decision.fibonacci_score);
+        }
+
+        // ── Pool predictive scoring (skipped in high-speed mode) ───────────────
+        if !high_speed && self.config.min_pool_score > 0.0 {
+            // Re-score with social_count bonus now that SocialLinksFilter has enriched metadata.
+            let final_score = if social_count > 0 {
+                crate::pool_scorer::PoolScorer::score_with_socials(
+                    &pool, upfront_pool_size_lamports, upfront_base_vault_lamports,
+                    detected_at_secs, social_count,
+                )
+            } else {
+                upfront_score
+            };
+            if final_score < self.config.min_pool_score {
+                info!(
+                    mint = %pool.base_mint,
+                    score = %format!("{:.1}", final_score),
+                    social_count,
                     min = %format!("{:.1}", self.config.min_pool_score),
                     "Pool score too low — skipping buy"
                 );
-                self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                self.write_radar_entry(&pool, upfront_pool_size_sol, false, final_score);
                 self.filter_pipeline.stats.record_rejection("pool_scorer");
                 return;
             }
             info!(
                 mint = %pool.base_mint,
-                score = %format!("{:.1}", upfront_score),
+                score = %format!("{:.1}", final_score),
+                social_count,
+                name = %display_name,
+                symbol = %display_symbol,
                 "Pool scorer: passed"
             );
         }
@@ -861,8 +967,37 @@ impl Sniper {
     }
 
     async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64, upfront_score: f64) -> Result<()> {
+        // ── POOL SIZE VALIDATION: Enforce min/max pool size at buy time ──
+        // The filter gate uses upfront data; we re-validate here to catch stale/drained pools
+        let pool_size_sol = quote_reserve_lam as f64 / 1e9;
+        
+        if pool_size_sol < self.config.filters.min_pool_size {
+            info!(
+                mint = %pool.base_mint,
+                pool_size_sol = %format!("{:.2}", pool_size_sol),
+                min_required = %format!("{:.2}", self.config.filters.min_pool_size),
+                "Pool size too small at buy time — SKIPPING (filter gate passed but pool drained)"
+            );
+            return Ok(());
+        }
+
+        if self.config.filters.max_pool_size > 0.0 && pool_size_sol > self.config.filters.max_pool_size {
+            info!(
+                mint = %pool.base_mint,
+                pool_size_sol = %format!("{:.2}", pool_size_sol),
+                max_allowed = %format!("{:.2}", self.config.filters.max_pool_size),
+                "Pool size too large at buy time — SKIPPING (whale influence)"
+            );
+            return Ok(());
+        }
+
         // ── Compute effective quote amount with day-weight and Kelly multipliers ──
-        let mut effective_quote_amount_raw = self.quote_amount_raw;
+        // Read rate mode's quote_amount from live_params (updated by mode switches)
+        let mode_quote_amount_raw = {
+            let lp = self.live_params.read();
+            ui_to_raw(lp.quote_amount_mode, self.quote_decimals)
+        };
+        let mut effective_quote_amount_raw = mode_quote_amount_raw;
 
         // Apply live_params amount_multiplier (strategy agent / rate mode)
         {
@@ -977,6 +1112,30 @@ impl Sniper {
                     }
                     }
                 }
+            }
+        }
+
+        // Fibonacci position sizing: scale by entry decision confidence
+        let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+        let detected_at_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if !high_speed {
+            let fib_decision = self.fib_system.evaluate_entry(
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                detected_at_secs,
+            );
+            if fib_decision.position_multiplier != 1.0 {
+                effective_quote_amount_raw = 
+                    (effective_quote_amount_raw as f64 * fib_decision.position_multiplier) as u64;
+                info!(
+                    mint = %pool.base_mint,
+                    fibonacci_score = fib_decision.fibonacci_score,
+                    fibonacci_multiplier = fib_decision.position_multiplier,
+                    "Fibonacci position sizing applied"
+                );
             }
         }
 
@@ -1342,15 +1501,28 @@ impl Sniper {
             1
         };
 
-        // Use live_params so Strategy Agent adjustments take effect immediately
-        let (take_profit_pct, stop_loss_pct) = {
+        // Use live_params so Strategy Agent adjustments + rate mode TP/SL take effect immediately
+        let (take_profit_pct, stop_loss_pct, entry_amount_raw) = {
             let p = self.live_params.read();
-            (p.take_profit_pct, p.stop_loss_pct)
+            // Use rate mode's TP/SL, or fall back to base config if not set
+            let tp = if (p.take_profit_pct_mode - 0.0).abs() > 0.01 {
+                p.take_profit_pct_mode
+            } else {
+                p.take_profit_pct
+            };
+            let sl = if (p.stop_loss_pct_mode - 0.0).abs() > 0.01 {
+                p.stop_loss_pct_mode
+            } else {
+                p.stop_loss_pct
+            };
+            // Entry amount from rate mode (converted to raw lamports)
+            let entry_raw = ui_to_raw(p.quote_amount_mode, self.quote_decimals);
+            (tp, sl, entry_raw)
         };
         let take_profit_factor = 1.0 + take_profit_pct / 100.0;
         let stop_loss_factor = 1.0 - stop_loss_pct / 100.0;
-        let target_profit = (self.quote_amount_raw as f64 * take_profit_factor) as u64;
-        let stop_loss = (self.quote_amount_raw as f64 * stop_loss_factor) as u64;
+        let target_profit = (entry_amount_raw as f64 * take_profit_factor) as u64;
+        let stop_loss = (entry_amount_raw as f64 * stop_loss_factor) as u64;
 
         let mut checks = 0u64;
         loop {
@@ -1387,7 +1559,7 @@ impl Sniper {
                             if current_value >= target_profit {
                                 info!(mint = %pool.base_mint, "Take profit triggered");
                                 self.sell(&pool, &base_ata, amount).await;
-                                let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
+                                let pnl_sol = (current_value as f64 - entry_amount_raw as f64)
                                     / 1_000_000_000.0;
                                 self.record_trade_outcome(true, pnl_sol);
                                 break;
@@ -1395,7 +1567,7 @@ impl Sniper {
                             if current_value <= stop_loss {
                                 info!(mint = %pool.base_mint, "Stop loss triggered");
                                 self.sell(&pool, &base_ata, amount).await;
-                                let pnl_sol = (current_value as f64 - self.quote_amount_raw as f64)
+                                let pnl_sol = (current_value as f64 - entry_amount_raw as f64)
                                     / 1_000_000_000.0;
                                 self.record_trade_outcome(false, pnl_sol);
                                 break;
@@ -1971,6 +2143,8 @@ impl Sniper {
             moon_chase: self.moon_chase.clone(),
             live_positions: self.live_positions.clone(),
             loss_heat_timestamps: self.loss_heat_timestamps.clone(),
+            fib_system: self.fib_system.clone(),
+            fib_stats: self.fib_stats.clone(),
         }
     }
 }
@@ -2023,6 +2197,10 @@ struct SellMonitor {
     live_positions: Arc<DashMap<String, LivePositionSnapshot>>,
     /// Session heat loss timestamps — updated on loss; drives the cooldown_until_ms gate
     loss_heat_timestamps: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// Fibonacci recovery system for exit optimization
+    fib_system: Arc<FibonacciRecoverySystem>,
+    /// Fibonacci recovery statistics
+    fib_stats: Arc<Mutex<FibonacciRecoveryStats>>,
 }
 
 /// Minimum quote-vault balance considered viable for a swap.
@@ -2036,6 +2214,12 @@ impl SellMonitor {
         // on every sell path (sell_mode trigger / partial TP / dump / TP-SL / timeout).
         let position_started = std::time::Instant::now();
         let entry_unix_secs = chrono::Utc::now().timestamp();
+
+        // Create Fibonacci momentum tracker for this position
+        let mut fib_momentum = FibonacciMomentum::new(
+            self.entry_amount_raw,
+            entry_unix_secs as u64,
+        );
 
         // Register this position in the live registry so the dashboard sees it
         // immediately. We update the entry on every price check below and
@@ -2111,6 +2295,13 @@ impl SellMonitor {
         let mut entry_q: u64 = 0;
         let mut prev_q: u64 = 0;
 
+        // Live swell: sliding window of per-check quote vault deltas (SOL in/out).
+        // Positive avg = net buyers still flowing in (pool swelling).
+        // Negative avg = net sellers / LP withdraw (pool draining).
+        let swell_win_cap = 6usize;
+        let mut swell_window: std::collections::VecDeque<i64> =
+            std::collections::VecDeque::with_capacity(swell_win_cap);
+
         // Momentum-hold state for long-term sniping. dynamic_tp_pct floats above
         // the configured TP via velocity-driven escalation. velocity_window stores
         // recent per-check % deltas (vs entry) for the momentum signal.
@@ -2131,6 +2322,10 @@ impl SellMonitor {
             )
         };
         let initial_tp_pct = self.live_params.read().take_profit_pct;
+        // Minimum profit floor in lamports: once position reaches TP, SL is raised
+        // to this value so the exit is always >= initial_tp_pct gain (e.g. 0.05 SOL).
+        let min_profit_floor_lamports =
+            (self.entry_amount_raw as f64 * (1.0 + initial_tp_pct / 100.0)) as u64;
         let mut dynamic_tp_pct: f64 = initial_tp_pct;
         let mut escalation_count: u32 = 0;
         let momentum_window_cap = self.config.momentum_window_checks.max(1) as usize;
@@ -2293,6 +2488,56 @@ impl SellMonitor {
                         // Use correct AMM formula with 0.25% fee — more accurate than naive ratio
                         let current_value = amm_out(amount, b, q);
 
+                        // ── Fibonacci momentum update and exit evaluation ───────────
+                        let current_time_secs = chrono::Utc::now().timestamp() as u64;
+                        let _fib_signal = fib_momentum.update(current_value, current_time_secs, q);
+                        
+                        let fib_exit = self.fib_system.evaluate_exit(
+                            &fib_momentum,
+                            current_value,
+                            current_time_secs,
+                            q,
+                        );
+
+                        if fib_exit.should_exit {
+                            let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                            let pnl_sol = pnl_lamports as f64 / 1e9;
+                            let hold_time = current_time_secs - entry_unix_secs as u64;
+                            
+                            tracing::info!(
+                                mint = %pool.base_mint,
+                                reason = %fib_exit.exit_reason,
+                                expected_pnl_pct = fib_exit.expected_pnl_pct,
+                                actual_pnl_sol = pnl_sol,
+                                is_dead_pool = fib_exit.is_dead_pool,
+                                hold_time_secs = hold_time,
+                                "🎯 Fibonacci exit triggered"
+                            );
+                            
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.fib_stats.lock().record_exit(&fib_exit, hold_time, pnl_lamports);
+                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            
+                            // Log Fibonacci stats every 10 exits
+                            let stats = self.fib_stats.lock();
+                            let total_exits = stats.dead_pool_exits + stats.fibonacci_tp_exits + stats.golden_retrace_exits;
+                            if total_exits > 0 && total_exits % 10 == 0 {
+                                tracing::info!(
+                                    "📊 Fibonacci Recovery Stats: Entries={} ({:.0}% high-score) | Win Rate={:.1}% | Avg PnL={:.4} SOL | Avg Hold={:.1}s | Dead Pool Exits={} | Fib TP Exits={} | Total PnL={:.4} SOL",
+                                    stats.total_entries,
+                                    (stats.fibonacci_entries as f64 / stats.total_entries.max(1) as f64 * 100.0),
+                                    stats.win_rate() * 100.0,
+                                    stats.avg_pnl_sol(),
+                                    stats.avg_hold_time_secs,
+                                    stats.dead_pool_exits,
+                                    stats.fibonacci_tp_exits,
+                                    stats.total_pnl_lamports as f64 / 1e9,
+                                );
+                            }
+                            
+                            break;
+                        }
+
                         // Momentum: track consecutive declines for dump detection
                         if current_value < prev_value {
                             decline_streak += 1;
@@ -2303,8 +2548,33 @@ impl SellMonitor {
                         // Capture entry quote vault on the first valid check
                         if entry_q == 0 { entry_q = q; }
 
+                        // ── Swell signal: net SOL flow into pool ────────────────
+                        // Positive avg = active buys still arriving (pool swelling).
+                        // Negative avg = sells / LP drain dominating (pool dumping).
+                        if prev_q > 0 {
+                            swell_window.push_back(q as i64 - prev_q as i64);
+                            if swell_window.len() > swell_win_cap {
+                                swell_window.pop_front();
+                            }
+                        }
+                        let swell_avg: i64 = if swell_window.is_empty() {
+                            0
+                        } else {
+                            swell_window.iter().sum::<i64>() / swell_window.len() as i64
+                        };
+                        let pool_is_draining = swell_avg < 0;
+                        let current_pnl_pct_raw = (current_value as f64
+                            - self.entry_amount_raw as f64)
+                            / self.entry_amount_raw as f64
+                            * 100.0;
+                        // Exit gate: block ALL momentum/timing exits below the initial TP
+                        // so every profitable exit is >= min_profit_floor (0.05 SOL).
+                        // Hard SL and no-pump timeout are exempt (they protect against rugs).
+                        let exit_gate_met = current_pnl_pct_raw >= initial_tp_pct;
+
                         // ── Whale exit: single-check vault drop ─────────────────
-                        if self.config.whale_exit_vault_drop_pct > 0.0 && prev_q > 0 && q < prev_q {
+                        if self.config.whale_exit_vault_drop_pct > 0.0 && prev_q > 0 && q < prev_q
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
                             let vault_drop_pct = (prev_q - q) as f64 / prev_q as f64 * 100.0;
                             if vault_drop_pct >= self.config.whale_exit_vault_drop_pct {
                                 let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
@@ -2329,6 +2599,7 @@ impl SellMonitor {
                         if self.config.volume_exhaustion_pct > 0.0
                             && entry_q > 0
                             && current_value > self.entry_amount_raw
+                            && exit_gate_met
                         {
                             let exhaustion_floor =
                                 (entry_q as f64 * (1.0 - self.config.volume_exhaustion_pct / 100.0)) as u64;
@@ -2349,8 +2620,21 @@ impl SellMonitor {
 
                         // Update peak (used for both trailing stop AND momentum pullback exit)
                         if current_value > peak_value { peak_value = current_value; }
-                        if trailing_enabled {
-                            let trail = (peak_value as f64 * (1.0 - self.config.trailing_stop_loss_pct / 100.0)) as u64;
+
+                        // Profit floor: once position reaches initial TP, raise SL to
+                        // min_profit_floor so every exit is >= the 0.05 SOL target.
+                        if exit_gate_met && stop_loss_amount < min_profit_floor_lamports {
+                            stop_loss_amount = min_profit_floor_lamports;
+                        }
+                        // Trailing stop: only activates at/above TP to prevent sub-0.05 exits.
+                        // When vault is actively draining, tighten to 2 % to lock gains faster.
+                        if trailing_enabled && exit_gate_met {
+                            let trail_pct = if pool_is_draining {
+                                2.0f64
+                            } else {
+                                self.config.trailing_stop_loss_pct
+                            };
+                            let trail = (peak_value as f64 * (1.0 - trail_pct / 100.0)) as u64;
                             if trail > stop_loss_amount { stop_loss_amount = trail; }
                         }
 
@@ -2360,7 +2644,8 @@ impl SellMonitor {
                         // positives on the fill price vs entry discrepancy), exit now.
                         // This fires before the 3-consecutive-decline counter can even
                         // accumulate — crucial for vertical dumps (rug/snipe target).
-                        if self.config.flash_crash_pct > 0.0 && checks >= 3 && prev_value > current_value {
+                        if self.config.flash_crash_pct > 0.0 && checks >= 3 && prev_value > current_value
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
                             let single_drop_pct = (prev_value as f64 - current_value as f64)
                                 / self.entry_amount_raw as f64 * 100.0;
                             if single_drop_pct >= self.config.flash_crash_pct {
@@ -2462,7 +2747,8 @@ impl SellMonitor {
                             } else {
                                 mom_pullback
                             };
-                            if peak_pnl_pct >= self.config.momentum_min_peak_pct
+                            if exit_gate_met
+                                && peak_pnl_pct >= self.config.momentum_min_peak_pct
                                 && pullback_pct >= pullback_eff
                             {
                                 let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
@@ -2490,6 +2776,7 @@ impl SellMonitor {
                             //     of price, ~1-2 ticks before the trailing stop or
                             //     pullback exit would fire.
                             if self.config.velocity_decay_exit
+                                && exit_gate_met
                                 && current_pnl_pct >= self.config.velocity_decay_min_pnl_pct
                             {
                                 decay_window.push_back(delta_pct);
@@ -2662,7 +2949,8 @@ impl SellMonitor {
                                 current_value <= stop_loss_amount
                             } else { true }
                         } else { true };
-                        if decline_streak >= 3 && checks >= fast_phase_checks && dump_eligible {
+                        if decline_streak >= 3 && checks >= fast_phase_checks && dump_eligible
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
                             let pnl_sol = pnl_lamports as f64 / 1e9;
                             tracing::warn!(
@@ -3106,7 +3394,12 @@ impl SellMonitor {
         let min_out = if self.dump_mode.load(Ordering::Relaxed) || sell_round >= 2 {
             0
         } else if estimated_out > 0 {
-            let effective_slippage = self.config.sell_slippage_pct * (1.0 + sell_round as f64);
+            let effective_slippage = if sell_round == 0 {
+                self.config.sell_slippage_pct
+            } else {
+                // sell_round 1: double the slippage tolerance
+                self.config.sell_slippage_pct * 2.0
+            };
             apply_slippage(estimated_out, effective_slippage)
         } else {
             0

@@ -1,10 +1,52 @@
-# Scematica v1.5.2
+# Scematica v1.6.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed. The guide includes a dedicated **Web Dashboard** section covering Node.js setup, the browser UI, Phantom wallet integration, and the SCEMA token gate.
+
+---
+
+## What's New in v1.6.0
+
+### Guaranteed ≥0.05 SOL Exits — Swell-Based Exit Gate
+
+All momentum/timing exits (trailing stop, adaptive pullback, velocity decay, volume exhaustion, whale exit, flash crash, 3-consecutive-decline dump detection) are now **gated behind the initial take-profit level (500%)**.
+
+**What this fixes:** Previous behavior allowed the trailing stop (5%), pullback exit (15%), velocity decay, and dump detection to fire at +50–300% gains, returning sub-0.05 SOL profit on a 0.01 SOL buy. With the exit gate, the bot holds through all market noise below the 500% target and only activates timing exits once the position has reached ≥500% gain.
+
+**Live swell signal:** The sell monitor now tracks a 6-check sliding window of quote vault deltas (net SOL flow). When the vault is actively draining (pool is selling off) AND the position is at/above TP, the trailing stop tightens to 2% (from the configured value) to lock gains before the reversal completes.
+
+**Profit floor:** Once the position first hits the TP price (500% gain), the stop-loss floor is raised to exactly that level. Any subsequent exit — whether from trailing stop, pullback, or time-cap — is guaranteed to return ≥0.05 SOL profit.
+
+**Hard SL and no-pump timeout are exempt** — they still fire at their configured levels to protect against rugs and dead positions.
+
+### Social Link Enrichment — "Biggest Hitters" Pool Selection
+
+Every pool now runs through a new `SocialLinksFilter` that:
+
+1. **Reads Metaplex on-chain metadata** — extracts real name and symbol (instead of "UNKNOWN" in logs)
+2. **Fetches off-chain URI JSON** (1.5s timeout) — checks for Twitter, Telegram, website, Discord links in pump.fun and Metaplex extension format
+3. **Populates `FilterPipeline::metadata`** cache with enriched token info for downstream use
+
+**Pool scorer boost:** `score_with_socials()` applies additive score adjustments based on social count (−4 for zero socials → +10 for all four platforms). Anonymous tokens with zero social presence are penalised; well-connected projects are promoted.
+
+**AI enrichment:** The risk-scoring AI now receives real token name and symbol instead of "UNKNOWN", producing more meaningful context-aware analysis.
+
+**Social rejection (opt-in):** Enable `check_socials = true` in `config.toml` to hard-reject tokens with zero social links. Currently off by default to avoid false-positives on legitimate projects that haven't set their URI yet at pool creation time.
+
+**New config fields** (in `[sniper]` section):
+```toml
+momentum_min_peak_pct = 500.0       # Pullback exit only fires after peak >= 500%
+velocity_decay_min_pnl_pct = 500.0  # Decay exit only fires when PnL >= 500%
+volume_exhaustion_pct = 0.0         # Disabled — swell gate handles vault drain
+whale_exit_vault_drop_pct = 0.0     # Disabled in profit zone
+flash_crash_pct = 0.0               # Disabled in profit zone; SL handles crashes
+profit_lock_checks = 0              # Disabled — profit floor in code locks 0.05 SOL
+```
+
+Enable `check_socials = true` in `[sniper.filters]` to require social presence.
 
 ---
 

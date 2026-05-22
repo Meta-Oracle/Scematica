@@ -45,6 +45,20 @@ impl FilterStats {
 
 pub const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
 
+/// On-chain and off-chain metadata enrichment for a token.
+/// Written by SocialLinksFilter; read by sniper AI call + pool scorer.
+#[derive(Debug, Clone, Default)]
+pub struct TokenSocials {
+    pub name: String,
+    pub symbol: String,
+    pub twitter: bool,
+    pub telegram: bool,
+    pub website: bool,
+    pub discord: bool,
+    /// 0–4: how many distinct social channels were found
+    pub social_count: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct FilterResult {
     pub passed: bool,
@@ -731,6 +745,125 @@ impl PoolFilter for DeployerWalletAgeFilter {
     }
 }
 
+/// Fetch off-chain token metadata JSON from the Metaplex URI.
+/// Hard 1.5 s wall-clock cap so a slow CDN can't stall the filter pipeline.
+async fn fetch_token_uri_metadata(uri: &str) -> Option<serde_json::Value> {
+    if !uri.starts_with("http") { return None; }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .user_agent("scematica-sniper/1.0")
+        .build()
+        .ok()?;
+    let resp = tokio::time::timeout(
+        tokio::time::Duration::from_millis(1800),
+        client.get(uri).send(),
+    ).await.ok()?.ok()?;
+    tokio::time::timeout(
+        tokio::time::Duration::from_millis(1500),
+        resp.json::<serde_json::Value>(),
+    ).await.ok()?.ok()
+}
+
+/// Enriches pool metadata with on-chain name/symbol and off-chain social links.
+///
+/// Always runs so that `FilterPipeline::metadata` is populated for the AI call
+/// and pool scorer even when `require_socials = false`. When `require_socials`
+/// is true, rejects pools that have zero social presence.
+pub struct SocialLinksFilter {
+    pub metadata_cache: Arc<DashMap<String, TokenSocials>>,
+    /// If true, reject pools with no social links. If false, only enrich.
+    pub require_socials: bool,
+}
+
+#[async_trait]
+impl PoolFilter for SocialLinksFilter {
+    fn name(&self) -> &str { "SocialLinks" }
+
+    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
+        const METADATA_PROGRAM: Pubkey =
+            solana_sdk::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+        let seeds: &[&[u8]] = &[b"metadata", METADATA_PROGRAM.as_ref(), pool.base_mint.as_ref()];
+        let (metadata_pda, _) = Pubkey::find_program_address(seeds, &METADATA_PROGRAM);
+
+        let acct = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            rpc.get_account(&metadata_pda),
+        ).await {
+            Ok(Ok(a)) if a.data.len() > 120 => a,
+            _ => {
+                debug!(mint = %pool.base_mint, "SocialLinks: no metadata account — skipping enrichment");
+                self.metadata_cache.insert(pool.base_mint.to_string(), TokenSocials::default());
+                return FilterResult::pass();
+            }
+        };
+
+        let data = &acct.data;
+        let name = read_metaplex_string(data, 65);
+        let symbol_offset = 65 + 4 + name.len().min(32);
+        let symbol = read_metaplex_string(data, symbol_offset);
+        let uri_offset = symbol_offset + 4 + symbol.len().min(10);
+        let uri_raw = read_metaplex_string(data, uri_offset);
+        let uri = uri_raw.trim().to_string();
+
+        let mut socials = TokenSocials {
+            name: name.trim().to_string(),
+            symbol: symbol.trim().to_string(),
+            ..TokenSocials::default()
+        };
+
+        // Off-chain URI fetch — pump.fun stores twitter/telegram/website in JSON
+        if !uri.is_empty() {
+            if let Some(meta) = fetch_token_uri_metadata(&uri).await {
+                let check = |key: &str| {
+                    meta.get(key)
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                        || meta.get("extensions")
+                            .and_then(|e| e.get(key))
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false)
+                };
+                socials.twitter  = check("twitter");
+                socials.telegram = check("telegram");
+                socials.website  = check("website");
+                socials.discord  = check("discord");
+                // pump.fun also uses "createdOn" and root-level socials
+                if !socials.twitter  { socials.twitter  = check("twitter_url"); }
+                if !socials.telegram { socials.telegram = check("telegram_url"); }
+            }
+        }
+
+        socials.social_count = [socials.twitter, socials.telegram, socials.website, socials.discord]
+            .iter()
+            .filter(|&&b| b)
+            .count() as u8;
+
+        tracing::debug!(
+            mint = %pool.base_mint,
+            name = %socials.name,
+            symbol = %socials.symbol,
+            social_count = socials.social_count,
+            twitter = socials.twitter,
+            telegram = socials.telegram,
+            website = socials.website,
+            "SocialLinks metadata enriched"
+        );
+
+        self.metadata_cache.insert(pool.base_mint.to_string(), socials.clone());
+
+        if self.require_socials && socials.social_count == 0 {
+            FilterResult::fail(format!(
+                "Zero social links — '{}' ({}) is likely anonymous rug",
+                socials.name, socials.symbol,
+            ))
+        } else {
+            FilterResult::pass()
+        }
+    }
+}
+
 // ── pipeline ──────────────────────────────────────────────────────────────────
 
 pub struct FilterPipeline {
@@ -740,6 +873,9 @@ pub struct FilterPipeline {
     /// Pool-id → (passed, timestamp) cache to avoid repeating RPC calls on duplicate events.
     result_cache: Arc<DashMap<String, (bool, std::time::Instant)>>,
     cache_ttl_secs: u64,
+    /// mint → enriched metadata (name, symbol, social links). Written by SocialLinksFilter,
+    /// read by sniper AI call and pool scorer for quantitative signal enrichment.
+    pub metadata: Arc<DashMap<String, TokenSocials>>,
 }
 
 impl FilterPipeline {
@@ -827,6 +963,16 @@ impl FilterPipeline {
             }));
         }
 
+        // Shared metadata cache — populated by SocialLinksFilter, read by sniper AI + scorer.
+        let metadata: Arc<DashMap<String, TokenSocials>> = Arc::new(DashMap::new());
+
+        // SocialLinksFilter always runs for metadata enrichment (name/symbol/socials).
+        // It only rejects when require_socials = true (check_socials in config).
+        filters.push(Box::new(SocialLinksFilter {
+            metadata_cache: Arc::clone(&metadata),
+            require_socials: config.check_socials,
+        }));
+
         let cache_ttl_secs = config.filter_cache_ttl_secs.max(5);
         Self {
             filters,
@@ -834,6 +980,7 @@ impl FilterPipeline {
             stats: FilterStats::default(),
             result_cache: Arc::new(DashMap::new()),
             cache_ttl_secs,
+            metadata,
         }
     }
 

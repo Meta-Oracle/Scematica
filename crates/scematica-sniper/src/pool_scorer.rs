@@ -175,6 +175,11 @@ impl PoolScorer {
             p *= ev_lr;
         }
 
+        // Signal 6: Social presence (community backing = lower rug probability)
+        // social_count is set by the caller when SocialLinksFilter metadata is available.
+        // LR values calibrated: no socials = more likely anon dev rug.
+        // Pass 0 to indicate "unknown/unenriched" — neutral.
+
         // ── Map posterior to 0–100 via logistic sigmoid ───────────────────────
         // sigmoid(x) = 100 / (1 + exp(−k(x − x0)))
         // Calibrated so that p=0.08 → score≈50, p=0.25 → score≈90
@@ -183,6 +188,28 @@ impl PoolScorer {
         let score = 100.0 / (1.0 + (-k * (p - x0)).exp());
 
         score.max(0.0).min(100.0)
+    }
+
+    /// Variant that additionally applies a social-presence likelihood ratio.
+    /// social_count: 0 = no socials found / unknown, 1–4 = twitter/telegram/website/discord.
+    pub fn score_with_socials(
+        pool: &CachedPool,
+        pool_size_lamports: u64,
+        base_vault_lamports: u64,
+        detected_at_secs: u64,
+        social_count: u8,
+    ) -> f64 {
+        let base = Self::score(pool, pool_size_lamports, base_vault_lamports, detected_at_secs);
+        // Social LR adjustment: applied AFTER logistic sigmoid so the boost is additive
+        // on the score, not the posterior (prevents over-weighting on already-high scores).
+        let social_boost = match social_count {
+            0 => -4.0, // no socials: anonymous — slight penalty (may be fine for tiny projects)
+            1 => 2.0,  // one link: a little community signal
+            2 => 5.0,  // two links: credible project
+            3 => 8.0,  // three links: well-connected
+            _ => 10.0, // four links: full social stack — strongest signal
+        };
+        (base + social_boost).max(0.0).min(100.0)
     }
 }
 

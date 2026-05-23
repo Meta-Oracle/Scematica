@@ -1136,9 +1136,12 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── Pump.fun graduation monitor ───────────────────────────────────────────
-    // Enabled when PUMPFUN_MONITOR=1 env var is set
-    if std::env::var("PUMPFUN_MONITOR").as_deref() == Ok("1") {
+    // ── Pump.fun graduation monitor (legacy poll-based) ──────────────────────
+    // Enabled when PUMPFUN_MONITOR=1 env var is set.
+    // Superseded by pumpfun_trending_enabled in config; kept for fallback.
+    if std::env::var("PUMPFUN_MONITOR").as_deref() == Ok("1")
+        && !config.sniper.pumpfun_trending_enabled
+    {
         use scematica_sniper::pumpfun::PumpFunMonitor;
         let pf_tx = event_tx.clone();
         let pf_ws = config.rpc.ws_endpoint.clone();
@@ -1155,7 +1158,33 @@ async fn main() -> Result<()> {
                 }
             }
         });
-        info!("Pump.fun graduation monitor started (threshold={:.0} SOL)", pf_threshold);
+        info!("Pump.fun graduation monitor started (threshold=82 SOL)");
+    }
+
+    // ── Pump.fun trending monitor (PumpPortal WebSocket) ─────────────────────
+    // Real-time buy/sell velocity tracking per bonding curve token.
+    // Emits CachedPool immediately on graduation when token was pre-screened as
+    // trending — typically 0.5–3 s ahead of the Raydium AMM V4 listener.
+    if config.sniper.pumpfun_trending_enabled {
+        use scematica_sniper::pumpfun_trending::{PumpFunTrendingConfig, PumpFunTrendingMonitor};
+        let pf_tx  = event_tx.clone();
+        let rpc_url = config.rpc.endpoint.clone();
+        let pf_cfg = PumpFunTrendingConfig {
+            min_trending_score: config.sniper.pumpfun_trending_score,
+            min_curve_pct:      config.sniper.pumpfun_min_curve_pct,
+            track_window_secs:  config.sniper.pumpfun_window_secs,
+            max_tracked_tokens: 300,
+        };
+        info!(
+            "PumpFun trending monitor starting (min_score={:.0}, min_curve={:.0}%)",
+            pf_cfg.min_trending_score, pf_cfg.min_curve_pct
+        );
+        tokio::spawn(async move {
+            let monitor = PumpFunTrendingMonitor::new(rpc_url, pf_tx, pf_cfg);
+            if let Err(e) = monitor.run().await {
+                warn!("PumpFun trending monitor exited: {}", e);
+            }
+        });
     }
 
     // ── Profit extraction scheduler: every 60s check session PnL ─────────────

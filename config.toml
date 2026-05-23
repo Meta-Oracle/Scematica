@@ -82,6 +82,21 @@ session_heat_cooldown_mins = 15     # Pause duration when heat trips
 # Calibrated from 573 confirmed trades (2026-05-16 to 2026-05-23):
 #   0% WR hours (UTC): 01:00, 21:00 → hard-blocked
 #   53% WR: 03:00 | 52% WR: 16:00 | 50% WR: 10:00 (best trading windows)
+# ── v1.10.0 Pump.fun Trending Monitor ───────────────────────────────────────────
+# Connects to PumpPortal WebSocket (wss://pumpportal.fun/api/data) for real-time
+# bonding-curve trade events. Tracks buy/sell velocity per token.
+# Trending score = buy_pressure(40pts) + volume_velocity(30pts) + curve_fill(30pts)
+# When a trending token graduates to Raydium, it's emitted to the sniper pipeline
+# 0.5–3s ahead of the standard Raydium AMM V4 listener.
+pumpfun_trending_enabled = true     # Enable PumpPortal WebSocket trending monitor
+pumpfun_trending_score = 55.0       # Min score to consider a token "trending" (0-100)
+pumpfun_min_curve_pct = 40.0        # Min bonding curve fill % (40% = ~28 SOL raised)
+pumpfun_window_secs = 120           # Sliding window for trend calculation (seconds)
+
+# ── v1.9.0 Time-of-Day Controls ─────────────────────────────────────────────────
+# Calibrated from 573 confirmed trades (2026-05-16 to 2026-05-23):
+#   0% WR hours (UTC): 01:00, 21:00 → hard-blocked
+#   53% WR: 03:00 | 52% WR: 16:00 | 50% WR: 10:00 (best trading windows)
 time_of_day_weighting = true        # Scale buy size by hour quality (1.3× peak, 0.5× dead)
 blocked_hours_utc = [1, 21]         # 0% win rate — skip entirely (not just size reduction)
 weekend_mode = "Bearish"            # Auto-switch Sat/Sun (0% WR Sat, 22% WR Fri vs 32% Mon)

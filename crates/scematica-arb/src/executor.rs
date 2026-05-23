@@ -179,6 +179,7 @@ impl ArbExecutor {
                         hops: path.hops() as u8,
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
+                        exit_reason: String::new(),
                     }
                     .append_to_file(TRADES_FILE);
 
@@ -200,6 +201,7 @@ impl ArbExecutor {
                         hops: path.hops() as u8,
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
+                        exit_reason: String::new(),
                     }
                     .append_to_file(TRADES_FILE);
 

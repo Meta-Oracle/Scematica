@@ -152,6 +152,26 @@ pub struct SniperConfig {
     /// Halt buying if losses in the window exceed this SOL amount (0.0 = disabled)
     pub grief_loss_limit_sol: f64,
 
+    // ── Pump.fun trending monitor ─────────────────────────────────────────────
+    /// Enable the PumpPortal WebSocket trending monitor.
+    /// Tracks per-token buy/sell velocity and emits graduating tokens ahead of
+    /// the standard Raydium AMM V4 listener when they show strong buy momentum.
+    #[serde(default)]
+    pub pumpfun_trending_enabled: bool,
+    /// Minimum trending score (0–100) for a token to be considered "trending".
+    /// Score = buy_pressure(40) + volume_velocity(30) + curve_fill(30).
+    /// Default: 55.0
+    #[serde(default = "default_pumpfun_trending_score")]
+    pub pumpfun_trending_score: f64,
+    /// Minimum bonding curve fill % before a token is flagged as trending.
+    /// Prevents entering tokens with very little traction (< 28 SOL raised).
+    /// Default: 40.0
+    #[serde(default = "default_pumpfun_min_curve_pct")]
+    pub pumpfun_min_curve_pct: f64,
+    /// Sliding window in seconds for the trending score calculation. Default: 120
+    #[serde(default = "default_pumpfun_window_secs")]
+    pub pumpfun_window_secs: u64,
+
     // ── Time-of-day weighting ─────────────────────────────────────────────────
     /// Scale position size based on UTC trading hour activity
     pub time_of_day_weighting: bool,
@@ -434,6 +454,10 @@ pub struct SniperConfig {
     pub pool_drain_exit_pct: f64,
 }
 
+fn default_pumpfun_trending_score() -> f64 { 55.0 }
+fn default_pumpfun_min_curve_pct()   -> f64 { 40.0 }
+fn default_pumpfun_window_secs()     -> u64 { 120  }
+
 impl Default for SniperConfig {
     fn default() -> Self {
         Self {
@@ -637,6 +661,10 @@ impl Default for SniperConfig {
             blocked_hours_utc: Vec::new(),
             weekend_mode: String::new(),
             weekday_mode: String::new(),
+            pumpfun_trending_enabled: false,
+            pumpfun_trending_score: default_pumpfun_trending_score(),
+            pumpfun_min_curve_pct: default_pumpfun_min_curve_pct(),
+            pumpfun_window_secs: default_pumpfun_window_secs(),
         }
     }
 }

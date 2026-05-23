@@ -1565,6 +1565,7 @@ impl Sniper {
                         hops: 1,
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
+                        exit_reason: String::new(),
                     }.append_to_file(TRADES_FILE);
 
                     // Track open positions
@@ -1648,6 +1649,7 @@ impl Sniper {
             hops: 1,
             pnl_pct: 0.0,
             position_age_secs: 0.0,
+            exit_reason: String::new(),
         }.append_to_file(TRADES_FILE);
         // ProcessingSlot::Drop releases the lock when `slot` goes out of scope here.
         Ok(())
@@ -1861,6 +1863,7 @@ impl Sniper {
                         hops: 1,
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
+                        exit_reason: String::new(),
                     }.append_to_file(TRADES_FILE);
                     return;
                 }
@@ -1893,6 +1896,7 @@ impl Sniper {
             hops: 1,
             pnl_pct: -100.0,
             position_age_secs: 0.0,
+            exit_reason: "failed".into(),
         }.append_to_file(TRADES_FILE);
     }
 
@@ -2766,7 +2770,7 @@ impl SellMonitor {
                         } else {
                             swell_window.iter().sum::<i64>() / swell_window.len() as i64
                         };
-                        let pool_is_draining = swell_avg < 0;
+                        let _pool_is_draining = swell_avg < 0;
                         let current_pnl_pct_raw = (current_value as f64
                             - self.entry_amount_raw as f64)
                             / self.entry_amount_raw as f64

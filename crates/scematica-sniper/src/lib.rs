@@ -16,6 +16,7 @@ pub mod listener;
 pub mod multi_rpc;
 pub mod pool_scorer;
 pub mod pumpfun;
+pub mod pumpfun_trending;
 pub mod reputation;
 pub mod whale_copy;
 pub mod sniper;

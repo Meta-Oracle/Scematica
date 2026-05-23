@@ -155,6 +155,18 @@ pub struct SniperConfig {
     // ── Time-of-day weighting ─────────────────────────────────────────────────
     /// Scale position size based on UTC trading hour activity
     pub time_of_day_weighting: bool,
+    /// UTC hours (0–23) where buys are completely blocked — skip the pool entirely.
+    /// Distinct from time_of_day_weighting (which just scales size).
+    /// Calibrated from live data: hours 1 and 21 UTC show 0% win rate.
+    #[serde(default)]
+    pub blocked_hours_utc: Vec<u8>,
+    /// Rate mode to auto-switch to on Saturday and Sunday UTC (empty = no auto-switch).
+    /// Live data shows 0% WR on Saturday. E.g., "Bearish" or "Micro".
+    #[serde(default)]
+    pub weekend_mode: String,
+    /// Rate mode to restore Monday–Friday when weekend_mode is active (empty = "Balanced").
+    #[serde(default)]
+    pub weekday_mode: String,
 
     // ── Profit extraction ─────────────────────────────────────────────────────
     /// Automatically extract profits when session PnL exceeds this SOL (0.0 = disabled)
@@ -622,6 +634,9 @@ impl Default for SniperConfig {
             pool_drain_exit_pct: 15.0,
             mint_cooldown_secs: 1800,
             ai_chain: AiChainConfig::default(),
+            blocked_hours_utc: Vec::new(),
+            weekend_mode: String::new(),
+            weekday_mode: String::new(),
         }
     }
 }

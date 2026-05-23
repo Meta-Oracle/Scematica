@@ -1,3 +1,4 @@
+use chrono::Timelike;
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use spl_associated_token_account;
@@ -146,7 +147,7 @@ impl LiveParams {
 
 /// Core sniper bot: receives pool events and executes buy/sell
 pub struct Sniper {
-    config: SniperConfig,
+    pub config: SniperConfig,
     wallet: Arc<Keypair>,
     rpc: Arc<RpcClient>,
     pool_cache: PoolCache,
@@ -999,6 +1000,22 @@ impl Sniper {
             );
         }
 
+        // ── Time-of-day block gate ────────────────────────────────────────────────
+        // Completely skip buying during configured UTC hours (e.g. 01:00, 21:00 which
+        // show 0% win rate in live data). Distinct from time_of_day_weighting (sizing).
+        if !self.config.blocked_hours_utc.is_empty() {
+            let utc_hour = chrono::Utc::now().hour() as u8;
+            if self.config.blocked_hours_utc.contains(&utc_hour) {
+                info!(
+                    mint = %pool.base_mint,
+                    utc_hour,
+                    "Time gate: blocked hour — skipping buy"
+                );
+                self.filter_pipeline.stats.record_rejection("time_gate");
+                return;
+            }
+        }
+
         // ── Regime gate: in bear/panic, only buy exceptional-velocity or high-score pools ──
         if !high_speed && !dex_boosted {
             let regime = self.live_params.read().market_regime.clone();
@@ -1109,17 +1126,19 @@ impl Sniper {
         let native_balance_early = self.rpc.get_balance(&wallet_pubkey_early).await.unwrap_or(0);
 
         // ── Compute effective quote amount ─────────────────────────────────────
-        // When wallet_pct > 0 the position is a true percentage of the current wallet
-        // balance so it grows (and shrinks) automatically as the wallet compounds.
-        // When wallet_pct == 0 use the fixed quote_amount_mode from the rate mode.
-        // Floor: 0.001 SOL — always enough for ATA rent + tx fees.
+        // When wallet_pct > 0: position = wallet × wallet_pct%, floored at the
+        // mode's quote_amount so small wallets still use the intended base size.
+        // This means wallet_pct scales UP as the wallet grows past the base, but
+        // never drops BELOW the mode's base (e.g. Balanced never goes under 0.01 SOL).
+        // When wallet_pct == 0: use the fixed quote_amount_mode.
         let mode_quote_amount_raw = {
             let lp = self.live_params.read();
+            let base_raw = ui_to_raw(lp.quote_amount_mode, self.quote_decimals).max(1_000_000);
             if lp.wallet_pct > 0.0 {
                 let pct_raw = (native_balance_early as f64 * lp.wallet_pct / 100.0) as u64;
-                pct_raw.max(1_000_000) // 0.001 SOL floor
+                pct_raw.max(base_raw) // scale up via wallet%, but floor at mode's base amount
             } else {
-                ui_to_raw(lp.quote_amount_mode, self.quote_decimals)
+                base_raw
             }
         };
         let mut effective_quote_amount_raw = mode_quote_amount_raw;
@@ -2172,7 +2191,7 @@ impl Sniper {
             tokio::spawn(async move {
                 // Auto-dump path: position age is unknown (could be from a previous session),
                 // so feed 0 to the NN observer rather than fabricating a time signal.
-                monitor.sell_with_retry(&pool, &ata_pk, amount, 0.0).await;
+                monitor.sell_with_retry(&pool, &ata_pk, amount, 0.0, "dump_mode").await;
             });
             spawned += 1;
         }
@@ -2463,8 +2482,12 @@ impl SellMonitor {
         let (mom_max_esc, mom_factor, mom_pullback, mom_threshold) = if moon_chase {
             (8u32, 1.75f64, 25.0f64, 3.0f64)
         } else {
+            // Read escalation count from live_params (set by rate-mode watcher on switch),
+            // falling back to static config if the mode field is 0 (unset).
+            let mode_esc = self.live_params.read().momentum_max_escalations_mode;
+            let max_esc = if mode_esc > 0 { mode_esc } else { self.config.momentum_max_escalations };
             (
-                self.config.momentum_max_escalations,
+                max_esc,
                 self.config.momentum_escalation_factor,
                 self.config.momentum_pullback_exit_pct,
                 self.config.momentum_escalation_threshold_pct,
@@ -2532,7 +2555,7 @@ impl SellMonitor {
                     if let Ok(bal) = self.rpc.get_token_account_balance(&base_ata).await {
                         let amount: u64 = bal.amount.parse().unwrap_or(0);
                         if amount > 0 {
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "timeout").await;
                         }
                     }
                     break;
@@ -2560,7 +2583,8 @@ impl SellMonitor {
                     if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
                         let amount: u64 = balance.amount.parse().unwrap_or(0);
                         if amount > 0 {
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            let mode_reason = if dump_on { "dump_mode" } else { "sell_mode" };
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), mode_reason).await;
                         }
                     }
                     break;
@@ -2694,7 +2718,7 @@ impl SellMonitor {
                                 "🎯 Fibonacci exit triggered"
                             );
                             
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "fibonacci").await;
                             self.fib_stats.lock().record_exit(&fib_exit, hold_time, pnl_lamports);
                             self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                             
@@ -2766,7 +2790,7 @@ impl SellMonitor {
                                     pnl_sol,
                                     "🐋 Whale exit: vault drop detected — selling immediately"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
                                 self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                 break;
                             }
@@ -2792,7 +2816,7 @@ impl SellMonitor {
                                     pnl_sol,
                                     "Volume exhaustion exit — locking profit before liquidity dries up"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "volume_exhaustion").await;
                                 self.record_sell_outcome(true, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                 break;
                             }
@@ -2835,7 +2859,7 @@ impl SellMonitor {
                                     pnl_sol,
                                     "⚡ Flash-crash detected — emergency exit"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
                                 self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                 break;
                             }
@@ -2954,7 +2978,7 @@ impl SellMonitor {
                                     pnl_sol,
                                     "📉 Adaptive pullback exit — locking gains before reversal"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "trailing_stop").await;
                                 self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                 break;
                             }
@@ -3003,7 +3027,7 @@ impl SellMonitor {
                                             pnl_sol,
                                             "🎯 Velocity-decay exit — momentum inflection caught"
                                         );
-                                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "velocity_decay").await;
                                         self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                         break;
                                     }
@@ -3050,7 +3074,7 @@ impl SellMonitor {
                                         pnl_sol,
                                         "No pump detected — recycling dead position"
                                     );
-                                    self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                                    self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "no_pump_timeout").await;
                                     self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                                     break;
                                 }
@@ -3089,7 +3113,7 @@ impl SellMonitor {
                                     current_pnl_pct = %format!("{:.1}%", current_pnl_pct_now),
                                     "🎯 Tiered partial TP — locking layer"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64(), "tiered_tp").await;
                                 remaining_tokens = remaining_tokens.saturating_sub(partial_amount);
                                 tiered_fired[i] = true;
                                 any_fired_this_check = true;
@@ -3116,7 +3140,7 @@ impl SellMonitor {
                             let partial_amount = (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;
                             if partial_amount > 0 {
                                 tracing::info!(mint = %pool.base_mint, "Partial TP triggered — selling {}%", self.config.partial_tp_pct);
-                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64()).await;
+                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64(), "take_profit").await;
                                 partial_tp_done = true;
                                 stop_loss_amount = self.entry_amount_raw; // move stop to breakeven
                             }
@@ -3150,7 +3174,7 @@ impl SellMonitor {
                                 decline_streak, current_value, pnl_sol,
                                 "Dump momentum detected — exiting position"
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
                             self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                             break;
                         }
@@ -3175,7 +3199,7 @@ impl SellMonitor {
                                 pnl_sol,
                                 "⏱ Peak stagnation exit — pool flat, recycling capital"
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "peak_stagnation").await;
                             self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                             break;
                         }
@@ -3184,15 +3208,15 @@ impl SellMonitor {
                             let profitable = current_value >= target_profit;
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
                             let pnl_sol = pnl_lamports as f64 / 1e9;
-                            let reason = if profitable { "take profit" } else { "stop loss" };
+                            let exit_r = if profitable { "take_profit" } else { "stop_loss" };
                             tracing::info!(
                                 mint = %pool.base_mint,
                                 current_value, target_profit,
                                 stop_loss = stop_loss_amount, pnl_sol,
                                 peak_value,
-                                "Sell triggered: {}", reason
+                                "Sell triggered: {}", exit_r
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), exit_r).await;
                             self.record_sell_outcome(profitable, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
                             break;
                         }
@@ -3252,7 +3276,7 @@ impl SellMonitor {
                 if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
-                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64()).await;
+                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "timeout").await;
                         // Parallel reserve fetch for PnL estimate.
                         let (qb_res, bb_res) = tokio::join!(
                             self.rpc.get_token_account_balance(&pool.quote_vault),
@@ -3481,7 +3505,7 @@ impl SellMonitor {
     /// Refreshes the token balance before each round so stale amounts don't
     /// block later rounds. `position_age_secs` is forwarded into the TradeEvent
     /// for the NN observer; pass 0.0 from call sites that don't track entry time.
-    async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64) {
+    async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64, exit_reason: &str) {
         // (delay_before_secs, sell_round passed to do_sell for slippage escalation)
         //
         // Timing tuned for rug-pull dynamics: the critical window is the first 3 s after
@@ -3512,6 +3536,7 @@ impl SellMonitor {
                     hops: 1,
                     pnl_pct: -100.0,
                     position_age_secs,
+                    exit_reason: exit_reason.to_string(),
                 }.append_to_file(TRADES_FILE);
                 return;
             }
@@ -3546,7 +3571,7 @@ impl SellMonitor {
                 }
                 current_amount = fresh;
             }
-            match self.do_sell(pool, base_ata, current_amount, position_age_secs, *sell_round).await {
+            match self.do_sell(pool, base_ata, current_amount, position_age_secs, *sell_round, exit_reason).await {
                 Ok(()) => return,
                 Err(e) => {
                     let is_last = round_idx + 1 >= rounds.len();
@@ -3568,7 +3593,7 @@ impl SellMonitor {
     ///   0 = normal slippage (`config.sell_slippage_pct`)
     ///   1 = 2× slippage (wider tolerance on retries)
     ///   2+ = min_out=0 (accept any price — last resort)
-    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64, sell_round: u32) -> Result<()> {
+    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64, sell_round: u32, exit_reason: &str) -> Result<()> {
         use scematica_core::token::apply_slippage;
 
         // Limit concurrent sell transactions to avoid 429 RPC hammering
@@ -3618,6 +3643,7 @@ impl SellMonitor {
                 hops: 1,
                 pnl_pct: -100.0,
                 position_age_secs,
+                exit_reason: exit_reason.to_string(),
             }.append_to_file(TRADES_FILE);
             return Ok(());
         }
@@ -3727,6 +3753,7 @@ impl SellMonitor {
                         hops: 1,
                         pnl_pct,
                         position_age_secs,
+                        exit_reason: exit_reason.to_string(),
                     }.append_to_file(TRADES_FILE);
 
                     return Ok(());
@@ -3822,6 +3849,7 @@ impl SellMonitor {
             hops: 1,
             pnl_pct: -100.0,           // total loss signal for the NN agent
             position_age_secs,
+            exit_reason: exit_reason.to_string(),
         }.append_to_file(TRADES_FILE);
 
         anyhow::bail!("sell exhausted {} retries for {}", self.config.max_sell_retries, pool.base_mint)

@@ -77,6 +77,12 @@ pub struct TradeEvent {
     /// How long the position was held in seconds (SELL only; 0 otherwise).
     #[serde(default)]
     pub position_age_secs: f64,
+    /// Why the position was closed (SELL only). One of:
+    /// "take_profit" | "stop_loss" | "trailing_stop" | "velocity_decay" |
+    /// "peak_stagnation" | "dump_detected" | "no_pump_timeout" | "sell_mode" |
+    /// "dump_mode" | "profit_lock" | "tiered_tp" | "fibonacci" | "timeout" | ""
+    #[serde(default)]
+    pub exit_reason: String,
 }
 
 impl TradeEvent {

@@ -59,5 +59,23 @@ web/node_modules/
 web/.env.local
 web/out/
 
+# ── Session-artifact docs (Claude-generated per-session reports, not source truth) ──
+ANALYSIS_REPORT.md
+BUILD_STATUS.md
+DEPLOY_CHECKLIST.md
+FIX_VERIFICATION.md
+OPTIMIZATION_COMPLETE.md
+OPTIMIZATION_REPORT.md
+PHASE1_OPTIMIZATION.md
+POOL_EVALUATION_FIX.md
+README_FIXES.md
+READY_TO_DEPLOY.md
+SETUP_SUMMARY.md
+SPIKE_ROOT_CAUSE.md
+LIVE_DATA_REPORT.md
+
+# ── Backup / alternate config files (not source of truth) ─────────────────────
+config-*.toml
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md

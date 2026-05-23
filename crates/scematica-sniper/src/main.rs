@@ -405,8 +405,10 @@ async fn main() -> Result<()> {
     }
 
     // Rate-mode file watcher — checks scematica-rate-mode.json every 5 s.
-    // When the dashboard sets a new rate mode the sniper picks it up and overrides
-    // live_params immediately, letting the strategy agent continue from there.
+    // When the dashboard sets a new rate mode the sniper picks it up and applies
+    // ALL fields from the matching RateMode in config (single source of truth).
+    // amount_multiplier is reset to 1.0 on every mode switch so strategy-agent
+    // values from a prior mode don't compound onto a fresh mode's sizing.
     {
         let sniper_rm = sniper.clone();
         tokio::spawn(async move {
@@ -417,18 +419,92 @@ async fn main() -> Result<()> {
                 let Ok(data) = std::fs::read_to_string("scematica-rate-mode.json") else { continue };
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
                 let mode_str = v["mode"].as_str().unwrap_or("").to_string();
-                if mode_str == last_mode { continue; }
-                last_mode = mode_str.clone();
+                if mode_str.is_empty() { continue; }
+                // Dedup: skip if nothing changed (mode name AND wallet_pct both stable)
+                let file_wp = v["wallet_pct"].as_f64().unwrap_or(0.0);
+                let dedup_key = format!("{}:{:.3}", mode_str, file_wp);
+                if dedup_key == last_mode { continue; }
+                last_mode = dedup_key;
+
+                // Look up the mode in config.toml (case-insensitive).
+                // config is the single source of truth for TP/SL/sizing — not the file,
+                // which may carry stale dashboard enum values that diverge from config.toml.
+                let config_mode = sniper_rm.config.rate_modes.iter().find(|m| {
+                    m.name.to_lowercase() == mode_str.to_lowercase() && m.enabled
+                }).cloned();
+
                 let mut params = sniper_rm.live_params.write();
-                if let Some(tp)   = v["tp_pct"].as_f64()    { params.take_profit_pct  = tp; }
-                if let Some(sl)   = v["sl_pct"].as_f64()    { params.stop_loss_pct    = sl; }
-                if let Some(mult) = v["multiplier"].as_f64() { params.amount_multiplier = mult; }
-                if let Some(qa)   = v["quote_amount"].as_f64() { params.quote_amount_mode = qa; }
-                if let Some(wp)   = v["wallet_pct"].as_f64() { params.wallet_pct = wp; }
-                info!(
-                    "⚡ Rate mode → {}  |  {:.1}% wallet  TP {:.0}%  SL {:.0}%",
-                    mode_str, params.wallet_pct, params.take_profit_pct, params.stop_loss_pct
-                );
+                if let Some(m) = config_mode {
+                    // Apply every field from config — this is the authoritative definition.
+                    params.take_profit_pct        = m.take_profit_pct;
+                    params.stop_loss_pct          = m.stop_loss_pct;
+                    params.take_profit_pct_mode   = m.take_profit_pct;
+                    params.stop_loss_pct_mode     = m.stop_loss_pct;
+                    params.quote_amount_mode      = m.quote_amount;
+                    params.wallet_pct             = m.wallet_pct;
+                    params.momentum_max_escalations_mode = m.momentum_max_escalations;
+                    params.active_mode_name       = m.name.clone();
+                    // Reset multiplier to 1.0 so strategy-agent adjustments start
+                    // from a clean baseline rather than stacking on the prior mode's value.
+                    params.amount_multiplier = 1.0;
+                    info!(
+                        "⚡ Rate mode → {} (from config)  |  {:.1}% wallet  {:.4} SOL base  TP {:.0}%  SL {:.0}%  esc {}",
+                        m.name, m.wallet_pct, m.quote_amount, m.take_profit_pct, m.stop_loss_pct, m.momentum_max_escalations
+                    );
+                } else {
+                    // Mode not found in config — fall back to file values
+                    if let Some(tp) = v["tp_pct"].as_f64()       { params.take_profit_pct = tp; params.take_profit_pct_mode = tp; }
+                    if let Some(sl) = v["sl_pct"].as_f64()       { params.stop_loss_pct   = sl; params.stop_loss_pct_mode   = sl; }
+                    if let Some(qa) = v["quote_amount"].as_f64() { params.quote_amount_mode = qa; }
+                    if let Some(wp) = v["wallet_pct"].as_f64()   { params.wallet_pct = wp; }
+                    params.amount_multiplier = 1.0;
+                    info!(
+                        "⚡ Rate mode → {} (file fallback — not in config)  |  {:.1}% wallet  TP {:.0}%  SL {:.0}%",
+                        mode_str, params.wallet_pct, params.take_profit_pct, params.stop_loss_pct
+                    );
+                }
+            }
+        });
+    }
+
+    // ── Weekend mode auto-switch ──────────────────────────────────────────────
+    // Checks day-of-week every 10 min UTC. If config.weekend_mode is set, writes
+    // scematica-rate-mode.json to trigger the rate-mode watcher above.
+    // Live data: Saturday = 0% WR, Friday = 22% WR vs Monday = 32% WR.
+    if !sniper.config.weekend_mode.is_empty() {
+        let sniper_wm = sniper.clone();
+        tokio::spawn(async move {
+            use chrono::{Datelike, Weekday};
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600));
+            let mut last_applied = String::new();
+            loop {
+                interval.tick().await;
+                let weekday = chrono::Utc::now().weekday();
+                let is_weekend = matches!(weekday, Weekday::Sat | Weekday::Sun);
+                let target_mode = if is_weekend {
+                    sniper_wm.config.weekend_mode.clone()
+                } else {
+                    let wm = &sniper_wm.config.weekday_mode;
+                    if wm.is_empty() { "Balanced".to_string() } else { wm.clone() }
+                };
+                if target_mode == last_applied { continue; }
+                // Only auto-switch if the mode exists in config
+                let known = sniper_wm.config.rate_modes.iter().any(|m| {
+                    m.name.to_lowercase() == target_mode.to_lowercase() && m.enabled
+                });
+                if !known { continue; }
+                let json = serde_json::json!({ "mode": target_mode });
+                if let Ok(s) = serde_json::to_string(&json) {
+                    let tmp = "scematica-rate-mode.json.tmp";
+                    if std::fs::write(tmp, &s).is_ok() {
+                        let _ = std::fs::rename(tmp, "scematica-rate-mode.json");
+                        info!(
+                            "📅 Weekend auto-switch: {} → {} ({})",
+                            last_applied, target_mode, weekday
+                        );
+                        last_applied = target_mode;
+                    }
+                }
             }
         });
     }
@@ -796,11 +872,14 @@ async fn main() -> Result<()> {
                         let confirmed = v["status"].as_str() == Some("✓");
 
                         let pnl_sol = v["pnl"].as_f64().unwrap_or(0.0);
-                        let pnl_pct = v["pnl_pct"].as_f64().unwrap_or_else(|| {
-                            // Backfill for older entries without pnl_pct: derive it from pnl_sol
-                            // assuming the standard quote_amount baseline (0.01 SOL).
-                            if pnl_sol == 0.0 { 0.0 } else { pnl_sol / 0.01 * 100.0 }
-                        });
+                        let pnl_pct = v["pnl_pct"].as_f64()
+                            .filter(|&p| p != 0.0)  // treat missing/zero as absent
+                            .unwrap_or_else(|| {
+                                // Old entries lack pnl_pct. Skip them (use 0 = neutral)
+                                // rather than backfilling pnl_sol*10000 which diverged Q-net.
+                                0.0
+                            })
+                            .clamp(-200.0, 500.0); // hard cap regardless of source
                         let age_secs = v["position_age_secs"].as_f64().unwrap_or(0.0);
 
                         // Update streak tracking

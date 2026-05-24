@@ -1,10 +1,100 @@
-# Scematica v1.8.1
+# Scematica v1.10.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.10.0
+
+### Pump.fun Trending Monitor
+
+A new `pumpfun_trending.rs` module connects to PumpPortal's WebSocket feed and scores bonding curves in real time, firing a `ListenerEvent::NewPool` event **0.5–3 seconds before** the standard AMM V4 `InitializeInstruction` listener sees the same pool.
+
+**How it works:**
+
+Each bonding curve accumulates a sliding-window trending score from three signals:
+
+| Signal | What it measures |
+|---|---|
+| Buy pressure | Net buy-side delta in the observation window |
+| Volume velocity | SOL/s flowing into the curve |
+| Curve fill % | How far the bonding curve is toward the graduation threshold |
+
+When `trending_score ≥ 55` (configurable) AND `curve fill ≥ 40%`, the curve is emitted as a pool candidate. Graduating tokens — those where the curve fill has crossed the 100% threshold — are pre-flagged and bypass the standard entry delay entirely.
+
+**Config** (`[sniper]` section in `config.toml`):
+```toml
+pumpfun_trending_enabled = true
+pumpfun_trending_score   = 55.0     # minimum score to emit as candidate
+pumpfun_min_curve_pct    = 40.0     # minimum curve fill %
+pumpfun_window_secs      = 120      # sliding window for score accumulation
+```
+
+The trending listener runs in parallel with the existing AMM V4 listener and Whale Copy listener — all three merge into one `ListenerEvent::NewPool` stream, so the filter pipeline and executor are unchanged.
+
+### Exit Reason Coverage (Complete)
+
+All 16 sell paths now populate `exit_reason` in `TradeEvent` structs, completing the work started in v1.9.0. Previously, the arb executor and `sell_with_min_out` paths were missing the field, producing blank exit_reason in the trades log. BUY events correctly carry an empty `exit_reason`. The dashboard exit breakdown analytics panel now has full coverage.
+
+---
+
+## What's New in v1.9.0
+
+### Exit Reason Tracking
+
+`exit_reason` is now populated on every sell path and written to `scematica-trades.jsonl`. Previously, all trades showed a blank exit reason, making it impossible to distinguish why a position closed.
+
+**Exit reasons tracked:**
+
+| Code | Trigger |
+|---|---|
+| `take_profit` | Hit dynamic TP level |
+| `stop_loss` | Fell below hard SL floor |
+| `trailing_stop` | Dropped > trailing stop % from peak |
+| `velocity_decay` | Momentum second derivative negative |
+| `peak_stagnation` | Peak unchanged for 90s with PnL ≥ 20% |
+| `dump_detected` | 3 consecutive declining checks |
+| `fibonacci` | Fibonacci golden retracement exit |
+| `no_pump_timeout` | Dead-zone timeout (peak < 3% after N seconds) |
+| `sell_mode` | Operator or drawdown guard triggered Sell Mode |
+| `dump_mode` | Operator triggered Dump Mode |
+| `volume_exhaustion` | Quote vault volume dropped below threshold |
+| `tiered_tp` | Tiered partial-TP ladder completed |
+| `timeout` | `price_check_duration_ms` window expired |
+
+### Weekend Auto-Switch
+
+Live session data from 573 trades showed dramatically lower win rates on weekends vs weekdays (0% Saturday, 22% Friday, 32% Monday). The bot now automatically adjusts its rate mode based on the UTC day of week.
+
+**How it works:** A 10-minute watcher in `main.rs` checks `chrono::Utc::now().weekday()` and writes `scematica-rate-mode.json`. On Saturday/Sunday it switches to the configured `weekend_mode`; on Monday–Friday it restores `weekday_mode`. The change takes effect within 10 minutes of the day boundary, with no restart needed.
+
+**Config** (`[sniper]` section):
+```toml
+weekend_mode  = "Bearish"    # Sat/Sun: 0.3× size, TP 30%, SL 8%
+weekday_mode  = "Balanced"   # Mon-Fri: 1.0× size, TP 100%, SL 15%
+```
+
+### Time-of-Day Controls
+
+`time_of_day_weighting` is now enabled and calibrated from 573 live trades. Low-traffic UTC hours (1am–9pm) are blocked by default.
+
+**Config:**
+```toml
+time_of_day_weighting = true
+blocked_hours_utc     = [1, 21]    # block UTC hours 1–21 (active window: 9pm–1am UTC)
+```
+
+### NN Reward Overflow Fix
+
+**Root cause:** The NN observer backfilled `pnl_pct` for old trade entries using `pnl_sol / 0.01 * 100.0`. A 0.9 SOL winning trade produced `pnl_pct = 9000%`, which passed into `shape_reward()` → reward ≈ 85,000 → Q-value divergence. Live symptom: `avg_loss = 331,882` in the NN stats panel.
+
+**Fix:** Old entries without a `pnl_pct` field now use `0.0` (neutral reward). All 18 state inputs are clamped to `(−200, 500)` before the forward pass to prevent future divergence regardless of bad data.
+
+> **Action required after upgrading:** Delete `scematica-nn-agent.json` before restarting to reset the diverged Q-weights. The agent will retrain from scratch, reaching `ready_to_advise` again once `epsilon < 0.5`.
 
 ---
 

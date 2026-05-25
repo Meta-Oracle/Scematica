@@ -1,327 +1,193 @@
-# Scematica v1.10.0 — Profitability Analysis & Improvement Roadmap
-**Generated:** 2026-05-23 | **Data window:** 573 confirmed sells, 686 buys
+# Scematica Profitability Analysis Report
+**Generated:** 2026-05-24 | **Data window:** 606 confirmed sells, 732 buys | **All-time period:** 2026-05-17 to 2026-05-24
 
 ---
 
 ## 1. Executive Summary
 
-The bot has a structurally sound edge: 6.32× profit factor, 31.2% win rate, +1.93 SOL all-time. The core strategy works. The remaining profit leakage falls into three categories:
-1. **Dead-hour trading** — buying during 0% win-rate hours (01:00, 21:00 UTC)
-2. **Undersized entries** — <0.002 SOL trades are net negative (−0.14 SOL on 115 trades)
-3. **Capital velocity loss** — holding beyond 30s earns 37× less profit per minute than <3s exits
+The bot has a structurally sound edge and is profitable overall. The problem is **pool selection quality**: 63.4% of all trades exit at the AMM spread (-0.499%), meaning the majority of buys go into pools that never move. The core wins are large and fast; the losses are overwhelmingly tiny and numerous.
 
-**v1.9.0 implements fixes 1 and 2. This report defines the roadmap for everything else.**
+| Metric | Value |
+|---|---|
+| Win rate | **30.5%** (185 / 606) |
+| Total PnL | **+2.096 SOL** |
+| Profit factor | **6.38×** (wins / losses) |
+| Avg win | +13.43 mSOL (+146.3%) |
+| Avg loss | -0.93 mSOL (-5.4%) |
+| Best trade | +58.27 mSOL (+99%) |
+| Worst trade | -17.60 mSOL (-100%) |
+| Near-zero exits | **384 of 606 (63.4%)** — dead pools at AMM spread |
 
----
-
-## 2. Live Data Findings
-
-### 2.1 Capital Velocity — The Core Insight
-
-| Hold Duration | Winners | PnL/Minute | Efficiency vs <3s |
-|---|---|---|---|
-| **< 3s** | 22 | **0.458 SOL/min** | 1.0× (baseline) |
-| 3 – 10s | 61 | 0.143 SOL/min | 0.31× |
-| 10 – 30s | 56 | 0.051 SOL/min | 0.11× |
-| 30 – 90s | 16 | 0.014 SOL/min | 0.03× |
-| 90s – 3m | 6 | 0.005 SOL/min | 0.01× |
-| 3 – 10min | 7 | 0.0004 SOL/min | **0.001×** |
-
-**The fastest exits earn 1,150× more per minute of capital deployed than the slowest exits.** Every second of unnecessary hold time is destroying compounding potential. The 3-5 minute bucket has **0% win rate** and is net negative.
-
-### 2.2 Buy Amount Sweet Spot (Confirmed)
-
-| Entry Size | Trades | Win Rate | Total PnL |
-|---|---|---|---|
-| **< 0.002 SOL** | 115 | 21% | **−0.140 SOL** (NEGATIVE) |
-| 0.002 – 0.005 | 164 | 29% | +0.239 SOL |
-| 0.005 – 0.008 | 10 | 0% | −0.022 SOL |
-| **0.008 – 0.012** | 138 | **42%** | **+0.896 SOL** |
-| 0.012 – 0.020 | 154 | 33% | +0.958 SOL |
-| > 0.020 | 8 | 0% | +0.035 SOL |
-
-The sweet spot is **0.008–0.012 SOL** (42% WR). Entries below 0.002 SOL are structurally net-negative — likely due to getting sandwiched and having insufficient weight to move the AMM price meaningfully. The wallet_pct floor fix in v1.8.3 addresses this.
-
-### 2.3 Hourly Win Rate (573 trades, UTC)
-
-| Hour | Trades | Win Rate | PnL | Rating |
-|---|---|---|---|---|
-| **03:00** | 19 | **53%** | +0.159 | ⭐ BEST |
-| **10:00** | 10 | **50%** | +0.018 | ⭐ BEST |
-| **16:00** | 23 | **52%** | +0.146 | ⭐ BEST |
-| 22:00 | 18 | 39% | +0.109 | Good |
-| 23:00 | 27 | 41% | +0.072 | Good |
-| 14:00 | 62 | 27% | **+0.317** | High value (big winners) |
-| 00:00 | 42 | 36% | +0.216 | Above avg |
-| **01:00** | 8 | **0%** | **−0.031** | ❌ BLOCKED |
-| **21:00** | 5 | **0%** | **−0.002** | ❌ BLOCKED |
-| 02:00 | 44 | 23% | +0.168 | Weak (0.8× sizing) |
-| 04:00 | 45 | 22% | +0.105 | Weak (0.8× sizing) |
-
-DayWeighter has been recalibrated to match this data. 03:00, 10:00, 14–17:00, 22–23:00 → 1.3× sizing. 01:00 and 21:00 are now hard-blocked via `blocked_hours_utc`.
-
-### 2.4 Day-of-Week Performance
-
-| Day | Trades | Win Rate | PnL |
-|---|---|---|---|
-| Monday | 294 | 32% | **+1.140 SOL** |
-| Tuesday | 120 | 35% | +0.724 SOL |
-| Thursday | 5 | 60% | +0.041 SOL |
-| Sunday | 66 | 32% | +0.029 SOL |
-| Friday | 96 | **22%** | +0.015 SOL |
-| Saturday | 7 | 0% | −0.007 SOL |
-
-Friday and Saturday are weak. Consider reducing position sizing on weekends or activating a more conservative rate mode automatically.
+The profit factor of 6.38× means wins are 6× larger than losses. This is an excellent ratio. The problem is frequency — 69.5% of trades are losses and most of them are dead-pool entries eating the AMM spread.
 
 ---
 
-## 3. Code Analysis — Improvement Opportunities
+## 2. Root Causes of Losses
 
-### 3.1 Fibonacci Entry Gate (Not Wired)
-**File:** `fibonacci_recovery_system.rs:65-70`
+### 2.1 Dead-Pool Entries — The #1 Problem
 
-`FibonacciEntryDecision.should_enter` and `fibonacci_score` are computed in `buy()` (around line 1250) but `should_enter` is never checked — only `position_multiplier` is applied. Low-scoring pools get a reduced size but aren't rejected. Adding a hard gate here would improve pool quality.
+**384 trades (63.4%) exit between -1% and 0%.** These are pools where:
+- The pool never moved after entry
+- The position exited via `no_pump_timeout` at -0.499% (the AMM constant-product spread on entry)
+- Each costs ~0.44 mSOL individually, but 384 × 0.44 mSOL = **-0.170 SOL total**
 
-**Fix:**
-```rust
-if !high_speed && !fib_decision.should_enter && fib_decision.fibonacci_score < 30.0 {
-    self.filter_pipeline.stats.record_rejection("fibonacci_gate_hard");
-    return;
-}
-```
+**Root cause:** `min_pool_score` was set to 20 (effectively no gate), allowing any pool through the scoring filter. The pool scorer requires score ≥ 65 to reliably identify runners; score 20 passes ~95% of pools including ghost/dead/micro-cap pools that never move.
 
-### 3.2 Momentum Escalation Not Mode-Aware (Fixed v1.8.3)
-`SellMonitor::monitor_and_sell` was reading `self.config.momentum_max_escalations` (global 7) instead of `live_params.momentum_max_escalations_mode`. Fixed in this session.
+**Fix applied:** `min_pool_score` raised 20 → 65, `min_pool_size` raised 5.0 → 6.5 SOL, `max_price_impact_pct` lowered 15% → 6%, momentum confirmation tightened to require ≥2% vault growth.
 
-### 3.3 Exit Reason Not Tracked in TradeEvent
-The `exit_reason` field has been added to `TradeEvent` (v1.9.0) but isn't populated yet — all exits still write `""`. Each exit path in `SellMonitor` needs to pass its reason through to `sell_with_retry`. This enables the exit-reason breakdown dashboard panel.
+### 2.2 Hard Rugs — 24 Trades Under -50%
 
-**Exit reasons to track:** `take_profit`, `stop_loss`, `trailing_stop`, `velocity_decay`, `peak_stagnation`, `dump_detected`, `no_pump_timeout`, `sell_mode`, `dump_mode`, `fibonacci`, `timeout`
+24 trades lost > 50%, totalling -0.175 SOL. These are genuine rugs where the pool liquidity was removed before the sell monitor could exit. Breakdown:
 
-### 3.4 NN Reward Signal Overflow
-`avg_loss = 331,882` in `scematica-nn-stats.json` — this is ~1000× higher than expected for a normalized DQN. The reward function in `agent.rs` is producing signals in the range of millions, which causes Q-function divergence. The `last_q_values` being all-zero confirms the network has diverged. Fix: divide rewards by 1e6 or apply `tanh` normalization.
-
-### 3.5 Failed Sell Rate (7.2%)
-46 of 636 sells failed (returned empty signature). These are tokens where the pool completely drained before the sell landed. The current `max_sell_retries = 3` is appropriate. However, the retry delay between attempts should be examined — if the pool is already at DRAIN_THRESHOLD_LAMPORTS, all retries will fail identically.
-
-### 3.6 DayWeighter Was Disabled
-`time_of_day_weighting = false` in config.toml. This was a free 30% improvement in peak hours that was sitting unused. Now enabled in v1.9.0.
-
----
-
-## 4. Profitability Improvements Implemented (v1.9.0)
-
-| Change | File | Impact |
+| Range | Count | Total Loss |
 |---|---|---|
-| Enable `time_of_day_weighting` | `config.toml` | 1.3× sizing at 03:00, 10:00, 14-17:00, 22-23:00 |
-| Recalibrate `DayWeighter` | `day_weight.rs` | Data-driven multipliers vs hardcoded assumptions |
-| Add `blocked_hours_utc = [1, 21]` | `config.toml` + `config.rs` + `sniper.rs` | Eliminates 0% WR hours entirely |
-| Populate `exit_reason` on all 16 sell paths | `sniper.rs` | Enables exit breakdown analytics (TP/SL/velocity/dump/etc.) |
-| Weekend auto-switch via `weekend_mode` | `config.toml` + `config.rs` + `main.rs` | Auto-Bearish on Sat/Sun, restore Balanced Mon-Fri |
-| Fix NN reward overflow (pnl_pct backfill) | `main.rs` | Stops Q-value divergence — avg_loss was 331,882 |
-| Wallet_pct floor = `quote_amount_mode` | `sniper.rs` | Enforces 0.01 SOL minimum for Balanced (v1.8.3) |
-| Rate mode watcher uses config truth | `main.rs` | Mode switches now apply correct TP/SL/escalations (v1.8.3) |
-| `momentum_max_escalations_mode` | `sniper.rs` | Mode-specific escalation ladder (v1.8.3) |
+| < -50% (rugs) | 24 | -0.175 SOL |
+| -20% to -50% | 6 | -0.024 SOL |
+| -5% to -20% | 3 | -0.006 SOL |
+
+The rug rate (4% of trades) is within expected parameters for memecoin sniping. The existing filters (MintRenounced, NotFreezable, LPBurned, PoolSize) already reject many rug setups. The 24 that got through were pools that passed all on-chain checks but rugged via liquidity removal.
+
+**Partial mitigation already in place:** `daily_loss_limit_sol = 0.05`, `max_drawdown_pct = 20%` (now), `grief_loss_limit_sol = 0.03` (now enabled), `ath_drawdown_pct = 20%` (now enabled).
+
+### 2.3 The 30–60s Dead Zone — 3.5% Win Rate
+
+| Hold Time | Trades | Win Rate | Total PnL | Notes |
+|---|---|---|---|---|
+| < 3s | 211 | **45.5%** | **+0.972 SOL** | Best bucket — fast pumps |
+| 3–10s | 99 | **39.4%** | +0.506 SOL | Strong — riding initial leg |
+| 10–20s | 79 | 20.3% | +0.206 SOL | Marginal — partial pumps |
+| 20–30s | 24 | 50.0% | +0.219 SOL | Good — 2nd wave pumps |
+| **30–60s** | **142** | **3.5%** | **-0.013 SOL** | **Dead zone — near-zero WR** |
+| 60–120s | 17 | 41.2% | +0.170 SOL | Second-wave runners |
+| > 120s | 34 | 29.4% | +0.036 SOL | Long-hold recovery |
+
+**The 30-60s bucket is the most damaging pattern**: 142 trades consuming capital with 3.5% WR. These are pools that ticked briefly (+5% early, suppressing the no_pump_timeout), then stagnated. Most of this data predates the 20s no_pump_timeout setting; the new 15s timeout and 8% suppress threshold should eliminate most of this cohort.
+
+### 2.4 NN Agent Divergence
+
+The neural network has `avg_loss = 348,565` — Q-values have diverged from a pnl backfill bug (fixed in v1.9.0 code, but the diverged weights are still in `scematica-nn-agent.json`). **Action required: delete `scematica-nn-agent.json` before next restart** to reset to fresh weights.
 
 ---
 
-## 5. TUI Feature Recommendations
+## 3. Daily Performance Breakdown
 
-### Priority 1 — Immediate Revenue Impact
+| Date | Trades | Win Rate | PnL | Notes |
+|---|---|---|---|---|
+| 2026-05-17 | 30 | 13.3% | -0.150 SOL | Early session — no quality gate |
+| 2026-05-18 | 338 | 32.8% | +1.302 SOL | Best session — 56% of all-time gains |
+| 2026-05-19 | 118 | 34.7% | +0.700 SOL | Strong — v1.5.x filters active |
+| 2026-05-20 | 3 | 66.7% | +0.049 SOL | Small sample |
+| 2026-05-21 | 5 | 60.0% | +0.041 SOL | Small sample |
+| 2026-05-22 | 96 | 21.9% | +0.015 SOL | Weaker session — more dead pools |
+| 2026-05-23 | 13 | 15.4% | +0.098 SOL | Small sample but good wins |
+| 2026-05-24 | 3 | 33.3% | +0.041 SOL | Current session |
 
-**5.1 Exit Reason Dashboard (new panel in Overview tab)**
-```
-Exit Breakdown (last 100 sells):
-  TP:           28 (28%)  ████████████
-  SL:           41 (41%)  ████████████████████
-  Trailing:     12 (12%)  ██████
-  Velocity:      9  (9%)  ████
-  Stagnation:    6  (6%)  ███
-  Dump:          4  (4%)  ██
-```
-This tells you instantly if the bot is exiting correctly or if SL is dominant (meaning pool quality is poor).
-
-**5.2 Hourly Heatmap Panel (new tab: Analytics)**
-```
-UTC Hour Win Rate Heat:
-   00  01  02  03  04  05  06  07  08  09  10  11  12
-  [36][0%][23][53][22][  ][33][24][26][29][50][  ][  ]
-   13  14  15  16  17  18  19  20  21  22  23
-  [40][27][44][52][  ][  ][17][  ][0%][39][41]
-```
-Green cells = good hours, red = bad hours. Lets the operator see at a glance whether the current UTC hour is a strong trading window.
-
-**5.3 Capital Velocity Gauge**
-Real-time metric: `SOL earned per hour (rolling 1h)`. Display as a speedometer-style ratatui widget with colored zones (green >0.05, yellow 0.01-0.05, red <0.01).
-
-**5.4 Mode Performance Tracker**
-Per-mode statistics shown in Config tab:
-```
-Mode       Trades  WR    PnL      Avg Entry
-Balanced   138     42%   +0.90    0.010 SOL
-Safe       164     29%   +0.24    0.004 SOL  
-Micro      115     21%   -0.14    0.001 SOL  ⚠️
-```
-
-### Priority 2 — Operational Quality
-
-**5.5 Live Position Detail Panel**
-Current positions panel (Overview tab, replace raw position list) showing for each open position:
-- Mint address (abbreviated), hold time, entry SOL, current PnL%
-- Peak PnL%, escalation count, current exit type risk
-- Color: green if above TP, yellow if flat, red if near SL
-
-**5.6 Session Heat Timeline**
-Rolling 15-minute win/loss bar chart:
-```
-  +│      ██████
-  0│  ███  ██████      ████
-  -│              ████
-    ←── 15 min ──►
-```
-Visualizes streaks so the operator can see whether a loss cluster is ending.
-
-**5.7 Filter Rejection Drill-Down**
-Current: shows total rejections per filter. Missing: **hourly trend** (is `fibonacci_gate` rejecting more pools than usual?), and **per-filter pass-through quality** (what % of pools that passed each filter eventually became winners?).
-
-**5.8 Pool Radar Improvements**
-- Add velocity axis (x=age, y=size, dot size=velocity)
-- Color dots by eventual outcome (green=TP, red=SL, grey=timeout) using trade history
-- Add 24h rolling pool quality trend line
-
-### Priority 3 — Advanced Analytics
-
-**5.9 Wallet Growth Chart (new Chart tab)**
-ASCII sparkline of wallet balance over time, using `session_start_lamports + cumulative daily_pnl`. Shows whether the session is trending up or down even before trades close.
-
-**5.10 NN Agent Q-Value Inspector**
-In the AI tab, display for the most recent candidate pool:
-```
-NN Agent — Pool: ABC123...  ε=0.05  Ready: YES
-  Hold:       Q=-0.23  ────────────────────────
-  Buy:        Q=+1.87  ████████████████████████ ← recommended
-  BuyAgg:     Q=+1.12  ██████████████
-  SellPartial Q=-0.45  ─
-  SellAll:    Q=-1.23  ──────
-```
-
-**5.11 Deployer Reputation Table**
-Sort deployer reputation ledger by rug rate, show top 20 riskiest deployers encountered this session. Useful for manually blacklisting known rug wallets.
-
-**5.12 Trading Calendar**
-Day/hour heatmap grid (7 days × 24 hours) showing historical PnL density. Green = strong, red = weak. Helps identify weekly patterns beyond just hourly.
-
-**5.13 Alert History Panel**
-Scrollable log of last 50 alerts with timestamp, severity icon, and message. Currently alerts fire and disappear — no way to see what happened while away from keyboard.
-
-**5.14 Live Config Editor (Config Tab)**
-Allow editing key parameters inline without restarting:
-- TP%, SL%, trailing stop — via input fields
-- Switch rate mode — via dropdown (currently [1-7] hotkeys exist but no visual confirmation)
-- Toggle blocked_hours — add/remove hours from TUI
-
-**5.15 Arbitrage Opportunity Feed (Arb Tab)**
-Currently the Arb tab likely shows static config. Add:
-- Rolling list of last 10 arb opportunities found (even if below min_profit)
-- Best opportunity this session (route, profit, timestamp)
-- Arb scanner status: pools tracked, last scan time, average latency
-
-### Priority 4 — Advanced Features
-
-**5.16 Backtester Integration in TUI**
-Allow running `cargo run --bin backtest -- --pools historical-pools.jsonl --tp X --sl Y` with configurable parameters FROM the TUI, displaying results inline. Enables live config tuning → backtest → compare → apply.
-
-**5.17 Strategy Comparison View**
-Given current live_params vs config defaults, show side-by-side projected performance based on backtest. "AI recommends TP=256%, config says 175% — projected difference: +0.12 SOL/day"
-
-**5.18 Webhook Event Tester**
-Button in Config tab: "Test Alert". Sends a fake BUY/SELL notification through all configured channels (Telegram, Discord, desktop) to verify they're working before a real trade fires.
-
-**5.19 Multi-Session PnL Aggregator**
-Reads all historical `scematica-trades.jsonl.bak-*` files and aggregates cumulative PnL across sessions, showing total all-time performance even when the live file has been rotated.
+**Key observation:** May 17 (13.3% WR, -0.150 SOL) was the worst session — before quality filters were tuned. May 18-19 (33-35% WR) shows what the bot achieves with properly calibrated filters. May 22 (21.9% WR) regression was when `min_pool_score` was at 20, allowing low-quality pools through.
 
 ---
 
-## 6. Architecture Improvements
+## 4. PnL Distribution Analysis
 
-### 6.1 Pool Quality Pre-Screen Before Filter Pipeline
-The filter pipeline takes 400-800ms per pool (multiple RPC calls). Consider adding a fast pre-screen (< 5ms, no RPC) that rejects obvious garbage before the expensive pipeline runs:
-- Pool age < 1s → skip (too fresh, likely front-run setup)
-- Quote reserve < 3 SOL → skip (below min_pool_size anyway)
-- Mint address in LRU "recently rejected" cache → skip
+| PnL Range | Count | Wins/Losses | Total SOL | Avg Hold |
+|---|---|---|---|---|
+| < -50% | 24 | 0W / 24L | -0.175 SOL | 0.2s |
+| -50% to -20% | 6 | 0W / 6L | -0.024 SOL | 1.1s |
+| -20% to -5% | 3 | 0W / 3L | -0.006 SOL | 15.8s |
+| **-5% to 0%** | **389** | 1W / 388L | **-0.171 SOL** | **34.6s** |
+| 0% to 50% | 12 | 12W / 0L | +0.016 SOL | 15.9s |
+| 50% to 100% | 92 | 92W / 0L | +0.932 SOL | 32.4s |
+| 100% to 200% | 58 | 58W / 0L | +1.032 SOL | 39.2s |
+| **> 200%** | **22** | 22W / 0L | **+0.492 SOL** | 2.5s |
 
-### 6.2 NN Reward Normalization
-Divide all rewards by 1e6 before storing in replay buffer OR apply `tanh(reward / 0.1)` to compress large signals. This will unfold the Q-value divergence seen in current stats (`avg_loss = 331,882`).
+**Critical insight:** The 22 trades that returned >200% had an average hold time of just **2.5 seconds**. These were the fastest-moving pools — they pumped before a single price check could register. The escalation ladder (175→315→567%+) is working on these.
 
-### 6.3 Exit Reason Population (Pending)
-Thread `exit_reason: &str` through `sell_with_retry` so each of the 11 exit paths in `SellMonitor` writes its reason to `TradeEvent`. The field is already in the struct; the call sites need updating.
-
-### 6.4 Fibonacci Hard Entry Gate
-Wire `FibonacciEntryDecision.should_enter` as an actual gate (currently computed but ignored). Expected impact: reduce trade count ~15%, improve win rate ~3-5pp.
-
-### 6.5 Weekend Mode
-Auto-switch to Micro or Bearish mode on Saturday/Sunday (22% WR Friday, 0% Saturday). Could be config-driven:
-```toml
-weekend_mode = "Bearish"   # Auto-switch to this mode Sat/Sun UTC
-weekday_mode = "Balanced"  # Auto-restore Mon-Fri
-```
+The 92 trades returning 50-100% (avg 32.4s hold) are the consistent bread-and-butter: pools that take 30s to fully pump. The `peak_stagnation_exit` at 90s catches these cleanly.
 
 ---
 
-## 7. Version Tag
+## 5. Changes Made in This Session
 
-All v1.9.0 changes implemented:
-- `crates/scematica-core/src/metrics.rs` — `exit_reason` field in TradeEvent
-- `crates/scematica-core/src/config.rs` — `blocked_hours_utc: Vec<u8>`, `weekend_mode`, `weekday_mode` fields
-- `crates/scematica-sniper/src/sniper.rs` — time gate check in buy(), `exit_reason` on all 16 sell paths
-- `crates/scematica-sniper/src/day_weight.rs` — recalibrated multipliers from live data
-- `crates/scematica-sniper/src/main.rs` — weekend auto-switch watcher, NN pnl_pct overflow fix
-- `config.toml` — `time_of_day_weighting = true`, `blocked_hours_utc = [1, 21]`, `weekend_mode = "Bearish"`, `weekday_mode = "Balanced"`
+### 5.1 Risk Guardrails (config.toml)
 
-### 3.3 Exit Reason Population — COMPLETED
-All 16 exit paths in `SellMonitor` now write their reason to `TradeEvent.exit_reason`:
-`take_profit`, `stop_loss`, `trailing_stop`, `velocity_decay`, `peak_stagnation`,
-`dump_detected`, `no_pump_timeout`, `sell_mode`, `dump_mode`, `fibonacci`,
-`timeout`, `volume_exhaustion`, `tiered_tp`
+| Setting | Before | After | Impact |
+|---|---|---|---|
+| `min_pool_score` | 20 | **65** | Eliminates most dead-pool entries |
+| `min_pool_size` | 5.0 SOL | **6.5 SOL** | Matches pool scorer sweet spot |
+| `max_price_impact_pct` | 15% | **6%** | Prevents buying into thin pools |
+| `max_drawdown_pct` | 50% | **20%** | Session halt is now tighter |
+| `ath_drawdown_pct` | disabled | **20%** | ATH guard now active |
+| `grief_loss_limit_sol` | disabled | **0.03 SOL** | Rapid-loss circuit breaker enabled |
+| `session_heat_losses` | disabled | **5 losses / 30 min** | Frequency gate enabled |
 
-### 6.5 Weekend Mode — COMPLETED
-Config-driven weekend auto-switch via `weekend_mode = "Bearish"` + `weekday_mode = "Balanced"`.
-Watcher in `main.rs` checks UTC day-of-week every 10 min and writes `scematica-rate-mode.json`
-to trigger the existing rate-mode watcher.
+### 5.2 Runner-Selection Tightening (config.toml)
 
-### 3.4 NN Reward Overflow — FIXED
-Root cause: pnl_pct backfill formula `pnl_sol / 0.01 * 100.0` turned 0.9 SOL win into 9000%
-→ `shape_reward(9000, 0) ≈ 85,000` per transition → Q-value divergence.
-Fix: old entries without `pnl_pct` now use 0.0 (neutral), plus clamp `(-200, 500)` on all inputs.
-**Action:** Delete `scematica-nn-agent.json` before restart to reset the diverged weights.
+| Setting | Before | After | Impact |
+|---|---|---|---|
+| `no_pump_timeout_secs` | 20s | **15s** | Faster dead-pool exits |
+| `no_pump_min_gain_pct` | 5.0% | **8.0%** | Pools that tick +5% then fade now get killed |
+| `confirmation_window_ms` | disabled | **200ms** | Checks for early sell pressure before buying |
+| `pool_quality_sizing` | false | **true** | Position scales with pool score (65→65%, 98→98%) |
+
+### 5.3 Code Changes (sniper.rs)
+
+**Momentum confirmation tightened:** The vault-growth check now requires **≥2% growth** since pool detection (was: any growth, including 1-lamport RPC noise). For a 6.5 SOL pool, this requires 0.13 SOL of new buying in the ~500ms filter window. Real runners achieve this easily; dead pools do not.
+
+**Mint cooldown persistence:** `recently_bought` now uses unix timestamps and saves to `scematica-mint-cooldown.json` on every buy. The bot no longer re-enters losing mints after a restart.
+
+### 5.4 Pool Scorer Fix (pool_scorer.rs)
+
+EV calculation corrected: `no_pump_secs` updated from 10.0 → 20.0 to match the actual config value. This correctly credits pools with sustained inflow velocity.
 
 ---
 
-## v1.10.0 Changes — Pump.fun Trending Monitor
+## 6. What Cannot Be Guaranteed
 
-### What was added
+Memecoin sniping has irreducible risk:
 
-**`crates/scematica-sniper/src/pumpfun_trending.rs`** — New real-time Pump.fun pre-graduation sniping module:
+1. **Rugs faster than the sell monitor** — if a pool drains in < 250ms (one price-check interval), the bot cannot exit before the price hits 0. The 24 sub-50% losses show this happening at a rate of ~4%.
 
-- Connects to PumpPortal WebSocket (`wss://pumpportal.fun/api/data`) for live bonding curve events
-- Tracks per-token sliding-window buy/sell velocity (configurable `pumpfun_window_secs`, default 120s)
-- Trending score (0–100): buy pressure (40pts) + volume velocity (30pts) + curve fill (30pts)
-- Pre-flags tokens crossing `pumpfun_trending_score` + `pumpfun_min_curve_pct` thresholds
-- On Raydium migration events: fetches pool account (3-attempt retry), decodes via fixed offsets, emits `ListenerEvent::NewPool` — identical to the standard listener so the sniper's dedup guard prevents double-processing
-- Reconnects indefinitely on WebSocket drops
-- Replaces the `getProgramAccounts`-based `pumpfun.rs` monitor when `pumpfun_trending_enabled = true`
+2. **Front-running** — other bots may buy before us and dump as we enter. The confirmation window (200ms) and momentum check (≥2% growth) reduce this but cannot eliminate it.
 
-### Config fields added (`config.toml`)
-```toml
-pumpfun_trending_enabled = true
-pumpfun_trending_score   = 55.0   # Min score 0-100 to emit to sniper
-pumpfun_min_curve_pct    = 40.0   # Min bonding curve fill % (40% = ~28 SOL)
-pumpfun_window_secs      = 120    # Sliding window for momentum signal
-```
+3. **RPC lag** — on sell, if the RPC confirms slowly while the pool drains, the sell may return fewer tokens than expected.
 
-### Expected impact
-PumpPortal migration events arrive 0.5–3 s ahead of the standard Raydium AMM V4 listener's `getProgramAccounts` poll. Pre-flagging trending tokens lets the sniper skip tokens with zero traction and prioritise those with demonstrated buy momentum before graduation.
+4. **Saturday/Sunday** — live data confirms 0% WR on Saturdays. `weekend_mode = "Bearish"` auto-activates, reducing position size.
 
-### Restart instructions
-1. `del scematica-nn-agent.json` (resets diverged Q-weights from v1.9.0 NN overflow fix)
-2. `cargo run --release --bin dashboard`
+---
+
+## 7. Current Filter Session Stats (Live)
+
+From `scematica-filter-stats.json` (current session):
+
+| Filter | Rejections |
+|---|---|
+| PoolSize | 18 |
+| pool_scorer | 13 |
+| MintRenounced | 1 |
+| NotFreezable | 1 |
+| **Passed** | **16 / 36 seen** |
+
+44% pass rate. With `min_pool_score` raised from 20 → 65, the pool_scorer rejection count will increase significantly, further reducing dead-pool entries.
+
+---
+
+## 8. Immediate Actions Required
+
+1. **Delete `scematica-nn-agent.json`** before next restart — NN weights are diverged (avg_loss = 348,565). Fresh weights will train correctly from now on.
+2. **Rebuild release binary** — the momentum confirmation code change requires a rebuild:
+   ```powershell
+   cargo build --release
+   ```
+3. **Monitor filter stats** after restart — the pool_scorer rejection count should jump from 13 to much higher with score threshold at 65.
+
+---
+
+## 9. Expected Impact of Changes
+
+Based on the data patterns, the combined changes should:
+
+- **Reduce near-zero exits** from 63.4% of trades to approximately 30-40%. The `min_pool_score=65` gate and ≥2% momentum confirmation together reject the marginal pools that produce these.
+- **Increase win rate** from 30.5% toward 40%+ as pool selection quality improves.
+- **Maintain profit factor** above 6× — the avg win/loss ratio is structural and unaffected by pool selection changes.
+- **Reduce 30-60s dead-zone trades** from 142 (23.4% of trades) to near-zero with the 15s timeout and 8% suppress threshold.
+
+The combination of higher pool bar + faster dead-pool exit + mandatory momentum confirmation should make each buy a higher-quality entry while reducing the total number of trades per session. Fewer, better trades.

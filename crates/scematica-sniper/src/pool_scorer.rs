@@ -167,7 +167,7 @@ impl PoolScorer {
         //   P(success) ≈ min(1, velocity_sol_per_sec × no_pump_timeout / S)
         // Only applied when velocity data is available.
         if velocity_sol_per_sec > 0.0 && size_sol > 0.0 {
-            let no_pump_secs = 10.0_f64; // matches config no_pump_timeout_secs
+            let no_pump_secs = 20.0_f64; // matches config no_pump_timeout_secs default
             let expected_inflow = velocity_sol_per_sec * no_pump_secs;
             let p_2x = (expected_inflow / size_sol).min(1.0);
             // Convert to LR: p_2x=0.1 → LR=1.0 (neutral), p_2x=1.0 → LR=2.5

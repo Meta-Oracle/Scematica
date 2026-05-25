@@ -57,7 +57,7 @@ max_concurrent_positions = 1   # 1 at a time — prevents RPC overload causing s
 cooldown_after_losses = 0      # No pause after losses — keep recycling capital
 cooldown_minutes = 20          # Cooldown duration in minutes
 daily_loss_limit_sol = 0.05    # Halt if daily losses exceed 0.05 SOL
-max_drawdown_pct =  50.0      # Halt if wallet drops 30% below session start
+max_drawdown_pct = 20.0       # Halt if wallet drops 20% below session start — tighter than 50% to preserve capital
 blacklist_path = "blacklist.txt"
 
 # ── v1.7.0 Pool Quality Gate ───────────────────────────────────────────────────
@@ -65,7 +65,7 @@ blacklist_path = "blacklist.txt"
 # Score 45 = P(win)≈0.06 posterior — minimum bar; still rejects ghost/dead/tiny pools.
 # Score 65 = P(win)≈0.09 — requires 6+ SOL + fresh + some velocity.
 # Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
-min_pool_score = 20              # Low floor — Fibonacci gate is the primary quality gate
+min_pool_score = 65              # Score 65 = runner threshold. Live data: 63.4% of all trades exit at -0.5% (dead pools). Raising from 45→65 requires: 6.5+ SOL + fresh age + moderate velocity simultaneously. Eliminates the bulk of near-zero exits.
 
 # ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
 kelly_sizing = false
@@ -74,8 +74,8 @@ kelly_lookback = 20
 kelly_min_trades = 10               # Trades required before Kelly activates
 
 # ── v1.1.0 Session Heat Cooldown ────────────────────────────────────────────────
-session_heat_losses = 0             # 0=disabled; losses in window to trigger pause
-session_heat_window_secs = 3600     # Rolling window for loss counting
+session_heat_losses = 5             # Pause after 5 losses in the window (frequency gate, complements grief_breaker's SOL-magnitude gate)
+session_heat_window_secs = 1800     # 30-min rolling window — faster reaction than 1h
 session_heat_cooldown_mins = 15     # Pause duration when heat trips
 
 # ── v1.9.0 Time-of-Day Controls ─────────────────────────────────────────────────
@@ -104,8 +104,8 @@ weekday_mode = "Balanced"           # Auto-restore Mon–Fri
 
 # ── v1.1.0 Buy Improvements ─────────────────────────────────────────────────────
 min_sol_reserve = 0.02              # Keep at least this SOL in wallet after buy
-confirmation_window_ms = 0          # 0=disabled; check vault drain before buying
-pool_quality_sizing = false         # Scale position by pool_score/100
+confirmation_window_ms = 200        # 200ms pause then check if early buyers are already selling (vault draining >15% = skip). Complements momentum check (growth) with drain check (sell pressure).
+pool_quality_sizing = true          # Scale position by pool_score/100: score 98 = full size, score 65 = 65%. Bets more on highest-conviction pools.
 check_interval_acceleration = true  # Halve poll interval on 3 consecutive declines
 
 # ── v1.4.0 Builder & SuperBuilder Modes ─────────────────────────────────────────
@@ -114,9 +114,9 @@ profit_first_floor_pct = 25.0       # v1.4.0: Exit rugs at -25% (was -50%)
 wallet_target_sol = 0.15            # Target for Growth mode
 
 # ── v1.4.0 Risk Breakers ────────────────────────────────────────────────────────
-ath_drawdown_pct = 0.0              # 0=disabled; halt if wallet drops X% from ATH
+ath_drawdown_pct = 20.0             # Halt if wallet drops 20% from session ATH (complements max_drawdown: ATH guard fires during rallies, drawdown guard fires from session start)
 grief_loss_window_secs = 300
-grief_loss_limit_sol = 0.0          # 0=disabled
+grief_loss_limit_sol = 0.03         # Halt if 0.03 SOL lost in 5 min window (= ~3 max-loss trades in a streak — prevents runaway loss spirals)
 
 # ── Multi-RPC Failover ──────────────────────────────────────────────────────────
 extra_rpc_endpoints = []            # Add backup RPC URLs here
@@ -135,8 +135,8 @@ extra_rpc_endpoints = []            # Add backup RPC URLs here
 tiered_partial_tp = false         # Set true to enable tiered ladder above
 
 # v1.6.0: Dead-zone exit reduced 45→30s (winners exit in <6s, recycle capital faster)
-no_pump_timeout_secs = 20        # Exit dead pools fast — 20s with no move is a dead pool
-no_pump_min_gain_pct = 5.0          # Suppress timeout if position already up 5%+
+no_pump_timeout_secs = 15        # Faster capital recycling — 15s is still generous for a real runner (best wins exit in <3s)
+no_pump_min_gain_pct = 8.0          # Require 8%+ gain to suppress timeout (was 5%). Real runners hit 8% in seconds; marginal pools that tick +5% then fade now get killed.
 peak_stagnation_secs = 90           # Exit if peak hasn't improved in 90s AND current pnl > threshold
 peak_stagnation_min_pnl_pct = 20.0  # Only fire stagnation exit when up 20%+ (above noise floor)
 
@@ -156,13 +156,13 @@ check_socials = false               # v1.6.0: Set true to hard-reject tokens wit
                                     # Social enrichment now reads Metaplex + off-chain URI
                                     # Scorer applies −4 to +10 boost based on social count
 filter_cache_ttl_secs = 30          # Cache filter results per pool
-min_pool_size = 5.0           # Allow 5+ SOL pools — runners can launch from 5 SOL
+min_pool_size = 6.5           # Pool scorer sweet spot starts at 6.5 SOL (LR 4.5); 5-6.5 SOL pools have lower LR (0.55) and produce more thin-pool slippage losses
 max_pool_size = 100.0         # Catch momentum: pools can grow 5→50→100 SOL
 check_name = true             # v1.2.0: Enabled — zero-cost scam-word filter
 check_volume = true           # v1.2.0: Require recent transaction activity
 min_volume_txns = 1           # Minimum transactions — 1 lets ultra-fresh pools through
 check_liquidity_depth = true      # Check price impact before buying
-max_price_impact_pct = 15.0       # Allow up to 15% impact — wallet-pct sizing needs room
+max_price_impact_pct = 6.0        # 6% max price impact — v1.2.0 baseline was 3.5%; 6% gives room for thin pools without accepting brutal slippage
 
 # v1.2.0: Holder concentration check
 check_holder_concentration = false  # Disabled: top-10 on new pools always includes the pool vault (near 100%); false signal

@@ -236,10 +236,10 @@ pub struct Sniper {
     /// price check, removes on exit. A background flush task in main.rs writes
     /// this map to `scematica-positions.json` every 1s for the dashboard panel.
     pub live_positions: Arc<DashMap<String, LivePositionSnapshot>>,
-    /// Dedup guard: mint → Instant of last confirmed buy. Any pool event for the
-    /// same mint within 5 minutes is silently skipped. Prevents triple-buying the
-    /// same token when multiple listener sources fire for the same pool creation.
-    recently_bought: Arc<DashMap<Pubkey, std::time::Instant>>,
+    /// Dedup guard: mint → unix-second timestamp of last confirmed buy.
+    /// Using unix seconds (not Instant) so the map can be persisted to
+    /// `scematica-mint-cooldown.json` and survive process restarts.
+    recently_bought: Arc<DashMap<Pubkey, u64>>,
     /// Fibonacci recovery system for entry/exit optimization
     pub fib_system: Arc<FibonacciRecoverySystem>,
     /// Fibonacci recovery statistics
@@ -270,6 +270,57 @@ pub struct LivePositionSnapshot {
     pub current_sl_pct: f64,
     /// Consecutive declining price-check ticks (≥3 triggers dump-detection sell)
     pub decline_streak: u32,
+}
+
+const MINT_COOLDOWN_FILE: &str = "scematica-mint-cooldown.json";
+
+/// Load the persisted mint re-entry cooldown map from disk.
+/// Entries that have already expired (older than mint_cooldown_secs) are dropped on load
+/// so the in-memory map stays compact.
+fn load_mint_cooldown(config: &scematica_core::config::SniperConfig) -> Arc<DashMap<Pubkey, u64>> {
+    let map: DashMap<Pubkey, u64> = DashMap::new();
+    let cooldown = config.mint_cooldown_secs;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Ok(data) = std::fs::read_to_string(MINT_COOLDOWN_FILE) {
+        if let Ok(entries) = serde_json::from_str::<std::collections::HashMap<String, u64>>(&data) {
+            let loaded = entries.len();
+            let mut kept = 0usize;
+            for (key_str, ts) in entries {
+                if now_secs.saturating_sub(ts) < cooldown {
+                    if let Ok(pk) = key_str.parse::<Pubkey>() {
+                        map.insert(pk, ts);
+                        kept += 1;
+                    }
+                }
+            }
+            if loaded > 0 {
+                tracing::info!(
+                    loaded,
+                    kept,
+                    "Loaded mint cooldown file — {} active cooldowns restored",
+                    kept
+                );
+            }
+        }
+    }
+    Arc::new(map)
+}
+
+/// Atomically persist the mint cooldown map to disk so it survives restarts.
+fn save_mint_cooldown(map: &Arc<DashMap<Pubkey, u64>>) {
+    let entries: std::collections::HashMap<String, u64> = map
+        .iter()
+        .map(|e| (e.key().to_string(), *e.value()))
+        .collect();
+    if let Ok(json) = serde_json::to_string(&entries) {
+        let tmp = format!("{}.tmp", MINT_COOLDOWN_FILE);
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, MINT_COOLDOWN_FILE);
+        }
+    }
 }
 
 impl Sniper {
@@ -332,6 +383,7 @@ impl Sniper {
         };
 
         let ath_drawdown_pct = config.ath_drawdown_pct;
+        let recently_bought = load_mint_cooldown(&config);
 
         let fib_config = FibonacciRecoveryConfig::default();
         let fib_system = Arc::new(FibonacciRecoverySystem::new(fib_config));
@@ -382,7 +434,7 @@ impl Sniper {
             progressive_scaling: Arc::new(AtomicBool::new(false)),
             moon_chase: Arc::new(AtomicBool::new(false)),
             live_positions: Arc::new(DashMap::new()),
-            recently_bought: Arc::new(DashMap::new()),
+            recently_bought,
             fib_system,
             fib_stats,
             dex_cache,
@@ -1049,20 +1101,27 @@ impl Sniper {
             let confirmed = match vault_now {
                 Ok(Ok(qb)) => {
                     let current = qb.amount.parse::<u64>().unwrap_or(0);
-                    let grew = current > upfront_pool_size_lamports;
+                    // Require ≥2% vault growth to confirm real buying pressure.
+                    // Any growth (old check) passes pools with 1-lamport ticks from RPC noise.
+                    // 2% of a 6.5 SOL pool = 0.13 SOL of new inflow in the filter window (~500ms).
+                    // A genuine runner achieves this easily; a dead pool does not.
+                    let min_growth = (upfront_pool_size_lamports / 50).max(10_000_000); // 2% or 0.01 SOL floor
+                    let grew = current >= upfront_pool_size_lamports + min_growth;
                     let growth_sol = (current as f64 - upfront_pool_size_lamports as f64) / 1e9;
                     if grew {
                         info!(
                             mint = %pool.base_mint,
                             growth_sol = %format!("+{:.4}", growth_sol),
-                            "✅ Momentum confirmed — vault grew since detection, buyers active"
+                            min_required_sol = %format!("{:.4}", min_growth as f64 / 1e9),
+                            "✅ Momentum confirmed — vault grew ≥2% since detection, buyers active"
                         );
                     } else {
                         let drift = current as f64 / 1e9 - upfront_pool_size_sol;
                         info!(
                             mint = %pool.base_mint,
                             drift_sol = %format!("{:.4}", drift),
-                            "❌ Momentum check failed — vault flat/declining, no active buyers"
+                            needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
+                            "❌ Momentum check failed — vault grew <2% since detection, insufficient buying"
                         );
                         self.filter_pipeline.stats.record_rejection("no_momentum");
                     }
@@ -1325,15 +1384,26 @@ impl Sniper {
         // Dedup: multiple listener sources (pumpfun, whale_copy, raydium listener) can
         // all fire for the same pool creation within milliseconds. Without this guard
         // the bot buys the same mint 2-3× before the processing_lock catches it.
+        // Timestamps are unix seconds so the map persists across restarts — prevents
+        // re-entering the same losing pool after a dashboard/sniper restart.
         {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let cooldown = self.config.mint_cooldown_secs;
             if let Some(entry) = self.recently_bought.get(&pool.base_mint) {
-                if entry.elapsed().as_secs() < 300 {
-                    info!(mint = %pool.base_mint, "Dedup: mint purchased in last 5 min — skipping");
+                if now_secs.saturating_sub(*entry) < cooldown {
+                    info!(
+                        mint = %pool.base_mint,
+                        cooldown_remaining_mins = (cooldown.saturating_sub(now_secs.saturating_sub(*entry))) / 60,
+                        "Dedup: mint purchased within cooldown window — skipping"
+                    );
                     return Ok(());
                 }
             }
-            // Prune stale entries so the map doesn't grow unbounded during long sessions.
-            self.recently_bought.retain(|_, v| v.elapsed().as_secs() < 300);
+            // Prune expired entries so the map doesn't grow unbounded during long sessions.
+            self.recently_bought.retain(|_, ts| now_secs.saturating_sub(*ts) < cooldown);
         }
 
         let wallet_pubkey = wallet_pubkey_early; // reuse — same key, already fetched above
@@ -1546,8 +1616,14 @@ impl Sniper {
                     );
                     self.metrics.record_trade_confirmed(0);
                     // Stamp the dedup guard so any subsequent pool events for this
-                    // mint are skipped for the next 5 minutes.
-                    self.recently_bought.insert(pool.base_mint, std::time::Instant::now());
+                    // mint are skipped for mint_cooldown_secs. Write unix timestamp
+                    // (not Instant) so the guard survives process restarts.
+                    let buy_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    self.recently_bought.insert(pool.base_mint, buy_ts);
+                    save_mint_cooldown(&self.recently_bought);
 
                     // Emit trade event for the dashboard
                     TradeEvent {

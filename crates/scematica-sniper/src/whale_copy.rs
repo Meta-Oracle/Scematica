@@ -125,6 +125,7 @@ impl WhaleCopyListener {
                     open_time: 0,
                     base_decimals: 9,
                     quote_decimals: 9,
+                    pumpfun_score: 0.0,
                 };
                 info!(
                     "🐋 Copy-trade: whale bought pool {} (tx {}…) — emitting for sniper",

@@ -1019,23 +1019,88 @@ impl Sniper {
             self.fib_stats.lock().record_entry(fib_decision.fibonacci_score);
         }
 
-        // ── Pool predictive scoring (skipped in high-speed mode and for boosted tokens) ──
-        if !high_speed && !dex_boosted && self.config.min_pool_score > 0.0 {
-            // Re-score with social_count bonus now that SocialLinksFilter has enriched metadata.
-            let final_score = if social_count > 0 {
-                crate::pool_scorer::PoolScorer::score_with_socials(
-                    &pool, upfront_pool_size_lamports, upfront_base_vault_lamports,
-                    detected_at_secs, social_count,
-                )
-            } else {
-                upfront_score
+        // ── Momentum confirmation (before pool scorer) ──────────────────────────
+        // The filter pipeline takes 400–800 ms to run. By the time we get here,
+        // a gaining pool has had active buyers adding SOL. A dead pool shows zero
+        // growth. We compare vault NOW to the upfront snapshot to compute:
+        //   1. Whether growth confirms buying (≥2% = proceed)
+        //   2. Instantaneous inflow rate (SOL/s) — passed to pool scorer as Signal 7
+        //
+        // Running the momentum check BEFORE the pool scorer allows the inflow rate to
+        // rescue borderline pools that are actively pumping right now.
+        //
+        // Skip for: exceptional velocity (≥2.618 SOL/s), DexScreener-boosted, high-speed.
+        let inflow_rate_now_sol_per_sec: f64;
+        if !high_speed && !dex_boosted && !exceptional_velocity && upfront_pool_size_lamports > 0 {
+            let vault_now = tokio::time::timeout(
+                tokio::time::Duration::from_millis(800),
+                self.rpc.get_token_account_balance(&pool.quote_vault),
+            ).await;
+            let (confirmed, rate) = match vault_now {
+                Ok(Ok(qb)) => {
+                    let current = qb.amount.parse::<u64>().unwrap_or(0);
+                    let min_growth = (upfront_pool_size_lamports / 50).max(10_000_000); // 2% or 0.01 SOL floor
+                    let grew = current >= upfront_pool_size_lamports + min_growth;
+                    let growth_lam = current.saturating_sub(upfront_pool_size_lamports);
+                    // Instantaneous inflow rate over the ~600ms filter evaluation window
+                    let spot_rate = growth_lam as f64 / 1e9 / 0.6;
+                    let growth_sol = growth_lam as f64 / 1e9;
+                    if grew {
+                        info!(
+                            mint = %pool.base_mint,
+                            growth_sol = %format!("+{:.4}", growth_sol),
+                            inflow_rate = %format!("{:.3} SOL/s", spot_rate),
+                            min_required_sol = %format!("{:.4}", min_growth as f64 / 1e9),
+                            "✅ Momentum confirmed — vault grew ≥2%, buyers active"
+                        );
+                    } else {
+                        let drift = current as f64 / 1e9 - upfront_pool_size_sol;
+                        info!(
+                            mint = %pool.base_mint,
+                            drift_sol = %format!("{:.4}", drift),
+                            needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
+                            "❌ Momentum check failed — vault grew <2%, insufficient buying"
+                        );
+                        self.filter_pipeline.stats.record_rejection("no_momentum");
+                    }
+                    (grew, spot_rate)
+                }
+                _ => {
+                    debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding");
+                    (true, 0.0) // fail open; unknown rate
+                }
             };
-            if final_score < self.config.min_pool_score {
+            if !confirmed {
+                return;
+            }
+            inflow_rate_now_sol_per_sec = rate;
+        } else {
+            inflow_rate_now_sol_per_sec = 0.0; // bypassed — pool scorer uses historical velocity
+        }
+
+        // ── Pool predictive scoring (skipped in high-speed mode and for boosted tokens) ──
+        // Uses all available signals: historical (size, age, velocity, buy-pressure, EV),
+        // pumpfun_score (pre-graduation momentum carried on the pool struct), social_count,
+        // and inflow_rate_now (live spot rate computed above).
+        if !high_speed && !dex_boosted && self.config.min_pool_score > 0.0 {
+            let final_score = crate::pool_scorer::PoolScorer::score_full(
+                &pool, upfront_pool_size_lamports, upfront_base_vault_lamports,
+                detected_at_secs, social_count, inflow_rate_now_sol_per_sec,
+            );
+            // Pools actively pumping right now (≥0.5 SOL/s spot inflow) get a 10-point lower
+            // threshold — confirmed live momentum overrides borderline historical signals.
+            let effective_min = if inflow_rate_now_sol_per_sec >= 0.5 {
+                (self.config.min_pool_score - 10.0).max(45.0)
+            } else {
+                self.config.min_pool_score
+            };
+            if final_score < effective_min {
                 info!(
                     mint = %pool.base_mint,
                     score = %format!("{:.1}", final_score),
-                    social_count,
-                    min = %format!("{:.1}", self.config.min_pool_score),
+                    effective_min = %format!("{:.1}", effective_min),
+                    inflow_rate = %format!("{:.3} SOL/s", inflow_rate_now_sol_per_sec),
+                    pumpfun_score = pool.pumpfun_score,
                     "Pool score too low — skipping buy"
                 );
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, final_score);
@@ -1045,6 +1110,9 @@ impl Sniper {
             info!(
                 mint = %pool.base_mint,
                 score = %format!("{:.1}", final_score),
+                effective_min = %format!("{:.1}", effective_min),
+                inflow_rate = %format!("{:.3} SOL/s", inflow_rate_now_sol_per_sec),
+                pumpfun_score = pool.pumpfun_score,
                 social_count,
                 name = %display_name,
                 symbol = %display_symbol,
@@ -1086,58 +1154,6 @@ impl Sniper {
             }
         }
 
-        // ── Momentum confirmation: require vault to have grown since detection ──────
-        // The filter pipeline takes 400–800 ms to run. By the time we get here,
-        // a gaining pool has had active buyers adding SOL. A dead pool shows zero
-        // growth. We compare the vault NOW to the upfront snapshot — no sleep needed,
-        // the evaluation latency is the observation window.
-        //
-        // Skip for: exceptional velocity (≥2.618 SOL/s), DexScreener-boosted, high-speed.
-        if !high_speed && !dex_boosted && !exceptional_velocity && upfront_pool_size_lamports > 0 {
-            let vault_now = tokio::time::timeout(
-                tokio::time::Duration::from_millis(800),
-                self.rpc.get_token_account_balance(&pool.quote_vault),
-            ).await;
-            let confirmed = match vault_now {
-                Ok(Ok(qb)) => {
-                    let current = qb.amount.parse::<u64>().unwrap_or(0);
-                    // Require ≥2% vault growth to confirm real buying pressure.
-                    // Any growth (old check) passes pools with 1-lamport ticks from RPC noise.
-                    // 2% of a 6.5 SOL pool = 0.13 SOL of new inflow in the filter window (~500ms).
-                    // A genuine runner achieves this easily; a dead pool does not.
-                    let min_growth = (upfront_pool_size_lamports / 50).max(10_000_000); // 2% or 0.01 SOL floor
-                    let grew = current >= upfront_pool_size_lamports + min_growth;
-                    let growth_sol = (current as f64 - upfront_pool_size_lamports as f64) / 1e9;
-                    if grew {
-                        info!(
-                            mint = %pool.base_mint,
-                            growth_sol = %format!("+{:.4}", growth_sol),
-                            min_required_sol = %format!("{:.4}", min_growth as f64 / 1e9),
-                            "✅ Momentum confirmed — vault grew ≥2% since detection, buyers active"
-                        );
-                    } else {
-                        let drift = current as f64 / 1e9 - upfront_pool_size_sol;
-                        info!(
-                            mint = %pool.base_mint,
-                            drift_sol = %format!("{:.4}", drift),
-                            needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
-                            "❌ Momentum check failed — vault grew <2% since detection, insufficient buying"
-                        );
-                        self.filter_pipeline.stats.record_rejection("no_momentum");
-                    }
-                    grew
-                }
-                _ => {
-                    // RPC timeout — fail open, don't block on a slow node
-                    debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding");
-                    true
-                }
-            };
-            if !confirmed {
-                return;
-            }
-        }
-
         // Track last pool time for gas war burst detection
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1150,15 +1166,32 @@ impl Sniper {
 
         // Execute buy — pass upfront reserves so buy() can compute a real min_out
         // without another RPC round-trip.
-        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, upfront_score).await {
+        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, upfront_score, inflow_rate_now_sol_per_sec, detected_at_secs).await {
             error!(mint = %pool.base_mint, "buy() error: {}", e);
         }
     }
 
-    async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64, upfront_score: f64) -> Result<()> {
+    async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64, upfront_score: f64, inflow_rate_now_sol_per_sec: f64, detected_at_secs: u64) -> Result<()> {
         // ── POOL SIZE VALIDATION: Enforce min/max pool size at buy time ──
         // The filter gate uses upfront data; we re-validate here to catch stale/drained pools
         let pool_size_sol = quote_reserve_lam as f64 / 1e9;
+
+        // ── Pool metadata for TradeEvent feedback loop ──
+        let pool_age_secs_at_buy = if pool.open_time > 0 && detected_at_secs >= pool.open_time {
+            (detected_at_secs - pool.open_time) as f64
+        } else {
+            0.0
+        };
+        let velocity_sol_per_sec_at_buy = if pool_age_secs_at_buy > 0.0 {
+            pool_size_sol / pool_age_secs_at_buy
+        } else {
+            0.0
+        };
+        let buy_pressure_ratio_at_buy = if base_reserve_lam > 0 {
+            quote_reserve_lam as f64 / base_reserve_lam as f64
+        } else {
+            0.0
+        };
         
         if pool_size_sol < self.config.filters.min_pool_size {
             info!(
@@ -1448,16 +1481,18 @@ impl Sniper {
                 self.rpc.get_token_account_balance(&pool.quote_vault),
             ).await {
                 if let Ok(current_q) = qb.amount.parse::<u64>() {
-                    // Quote vault draining = tokens bought out = price pumped.
-                    // Drain >15% means early buyers already front-ran us — skip.
+                    // Quote vault draining = early buyers already dumping.
+                    // Raised 15% → 25%: for 1000x runners, a 20% initial pump is
+                    // irrelevant to the final outcome; at 15% we were rejecting fast
+                    // movers that hadn't peaked yet. Only abort on clear dumps (>25%).
                     if current_q < quote_reserve_lam {
                         let drain_pct = (quote_reserve_lam - current_q) as f64
                             / quote_reserve_lam as f64 * 100.0;
-                        if drain_pct > 15.0 {
+                        if drain_pct > 25.0 {
                             info!(
                                 mint = %pool.base_mint,
                                 drain_pct = %format!("{:.1}%", drain_pct),
-                                "Confirmation window: price already pumped — skipping buy"
+                                "Confirmation window: vault drained >25% — early dump, skipping buy"
                             );
                             return Ok(());
                         }
@@ -1642,6 +1677,13 @@ impl Sniper {
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
                         exit_reason: String::new(),
+                        pool_size_sol,
+                        pool_age_secs: pool_age_secs_at_buy,
+                        velocity_sol_per_sec: velocity_sol_per_sec_at_buy,
+                        buy_pressure_ratio: buy_pressure_ratio_at_buy,
+                        pool_score: upfront_score,
+                        pumpfun_score: pool.pumpfun_score,
+                        inflow_rate_sol_per_sec: inflow_rate_now_sol_per_sec,
                     }.append_to_file(TRADES_FILE);
 
                     // Track open positions
@@ -1726,6 +1768,13 @@ impl Sniper {
             pnl_pct: 0.0,
             position_age_secs: 0.0,
             exit_reason: String::new(),
+            pool_size_sol,
+            pool_age_secs: pool_age_secs_at_buy,
+            velocity_sol_per_sec: velocity_sol_per_sec_at_buy,
+            buy_pressure_ratio: buy_pressure_ratio_at_buy,
+            pool_score: upfront_score,
+            pumpfun_score: pool.pumpfun_score,
+            inflow_rate_sol_per_sec: inflow_rate_now_sol_per_sec,
         }.append_to_file(TRADES_FILE);
         // ProcessingSlot::Drop releases the lock when `slot` goes out of scope here.
         Ok(())
@@ -1940,6 +1989,13 @@ impl Sniper {
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
                         exit_reason: String::new(),
+                        pool_size_sol: 0.0,
+                        pool_age_secs: 0.0,
+                        velocity_sol_per_sec: 0.0,
+                        buy_pressure_ratio: 0.0,
+                        pool_score: 0.0,
+                        pumpfun_score: 0.0,
+                        inflow_rate_sol_per_sec: 0.0,
                     }.append_to_file(TRADES_FILE);
                     return;
                 }
@@ -1973,6 +2029,13 @@ impl Sniper {
             pnl_pct: -100.0,
             position_age_secs: 0.0,
             exit_reason: "failed".into(),
+            pool_size_sol: 0.0,
+            pool_age_secs: 0.0,
+            velocity_sol_per_sec: 0.0,
+            buy_pressure_ratio: 0.0,
+            pool_score: 0.0,
+            pumpfun_score: 0.0,
+            inflow_rate_sol_per_sec: 0.0,
         }.append_to_file(TRADES_FILE);
     }
 
@@ -2351,6 +2414,7 @@ impl Sniper {
             open_time,
             base_decimals: 9,
             quote_decimals: 9,
+            pumpfun_score: 0.0,
         })
     }
 
@@ -3617,6 +3681,13 @@ impl SellMonitor {
                     pnl_pct: -100.0,
                     position_age_secs,
                     exit_reason: exit_reason.to_string(),
+                    pool_size_sol: 0.0,
+                    pool_age_secs: 0.0,
+                    velocity_sol_per_sec: 0.0,
+                    buy_pressure_ratio: 0.0,
+                    pool_score: 0.0,
+                    pumpfun_score: 0.0,
+                    inflow_rate_sol_per_sec: 0.0,
                 }.append_to_file(TRADES_FILE);
                 return;
             }
@@ -3724,6 +3795,13 @@ impl SellMonitor {
                 pnl_pct: -100.0,
                 position_age_secs,
                 exit_reason: exit_reason.to_string(),
+                pool_size_sol: 0.0,
+                pool_age_secs: 0.0,
+                velocity_sol_per_sec: 0.0,
+                buy_pressure_ratio: 0.0,
+                pool_score: 0.0,
+                pumpfun_score: 0.0,
+                inflow_rate_sol_per_sec: 0.0,
             }.append_to_file(TRADES_FILE);
             return Ok(());
         }
@@ -3834,6 +3912,13 @@ impl SellMonitor {
                         pnl_pct,
                         position_age_secs,
                         exit_reason: exit_reason.to_string(),
+                        pool_size_sol: 0.0,
+                        pool_age_secs: 0.0,
+                        velocity_sol_per_sec: 0.0,
+                        buy_pressure_ratio: 0.0,
+                        pool_score: 0.0,
+                        pumpfun_score: 0.0,
+                        inflow_rate_sol_per_sec: 0.0,
                     }.append_to_file(TRADES_FILE);
 
                     return Ok(());
@@ -3930,6 +4015,13 @@ impl SellMonitor {
             pnl_pct: -100.0,           // total loss signal for the NN agent
             position_age_secs,
             exit_reason: exit_reason.to_string(),
+            pool_size_sol: 0.0,
+            pool_age_secs: 0.0,
+            velocity_sol_per_sec: 0.0,
+            buy_pressure_ratio: 0.0,
+            pool_score: 0.0,
+            pumpfun_score: 0.0,
+            inflow_rate_sol_per_sec: 0.0,
         }.append_to_file(TRADES_FILE);
 
         anyhow::bail!("sell exhausted {} retries for {}", self.config.max_sell_retries, pool.base_mint)

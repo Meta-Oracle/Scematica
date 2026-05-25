@@ -183,6 +183,7 @@ mod tests {
             open_time,
             base_decimals: 9,
             quote_decimals: 9,
+            pumpfun_score: 0.0,
         }
     }
 

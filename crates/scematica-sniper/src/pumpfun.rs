@@ -115,6 +115,7 @@ impl PumpFunMonitor {
                     open_time: 0,
                     base_decimals: 6,
                     quote_decimals: 9,
+                    pumpfun_score: 0.0,
                 };
 
                 if self.tx.send(ListenerEvent::NewPool(synthetic_pool)).await.is_err() {

@@ -15,6 +15,11 @@ pub struct CachedPool {
     pub open_time: u64,
     pub base_decimals: u8,
     pub quote_decimals: u8,
+    /// Pre-graduation momentum score from pump.fun trending monitor (0.0 for Raydium-only pools).
+    /// Set by pumpfun_trending.rs when a token meets the trending threshold before AMM listing.
+    /// Carried through evaluate_pool → pool scorer as a Bayesian LR signal.
+    #[serde(default)]
+    pub pumpfun_score: f64,
 }
 
 /// Cached market state (OpenBook V3)

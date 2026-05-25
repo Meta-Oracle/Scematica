@@ -357,15 +357,19 @@ impl PumpFunTrendingMonitor {
                         let min_curve   = cfg.min_curve_pct;
 
                         tokio::spawn(async move {
-                            if let Some(pool) = Self::fetch_and_decode_pool(
+                            if let Some(mut pool) = Self::fetch_and_decode_pool(
                                 &rpc2, &pool_pk_str, &mint_str,
                             ).await {
                                 let trending = score >= min_score && curve_pct >= min_curve;
                                 if trending {
+                                    // Carry the pre-graduation momentum score into the pool
+                                    // so the pool scorer can use it as a Bayesian LR signal.
+                                    pool.pumpfun_score = score;
                                     info!(
-                                        mint  = %mint_str,
-                                        pool  = %pool_pk_str,
-                                        score = %format!("{:.1}", score),
+                                        mint       = %mint_str,
+                                        pool       = %pool_pk_str,
+                                        score      = %format!("{:.1}", score),
+                                        curve_pct  = %format!("{:.1}%", curve_pct),
                                         "🚀 PumpFun trending graduation — emitting to sniper"
                                     );
                                 }
@@ -439,6 +443,7 @@ impl PumpFunTrendingMonitor {
                 .as_secs(),
             base_decimals: 6,
             quote_decimals: 9,
+            pumpfun_score: 0.0, // set by caller after trending check
         })
     }
 }
@@ -477,5 +482,6 @@ fn decode_pool_account(pool_pk: &Pubkey, data: &[u8]) -> Option<CachedPool> {
         open_time,
         base_decimals: 6,  // Pump.fun tokens are 6-decimal
         quote_decimals: 9, // WSOL is 9-decimal
+        pumpfun_score: 0.0, // set by caller after trending check
     })
 }

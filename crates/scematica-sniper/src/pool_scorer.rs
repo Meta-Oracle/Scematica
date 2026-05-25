@@ -21,6 +21,8 @@ use crate::cache::CachedPool;
 ///  • No velocity signal: dead-on-arrival    → LR 0.35
 ///  • Strong velocity (>2 SOL/s): runner     → LR 3.0
 ///  • Buy pressure (high quote/base skew): confirms momentum → LR 2.0
+///  • PumpFun score ≥90: exceptional pre-grad momentum → LR 3.5
+///  • Live inflow ≥1.5 SOL/s during evaluation window → +12 pts (score_full)
 pub struct PoolScorer;
 
 impl PoolScorer {
@@ -167,7 +169,7 @@ impl PoolScorer {
         //   P(success) ≈ min(1, velocity_sol_per_sec × no_pump_timeout / S)
         // Only applied when velocity data is available.
         if velocity_sol_per_sec > 0.0 && size_sol > 0.0 {
-            let no_pump_secs = 20.0_f64; // matches config no_pump_timeout_secs default
+            let no_pump_secs = 15.0_f64; // matches config no_pump_timeout_secs
             let expected_inflow = velocity_sol_per_sec * no_pump_secs;
             let p_2x = (expected_inflow / size_sol).min(1.0);
             // Convert to LR: p_2x=0.1 → LR=1.0 (neutral), p_2x=1.0 → LR=2.5
@@ -175,7 +177,24 @@ impl PoolScorer {
             p *= ev_lr;
         }
 
-        // Signal 6: Social presence (community backing = lower rug probability)
+        // Signal 6: PumpFun pre-graduation momentum score.
+        // A non-zero pumpfun_score means the trending monitor tracked sustained buy
+        // pressure on this token before it graduated to Raydium. High score = community
+        // was already piling in, confirming organic demand rather than a cold launch.
+        if pool.pumpfun_score > 0.0 {
+            let pf_lr = if pool.pumpfun_score >= 90.0 {
+                3.5  // exceptional: stampede-level pre-graduation buying
+            } else if pool.pumpfun_score >= 80.0 {
+                2.8  // very strong: sustained community momentum
+            } else if pool.pumpfun_score >= 70.0 {
+                2.0  // strong: meets our trending threshold
+            } else {
+                1.3  // mild: some momentum, didn't hit threshold
+            };
+            p *= pf_lr;
+        }
+
+        // Signal 7: Social presence (community backing = lower rug probability)
         // social_count is set by the caller when SocialLinksFilter metadata is available.
         // LR values calibrated: no socials = more likely anon dev rug.
         // Pass 0 to indicate "unknown/unenriched" — neutral.
@@ -188,6 +207,40 @@ impl PoolScorer {
         let score = 100.0 / (1.0 + (-k * (p - x0)).exp());
 
         score.max(0.0).min(100.0)
+    }
+
+    /// Full scoring with all available signals, including live inflow rate measured during
+    /// the filter evaluation window.
+    ///
+    /// `inflow_rate_now_sol_per_sec`: SOL/s flowing INTO the pool vault measured between
+    /// pool detection and buy evaluation (~600ms window). 0.0 = unknown/bypassed.
+    /// This is a *spot* rate — independent of historical velocity. It measures what's
+    /// happening RIGHT NOW and is the strongest runner confirmation signal.
+    pub fn score_full(
+        pool: &CachedPool,
+        pool_size_lamports: u64,
+        base_vault_lamports: u64,
+        detected_at_secs: u64,
+        social_count: u8,
+        inflow_rate_now_sol_per_sec: f64,
+    ) -> f64 {
+        let base = Self::score_with_socials(
+            pool, pool_size_lamports, base_vault_lamports, detected_at_secs, social_count,
+        );
+        // Instantaneous inflow rate: additive post-sigmoid boost.
+        // Calibrated so a 1+ SOL/s spot inflow rescues borderline pools (score 58 → 68).
+        let inflow_boost = if inflow_rate_now_sol_per_sec >= 3.0 {
+            18.0  // stampede: 3+ SOL/s pouring in — confirmed runner
+        } else if inflow_rate_now_sol_per_sec >= 1.5 {
+            12.0  // very strong: likely parabolic pump
+        } else if inflow_rate_now_sol_per_sec >= 0.5 {
+            7.0   // solid: active buying during evaluation window
+        } else if inflow_rate_now_sol_per_sec >= 0.2 {
+            3.0   // mild: some buying visible
+        } else {
+            0.0   // unknown or zero — no boost
+        };
+        (base + inflow_boost).max(0.0).min(100.0)
     }
 
     /// Variant that additionally applies a social-presence likelihood ratio.
@@ -229,6 +282,7 @@ mod tests {
             open_time,
             base_decimals: 9,
             quote_decimals: 9,
+            pumpfun_score: 0.0,
         }
     }
 

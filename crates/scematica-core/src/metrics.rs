@@ -83,6 +83,26 @@ pub struct TradeEvent {
     /// "dump_mode" | "profit_lock" | "tiered_tp" | "fibonacci" | "timeout" | ""
     #[serde(default)]
     pub exit_reason: String,
+
+    // ── Pool metadata recorded at BUY time (0.0 for SELL/ARB) ─────────────────
+    // These fields close the feedback loop: after each sell we can look back at
+    // the paired BUY to see which pool signals predicted the outcome. Without
+    // these, the pool scorer is calibrated on theory alone.
+    #[serde(default)]
+    pub pool_size_sol: f64,
+    #[serde(default)]
+    pub pool_age_secs: f64,
+    #[serde(default)]
+    pub velocity_sol_per_sec: f64,
+    #[serde(default)]
+    pub buy_pressure_ratio: f64,
+    #[serde(default)]
+    pub pool_score: f64,
+    #[serde(default)]
+    pub pumpfun_score: f64,
+    /// Live inflow rate measured during the filter evaluation window (~600ms).
+    #[serde(default)]
+    pub inflow_rate_sol_per_sec: f64,
 }
 
 impl TradeEvent {

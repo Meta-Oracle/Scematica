@@ -27,7 +27,7 @@ stop_loss_pct = 10.0      # Tighter SL — exit before pool drains further
 buy_slippage_pct = 1.0
 sell_slippage_pct = 5.0   # Start at 5% — lands first attempt, avoids 2.5%→fail→5%→fail→min_out=0 chain
 price_check_interval_ms = 250    # 4× faster polling to catch momentum peaks
-price_check_duration_ms = 600000  # 10 min monitor window — hold runners long enough for 1000x
+price_check_duration_ms = 1800000 # 30 min monitor window — hold runners long enough for 1000x escalation to reach 1125x
 one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
@@ -48,9 +48,9 @@ profit_lock_checks = 0              # Disabled — profit floor in code locks 0.
 
 # ── v1.6.0 Momentum Escalation (Hold Longer) ──────────────────────────────────
 momentum_hold = true
-momentum_max_escalations = 7        # 7-round ladder: 175→315→567→1020→1836→3305→5949%
+momentum_max_escalations = 12       # 12-round ladder: 175→315→567→1021→1837→3307→5952→10714→19285→34713→62484→112471% (~1125x at round 11)
 momentum_escalation_factor = 1.8    # TP grows 1.8× per round
-momentum_escalation_threshold_pct = 8.0  # Escalate on 8%/check avg velocity OR any single-check jump 50%+ past TP
+momentum_escalation_threshold_pct = 5.0  # Escalate on 5%/check avg velocity (was 8%) — catches sustained pumps that plateau briefly before next leg
 momentum_pullback_exit_pct = 15.0   # At peak 200%: 15% pullback fires at 185%, above 175% floor → satisfiable
 adaptive_pullback = false            # Disabled: adaptive formula makes pullback unreachable at 175-250% peak
 max_concurrent_positions = 1   # 1 at a time — prevents RPC overload causing sell timeouts on multiple open positions
@@ -89,8 +89,8 @@ session_heat_cooldown_mins = 15     # Pause duration when heat trips
 # When a trending token graduates to Raydium, it's emitted to the sniper pipeline
 # 0.5–3s ahead of the standard Raydium AMM V4 listener.
 pumpfun_trending_enabled = true     # Enable PumpPortal WebSocket trending monitor
-pumpfun_trending_score = 55.0       # Min score to consider a token "trending" (0-100)
-pumpfun_min_curve_pct = 40.0        # Min bonding curve fill % (40% = ~28 SOL raised)
+pumpfun_trending_score = 70.0       # Min score to consider a token "trending" (0-100). Raised 55→70: only top-tier momentum tokens
+pumpfun_min_curve_pct = 65.0        # Min bonding curve fill % (65% = ~55k USDC raised). Tokens near graduation have strongest post-launch momentum
 pumpfun_window_secs = 120           # Sliding window for trend calculation (seconds)
 
 # ── v1.9.0 Time-of-Day Controls ─────────────────────────────────────────────────
@@ -98,7 +98,7 @@ pumpfun_window_secs = 120           # Sliding window for trend calculation (seco
 #   0% WR hours (UTC): 01:00, 21:00 → hard-blocked
 #   53% WR: 03:00 | 52% WR: 16:00 | 50% WR: 10:00 (best trading windows)
 time_of_day_weighting = true        # Scale buy size by hour quality (1.3× peak, 0.5× dead)
-blocked_hours_utc = [1, 21]         # 0% win rate — skip entirely (not just size reduction)
+blocked_hours_utc = [1, 5, 21]      # 0% win rate — skip entirely; 05h clusters all rug anomalies
 weekend_mode = "Bearish"            # Auto-switch Sat/Sun (0% WR Sat, 22% WR Fri vs 32% Mon)
 weekday_mode = "Balanced"           # Auto-restore Mon–Fri
 
@@ -137,8 +137,8 @@ tiered_partial_tp = false         # Set true to enable tiered ladder above
 # v1.6.0: Dead-zone exit reduced 45→30s (winners exit in <6s, recycle capital faster)
 no_pump_timeout_secs = 15        # Faster capital recycling — 15s is still generous for a real runner (best wins exit in <3s)
 no_pump_min_gain_pct = 8.0          # Require 8%+ gain to suppress timeout (was 5%). Real runners hit 8% in seconds; marginal pools that tick +5% then fade now get killed.
-peak_stagnation_secs = 90           # Exit if peak hasn't improved in 90s AND current pnl > threshold
-peak_stagnation_min_pnl_pct = 20.0  # Only fire stagnation exit when up 20%+ (above noise floor)
+peak_stagnation_secs = 300          # Exit if peak hasn't improved in 300s (5 min). Raised 90→300: genuine runners consolidate between legs; don't exit during consolidation
+peak_stagnation_min_pnl_pct = 175.0 # Only fire stagnation exit when up 175%+ (at or above initial TP). Below 175% is pure SL/timeout territory; above 175% = escalated position that's truly stalling
 
 # v1.5.2: Protect fresh positions from dump-mode force-sell
 min_dump_hold_secs = 90             # Positions younger than 90s held through normal TP/SL
@@ -225,7 +225,7 @@ quote_amount = 0.003       # Entry: 3 milliSOL (fallback)
 wallet_pct = 0.5           # 0.5% of wallet per trade
 take_profit_pct = 75.0     # Exit goal: 75% profit
 stop_loss_pct = 10.0       # Exit pain: 10% loss
-momentum_max_escalations = 4
+momentum_max_escalations = 6
 enabled = true
 
 # Safe mode: conservative entry, baseline risk
@@ -238,7 +238,7 @@ quote_amount = 0.005       # Entry: 5 milliSOL (fallback)
 wallet_pct = 0.8           # 0.8% of wallet per trade
 take_profit_pct = 100.0    # Exit goal: 100% profit (double entry)
 stop_loss_pct = 12.0       # Exit pain: 12% loss
-momentum_max_escalations = 5
+momentum_max_escalations = 8
 enabled = true
 
 # Balanced mode: sweet-spot entry (Phase 1 optimized)
@@ -252,7 +252,7 @@ quote_amount = 0.01        # Entry: 10 milliSOL (fallback)
 wallet_pct = 1.5           # 1.5% of wallet per trade (SWEET SPOT!)
 take_profit_pct = 175.0    # Exit goal: 175% profit (escalator starting point)
 stop_loss_pct = 12.0       # Exit pain: 12% loss
-momentum_max_escalations = 7
+momentum_max_escalations = 12  # 12-round ladder reaches ~1125x from 175% base
 enabled = true
 
 # Aggressive mode: 2× entry, accepting more volatility
@@ -265,7 +265,7 @@ quote_amount = 0.02        # Entry: 20 milliSOL (fallback)
 wallet_pct = 3.0           # 3% of wallet per trade
 take_profit_pct = 300.0    # Exit goal: 300% profit
 stop_loss_pct = 15.0       # Exit pain: 15% loss
-momentum_max_escalations = 7
+momentum_max_escalations = 12  # 12-round ladder: 300→540→972→1749→3149→5668→10203→18365→33057→59503→107105→192789% (~1928x)
 enabled = true
 
 # Degen mode: 4× entry, maximum conviction
@@ -279,7 +279,7 @@ quote_amount = 0.04        # Entry: 40 milliSOL (fallback)
 wallet_pct = 6.0           # 6% of wallet per trade
 take_profit_pct = 450.0    # Exit goal: 450% profit
 stop_loss_pct = 25.0       # Exit pain: 25% loss (wider for volatility)
-momentum_max_escalations = 7
+momentum_max_escalations = 12  # 12-round ladder: 450→810→1458→2624→4724→8503→15305→27549→49589→89260→160668→289202% (~2892x)
 enabled = true
 
 # Moon mode: maximum bet, chasing 10×+ runners

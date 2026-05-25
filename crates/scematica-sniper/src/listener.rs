@@ -340,5 +340,6 @@ fn decode_raydium_v4_pool(pubkey_str: &str, data: &[u8]) -> Option<CachedPool> {
         open_time,
         base_decimals: 9,
         quote_decimals: 9,
+        pumpfun_score: 0.0,
     })
 }

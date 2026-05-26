@@ -20,16 +20,21 @@ pub mod scematica_swap {
     /// Called as the first instruction in an arb transaction.
     pub fn start_swap(ctx: Context<StartSwap>, swap_input: u64, min_expected_output: u64) -> Result<()> {
         let swap_state = &mut ctx.accounts.swap_state;
-        swap_state.swap_input = swap_input;
-        swap_state.expected_output = min_expected_output;
+        let initial_balance = ctx.accounts.src.amount;
+        let min_final_balance = initial_balance
+            .saturating_sub(swap_input)
+            .saturating_add(min_expected_output);
+
+        swap_state.swap_input = initial_balance;
+        swap_state.expected_output = min_final_balance;
         swap_state.authority = ctx.accounts.authority.key();
         swap_state.src_mint = ctx.accounts.src.mint;
 
         msg!(
             "StartSwap: mint={} input={} min_output={} from {}",
             swap_state.src_mint,
-            swap_input,
-            min_expected_output,
+            initial_balance,
+            min_final_balance,
             ctx.accounts.src.key()
         );
         Ok(())

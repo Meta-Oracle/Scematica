@@ -171,6 +171,19 @@ pub struct SniperConfig {
     /// Sliding window in seconds for the trending score calculation. Default: 120
     #[serde(default = "default_pumpfun_window_secs")]
     pub pumpfun_window_secs: u64,
+    /// Maximum age from first Pump.fun observation to migration before the early
+    /// migration path skips it. The normal Raydium listener can still evaluate it.
+    #[serde(default = "default_pumpfun_max_migration_age_secs")]
+    pub pumpfun_max_migration_age_secs: u64,
+    /// Require at least this many recent buys in the Pump.fun sliding window.
+    #[serde(default = "default_pumpfun_min_recent_buys")]
+    pub pumpfun_min_recent_buys: u32,
+    /// Require recent buy volume minus sell volume to exceed this SOL amount.
+    #[serde(default = "default_pumpfun_min_net_buy_sol")]
+    pub pumpfun_min_net_buy_sol: f64,
+    /// Last buy must be this recent at migration time.
+    #[serde(default = "default_pumpfun_max_last_buy_age_secs")]
+    pub pumpfun_max_last_buy_age_secs: u64,
 
     // ── Time-of-day weighting ─────────────────────────────────────────────────
     /// Scale position size based on UTC trading hour activity
@@ -199,6 +212,29 @@ pub struct SniperConfig {
     // ── Pool predictive scoring ────────────────────────────────────────────────
     /// Minimum pool score (0–100) required to proceed with a buy (0.0 = disabled)
     pub min_pool_score: f64,
+    /// Require a pool to show moonshot confirmation before buying.
+    /// Confirmation means live vault inflow, strong pump.fun pre-graduation momentum,
+    /// or real historical AMM velocity. This intentionally lowers trade frequency.
+    #[serde(default)]
+    pub require_moonshot_confirmation: bool,
+    /// Minimum final pool score when moonshot confirmation is required.
+    #[serde(default = "default_moonshot_min_score")]
+    pub moonshot_min_score: f64,
+    /// Minimum measured quote-vault inflow rate in SOL/s for a live moonshot signal.
+    #[serde(default = "default_moonshot_min_inflow_sol_per_sec")]
+    pub moonshot_min_inflow_sol_per_sec: f64,
+    /// Minimum quote-vault growth percentage between reserve snapshots.
+    #[serde(default = "default_moonshot_min_growth_pct")]
+    pub moonshot_min_growth_pct: f64,
+    /// Minimum absolute quote-vault growth in SOL between reserve snapshots.
+    #[serde(default = "default_moonshot_min_growth_sol")]
+    pub moonshot_min_growth_sol: f64,
+    /// Minimum pump.fun pre-graduation score that qualifies as moonshot momentum.
+    #[serde(default = "default_moonshot_min_pumpfun_score")]
+    pub moonshot_min_pumpfun_score: f64,
+    /// Minimum historical AMM velocity in SOL/s when pool open_time is trustworthy.
+    #[serde(default = "default_moonshot_min_historical_velocity_sol_per_sec")]
+    pub moonshot_min_historical_velocity_sol_per_sec: f64,
 
     // ── Multi-RPC endpoints ────────────────────────────────────────────────────
     /// Additional RPC endpoints for automatic failover
@@ -457,6 +493,17 @@ pub struct SniperConfig {
 fn default_pumpfun_trending_score() -> f64 { 55.0 }
 fn default_pumpfun_min_curve_pct()   -> f64 { 40.0 }
 fn default_pumpfun_window_secs()     -> u64 { 120  }
+fn default_pumpfun_max_migration_age_secs() -> u64 { 120 }
+fn default_pumpfun_min_recent_buys() -> u32 { 3 }
+fn default_pumpfun_min_net_buy_sol() -> f64 { 0.25 }
+fn default_pumpfun_max_last_buy_age_secs() -> u64 { 20 }
+fn default_moonshot_min_score() -> f64 { 85.0 }
+fn default_moonshot_min_inflow_sol_per_sec() -> f64 { 0.50 }
+fn default_moonshot_min_growth_pct() -> f64 { 2.0 }
+fn default_moonshot_min_growth_sol() -> f64 { 0.01 }
+fn default_moonshot_min_pumpfun_score() -> f64 { 85.0 }
+fn default_moonshot_min_historical_velocity_sol_per_sec() -> f64 { 2.0 }
+fn default_compute_unit_price_hard_cap() -> u64 { 2_000_000 }
 
 impl Default for SniperConfig {
     fn default() -> Self {
@@ -547,6 +594,13 @@ impl Default for SniperConfig {
             // Moderate: operators willing to take more micro-cap risk can lower
             // to 25 in config.toml.
             min_pool_score: 35.0,
+            require_moonshot_confirmation: false,
+            moonshot_min_score: default_moonshot_min_score(),
+            moonshot_min_inflow_sol_per_sec: default_moonshot_min_inflow_sol_per_sec(),
+            moonshot_min_growth_pct: default_moonshot_min_growth_pct(),
+            moonshot_min_growth_sol: default_moonshot_min_growth_sol(),
+            moonshot_min_pumpfun_score: default_moonshot_min_pumpfun_score(),
+            moonshot_min_historical_velocity_sol_per_sec: default_moonshot_min_historical_velocity_sol_per_sec(),
             extra_rpc_endpoints: vec![],
             adaptive_slippage: false,
             sandwich_shield: false,
@@ -665,6 +719,10 @@ impl Default for SniperConfig {
             pumpfun_trending_score: default_pumpfun_trending_score(),
             pumpfun_min_curve_pct: default_pumpfun_min_curve_pct(),
             pumpfun_window_secs: default_pumpfun_window_secs(),
+            pumpfun_max_migration_age_secs: default_pumpfun_max_migration_age_secs(),
+            pumpfun_min_recent_buys: default_pumpfun_min_recent_buys(),
+            pumpfun_min_net_buy_sol: default_pumpfun_min_net_buy_sol(),
+            pumpfun_max_last_buy_age_secs: default_pumpfun_max_last_buy_age_secs(),
         }
     }
 }
@@ -917,6 +975,12 @@ pub struct ExecutionConfig {
     pub compute_unit_limit: u32,
     /// Compute unit price in micro-lamports (default executor)
     pub compute_unit_price: u64,
+    /// Hard cap for computed priority fee in micro-lamports (0 = disabled)
+    #[serde(default = "default_compute_unit_price_hard_cap")]
+    pub compute_unit_price_hard_cap: u64,
+    /// Optional SetLoadedAccountsDataSizeLimit byte limit (0 = disabled)
+    #[serde(default)]
+    pub loaded_accounts_data_size_limit: u32,
     /// Skip preflight simulation
     pub skip_preflight: bool,
     /// Jito block engine URL
@@ -930,6 +994,8 @@ impl Default for ExecutionConfig {
             custom_fee_sol: 0.006,
             compute_unit_limit: 200_000,
             compute_unit_price: 100_000,
+            compute_unit_price_hard_cap: default_compute_unit_price_hard_cap(),
+            loaded_accounts_data_size_limit: 0,
             skip_preflight: true,
             jito_url: "https://mainnet.block-engine.jito.wtf".into(),
         }

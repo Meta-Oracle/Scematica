@@ -66,6 +66,13 @@ blacklist_path = "blacklist.txt"
 # Score 65 = P(win)≈0.09 — requires 6+ SOL + fresh + some velocity.
 # Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
 min_pool_score = 65              # Score 65 = runner threshold. Live data: 63.4% of all trades exit at -0.5% (dead pools). Raising from 45→65 requires: 6.5+ SOL + fresh age + moderate velocity simultaneously. Eliminates the bulk of near-zero exits.
+require_moonshot_confirmation = true
+moonshot_min_score = 85.0
+moonshot_min_inflow_sol_per_sec = 0.50
+moonshot_min_growth_pct = 2.0
+moonshot_min_growth_sol = 0.01
+moonshot_min_pumpfun_score = 85.0
+moonshot_min_historical_velocity_sol_per_sec = 2.0
 
 # ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
 kelly_sizing = false
@@ -92,6 +99,10 @@ pumpfun_trending_enabled = true     # Enable PumpPortal WebSocket trending monit
 pumpfun_trending_score = 70.0       # Min score to consider a token "trending" (0-100). Raised 55→70: only top-tier momentum tokens
 pumpfun_min_curve_pct = 65.0        # Min bonding curve fill % (65% = ~55k USDC raised). Tokens near graduation have strongest post-launch momentum
 pumpfun_window_secs = 120           # Sliding window for trend calculation (seconds)
+pumpfun_max_migration_age_secs = 120 # Skip stale graduations in the early PumpPortal path; Raydium listener can still evaluate them
+pumpfun_min_recent_buys = 3         # Require real buy activity before treating a migration as a runner
+pumpfun_min_net_buy_sol = 0.25      # Buy volume minus sell volume in the trend window
+pumpfun_max_last_buy_age_secs = 20  # Last buy must be recent at graduation time
 
 # ── v1.9.0 Time-of-Day Controls ─────────────────────────────────────────────────
 # Calibrated from 573 confirmed trades (2026-05-16 to 2026-05-23):
@@ -320,6 +331,8 @@ executor = "default"      # default | jito
 custom_fee_sol = 0.001
 compute_unit_limit = 400000
 compute_unit_price = 500000  # high priority — sells land before pool drains
+compute_unit_price_hard_cap = 2000000
+loaded_accounts_data_size_limit = 12500000 # Chainstack CU optimization: keep above Token-2022 account footprint
 skip_preflight = true
 jito_url = "https://mainnet.block-engine.jito.wtf"
 

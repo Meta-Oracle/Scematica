@@ -72,10 +72,12 @@ fn handle_rate_limit(err: &str) {
 
 fn is_rate_limit_err(e: &str) -> bool {
     // Groq: "429", "Rate limit reached", "try again in Xm Ys"
-    // Anthropic: "rate_limit_error", "overloaded_error"
-    e.contains("429") || e.contains("rate_limit") || e.contains("Rate limit")
-        || e.contains("quota") || e.contains("try again in ")
-        || e.contains("rate_limit_error") || e.contains("overloaded_error")
+    // Anthropic: "rate_limit_error", "overloaded_error", or billing exhaustion.
+    let lower = e.to_ascii_lowercase();
+    lower.contains("429") || lower.contains("rate_limit") || lower.contains("rate limit")
+        || lower.contains("quota") || lower.contains("try again in ")
+        || lower.contains("credit balance") || lower.contains("insufficient credit")
+        || lower.contains("billing") || lower.contains("overloaded_error")
 }
 
 // ─── Risk Agent ───────────────────────────────────────────────────────────────

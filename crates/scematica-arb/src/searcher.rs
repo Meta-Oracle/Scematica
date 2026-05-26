@@ -210,16 +210,16 @@ mod tests {
         let pool1 = PoolEdge {
             pool_address: Pubkey::new_unique(),
             dex: DexKind::Raydium,
-            reserve_a: 1_000_000,
-            reserve_b: 2_000_000, // 2:1 ratio
+            reserve_a: 100_000_000,
+            reserve_b: 200_000_000, // 2:1 ratio
             fee_numerator: 0,
             fee_denominator: 10_000,
         };
         let pool2 = PoolEdge {
             pool_address: Pubkey::new_unique(),
             dex: DexKind::Orca,
-            reserve_a: 2_000_000, // 1:1 ratio
-            reserve_b: 2_000_000,
+            reserve_a: 200_000_000, // 1:1 ratio
+            reserve_b: 200_000_000,
             fee_numerator: 0,
             fee_denominator: 10_000,
         };
@@ -233,7 +233,7 @@ mod tests {
             ..ArbConfig::default()
         };
         let searcher = ArbSearcher::new(graph, config);
-        let paths = searcher.search(&mint_a, 100_000);
+        let paths = searcher.search(&mint_a, 1_000_000);
 
         // Should find at least one profitable path
         assert!(!paths.is_empty(), "Expected at least one arb path");

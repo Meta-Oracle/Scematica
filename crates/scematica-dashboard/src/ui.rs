@@ -1,6 +1,6 @@
-use crate::app::{AppState, BuilderMode, RateMode};
+use crate::app::{AppState, BuilderMode, RateMode, DASHBOARD_TAB_COUNT};
 use crate::chat::ChatLine;
-use crate::components::{COLOR_BG, COLOR_ACCENT, COLOR_TEXT, LoaderSpinner};
+use crate::components::{LoaderSpinner, COLOR_ACCENT, COLOR_BG, COLOR_TEXT};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
@@ -26,30 +26,106 @@ const SCEMATICA_LOGO: &str = r#"
 
 static SPINNER: OnceLock<Mutex<LoaderSpinner>> = OnceLock::new();
 
+const TAB_TITLES: [&str; DASHBOARD_TAB_COUNT] =
+    ["Overview", "Trades", "Logs", "Config", "Chat", "Radar"];
+const MIN_TERMINAL_WIDTH: u16 = 52;
+const MIN_TERMINAL_HEIGHT: u16 = 12;
+
+fn active_tab(state: &Arc<AppState>) -> usize {
+    (*state.selected_tab.read()).min(DASHBOARD_TAB_COUNT.saturating_sub(1))
+}
+
+fn status_label(status: &str) -> &str {
+    match status {
+        "✓" => "ok",
+        "✗" => "fail",
+        other => other,
+    }
+}
+
+fn header_cell(label: &'static str) -> Cell<'static> {
+    Cell::from(label).style(
+        Style::default()
+            .fg(COLOR_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn sanitize_display(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '✓' => out.push_str("ok"),
+            '✗' => out.push_str("fail"),
+            '→' => out.push_str("->"),
+            '←' => out.push_str("<-"),
+            '↑' => out.push_str("up"),
+            '↓' => out.push_str("down"),
+            '—' | '–' => out.push('-'),
+            '…' => out.push_str("..."),
+            '×' => out.push('x'),
+            '≈' => out.push('~'),
+            '│' => out.push('|'),
+            '⚡' => out.push_str("HIGH-SPEED"),
+            '🌙' => out.push_str("MOON"),
+            '🔍' => out.push_str("scan"),
+            '❌' => out.push_str("reject"),
+            '✅' => out.push_str("ok"),
+            '📊' => out.push_str("chart"),
+            '⚠' => out.push_str("WARN"),
+            '💰' => out.push_str("profit"),
+            '🔻' => out.push_str("loss"),
+            c if c.is_ascii() => out.push(c),
+            _ => out.push('?'),
+        }
+    }
+    out
+}
+
+fn render_too_small(f: &mut Frame, area: Rect) {
+    let message = "Terminal too small for dashboard. Resize to at least 52x12.";
+    let paragraph = Paragraph::new(message)
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .title(" Scematica ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_ACCENT)),
+        );
+    f.render_widget(paragraph, area);
+}
+
 pub fn render(f: &mut Frame, state: &Arc<AppState>) {
     let size = f.size();
     SPINNER.get_or_init(|| Mutex::new(LoaderSpinner::new()));
-    
+
     // Fill background
     let bg_block = Block::default().bg(COLOR_BG);
     f.render_widget(bg_block, size);
+
+    if size.width < MIN_TERMINAL_WIDTH || size.height < MIN_TERMINAL_HEIGHT {
+        render_too_small(f, size);
+        return;
+    }
 
     // Main layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // header
-            Constraint::Length(3),  // tabs
-            Constraint::Min(0),     // content
-            Constraint::Length(1),  // footer
+            Constraint::Length(3), // header
+            Constraint::Length(3), // tabs
+            Constraint::Min(0),    // content
+            Constraint::Length(1), // footer
         ])
         .split(size);
 
     render_header(f, chunks[0], state);
     render_tabs(f, chunks[1], state);
-    
+
     let content_area = chunks[2];
-    let tab = *state.selected_tab.read();
+    let tab = active_tab(state);
     match tab {
         0 => render_overview(f, content_area, state),
         1 => render_trades(f, content_area, state),
@@ -84,7 +160,12 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
     render_footer(f, chunks[3], tab);
 }
 
-fn render_onboarding(f: &mut Frame, area: Rect, _state: &Arc<AppState>, step: crate::onboarding::OnboardingStep) {
+fn render_onboarding(
+    f: &mut Frame,
+    area: Rect,
+    _state: &Arc<AppState>,
+    step: crate::onboarding::OnboardingStep,
+) {
     let area = Rect::new(
         area.width / 4,
         area.height / 4,
@@ -122,11 +203,10 @@ fn render_onboarding(f: &mut Frame, area: Rect, _state: &Arc<AppState>, step: cr
         .alignment(Alignment::Center)
         .block(block)
         .wrap(Wrap { trim: true });
-        
+
     f.render_widget(Block::default().bg(COLOR_BG), area);
     f.render_widget(p, area);
 }
-
 
 fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mode = *state.active_mode.read();
@@ -143,9 +223,9 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     };
 
     let regime_indicator = match regime.as_str() {
-        "aggressive" => "▲AGG",
-        "conservative" => "▼CON",
-        _ => "◆NEU",
+        "aggressive" => "AGG",
+        "conservative" => "CON",
+        _ => "NEU",
     };
 
     let sol_display = if price_usd > 0.0 {
@@ -154,18 +234,41 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         format!("{:.4}", sol)
     };
 
-    let header_text = format!(
-        " SCEMATICA  │  {}  │  Wallet: {}  │  SOL: {}  │  SCEMA: {:.0}  │  Regime: {}  │  Pos: {}",
-        mode,
-        if wallet.len() > 12 { &wallet[..12] } else { &wallet },
-        sol_display,
-        scema,
-        regime_indicator,
-        open_pos,
-    );
+    let wallet_short = if area.width < 90 {
+        if wallet.len() > 8 {
+            &wallet[..8]
+        } else {
+            &wallet
+        }
+    } else if wallet.len() > 12 {
+        &wallet[..12]
+    } else {
+        &wallet
+    };
+    let header_text = if area.width < 82 {
+        format!(
+            " SCEMATICA | {} | SOL {} | Pos {}",
+            mode, sol_display, open_pos
+        )
+    } else if area.width < 120 {
+        format!(
+            " SCEMATICA | {} | Wallet {} | SOL {} | Regime {} | Pos {}",
+            mode, wallet_short, sol_display, regime_indicator, open_pos,
+        )
+    } else {
+        format!(
+            " SCEMATICA | {} | Wallet: {} | SOL: {} | SCEMA: {:.0} | Regime: {} | Pos: {}",
+            mode, wallet_short, sol_display, scema, regime_indicator, open_pos,
+        )
+    };
 
     let header = Paragraph::new(header_text)
-        .style(Style::default().fg(mode_color).bg(COLOR_BG).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(mode_color)
+                .bg(COLOR_BG)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -175,9 +278,8 @@ fn render_header(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
-    let tab = *state.selected_tab.read();
-    let titles = vec!["Overview", "Trades", "Logs", "Config", "Chat", "Radar"];
-    let tabs = Tabs::new(titles)
+    let tab = active_tab(state);
+    let tabs = Tabs::new(TAB_TITLES.iter().copied())
         .select(tab)
         .style(Style::default().fg(COLOR_TEXT))
         .highlight_style(
@@ -185,11 +287,30 @@ fn render_tabs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 .fg(COLOR_ACCENT)
                 .add_modifier(Modifier::BOLD),
         )
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_ACCENT)),
+        );
     f.render_widget(tabs, area);
 }
 
 fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    if area.width < 120 || area.height < 28 {
+        let compact_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(45),
+                Constraint::Percentage(30),
+                Constraint::Percentage(25),
+            ])
+            .split(area);
+        render_metrics(f, compact_chunks[0], state);
+        render_live_positions(f, compact_chunks[1], state);
+        render_recent_trades(f, compact_chunks[2], state);
+        return;
+    }
+
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -198,7 +319,11 @@ fn render_overview(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     // Left: metrics + session stats + NN stats
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(7), Constraint::Length(7)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(7),
+            Constraint::Length(11),
+        ])
         .split(h_chunks[0]);
     render_metrics(f, left_chunks[0], state);
     render_session_stats(f, left_chunks[1], state);
@@ -235,11 +360,15 @@ fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let title_suffix = if positions.is_empty() {
         String::new()
     } else if max_age_since_check > 10 {
-        format!("  ⚠ stale ({}s)", max_age_since_check)
+        format!("  stale ({}s)", max_age_since_check)
     } else {
         String::new()
     };
-    let title = format!(" 💼 Open Positions  ({} live){} ", positions.len(), title_suffix);
+    let title = format!(
+        " Open Positions ({} live){} ",
+        positions.len(),
+        title_suffix
+    );
 
     let block = Block::default()
         .title(title)
@@ -259,27 +388,35 @@ fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     // the bottom only if there are more than panel-height rows.
     let mut sorted: Vec<_> = positions.iter().cloned().collect();
     sorted.sort_by(|a, b| b.entry_unix_secs.cmp(&a.entry_unix_secs));
+    let compact = area.width < 76;
+    let ultra_compact = area.width < 52;
 
     let rows: Vec<Row> = sorted
         .iter()
         .map(|p| {
-            let pnl   = p.pnl_pct();
-            let peak  = p.peak_pnl_pct();
-            let age   = p.age_secs();
+            let pnl = p.pnl_pct();
+            let peak = p.peak_pnl_pct();
+            let age = p.age_secs();
             let value_sol = p.value_sol();
             let staleness = now_unix.saturating_sub(p.last_check_unix_secs);
 
-            let pnl_color = if pnl >= 45.0       { Color::LightGreen }
-                       else if pnl >= 10.0       { Color::Green }
-                       else if pnl > -5.0        { Color::Yellow }
-                       else if pnl > -25.0       { Color::LightRed }
-                       else                      { Color::Red };
+            let pnl_color = if pnl >= 45.0 {
+                Color::LightGreen
+            } else if pnl >= 10.0 {
+                Color::Green
+            } else if pnl > -5.0 {
+                Color::Yellow
+            } else if pnl > -25.0 {
+                Color::LightRed
+            } else {
+                Color::Red
+            };
 
             // Decline streak indicator — prefix on status
             let streak_pfx = match p.decline_streak {
-                3..=4 => "▼ ",
-                5..   => "▼▼ ",
-                _     => "",
+                3..=4 => "v ",
+                5.. => "vv ",
+                _ => "",
             };
 
             // Status: escalation > stale > momentum > normal
@@ -297,81 +434,146 @@ fn render_live_positions(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 "down".to_string()
             };
             let status = format!("{}{}", streak_pfx, status_body);
-            let status_color = if staleness > 5 { Color::DarkGray }
-                          else if p.decline_streak >= 5 { Color::Red }
-                          else if p.decline_streak >= 3 { Color::LightRed }
-                          else { pnl_color };
+            let status_color = if staleness > 5 {
+                Color::DarkGray
+            } else if p.decline_streak >= 5 {
+                Color::Red
+            } else if p.decline_streak >= 3 {
+                Color::LightRed
+            } else {
+                pnl_color
+            };
 
-            // Progress bar: SL ←|→ TP, 8 chars wide
+            // Progress bar: SL to TP, 8 chars wide
             let prog = p.progress_to_tp();
             let bar_width: usize = 8;
             let filled = ((prog * bar_width as f64).round() as usize).min(bar_width);
-            let bar: String = (0..bar_width).map(|i| {
-                if i < filled { '█' } else { '░' }
-            }).collect();
-            let bar_color = if prog >= 0.85 { Color::LightGreen }
-                       else if prog >= 0.5  { Color::Green }
-                       else if prog >= 0.25 { Color::Yellow }
-                       else                 { Color::Red };
+            let bar: String = (0..bar_width)
+                .map(|i| if i < filled { '#' } else { '.' })
+                .collect();
+            let bar_color = if prog >= 0.85 {
+                Color::LightGreen
+            } else if prog >= 0.5 {
+                Color::Green
+            } else if prog >= 0.25 {
+                Color::Yellow
+            } else {
+                Color::Red
+            };
 
-            // Age: <60 s → seconds, <60 min → Xm Ys, else Xh Ym
-            let age_str = if age < 60 { format!("{}s", age) }
-                     else if age < 3600 { format!("{}m{}s", age/60, age%60) }
-                     else { format!("{}h{}m", age/3600, (age%3600)/60) };
+            // Age: <60 s = seconds, <60 min = Xm Ys, else Xh Ym
+            let age_str = if age < 60 {
+                format!("{}s", age)
+            } else if age < 3600 {
+                format!("{}m{}s", age / 60, age % 60)
+            } else {
+                format!("{}h{}m", age / 3600, (age % 3600) / 60)
+            };
 
             // SL column: show as % from entry (negative = loss floor)
             let sl_pct = p.current_sl_pct;
             let sl_str = format!("{:+.0}%", sl_pct);
-            let sl_color = if sl_pct >= 0.0 { Color::Green }
-                      else if sl_pct > -10.0 { Color::Yellow }
-                      else { Color::LightRed };
+            let sl_color = if sl_pct >= 0.0 {
+                Color::Green
+            } else if sl_pct > -10.0 {
+                Color::Yellow
+            } else {
+                Color::LightRed
+            };
 
-            Row::new(vec![
-                Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
-                Cell::from(age_str),
-                Cell::from(format!("{:.4}", value_sol))
-                    .style(Style::default().fg(pnl_color)),
-                Cell::from(format!("{:+.1}%", pnl))
-                    .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
-                Cell::from(format!("{:+.1}%", peak))
-                    .style(Style::default().fg(Color::Cyan)),
-                Cell::from(sl_str)
-                    .style(Style::default().fg(sl_color)),
-                Cell::from(format!("{:.0}%", p.dynamic_tp_pct))
-                    .style(Style::default().fg(Color::Magenta)),
-                Cell::from(bar)
-                    .style(Style::default().fg(bar_color)),
-                Cell::from(status)
-                    .style(Style::default().fg(status_color)),
-            ])
+            if ultra_compact {
+                Row::new(vec![
+                    Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
+                    Cell::from(format!("{:+.1}%", pnl))
+                        .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
+                    Cell::from(status).style(Style::default().fg(status_color)),
+                ])
+            } else if compact {
+                Row::new(vec![
+                    Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
+                    Cell::from(age_str),
+                    Cell::from(format!("{:+.1}%", pnl))
+                        .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
+                    Cell::from(format!("{:.0}%", p.dynamic_tp_pct))
+                        .style(Style::default().fg(Color::Magenta)),
+                    Cell::from(status).style(Style::default().fg(status_color)),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(p.mint[..8.min(p.mint.len())].to_string()),
+                    Cell::from(age_str),
+                    Cell::from(format!("{:.4}", value_sol)).style(Style::default().fg(pnl_color)),
+                    Cell::from(format!("{:+.1}%", pnl))
+                        .style(Style::default().fg(pnl_color).add_modifier(Modifier::BOLD)),
+                    Cell::from(format!("{:+.1}%", peak)).style(Style::default().fg(Color::Cyan)),
+                    Cell::from(sl_str).style(Style::default().fg(sl_color)),
+                    Cell::from(format!("{:.0}%", p.dynamic_tp_pct))
+                        .style(Style::default().fg(Color::Magenta)),
+                    Cell::from(bar).style(Style::default().fg(bar_color)),
+                    Cell::from(status).style(Style::default().fg(status_color)),
+                ])
+            }
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(9),  // Mint
-        Constraint::Length(7),  // Age
-        Constraint::Length(8),  // Value SOL
-        Constraint::Length(8),  // PnL %
-        Constraint::Length(8),  // Peak %
-        Constraint::Length(6),  // SL floor %
-        Constraint::Length(6),  // TP target %
-        Constraint::Length(10), // Progress bar
-        Constraint::Min(8),     // Status
-    ];
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new(vec![
-                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Age").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Value").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("PnL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Peak").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("SL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("TP").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Progress").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Status").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-            ]),
+    let (widths, headers) = if ultra_compact {
+        (
+            vec![
+                Constraint::Length(9),
+                Constraint::Length(8),
+                Constraint::Min(8),
+            ],
+            vec![
+                header_cell("Mint"),
+                header_cell("PnL"),
+                header_cell("Status"),
+            ],
         )
+    } else if compact {
+        (
+            vec![
+                Constraint::Length(9),
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Length(6),
+                Constraint::Min(8),
+            ],
+            vec![
+                header_cell("Mint"),
+                header_cell("Age"),
+                header_cell("PnL"),
+                header_cell("TP"),
+                header_cell("Status"),
+            ],
+        )
+    } else {
+        (
+            vec![
+                Constraint::Length(9),  // Mint
+                Constraint::Length(7),  // Age
+                Constraint::Length(8),  // Value SOL
+                Constraint::Length(8),  // PnL %
+                Constraint::Length(8),  // Peak %
+                Constraint::Length(6),  // SL floor %
+                Constraint::Length(6),  // TP target %
+                Constraint::Length(10), // Progress bar
+                Constraint::Min(8),     // Status
+            ],
+            vec![
+                header_cell("Mint"),
+                header_cell("Age"),
+                header_cell("Value"),
+                header_cell("PnL"),
+                header_cell("Peak"),
+                header_cell("SL"),
+                header_cell("TP"),
+                header_cell("Progress"),
+                header_cell("Status"),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers))
         .block(block);
     f.render_widget(table, area);
 }
@@ -390,24 +592,52 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let price_str = if price_usd > 0.0 {
         format!("${:.2} / SOL", price_usd)
     } else {
-        "fetching…".to_string()
+        "fetching...".to_string()
     };
     let pnl_usd_str = if price_usd > 0.0 {
-        format!("{:.6} SOL  (${:.4})", m.total_pnl_sol(), m.total_pnl_sol() * price_usd)
+        format!(
+            "{:.6} SOL  (${:.4})",
+            m.total_pnl_sol(),
+            m.total_pnl_sol() * price_usd
+        )
     } else {
         format!("{:.6} SOL", m.total_pnl_sol())
     };
 
     let rows: Vec<Row> = vec![
-        Row::new(vec![Cell::from("Trades Attempted"), Cell::from(m.trades_attempted.to_string())]),
-        Row::new(vec![Cell::from("Trades Confirmed"), Cell::from(m.trades_confirmed.to_string())]),
-        Row::new(vec![Cell::from("Trades Failed"), Cell::from(m.trades_failed.to_string())]),
-        Row::new(vec![Cell::from("Win Rate"), Cell::from(format!("{:.1}%", m.win_rate()))]),
-        Row::new(vec![Cell::from("Arbs Found"), Cell::from(m.arb_opportunities_found.to_string())]),
-        Row::new(vec![Cell::from("Arbs Executed"), Cell::from(m.arb_executed.to_string())]),
+        Row::new(vec![
+            Cell::from("Trades Attempted"),
+            Cell::from(m.trades_attempted.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Trades Confirmed"),
+            Cell::from(m.trades_confirmed.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Trades Failed"),
+            Cell::from(m.trades_failed.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Win Rate"),
+            Cell::from(format!("{:.1}%", m.win_rate())),
+        ]),
+        Row::new(vec![
+            Cell::from("Arbs Found"),
+            Cell::from(m.arb_opportunities_found.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Arbs Executed"),
+            Cell::from(m.arb_executed.to_string()),
+        ]),
         Row::new(vec![Cell::from("Total PnL"), Cell::from(pnl_usd_str)]),
-        Row::new(vec![Cell::from("Pools Tracked"), Cell::from(m.pools_tracked.to_string())]),
-        Row::new(vec![Cell::from("Uptime"), Cell::from(format!("{}s", m.uptime_secs))]),
+        Row::new(vec![
+            Cell::from("Pools Tracked"),
+            Cell::from(m.pools_tracked.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Uptime"),
+            Cell::from(format!("{}s", m.uptime_secs)),
+        ]),
         Row::new(vec![
             Cell::from("SOL Balance"),
             Cell::from(sol_usd_str).style(Style::default().fg(Color::Cyan)),
@@ -418,22 +648,27 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         ]),
         Row::new(vec![
             Cell::from("SCEMA Balance"),
-            Cell::from(format!("{:.2} SCEMA", scema))
-                .style(Style::default().fg(if scema > 0.0 { Color::Green } else { Color::DarkGray })),
+            Cell::from(format!("{:.2} SCEMA", scema)).style(Style::default().fg(if scema > 0.0 {
+                Color::Green
+            } else {
+                Color::DarkGray
+            })),
         ]),
     ];
 
     let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
     let table = Table::new(rows, widths)
-        .header(
-            Row::new(vec![
-                Cell::from("Metric").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Value").style(Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
-            ]),
-        )
+        .header(Row::new(vec![
+            Cell::from("Metric").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Value").style(Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
+        ]))
         .block(
             Block::default()
-                .title(" 📊 Metrics ")
+                .title(" Metrics ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_ACCENT)),
         );
@@ -447,11 +682,15 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .iter()
         .take(20)
         .map(|t| {
-            let color = if t.pnl >= 0.0 { Color::Green } else { COLOR_ACCENT };
+            let color = if t.pnl >= 0.0 {
+                Color::Green
+            } else {
+                COLOR_ACCENT
+            };
             let line = format!(
                 "{} {} {} {:>10.4} SOL  {}",
                 t.timestamp.format("%H:%M:%S"),
-                t.status,
+                status_label(&t.status),
                 t.kind,
                 t.pnl,
                 &t.mint[..8.min(t.mint.len())],
@@ -462,7 +701,7 @@ fn render_recent_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" 📈 Recent Trades ")
+            .title(" Recent Trades ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(COLOR_ACCENT)),
     );
@@ -480,19 +719,25 @@ fn render_session_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     } else if streak < 0 {
         (format!("L{}", streak.abs()), Color::Red)
     } else {
-        ("—".to_string(), Color::DarkGray)
+        ("-".to_string(), Color::DarkGray)
     };
 
     let rows = vec![
         Row::new(vec![
             Cell::from("Best Trade"),
-            Cell::from(format!("{:+.4} SOL", best))
-                .style(Style::default().fg(if best >= 0.0 { Color::Green } else { COLOR_ACCENT })),
+            Cell::from(format!("{:+.4} SOL", best)).style(Style::default().fg(if best >= 0.0 {
+                Color::Green
+            } else {
+                COLOR_ACCENT
+            })),
         ]),
         Row::new(vec![
             Cell::from("Worst Trade"),
-            Cell::from(format!("{:+.4} SOL", worst))
-                .style(Style::default().fg(if worst >= 0.0 { Color::Green } else { COLOR_ACCENT })),
+            Cell::from(format!("{:+.4} SOL", worst)).style(Style::default().fg(if worst >= 0.0 {
+                Color::Green
+            } else {
+                COLOR_ACCENT
+            })),
         ]),
         Row::new(vec![
             Cell::from("Streak"),
@@ -505,15 +750,24 @@ fn render_session_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     ];
 
     let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
-    let table = Table::new(rows, widths)
-        .block(Block::default().title(" 🏆 Session Stats ").borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
+    let table = Table::new(rows, widths).block(
+        Block::default()
+            .title(" Session Stats ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(COLOR_ACCENT)),
+    );
     f.render_widget(table, area);
 }
 
 fn render_pnl_sparkline(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let spark_data: Vec<u64> = state.pnl_sparkline.read().iter().copied().collect();
     let sparkline = Sparkline::default()
-        .block(Block::default().title(" PnL History ").borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)))
+        .block(
+            Block::default()
+                .title(" PnL History ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_ACCENT)),
+        )
         .data(&spark_data)
         .style(Style::default().fg(Color::Green));
     f.render_widget(sparkline, area);
@@ -527,24 +781,37 @@ fn render_alert_history(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .border_style(Style::default().fg(Color::Yellow));
 
     let items: Vec<ListItem> = if alerts.is_empty() {
-        vec![ListItem::new(
-            Line::from(Span::styled("No alerts yet", Style::default().fg(Color::DarkGray))),
-        )]
+        vec![ListItem::new(Line::from(Span::styled(
+            "No alerts yet",
+            Style::default().fg(Color::DarkGray),
+        )))]
     } else {
-        alerts.iter().map(|(ts, title, body)| {
-            let is_sell = title.contains("SELL");
-            let is_buy  = title.contains("BUY");
-            let col = if is_sell && title.contains('✓') { Color::Green }
-                      else if is_buy { Color::Cyan }
-                      else { Color::Yellow };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{} ", ts.format("%H:%M:%S")),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(format!("{} — {}", title, body), Style::default().fg(col)),
-            ]))
-        }).collect()
+        alerts
+            .iter()
+            .map(|(ts, title, body)| {
+                let is_sell = title.contains("SELL");
+                let is_buy = title.contains("BUY");
+                let col = if is_sell && title.contains('✓') {
+                    Color::Green
+                } else if is_buy {
+                    Color::Cyan
+                } else {
+                    Color::Yellow
+                };
+                let title_display = title.replace('✓', "ok").replace('✗', "fail");
+                let body_display = sanitize_display(body);
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", ts.format("%H:%M:%S")),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("{} - {}", title_display, body_display),
+                        Style::default().fg(col),
+                    ),
+                ]))
+            })
+            .collect()
     };
 
     let list = List::new(items).block(block);
@@ -555,32 +822,37 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let nn = state.nn_stats.read();
 
     // Split area: top for stats table, bottom for Q-value bar chart
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(7), Constraint::Length(4)])
-        .split(area);
+    let (stats_area, q_area) = if area.height >= 10 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(6), Constraint::Length(4)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
 
     let block = Block::default()
-        .title(" 🧠 Deep Q* Agent ")
+        .title(" Deep Q* Agent ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
     let action_labels = ["Hold", "Buy", "BuyAgg", "SellP", "SellAll"];
 
     if let Some(v) = &*nn {
-        let epsilon  = v["epsilon"].as_f64().unwrap_or(1.0);
-        let steps    = v["step_count"].as_u64().unwrap_or(0);
-        let replay   = v["replay_size"].as_u64().unwrap_or(0);
-        let loss     = v["avg_loss"].as_f64().unwrap_or(0.0);
-        let reward   = v["total_reward"].as_f64().unwrap_or(0.0);
-        let ready    = v["ready_to_advise"].as_bool().unwrap_or(false);
+        let epsilon = v["epsilon"].as_f64().unwrap_or(1.0);
+        let steps = v["step_count"].as_u64().unwrap_or(0);
+        let replay = v["replay_size"].as_u64().unwrap_or(0);
+        let loss = v["avg_loss"].as_f64().unwrap_or(0.0);
+        let reward = v["total_reward"].as_f64().unwrap_or(0.0);
+        let ready = v["ready_to_advise"].as_bool().unwrap_or(false);
         let last_act = v["last_action"].as_str().unwrap_or("-").to_string();
         let ready_str = if ready { "YES" } else { "NO" };
         let ready_col = if ready { Color::Green } else { Color::Yellow };
 
         let rows = vec![
             Row::new(vec![
-                Cell::from("ε / Steps").style(Style::default().fg(Color::DarkGray)),
+                Cell::from("eps / Steps").style(Style::default().fg(Color::DarkGray)),
                 Cell::from(format!("{:.4}  /  {}", epsilon, steps)),
             ]),
             Row::new(vec![
@@ -600,9 +872,8 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 Cell::from(ready_str).style(Style::default().fg(ready_col)),
             ]),
         ];
-        let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)])
-            .block(block);
-        f.render_widget(table, chunks[0]);
+        let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)]).block(block);
+        f.render_widget(table, stats_area);
 
         // Q-value bar chart — one bar per action, width proportional to Q-value
         let q_vals: Vec<f64> = if let Some(arr) = v["last_q_values"].as_array() {
@@ -611,63 +882,74 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             Vec::new()
         };
 
-        if !q_vals.is_empty() {
+        if let Some(q_area) = q_area {
             let q_block = Block::default()
                 .title(" Q-values ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray));
 
-            let q_min = q_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-            let q_max = q_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let q_range = (q_max - q_min).max(1.0);
-            let max_action = q_vals.iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            if !q_vals.is_empty() {
+                let q_min = q_vals.iter().cloned().fold(f64::INFINITY, f64::min);
+                let q_max = q_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let q_range = (q_max - q_min).max(1.0);
+                let max_action = q_vals
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
 
-            let bar_w = (chunks[1].width.saturating_sub(2)) as usize / action_labels.len().max(1);
-            let mut spans: Vec<Span> = Vec::new();
-            for (i, (&q, &label)) in q_vals.iter().zip(action_labels.iter()).enumerate() {
-                let norm = ((q - q_min) / q_range * (bar_w.saturating_sub(1)) as f64) as usize;
-                let bar: String = "█".repeat(norm.max(1));
-                let col = if i == max_action { Color::Green } else { Color::Blue };
-                spans.push(Span::styled(
-                    format!("{:<width$}", format!("{} {:.1}", label, q), width = bar_w),
-                    Style::default().fg(col),
-                ));
-                let _ = bar; // suppress unused warning; label already carries width signal
+                let cell_w =
+                    ((q_area.width.saturating_sub(2)) as usize / action_labels.len().max(1)).max(7);
+                let mut spans: Vec<Span> = Vec::new();
+                for (i, (&q, &label)) in q_vals.iter().zip(action_labels.iter()).enumerate() {
+                    let bar_max = cell_w.saturating_sub(label.len() + 7).max(1);
+                    let norm = ((q - q_min) / q_range * bar_max as f64).round() as usize;
+                    let bar: String = "#".repeat(norm.max(1).min(bar_max));
+                    let col = if i == max_action {
+                        Color::Green
+                    } else {
+                        Color::Blue
+                    };
+                    let cell = format!("{}:{:.1} {}", label, q, bar);
+                    spans.push(Span::styled(
+                        format!("{:<width$}", cell, width = cell_w),
+                        Style::default().fg(col),
+                    ));
+                }
+                let p = Paragraph::new(Line::from(spans)).block(q_block);
+                f.render_widget(p, q_area);
+            } else {
+                let p = Paragraph::new("  Waiting for first Q-value observation...")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(q_block);
+                f.render_widget(p, q_area);
             }
-            let p = Paragraph::new(Line::from(spans)).block(q_block);
-            f.render_widget(p, chunks[1]);
-        } else {
-            let q_block = Block::default()
-                .title(" Q-values ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray));
-            let p = Paragraph::new("  Waiting for first Q-value observation…")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(q_block);
-            f.render_widget(p, chunks[1]);
         }
     } else {
         let table = Table::new(
-            vec![Row::new(vec![Cell::from("Waiting for NN agent...").style(Style::default().fg(Color::DarkGray))])],
+            vec![Row::new(vec![
+                Cell::from("Waiting for NN agent...").style(Style::default().fg(Color::DarkGray))
+            ])],
             [Constraint::Min(0)],
-        ).block(block);
-        f.render_widget(table, chunks[0]);
+        )
+        .block(block);
+        f.render_widget(table, stats_area);
 
-        let q_block = Block::default()
-            .title(" Q-values ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-        f.render_widget(q_block, chunks[1]);
+        if let Some(q_area) = q_area {
+            let q_block = Block::default()
+                .title(" Q-values ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
+            f.render_widget(q_block, q_area);
+        }
     }
 }
 
 fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let trades = state.trades.read();
     let scema_mint = known_tokens::SCEMATICA_MINT.to_string();
+    let compact = area.width < 70;
 
     let rows: Vec<Row> = trades
         .iter()
@@ -686,46 +968,72 @@ fn render_trades(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 t.mint[..8.min(t.mint.len())].to_string()
             };
 
-            Row::new(vec![
-                Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
-                Cell::from(t.status.clone()),
-                Cell::from(t.kind.clone()),
-                Cell::from(mint_display),
-                Cell::from(format!("{:.6}", t.amount)),
-                Cell::from(format!("{:.6}", t.pnl)),
-                Cell::from(t.signature[..12.min(t.signature.len())].to_string()),
-            ])
-            .style(Style::default().fg(color))
+            if compact {
+                Row::new(vec![
+                    Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
+                    Cell::from(t.kind.clone()),
+                    Cell::from(mint_display),
+                    Cell::from(format!("{:.6}", t.pnl)),
+                ])
+                .style(Style::default().fg(color))
+            } else {
+                Row::new(vec![
+                    Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
+                    Cell::from(status_label(&t.status).to_string()),
+                    Cell::from(t.kind.clone()),
+                    Cell::from(mint_display),
+                    Cell::from(format!("{:.6}", t.amount)),
+                    Cell::from(format!("{:.6}", t.pnl)),
+                    Cell::from(t.signature[..12.min(t.signature.len())].to_string()),
+                ])
+                .style(Style::default().fg(color))
+            }
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(10),
-        Constraint::Length(3),
-        Constraint::Length(6),
-        Constraint::Length(10),
-        Constraint::Length(12),
-        Constraint::Length(12),
-        Constraint::Min(0),
-    ];
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new(vec![
-                Cell::from("Time").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("St").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Type").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Amount").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("PnL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Sig").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-            ]),
+    let (widths, headers) = if compact {
+        (
+            vec![
+                Constraint::Length(10),
+                Constraint::Length(6),
+                Constraint::Length(10),
+                Constraint::Min(10),
+            ],
+            vec![
+                header_cell("Time"),
+                header_cell("Type"),
+                header_cell("Mint"),
+                header_cell("PnL"),
+            ],
         )
-        .block(
-            Block::default()
-                .title(" 📋 Trade History ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(COLOR_ACCENT)),
-        );
+    } else {
+        (
+            vec![
+                Constraint::Length(10),
+                Constraint::Length(6),
+                Constraint::Length(6),
+                Constraint::Length(10),
+                Constraint::Length(12),
+                Constraint::Length(12),
+                Constraint::Min(0),
+            ],
+            vec![
+                header_cell("Time"),
+                header_cell("St"),
+                header_cell("Type"),
+                header_cell("Mint"),
+                header_cell("Amount"),
+                header_cell("PnL"),
+                header_cell("Sig"),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths).header(Row::new(headers)).block(
+        Block::default()
+            .title(" Trade History ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(COLOR_ACCENT)),
+    );
 
     f.render_widget(table, area);
 }
@@ -746,7 +1054,11 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     // Build vertical layout dynamically based on active banners + filter bar
     let dump_h: u16 = if dump_mode { 3 } else { 0 };
     let sell_h: u16 = if sell_mode { 3 } else { 0 };
-    let filter_h: u16 = if filter_active || !filter_text.is_empty() { 3 } else { 0 };
+    let filter_h: u16 = if filter_active || !filter_text.is_empty() {
+        3
+    } else {
+        0
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -763,21 +1075,39 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             sol_label
         );
         let banner = Paragraph::new(banner_text)
-            .style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
         f.render_widget(banner, chunks[0]);
     }
 
     if sell_mode {
         let banner_text = format!(
-            " SELL MODE ACTIVE  |  SOL: {}  |  Buying paused — selling all positions  |  [e] to deactivate ",
+            " SELL MODE ACTIVE  |  SOL: {}  |  Buying paused - selling all positions  |  [e] to deactivate ",
             sol_label
         );
         let banner = Paragraph::new(banner_text)
-            .style(Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            )
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COLOR_ACCENT)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_ACCENT)),
+            );
         f.render_widget(banner, chunks[1]);
     }
 
@@ -786,10 +1116,20 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         let filter_display = format!(" Filter: {}{}", filter_text, cursor);
         let filter_bar = Paragraph::new(filter_display)
             .style(Style::default().fg(Color::White))
-            .block(Block::default()
-                .title(if filter_active { " [/] Filter (Esc to clear) " } else { " Filter active " })
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(if filter_active { Color::Cyan } else { Color::DarkGray })));
+            .block(
+                Block::default()
+                    .title(if filter_active {
+                        " [/] Filter (Esc to clear) "
+                    } else {
+                        " Filter active "
+                    })
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if filter_active {
+                        Color::Cyan
+                    } else {
+                        Color::DarkGray
+                    })),
+            );
         f.render_widget(filter_bar, chunks[2]);
     }
 
@@ -799,8 +1139,8 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let inner_width = log_area.width.saturating_sub(2).max(10) as usize;
     let max_rows = log_area.height.saturating_sub(2) as usize;
     let filter_lower = filter_text.to_lowercase();
-    // Prefix for wrapped continuation lines — keeps visual structure clear.
-    let cont_prefix = "  ↪ ";
+    // Prefix for wrapped continuation lines; keeps visual structure clear.
+    let cont_prefix = "  > ";
     // inner_width for continuation lines (shorter by prefix len)
     let cont_width = inner_width.saturating_sub(cont_prefix.len()).max(4);
 
@@ -816,29 +1156,39 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             COLOR_ACCENT
         } else if raw.contains("WARN") || raw.contains("[WARN]") {
             Color::Yellow
-        } else if raw.contains("confirmed") || raw.contains("Sell confirmed") || raw.contains("[INFO] sell") {
+        } else if raw.contains("confirmed")
+            || raw.contains("Sell confirmed")
+            || raw.contains("[INFO] sell")
+        {
             Color::Green
         } else if raw.contains("[INFO]") || raw.contains("[TRADE]") {
             COLOR_TEXT
         } else {
             COLOR_TEXT
         };
-        let style      = Style::default().fg(color);
+        let style = Style::default().fg(color);
         let cont_style = Style::default().fg(color).add_modifier(Modifier::DIM);
 
         // Safety-clip absurdly long lines before processing so we don't spend
         // microseconds chunking a 10 000-char corrupt entry.
-        let raw_clipped: &str = if raw.chars().count() > 1000 {
-            &raw[..raw.char_indices().nth(1000).map(|(i, _)| i).unwrap_or(raw.len())]
+        let visible_raw = sanitize_display(raw);
+        let raw_clipped: &str = if visible_raw.chars().count() > 1000 {
+            &visible_raw[..visible_raw
+                .char_indices()
+                .nth(1000)
+                .map(|(i, _)| i)
+                .unwrap_or(visible_raw.len())]
         } else {
-            raw.as_str()
+            visible_raw.as_str()
         };
 
         let chars: Vec<char> = raw_clipped.chars().collect();
         if chars.is_empty() {
-            // blank separator — still push so timestamp gaps are visible
+            // blank separator - still push so timestamp gaps are visible
             lines.push(Line::from(Span::styled(String::new(), style)));
-            if lines.len() >= max_rows { break; }
+            if lines.len() >= max_rows {
+                break;
+            }
         } else {
             // First chunk: full inner_width
             let first_end = inner_width.min(chars.len());
@@ -846,9 +1196,11 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 chars[..first_end].iter().collect::<String>(),
                 style,
             )));
-            if lines.len() >= max_rows { break 'outer; }
+            if lines.len() >= max_rows {
+                break 'outer;
+            }
 
-            // Continuation chunks: slightly narrower with "  ↪ " prefix
+            // Continuation chunks: slightly narrower with the continuation prefix.
             let mut pos = first_end;
             while pos < chars.len() {
                 let end = (pos + cont_width).min(chars.len());
@@ -857,7 +1209,9 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                     Span::styled(cont_prefix, cont_style),
                     Span::styled(chunk, style),
                 ]));
-                if lines.len() >= max_rows { break 'outer; }
+                if lines.len() >= max_rows {
+                    break 'outer;
+                }
                 pos = end;
             }
         }
@@ -865,13 +1219,14 @@ fn render_logs(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
 
     let high_speed = *state.high_speed_active.read();
     let title = if dump_mode {
-        " Logs — DUMP MODE ACTIVE (newest first)  [b] Force Buy Mode ".to_string()
+        " Logs - DUMP MODE ACTIVE (newest first)  [b] Force Buy Mode ".to_string()
     } else if sell_mode {
-        " Logs — SELL MODE (newest first)  [b] Force Buy Mode  [d] Dump All ".to_string()
+        " Logs - SELL MODE (newest first)  [b] Force Buy Mode  [d] Dump All ".to_string()
     } else if high_speed {
-        " Logs — ⚡ HIGH-SPEED (newest first)  [h] Disable  [e] Sell Mode  [d] Dump ".to_string()
+        " Logs - HIGH-SPEED (newest first)  [h] Disable  [e] Sell Mode  [d] Dump ".to_string()
     } else {
-        " Logs (newest first)  [e] Sell Mode  [b] Buy Mode  [h] High-Speed  [d] Dump All ".to_string()
+        " Logs (newest first)  [e] Sell Mode  [b] Buy Mode  [h] High-Speed  [d] Dump All "
+            .to_string()
     };
 
     let border_color = if dump_mode {
@@ -910,19 +1265,25 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     };
 
     let (mode_dot, mode_color) = match mode {
-        crate::app::BotMode::Idle    => ("● IDLE",    Color::DarkGray),
-        crate::app::BotMode::Sniper  => ("● SNIPER",  Color::Green),
-        crate::app::BotMode::Arb     => ("● ARB",     Color::Green),
-        crate::app::BotMode::Both    => ("● BOTH",    Color::Green),
+        crate::app::BotMode::Idle => ("[IDLE]", Color::DarkGray),
+        crate::app::BotMode::Sniper => ("[SNIPER]", Color::Green),
+        crate::app::BotMode::Arb => ("[ARB]", Color::Green),
+        crate::app::BotMode::Both => ("[BOTH]", Color::Green),
     };
 
     let text = vec![
-        Line::from(vec![
-            Span::styled("Bot Controls", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Bot Controls",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  Status: ", Style::default().fg(COLOR_ACCENT)),
-            Span::styled(mode_dot, Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                mode_dot,
+                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -935,14 +1296,19 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             Span::styled("[x] Stop All", Style::default().fg(COLOR_ACCENT)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("AI Strategy Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "AI Strategy Agent",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  Regime:     ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 regime.to_uppercase(),
-                Style::default().fg(regime_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(regime_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
@@ -957,146 +1323,447 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
             Span::styled("  Size Mult:  ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!(" {:.2}x", mult),
-                Style::default().fg(if mult >= 1.0 { Color::Green } else { COLOR_ACCENT }),
+                Style::default().fg(if mult >= 1.0 {
+                    Color::Green
+                } else {
+                    COLOR_ACCENT
+                }),
             ),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Rate Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Rate Mode",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("  (press key to switch)"),
         ]),
         {
             let active = rate_mode == RateMode::Bearish;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Blue } else { Color::DarkGray })),
-                Span::styled("[1] Bearish    ", Style::default().fg(if active { Color::Blue } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("0.3x  0.003 SOL/trade  TP: 45%  SL:  8%", Style::default().fg(if active { Color::Blue } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active { Color::Blue } else { Color::DarkGray }),
+                ),
+                Span::styled(
+                    "[1] Bearish    ",
+                    Style::default()
+                        .fg(if active { Color::Blue } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "0.3x  0.003 SOL/trade  TP: 45%  SL:  8%",
+                    Style::default().fg(if active { Color::Blue } else { Color::DarkGray }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Micro;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Cyan } else { Color::DarkGray })),
-                Span::styled("[2] Micro      ", Style::default().fg(if active { Color::Cyan } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("0.1x  0.001 SOL/trade  TP: 60%  SL: 10%  (≈$1–2 wallets)", Style::default().fg(if active { Color::Cyan } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active { Color::Cyan } else { Color::DarkGray }),
+                ),
+                Span::styled(
+                    "[2] Micro      ",
+                    Style::default()
+                        .fg(if active { Color::Cyan } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "0.1x  0.001 SOL/trade  TP: 60%  SL: 10%  (~$1-2 wallets)",
+                    Style::default().fg(if active { Color::Cyan } else { Color::DarkGray }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Safe;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[3] Safe       ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("0.5x  0.005 SOL/trade  TP: 75%  SL: 10%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[3] Safe       ",
+                    Style::default()
+                        .fg(if active { Color::Green } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "0.5x  0.005 SOL/trade  TP: 75%  SL: 10%",
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Balanced;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[4] Balanced   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("1.0x  0.010 SOL/trade  TP:150%  SL: 15%", Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[4] Balanced   ",
+                    Style::default()
+                        .fg(if active { Color::Green } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "1.0x  0.010 SOL/trade  TP:150%  SL: 15%",
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Aggressive;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
-                Span::styled("[5] Aggressive ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("2.0x  0.020 SOL/trade  TP:300%  SL: 25%", Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[5] Aggressive ",
+                    Style::default()
+                        .fg(if active { Color::Yellow } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "2.0x  0.020 SOL/trade  TP:300%  SL: 25%",
+                    Style::default().fg(if active {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Degen;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
-                Span::styled("[6] Degen      ", Style::default().fg(if active { COLOR_ACCENT } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("4.0x  0.040 SOL/trade  TP:450%  SL: 40%", Style::default().fg(if active { COLOR_ACCENT } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        COLOR_ACCENT
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[6] Degen      ",
+                    Style::default()
+                        .fg(if active { COLOR_ACCENT } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "4.0x  0.040 SOL/trade  TP:450%  SL: 40%",
+                    Style::default().fg(if active {
+                        COLOR_ACCENT
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Bullish;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
-                Span::styled("[7] Bullish    ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("6.0x  0.060 SOL/trade  TP:750%  SL: 50%", Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Magenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[7] Bullish    ",
+                    Style::default()
+                        .fg(if active { Color::Magenta } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "6.0x  0.060 SOL/trade  TP:750%  SL: 50%",
+                    Style::default().fg(if active {
+                        Color::Magenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = rate_mode == RateMode::Moon;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::LightMagenta } else { Color::DarkGray })),
-                Span::styled("[8] 🌙 Moon    ", Style::default().fg(if active { Color::LightMagenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled("8.0x  0.080 SOL/trade  TP:1200% SL: 60%  (parabolic chase)", Style::default().fg(if active { Color::LightMagenta } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::LightMagenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[8] Moon       ",
+                    Style::default()
+                        .fg(if active {
+                            Color::LightMagenta
+                        } else {
+                            COLOR_TEXT
+                        })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    "8.0x  0.080 SOL/trade  TP:1200% SL: 60%  (parabolic chase)",
+                    Style::default().fg(if active {
+                        Color::LightMagenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         Line::from(""),
         {
-            let mc_color = if moon_chase { Color::LightMagenta } else { Color::DarkGray };
-            let mc_text  = if moon_chase {
-                "🌙 ENGAGED  —  8 escalations × 1.75×  |  pullback 25%  |  threshold 3%/check"
+            let mc_color = if moon_chase {
+                Color::LightMagenta
             } else {
-                "disengaged  —  press [m] to enable parabolic-greedy escalation"
+                Color::DarkGray
+            };
+            let mc_text = if moon_chase {
+                "ENGAGED  -  8 escalations x 1.75x  |  pullback 25%  |  threshold 3%/check"
+            } else {
+                "disengaged  -  press [m] to enable parabolic-greedy escalation"
             };
             Line::from(vec![
-                Span::styled("[m] Moon Chase: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(mc_text, Style::default().fg(mc_color).add_modifier(if moon_chase { Modifier::BOLD } else { Modifier::empty() })),
+                Span::styled(
+                    "[m] Moon Chase: ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    mc_text,
+                    Style::default().fg(mc_color).add_modifier(if moon_chase {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+                ),
             ])
         },
         Line::from(""),
         Line::from(vec![
-            Span::styled("Builder Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("  (compounding algorithm — live size/TP/SL from wallet progress)"),
+            Span::styled(
+                "Builder Mode",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  (compounding algorithm - live size/TP/SL from wallet progress)"),
         ]),
         {
             let active = builder_mode == BuilderMode::Off;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(Color::DarkGray)),
-                Span::styled("[o] Off          ", Style::default().fg(if active { Color::White } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled(BuilderMode::Off.algo_description(), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    "[o] Off          ",
+                    Style::default()
+                        .fg(if active { Color::White } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    BuilderMode::Off.algo_description(),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ])
         },
         {
             let active = builder_mode == BuilderMode::Growth;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
-                Span::styled("[g] Growth 0.2   ", Style::default().fg(if active { Color::Green } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled(BuilderMode::Growth.algo_description(), Style::default().fg(if active { Color::Green } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[g] Growth 0.2   ",
+                    Style::default()
+                        .fg(if active { Color::Green } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    BuilderMode::Growth.algo_description(),
+                    Style::default().fg(if active {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = builder_mode == BuilderMode::Builder;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
-                Span::styled("[j] Builder 1.0  ", Style::default().fg(if active { Color::Yellow } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled(BuilderMode::Builder.algo_description(), Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[j] Builder 1.0  ",
+                    Style::default()
+                        .fg(if active { Color::Yellow } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    BuilderMode::Builder.algo_description(),
+                    Style::default().fg(if active {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         {
             let active = builder_mode == BuilderMode::SuperBuilder;
             Line::from(vec![
-                Span::styled(if active { "▶ " } else { "  " }, Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
-                Span::styled("[k] SuperBld 3.0 ", Style::default().fg(if active { Color::Magenta } else { COLOR_TEXT }).add_modifier(if active { Modifier::BOLD } else { Modifier::empty() })),
-                Span::styled(BuilderMode::SuperBuilder.algo_description(), Style::default().fg(if active { Color::Magenta } else { Color::DarkGray })),
+                Span::styled(
+                    if active { "> " } else { "  " },
+                    Style::default().fg(if active {
+                        Color::Magenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled(
+                    "[k] SuperBld 3.0 ",
+                    Style::default()
+                        .fg(if active { Color::Magenta } else { COLOR_TEXT })
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    BuilderMode::SuperBuilder.algo_description(),
+                    Style::default().fg(if active {
+                        Color::Magenta
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
             ])
         },
         Line::from(""),
-        Line::from(vec![
-            Span::styled("SCEMATICA Token", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "SCEMATICA Token",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  Mint:    ", Style::default().fg(COLOR_ACCENT)),
-            Span::styled("AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump", Style::default().fg(COLOR_TEXT)),
+            Span::styled(
+                "AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump",
+                Style::default().fg(COLOR_TEXT),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Symbol:  ", Style::default().fg(COLOR_ACCENT)),
-            Span::styled("SCEMA", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "SCEMA",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Balance: ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
                 format!("{:.2} SCEMA", scema),
                 Style::default()
-                    .fg(if scema > 0.0 { Color::Green } else { COLOR_ACCENT })
+                    .fg(if scema > 0.0 {
+                        Color::Green
+                    } else {
+                        COLOR_ACCENT
+                    })
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -1112,9 +1779,12 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let mut extra_lines: Vec<Line> = Vec::new();
     if let Some(stats) = filter_stats_opt {
         extra_lines.push(Line::from(""));
-        extra_lines.push(Line::from(vec![
-            Span::styled("Filter Stats", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]));
+        extra_lines.push(Line::from(vec![Span::styled(
+            "Filter Stats",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]));
         if let Some(obj) = stats.as_object() {
             if let Some(seen) = obj.get("pools_seen").and_then(|v| v.as_u64()) {
                 extra_lines.push(Line::from(vec![
@@ -1133,8 +1803,14 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                     let n = count.as_u64().unwrap_or(0);
                     if n > 0 {
                         extra_lines.push(Line::from(vec![
-                            Span::styled(format!("  {:16}", filter), Style::default().fg(COLOR_ACCENT)),
-                            Span::styled(format!("{} rejected", n), Style::default().fg(Color::Yellow)),
+                            Span::styled(
+                                format!("  {:16}", filter),
+                                Style::default().fg(COLOR_ACCENT),
+                            ),
+                            Span::styled(
+                                format!("{} rejected", n),
+                                Style::default().fg(Color::Yellow),
+                            ),
                         ]));
                     }
                 }
@@ -1149,22 +1825,23 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let para = Paragraph::new(all_lines)
         .block(
             Block::default()
-                .title(" ⚙️  Configuration  (↑/↓ scroll) ")
+                .title(" Configuration  (Up/Down scroll) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_ACCENT)),
         )
+        .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     f.render_widget(para, area);
 }
 
 fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
     let hint = match current_tab {
-        1 => " [x] Export CSV  [R] Reset Positions  [Tab] Switch  [q] Quit  [←/→] Navigate ",
+        1 => " [x] Export CSV  [R] Reset Positions  [Tab] Switch  [q] Quit  [Left/Right] Navigate ",
         2 => " [/] Filter  [e] Sell  [b] Buy  [h] High-Speed  [d] DUMP ALL  [Tab] Switch  [q] Quit ",
-        3 => " [s/a/b/x] Bot  [1-8] Rate  [g] Growth  [j] Builder  [k] SuperBld  [o] Off  [↑↓] Scroll  [Tab] Switch  [q] Quit ",
+        3 => " [s/a/b/x] Bot  [1-8] Rate  [g] Growth  [j] Builder  [k] SuperBld  [o] Off  [Up/Down] Scroll  [Tab] Switch  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
-        5 => " Pool Radar — live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
-        _ => " [Tab] Switch tab  [q] Quit  [←/→] Navigate ",
+        5 => " Pool Radar - live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
+        _ => " [Tab] Switch tab  [q] Quit  [Left/Right] Navigate ",
     };
     let footer = Paragraph::new(hint)
         .style(Style::default().fg(Color::DarkGray))
@@ -1217,7 +1894,7 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     let passed = pools.iter().filter(|p| p.passed_filters).count();
     let rejected = total - passed;
     let canvas_title = format!(
-        " Pool Radar — Seen vs Size (log)  |  total: {}  passed: {} (green)  rejected: {} (red) ",
+        " Pool Radar - Seen vs Size (log)  |  total: {}  passed: {} (green)  rejected: {} (red) ",
         total, passed, rejected,
     );
 
@@ -1232,7 +1909,7 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .y_bounds([0.0, Y_MAX])
         .paint(move |ctx| {
             // X = seconds since sniper observed the pool; Y = log10(size_sol+1).
-            ctx.print(0.0,   -0.15, "now");
+            ctx.print(0.0, -0.15, "now");
             ctx.print(150.0, -0.15, "2.5m ago");
             ctx.print(285.0, -0.15, "5m ago");
             ctx.print(-18.0, 0.30, "1");
@@ -1266,7 +1943,11 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .map(|p| {
             let seen_secs_ago = (now - p.timestamp).max(0);
             let pass_str = if p.passed_filters { "PASS" } else { "FAIL" };
-            let pass_color = if p.passed_filters { Color::Green } else { Color::Red };
+            let pass_color = if p.passed_filters {
+                Color::Green
+            } else {
+                Color::Red
+            };
             let mint_short = p.mint[..8.min(p.mint.len())].to_string();
             // Prefer the on-disk pool age when populated, otherwise fall back to "seen"
             let age_cell = if p.age_secs > 0.0 {
@@ -1294,16 +1975,38 @@ fn render_radar(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Constraint::Min(0),
     ];
     let table = Table::new(rows, widths)
-        .header(
-            Row::new(vec![
-                Cell::from("Mint").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Age").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Size SOL").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Result").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Score").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-                Cell::from("Seen").style(Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)),
-            ]),
-        )
+        .header(Row::new(vec![
+            Cell::from("Mint").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Age").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Size SOL").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Result").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Score").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Seen").style(
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
         .block(
             Block::default()
                 .title(" Recent Pools ")
@@ -1332,31 +2035,41 @@ fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         .iter()
         .skip(skip)
         .map(|line| match line {
-            ChatLine::User(s) => ListItem::new(format!("You: {}", s))
-                .style(Style::default().fg(Color::Cyan)),
-            ChatLine::Bot(s) => ListItem::new(format!(" AI: {}", s))
-                .style(Style::default().fg(COLOR_TEXT)),
-            ChatLine::ToolResult(s) => ListItem::new(format!("  > {}", s))
-                .style(Style::default().fg(Color::DarkGray)),
-            ChatLine::Error(s) => ListItem::new(format!("[ERR] {}", s))
-                .style(Style::default().fg(COLOR_ACCENT)),
-            ChatLine::Pending { summary, risk } => ListItem::new(format!(
-                "[Confirm? y/n] {} (Risk: {})",
-                summary, risk
-            ))
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ChatLine::User(s) => {
+                ListItem::new(format!("You: {}", s)).style(Style::default().fg(Color::Cyan))
+            }
+            ChatLine::Bot(s) => {
+                ListItem::new(format!(" AI: {}", s)).style(Style::default().fg(COLOR_TEXT))
+            }
+            ChatLine::ToolResult(s) => {
+                ListItem::new(format!("  > {}", s)).style(Style::default().fg(Color::DarkGray))
+            }
+            ChatLine::Error(s) => {
+                ListItem::new(format!("[ERR] {}", s)).style(Style::default().fg(COLOR_ACCENT))
+            }
+            ChatLine::Pending { summary, risk } => {
+                ListItem::new(format!("[Confirm? y/n] {} (Risk: {})", summary, risk)).style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
         })
         .collect();
 
     let title = if loading {
-        " 🤖 Chat — Thinking... "
+        " Chat - Thinking... "
     } else if has_pending {
-        " 🤖 Chat — Awaiting confirmation [y] yes  [n] no "
+        " Chat - Awaiting confirmation [y] yes  [n] no "
     } else {
-        " 🤖 Chat — Ask about your wallet & trades "
+        " Chat - Ask about your wallet & trades "
     };
 
-    let border_color = if has_pending { Color::Yellow } else { COLOR_ACCENT };
+    let border_color = if has_pending {
+        Color::Yellow
+    } else {
+        COLOR_ACCENT
+    };
 
     let list = List::new(items).block(
         Block::default()
@@ -1384,4 +2097,35 @@ fn render_chat(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 .border_style(Style::default().fg(border_color)),
         );
     f.render_widget(input_box, chunks[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    use scematica_core::{metrics::BotMetrics, rpc::RpcConnection};
+    use solana_sdk::commitment_config::CommitmentConfig;
+
+    fn test_state() -> Arc<AppState> {
+        let rpc = Arc::new(RpcConnection::new(
+            "https://api.mainnet-beta.solana.com",
+            CommitmentConfig::confirmed(),
+        ));
+        AppState::new(BotMetrics::new(), rpc)
+    }
+
+    #[test]
+    fn render_handles_common_and_constrained_sizes() {
+        let state = test_state();
+        for (width, height) in [(160, 48), (120, 32), (80, 24), (52, 12), (40, 10)] {
+            for tab in 0..=DASHBOARD_TAB_COUNT {
+                *state.selected_tab.write() = tab;
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).expect("test terminal");
+                terminal
+                    .draw(|frame| render(frame, &state))
+                    .expect("dashboard render");
+            }
+        }
+    }
 }

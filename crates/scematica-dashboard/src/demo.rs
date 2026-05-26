@@ -18,14 +18,14 @@ static TOKENS: &[(&str, &str)] = &[
     ("HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", "BOME"),
     ("6DNSN2BJsaPFdFFc1zP37kkeNe4Usc1Sqkzr9C9vPWcD", "SAMO"),
     ("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "COPE"),
-    ("mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",  "MSOL"),
+    ("mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "MSOL"),
     ("AGFEad2et2ZJif9jaGpdMixQqvW5i81aBdvKe7im23wR", "FIDA"),
     ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "ORCA"),
     ("3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", "WBTC"),
     ("CpMah17kLowc3oC98sEtBmEFWez6vzsKE1fy5ST6Lm6P", "NOOT"),
     ("BZLbGTNCSFfoth2GYDtwr7e4imWzpR5jqcUuGEwr646K", "PENG"),
     ("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", "SAMO2"),
-    ("kinXdEcpDQeHPEuQnqmUgtYykqKCSVgjzGr9e9HKCNo",  "KIN"),
+    ("kinXdEcpDQeHPEuQnqmUgtYykqKCSVgjzGr9e9HKCNo", "KIN"),
 ];
 
 static SNIPER_DEXES: &[&str] = &["Raydium", "Orca", "Meteora", "PumpFun"];
@@ -54,8 +54,15 @@ pub async fn run_demo(state: Arc<AppState>) {
 
     state.push_log("[DEMO] ════════════════════════════════════════════");
     state.push_log("[DEMO] Scematica Trading Demo  —  Simulation Mode");
-    state.push_log(format!("[DEMO] Wallet : {}...{}", &DEMO_WALLET[..8], &DEMO_WALLET[DEMO_WALLET.len()-8..]));
-    state.push_log(format!("[DEMO] SOL    : {:.4}  |  SCEMA : {:.0}", DEMO_SOL, DEMO_SCEMA));
+    state.push_log(format!(
+        "[DEMO] Wallet : {}...{}",
+        &DEMO_WALLET[..8],
+        &DEMO_WALLET[DEMO_WALLET.len() - 8..]
+    ));
+    state.push_log(format!(
+        "[DEMO] SOL    : {:.4}  |  SCEMA : {:.0}",
+        DEMO_SOL, DEMO_SCEMA
+    ));
     state.push_log("[DEMO] Bots   : SNIPER + ARB running (simulated)");
     state.push_log("[DEMO] ════════════════════════════════════════════");
 
@@ -92,7 +99,11 @@ async fn sniper_loop(state: Arc<AppState>) {
 
         state.push_log(format!(
             "[SNIPER] 🔍 Pool #{}: {} ({}) on {} | size: {:.1} SOL",
-            pools_seen, symbol, &mint[..8], dex, pool_sol
+            pools_seen,
+            symbol,
+            &mint[..8],
+            dex,
+            pool_sol
         ));
 
         sleep(Duration::from_millis(rng.gen_range(600..1400))).await;
@@ -112,15 +123,25 @@ async fn sniper_loop(state: Arc<AppState>) {
             continue;
         }
 
-        state.push_log(format!("[SNIPER] ✅ {} passed all filters — sending buy...", symbol));
+        state.push_log(format!(
+            "[SNIPER] ✅ {} passed all filters — sending buy...",
+            symbol
+        ));
         state.metrics.record_trade_attempt();
         sleep(Duration::from_millis(rng.gen_range(350..1100))).await;
 
         // Buy tx — 13% failure rate (congestion / slippage)
         if rng.gen_bool(0.13) {
             state.metrics.record_trade_failed();
-            let reason = if rng.gen_bool(0.5) { "slippage exceeded" } else { "simulation failed" };
-            state.push_log(format!("[SNIPER] ✗ Buy tx failed for {} ({})", symbol, reason));
+            let reason = if rng.gen_bool(0.5) {
+                "slippage exceeded"
+            } else {
+                "simulation failed"
+            };
+            state.push_log(format!(
+                "[SNIPER] ✗ Buy tx failed for {} ({})",
+                symbol, reason
+            ));
             state.push_trade(TradeEntry {
                 timestamp: Utc::now(),
                 kind: "BUY".to_string(),
@@ -129,6 +150,9 @@ async fn sniper_loop(state: Arc<AppState>) {
                 pnl: 0.0,
                 status: "✗".to_string(),
                 signature: fake_sig(),
+                exit_reason: String::new(),
+                pnl_pct: 0.0,
+                position_age_secs: 0.0,
             });
             continue;
         }
@@ -136,7 +160,11 @@ async fn sniper_loop(state: Arc<AppState>) {
         let buy_sig = fake_sig();
         state.push_log(format!(
             "[SNIPER] ✓ BUY confirmed  {} | {:.4} SOL → {} | sig: {}…{}",
-            symbol, QUOTE_SOL, symbol, &buy_sig[..6], &buy_sig[buy_sig.len()-4..]
+            symbol,
+            QUOTE_SOL,
+            symbol,
+            &buy_sig[..6],
+            &buy_sig[buy_sig.len() - 4..]
         ));
 
         {
@@ -151,6 +179,9 @@ async fn sniper_loop(state: Arc<AppState>) {
             pnl: 0.0,
             status: "✓".to_string(),
             signature: buy_sig,
+            exit_reason: String::new(),
+            pnl_pct: 0.0,
+            position_age_secs: 0.0,
         });
 
         // Holding period with live price-check logs
@@ -174,9 +205,13 @@ async fn sniper_loop(state: Arc<AppState>) {
             let current_pct = final_pct * progress + noise;
             state.push_log(format!(
                 "[SNIPER] 📊 {} check {}/{}: {}{:.1}%  (TP {:.0}% / SL -{:.0}%)",
-                symbol, i, checks,
-                if current_pct >= 0.0 { "+" } else { "" }, current_pct * 100.0,
-                50.0, 20.0
+                symbol,
+                i,
+                checks,
+                if current_pct >= 0.0 { "+" } else { "" },
+                current_pct * 100.0,
+                50.0,
+                20.0
             ));
         }
 
@@ -191,7 +226,10 @@ async fn sniper_loop(state: Arc<AppState>) {
         sleep(Duration::from_millis(rng.gen_range(300..900))).await;
 
         if rng.gen_bool(0.07) {
-            state.push_log(format!("[SNIPER] ⚠ Sell retry 1/3 for {} (rpc timeout)...", symbol));
+            state.push_log(format!(
+                "[SNIPER] ⚠ Sell retry 1/3 for {} (rpc timeout)...",
+                symbol
+            ));
             sleep(Duration::from_secs(2)).await;
         }
 
@@ -205,10 +243,14 @@ async fn sniper_loop(state: Arc<AppState>) {
         state.push_log(format!(
             "[SNIPER] {} SELL {} | {:.4} SOL received | PnL: {}{:.5} SOL ({}{:.1}%) | sig: {}…{}",
             if pnl >= 0.0 { "💰" } else { "🔻" },
-            symbol, sell_amount,
-            if pnl >= 0.0 { "+" } else { "" }, pnl,
-            if final_pct >= 0.0 { "+" } else { "" }, final_pct * 100.0,
-            &sell_sig[..6], &sell_sig[sell_sig.len()-4..]
+            symbol,
+            sell_amount,
+            if pnl >= 0.0 { "+" } else { "" },
+            pnl,
+            if final_pct >= 0.0 { "+" } else { "" },
+            final_pct * 100.0,
+            &sell_sig[..6],
+            &sell_sig[sell_sig.len() - 4..]
         ));
 
         state.push_trade(TradeEntry {
@@ -219,6 +261,14 @@ async fn sniper_loop(state: Arc<AppState>) {
             pnl,
             status: "✓".to_string(),
             signature: sell_sig,
+            exit_reason: if pnl >= 0.0 {
+                "take_profit"
+            } else {
+                "stop_loss"
+            }
+            .to_string(),
+            pnl_pct: final_pct * 100.0,
+            position_age_secs: hold_secs as f64,
         });
     }
 }
@@ -258,7 +308,9 @@ async fn arb_loop(state: Arc<AppState>) {
 
         // ~14% revert (profit window closed between quote and landing)
         if rng.gen_bool(0.14) {
-            state.push_log("[ARB] ✗ Tx reverted — profit window closed (profit_or_revert)".to_string());
+            state.push_log(
+                "[ARB] ✗ Tx reverted — profit window closed (profit_or_revert)".to_string(),
+            );
             continue;
         }
 
@@ -272,7 +324,11 @@ async fn arb_loop(state: Arc<AppState>) {
         let sig = fake_sig();
         state.push_log(format!(
             "[ARB] 💰 Confirmed! +{:.6} SOL | {} | {} | sig: {}…{}",
-            profit_sol, symbol, route, &sig[..6], &sig[sig.len()-4..]
+            profit_sol,
+            symbol,
+            route,
+            &sig[..6],
+            &sig[sig.len() - 4..]
         ));
 
         state.push_trade(TradeEntry {
@@ -283,6 +339,9 @@ async fn arb_loop(state: Arc<AppState>) {
             pnl: profit_sol,
             status: "✓".to_string(),
             signature: sig,
+            exit_reason: String::new(),
+            pnl_pct: 0.0,
+            position_age_secs: 0.0,
         });
     }
 }

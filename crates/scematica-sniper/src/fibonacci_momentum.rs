@@ -34,7 +34,6 @@
 ///
 /// A true runner maintains velocity ratios close to φ across these windows.
 /// Flash pumps show velocity collapse (ratio << φ) after the initial spike.
-
 use std::collections::VecDeque;
 
 /// Fibonacci constants derived from the golden ratio
@@ -130,7 +129,8 @@ impl FibonacciMomentum {
         };
 
         let retrace_pct = if self.peak_value > self.entry_value {
-            (self.peak_value as f64 - current_value as f64) / (self.peak_value as f64 - self.entry_value as f64)
+            (self.peak_value as f64 - current_value as f64)
+                / (self.peak_value as f64 - self.entry_value as f64)
         } else {
             0.0
         };
@@ -140,6 +140,15 @@ impl FibonacciMomentum {
 
         // Analyze velocity ratios across Fibonacci windows
         let velocity_ratio = self.calculate_velocity_ratio();
+
+        // Early runner detection: strong short-window velocity in the first
+        // Fibonacci windows should be classified before TP-level checks.
+        if age_secs <= 13 && velocity_ratio >= PHI * 1.2 {
+            return FibonacciSignal::RunnerDetected {
+                velocity_ratio,
+                age_secs,
+            };
+        }
 
         // Check for Fibonacci retracement exit signals
         if peak_gain_pct >= 50.0 {
@@ -182,14 +191,6 @@ impl FibonacciMomentum {
             }
         }
 
-        // Early runner detection: strong velocity in first Fibonacci windows
-        if age_secs <= 13 && velocity_ratio >= PHI * 1.2 {
-            return FibonacciSignal::RunnerDetected {
-                velocity_ratio,
-                age_secs,
-            };
-        }
-
         // Default: hold and continue monitoring
         FibonacciSignal::Hold {
             gain_pct,
@@ -199,7 +200,12 @@ impl FibonacciMomentum {
     }
 
     /// Update velocity measurements across all Fibonacci windows
-    fn update_velocity_windows(&mut self, _current_value: u64, current_time: u64, pool_size_lamports: u64) {
+    fn update_velocity_windows(
+        &mut self,
+        _current_value: u64,
+        current_time: u64,
+        pool_size_lamports: u64,
+    ) {
         let age_secs = current_time.saturating_sub(self.entry_time);
 
         for &window_secs in &FIB_WINDOWS {
@@ -212,7 +218,11 @@ impl FibonacciMomentum {
                 };
 
                 // Update or add window measurement
-                if let Some(existing) = self.velocity_windows.iter_mut().find(|w| w.window_secs == window_secs) {
+                if let Some(existing) = self
+                    .velocity_windows
+                    .iter_mut()
+                    .find(|w| w.window_secs == window_secs)
+                {
                     existing.velocity = velocity;
                     existing.measured_at = current_time;
                 } else {
@@ -226,12 +236,13 @@ impl FibonacciMomentum {
         }
 
         // Keep only recent measurements
-        self.velocity_windows.retain(|w| current_time.saturating_sub(w.measured_at) < 30);
+        self.velocity_windows
+            .retain(|w| current_time.saturating_sub(w.measured_at) < 30);
     }
 
     /// Calculate velocity ratio across Fibonacci windows
     ///
-    /// Returns ratio of (recent velocity) / (earlier velocity).
+    /// Returns ratio of short-window velocity / long-window velocity.
     /// - Ratio ≈ φ (1.618) = perfect Fibonacci momentum (runner)
     /// - Ratio > φ = accelerating (strong runner)
     /// - Ratio < 1.0 = decelerating (momentum dying)
@@ -240,12 +251,12 @@ impl FibonacciMomentum {
             return 1.0;
         }
 
-        // Compare most recent window to earliest window
-        let recent = self.velocity_windows.back().unwrap();
-        let early = self.velocity_windows.front().unwrap();
+        // Compare the shortest available Fibonacci window to the longest.
+        let short_window = self.velocity_windows.front().unwrap();
+        let long_window = self.velocity_windows.back().unwrap();
 
-        if early.velocity > 0.0 {
-            recent.velocity / early.velocity
+        if long_window.velocity > 0.0 {
+            short_window.velocity / long_window.velocity
         } else {
             1.0
         }
@@ -254,12 +265,12 @@ impl FibonacciMomentum {
     /// Get next Fibonacci extension target as gain %
     fn get_next_fibonacci_target(&self) -> f64 {
         match self.current_fib_level {
-            0 => 61.8,   // First target: 61.8% (φ - 1) * 100
-            1 => 161.8,  // φ * 100
-            2 => 261.8,  // φ² * 100
-            3 => 423.6,  // φ³ * 100
-            4 => 685.4,  // φ⁴ * 100
-            5 => 1109.0, // φ⁵ * 100
+            0 => 61.8,                                           // First target: 61.8% (φ - 1) * 100
+            1 => 161.8,                                          // φ * 100
+            2 => 261.8,                                          // φ² * 100
+            3 => 423.6,                                          // φ³ * 100
+            4 => 685.4,                                          // φ⁴ * 100
+            5 => 1109.0,                                         // φ⁵ * 100
             _ => 1618.0 * (self.current_fib_level as f64 - 4.0), // Continue Fibonacci progression
         }
     }
@@ -367,10 +378,7 @@ pub enum FibonacciSignal {
         next_target_pct: f64,
     },
     /// Runner detected - strong Fibonacci velocity pattern
-    RunnerDetected {
-        velocity_ratio: f64,
-        age_secs: u64,
-    },
+    RunnerDetected { velocity_ratio: f64, age_secs: u64 },
     /// Escalate TP to next Fibonacci level
     EscalateToNextFib {
         current_gain_pct: f64,
@@ -378,10 +386,7 @@ pub enum FibonacciSignal {
         velocity_ratio: f64,
     },
     /// Take profit at current Fibonacci level
-    TakeProfitAtFib {
-        gain_pct: f64,
-        fib_level: usize,
-    },
+    TakeProfitAtFib { gain_pct: f64, fib_level: usize },
     /// Exit on golden retracement (61.8% pullback from peak)
     ExitGoldenRetrace {
         peak_gain_pct: f64,
@@ -410,37 +415,62 @@ impl FibonacciSignal {
     /// Get human-readable description of the signal
     pub fn description(&self) -> String {
         match self {
-            FibonacciSignal::Hold { gain_pct, velocity_ratio, next_target_pct } => {
+            FibonacciSignal::Hold {
+                gain_pct,
+                velocity_ratio,
+                next_target_pct,
+            } => {
                 format!(
                     "HOLD: +{:.1}% gain, velocity ratio {:.2}, next Fib target {:.0}%",
                     gain_pct, velocity_ratio, next_target_pct
                 )
             }
-            FibonacciSignal::RunnerDetected { velocity_ratio, age_secs } => {
+            FibonacciSignal::RunnerDetected {
+                velocity_ratio,
+                age_secs,
+            } => {
                 format!(
                     "🚀 RUNNER: Fibonacci velocity {:.2}φ detected at {}s",
-                    velocity_ratio / PHI, age_secs
+                    velocity_ratio / PHI,
+                    age_secs
                 )
             }
-            FibonacciSignal::EscalateToNextFib { current_gain_pct, next_target_pct, velocity_ratio } => {
+            FibonacciSignal::EscalateToNextFib {
+                current_gain_pct,
+                next_target_pct,
+                velocity_ratio,
+            } => {
                 format!(
                     "📈 ESCALATE: +{:.1}% → {:.0}% target (velocity {:.2}φ)",
-                    current_gain_pct, next_target_pct, velocity_ratio / PHI
+                    current_gain_pct,
+                    next_target_pct,
+                    velocity_ratio / PHI
                 )
             }
-            FibonacciSignal::TakeProfitAtFib { gain_pct, fib_level } => {
+            FibonacciSignal::TakeProfitAtFib {
+                gain_pct,
+                fib_level,
+            } => {
                 format!(
                     "💰 TAKE PROFIT: +{:.1}% at Fibonacci level {}",
                     gain_pct, fib_level
                 )
             }
-            FibonacciSignal::ExitGoldenRetrace { peak_gain_pct, current_gain_pct, retrace_pct } => {
+            FibonacciSignal::ExitGoldenRetrace {
+                peak_gain_pct,
+                current_gain_pct,
+                retrace_pct,
+            } => {
                 format!(
                     "🔻 GOLDEN RETRACE: Peak +{:.1}% → +{:.1}% ({:.1}% pullback)",
                     peak_gain_pct, current_gain_pct, retrace_pct
                 )
             }
-            FibonacciSignal::ExitVelocityCollapse { peak_gain_pct, current_gain_pct, velocity_ratio } => {
+            FibonacciSignal::ExitVelocityCollapse {
+                peak_gain_pct,
+                current_gain_pct,
+                velocity_ratio,
+            } => {
                 format!(
                     "⚠️ VELOCITY COLLAPSE: Peak +{:.1}% → +{:.1}% (ratio {:.2})",
                     peak_gain_pct, current_gain_pct, velocity_ratio
@@ -469,7 +499,7 @@ mod tests {
 
         // Simulate strong velocity in first 5 seconds
         let signal = momentum.update(entry * 2, 1005, 15_000_000_000);
-        
+
         match signal {
             FibonacciSignal::RunnerDetected { .. } => {
                 // Expected: strong velocity + early age = runner
@@ -485,7 +515,7 @@ mod tests {
 
         // Pump to 3x
         momentum.update(entry * 3, 1010, 20_000_000_000);
-        
+
         // Retrace 61.8% from peak
         let retrace_value = entry + ((entry * 2) as f64 * (1.0 - FIB_RETRACE_61_8)) as u64;
         let signal = momentum.update(retrace_value, 1020, 18_000_000_000);
@@ -495,18 +525,37 @@ mod tests {
 
     #[test]
     fn test_fibonacci_position_sizing() {
-        assert_eq!(FibonacciMomentum::calculate_position_multiplier(0, 1.0), 1.0);
-        assert_eq!(FibonacciMomentum::calculate_position_multiplier(3, 1.0), 2.0);
-        assert_eq!(FibonacciMomentum::calculate_position_multiplier(5, 1.0), 5.0);
-        assert_eq!(FibonacciMomentum::calculate_position_multiplier(7, 1.0), 13.0);
-        assert_eq!(FibonacciMomentum::calculate_position_multiplier(10, 1.0), 21.0); // Capped
+        assert_eq!(
+            FibonacciMomentum::calculate_position_multiplier(0, 1.0),
+            1.0
+        );
+        assert_eq!(
+            FibonacciMomentum::calculate_position_multiplier(3, 1.0),
+            2.0
+        );
+        assert_eq!(
+            FibonacciMomentum::calculate_position_multiplier(5, 1.0),
+            5.0
+        );
+        assert_eq!(
+            FibonacciMomentum::calculate_position_multiplier(7, 1.0),
+            13.0
+        );
+        assert_eq!(
+            FibonacciMomentum::calculate_position_multiplier(10, 1.0),
+            21.0
+        ); // Capped
     }
 
     #[test]
     fn test_pool_fibonacci_scoring() {
         // Perfect Fibonacci pool: 13 SOL, 3s old, 2.5 SOL/s velocity, 1.8 pressure
         let score = FibonacciMomentum::score_pool_fibonacci(13.0, 3, 2.5, 1.8);
-        assert!(score > 0.85, "Perfect Fibonacci pool should score high: {}", score);
+        assert!(
+            score > 0.85,
+            "Perfect Fibonacci pool should score high: {}",
+            score
+        );
 
         // Poor pool: 100 SOL, 60s old, 0.1 SOL/s, 0.2 pressure
         let score = FibonacciMomentum::score_pool_fibonacci(100.0, 60, 0.1, 0.2);

@@ -49,6 +49,14 @@ pub struct PumpFunTrendingConfig {
     /// How long to track a token's trades in the sliding window (seconds).
     /// Default: 120 — 2 minutes of data for the momentum signal.
     pub track_window_secs: u64,
+    /// Maximum age from first observation to migration for this fast path.
+    pub max_migration_age_secs: u64,
+    /// Minimum recent buy count before migration is treated as a runner.
+    pub min_recent_buys: u32,
+    /// Minimum recent net buy pressure in SOL.
+    pub min_net_buy_sol: f64,
+    /// Maximum age of the last buy at migration time.
+    pub max_last_buy_age_secs: u64,
     /// Maximum number of tokens tracked simultaneously.
     /// Oldest-first eviction when limit is hit.
     /// Default: 300.
@@ -61,6 +69,10 @@ impl Default for PumpFunTrendingConfig {
             min_trending_score: 55.0,
             min_curve_pct: 40.0,
             track_window_secs: 120,
+            max_migration_age_secs: 120,
+            min_recent_buys: 3,
+            min_net_buy_sol: 0.25,
+            max_last_buy_age_secs: 20,
             max_tracked_tokens: 300,
         }
     }
@@ -91,6 +103,8 @@ struct TokenWindow {
     trades: VecDeque<(Instant, bool, f64)>,
     /// Most recent bonding curve SOL balance
     curve_sol: f64,
+    /// Monotonic timestamp of first observation
+    first_seen_at: Instant,
     /// Unix timestamp of first observation
     first_seen_secs: u64,
     /// Whether we've already emitted a pre-graduation signal for this mint
@@ -106,6 +120,7 @@ impl TokenWindow {
         Self {
             trades: VecDeque::new(),
             curve_sol,
+            first_seen_at: Instant::now(),
             first_seen_secs,
             pre_flagged: false,
         }
@@ -164,6 +179,42 @@ impl TokenWindow {
 
     fn curve_fill_pct(&self) -> f64 {
         self.curve_sol / GRADUATION_SOL * 100.0
+    }
+
+    fn trade_pressure(&self) -> (u32, u32, f64, f64, f64, f64, f64) {
+        let mut buy_n = 0u32;
+        let mut sell_n = 0u32;
+        let mut buy_vol = 0.0;
+        let mut sell_vol = 0.0;
+        let mut last_buy_age = f64::INFINITY;
+        let mut last_trade_age = f64::INFINITY;
+
+        for (at, is_buy, sol) in &self.trades {
+            let age = at.elapsed().as_secs_f64();
+            last_trade_age = last_trade_age.min(age);
+            if *is_buy {
+                buy_n += 1;
+                buy_vol += *sol;
+                last_buy_age = last_buy_age.min(age);
+            } else {
+                sell_n += 1;
+                sell_vol += *sol;
+            }
+        }
+
+        (
+            buy_n,
+            sell_n,
+            buy_vol,
+            sell_vol,
+            buy_vol - sell_vol,
+            last_buy_age,
+            last_trade_age,
+        )
+    }
+
+    fn migration_age_secs(&self) -> f64 {
+        self.first_seen_at.elapsed().as_secs_f64()
     }
 }
 
@@ -329,19 +380,93 @@ impl PumpFunTrendingMonitor {
                     // ── Token graduated to Raydium ────────────────────────────
                     "migration" => {
                         // Read trending state then immediately remove from map
-                        let trending_state = windows.remove(&ev.mint)
-                            .map(|(_, w)| (w.trending_score(), w.curve_fill_pct(), w.pre_flagged));
-                        let (score, curve_pct, was_pre_flagged) =
-                            trending_state.unwrap_or((0.0, 0.0, false));
+                        let trending_state = windows.remove(&ev.mint).map(|(_, w)| {
+                            let (
+                                buy_n,
+                                sell_n,
+                                buy_vol,
+                                sell_vol,
+                                net_buy_sol,
+                                last_buy_age,
+                                last_trade_age,
+                            ) = w.trade_pressure();
+                            (
+                                w.trending_score(),
+                                w.curve_fill_pct(),
+                                w.pre_flagged,
+                                buy_n,
+                                sell_n,
+                                buy_vol,
+                                sell_vol,
+                                net_buy_sol,
+                                last_buy_age,
+                                last_trade_age,
+                                w.migration_age_secs(),
+                            )
+                        });
+                        let (
+                            score,
+                            curve_pct,
+                            was_pre_flagged,
+                            buy_n,
+                            sell_n,
+                            buy_vol,
+                            sell_vol,
+                            net_buy_sol,
+                            last_buy_age,
+                            last_trade_age,
+                            migration_age,
+                        ) = trending_state.unwrap_or((
+                            0.0,
+                            0.0,
+                            false,
+                            0,
+                            0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                        ));
+
+                        let runner_signal = score >= cfg.min_trending_score
+                            && curve_pct >= cfg.min_curve_pct
+                            && buy_n >= cfg.min_recent_buys
+                            && net_buy_sol >= cfg.min_net_buy_sol
+                            && last_buy_age <= cfg.max_last_buy_age_secs as f64
+                            && migration_age <= cfg.max_migration_age_secs as f64;
 
                         info!(
                             mint            = %ev.mint,
                             pool            = %ev.pool,
                             score           = %format!("{:.1}", score),
                             curve_pct       = %format!("{:.1}%", curve_pct),
+                            buy_n,
+                            sell_n,
+                            buy_vol         = %format!("{:.3}", buy_vol),
+                            sell_vol        = %format!("{:.3}", sell_vol),
+                            net_buy_sol     = %format!("{:.3}", net_buy_sol),
+                            last_buy_age_s  = %format!("{:.1}", last_buy_age),
+                            last_trade_age_s= %format!("{:.1}", last_trade_age),
+                            migration_age_s = %format!("{:.1}", migration_age),
                             was_pre_flagged,
                             "🎓 PumpFun migration → Raydium"
                         );
+
+                        if !runner_signal {
+                            info!(
+                                mint = %ev.mint,
+                                score = %format!("{:.1}", score),
+                                curve_pct = %format!("{:.1}%", curve_pct),
+                                buy_n,
+                                net_buy_sol = %format!("{:.3}", net_buy_sol),
+                                last_buy_age_s = %format!("{:.1}", last_buy_age),
+                                migration_age_s = %format!("{:.1}", migration_age),
+                                "PumpFun migration skipped by runner gate"
+                            );
+                            continue;
+                        }
 
                         if ev.pool.is_empty() {
                             warn!(mint = %ev.mint, "PumpFun migration: no pool pubkey in event");
@@ -353,26 +478,22 @@ impl PumpFunTrendingMonitor {
                         let mint_str    = ev.mint.clone();
                         let rpc2        = Arc::clone(&rpc);
                         let tx2         = event_tx.clone();
-                        let min_score   = cfg.min_trending_score;
-                        let min_curve   = cfg.min_curve_pct;
 
                         tokio::spawn(async move {
                             if let Some(mut pool) = Self::fetch_and_decode_pool(
                                 &rpc2, &pool_pk_str, &mint_str,
                             ).await {
-                                let trending = score >= min_score && curve_pct >= min_curve;
-                                if trending {
-                                    // Carry the pre-graduation momentum score into the pool
-                                    // so the pool scorer can use it as a Bayesian LR signal.
-                                    pool.pumpfun_score = score;
-                                    info!(
-                                        mint       = %mint_str,
-                                        pool       = %pool_pk_str,
-                                        score      = %format!("{:.1}", score),
-                                        curve_pct  = %format!("{:.1}%", curve_pct),
-                                        "🚀 PumpFun trending graduation — emitting to sniper"
-                                    );
-                                }
+                                // Carry the pre-graduation momentum score into the pool
+                                // so the pool scorer can use it as a Bayesian LR signal.
+                                pool.pumpfun_score = score;
+                                info!(
+                                    mint       = %mint_str,
+                                    pool       = %pool_pk_str,
+                                    score      = %format!("{:.1}", score),
+                                    curve_pct  = %format!("{:.1}%", curve_pct),
+                                    net_buy_sol= %format!("{:.3}", net_buy_sol),
+                                    "PumpFun runner graduation - emitting to sniper"
+                                );
                                 let _ = tx2.send(ListenerEvent::NewPool(pool)).await;
                             } else {
                                 warn!(

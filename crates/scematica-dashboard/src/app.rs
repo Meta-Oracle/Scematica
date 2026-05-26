@@ -1,15 +1,18 @@
+use crate::chat::{ChatLine, ChatUpdate};
+use crate::onboarding::OnboardingManager;
+use crate::process::BotCommand;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use scematica_core::metrics::{BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE, TRADES_FILE};
+use scematica_ai::chat_types::PendingToolCall;
+use scematica_ai::tool_dispatcher::LiveData;
+use scematica_core::metrics::{
+    BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE,
+    TRADES_FILE,
+};
 use scematica_core::rpc::RpcConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use crate::onboarding::OnboardingManager;
-use crate::chat::{ChatLine, ChatUpdate};
-use crate::process::BotCommand;
-use scematica_ai::tool_dispatcher::LiveData;
-use scematica_ai::chat_types::PendingToolCall;
 
 /// Maximum number of log lines to keep in memory
 const MAX_LOG_LINES: usize = 200;
@@ -19,16 +22,21 @@ const MAX_TRADES: usize = 100;
 const SPARKLINE_CAPACITY: usize = 60;
 /// Max age of radar pool entries (5 minutes)
 const RADAR_MAX_AGE_SECS: i64 = 300;
+/// Number of top-level dashboard tabs rendered by the TUI.
+pub const DASHBOARD_TAB_COUNT: usize = 6;
 
 #[derive(Debug, Clone)]
 pub struct TradeEntry {
     pub timestamp: DateTime<Utc>,
-    pub kind: String,       // "BUY" | "SELL" | "ARB"
+    pub kind: String,
     pub mint: String,
     pub amount: f64,
     pub pnl: f64,
-    pub status: String,     // "✓" | "✗"
+    pub status: String,
     pub signature: String,
+    pub exit_reason: String,
+    pub pnl_pct: f64,
+    pub position_age_secs: f64,
 }
 
 /// Live position snapshot — written by the sniper's live-position registry
@@ -55,30 +63,49 @@ pub struct LivePosition {
 
 impl LivePosition {
     pub fn age_secs(&self) -> i64 {
-        chrono::Utc::now().timestamp().saturating_sub(self.entry_unix_secs).max(0)
+        chrono::Utc::now()
+            .timestamp()
+            .saturating_sub(self.entry_unix_secs)
+            .max(0)
     }
     pub fn pnl_pct(&self) -> f64 {
-        if self.entry_lamports == 0 { 0.0 } else {
+        if self.entry_lamports == 0 {
+            0.0
+        } else {
             (self.current_value_lamports as f64 - self.entry_lamports as f64)
-                / self.entry_lamports as f64 * 100.0
+                / self.entry_lamports as f64
+                * 100.0
         }
     }
     pub fn peak_pnl_pct(&self) -> f64 {
-        if self.entry_lamports == 0 { 0.0 } else {
+        if self.entry_lamports == 0 {
+            0.0
+        } else {
             (self.peak_value_lamports as f64 - self.entry_lamports as f64)
-                / self.entry_lamports as f64 * 100.0
+                / self.entry_lamports as f64
+                * 100.0
         }
     }
-    pub fn entry_sol(&self) -> f64  { self.entry_lamports as f64 / 1e9 }
-    pub fn value_sol(&self) -> f64  { self.current_value_lamports as f64 / 1e9 }
-    pub fn sl_sol(&self) -> f64     { self.current_sl_lamports as f64 / 1e9 }
+    pub fn entry_sol(&self) -> f64 {
+        self.entry_lamports as f64 / 1e9
+    }
+    pub fn value_sol(&self) -> f64 {
+        self.current_value_lamports as f64 / 1e9
+    }
+    pub fn sl_sol(&self) -> f64 {
+        self.current_sl_lamports as f64 / 1e9
+    }
     /// 0.0–1.0: how far current value sits between SL (0) and TP (1)
     pub fn progress_to_tp(&self) -> f64 {
-        if self.entry_lamports == 0 { return 0.5; }
+        if self.entry_lamports == 0 {
+            return 0.5;
+        }
         let sl = self.current_sl_lamports as f64;
         let tp = self.entry_lamports as f64 * (1.0 + self.dynamic_tp_pct / 100.0);
         let cur = self.current_value_lamports as f64;
-        if tp <= sl { return 0.5; }
+        if tp <= sl {
+            return 0.5;
+        }
         ((cur - sl) / (tp - sl)).clamp(0.0, 1.0)
     }
 }
@@ -185,6 +212,22 @@ pub struct AppState {
     pub live_positions_file_seen: std::sync::atomic::AtomicBool,
     /// Rolling last 5 alert messages displayed in the overview panel
     pub alert_history: RwLock<VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
+    /// NN tournament variant stats from scematica-nn-tournament.json
+    pub tournament_stats: RwLock<Option<serde_json::Value>>,
+    /// Deployer reputation ledger from scematica-deployer-reputation.json
+    pub deployer_reputation: RwLock<Option<serde_json::Value>>,
+    /// Unix milliseconds of last confirmed trade (for border flash)
+    pub last_trade_flash_ts: std::sync::atomic::AtomicI64,
+    /// True if the last trade was a win (for flash color)
+    pub last_trade_was_win: std::sync::atomic::AtomicBool,
+    /// Session cumulative PnL in SOL (all confirmed SELLs)
+    pub cumulative_pnl_sol: RwLock<f64>,
+    /// Running peak of cumulative_pnl_sol (for drawdown computation)
+    pub session_peak_pnl_sol: RwLock<f64>,
+    /// Time-series equity curve: (unix_ts, cumulative_pnl_sol) — up to 500 points
+    pub pnl_equity_curve: RwLock<VecDeque<(i64, f64)>>,
+    /// Big runner callout: (pnl_pct, unix_secs_when_set) — displayed for 10s
+    pub big_runner: RwLock<Option<(f64, i64)>>,
 }
 
 /// Wallet-growth ladder. Each mode applies a live compounding algorithm that
@@ -207,9 +250,9 @@ pub enum BuilderMode {
 impl BuilderMode {
     pub fn target_sol(self) -> f64 {
         match self {
-            BuilderMode::Off          => 0.0,
-            BuilderMode::Growth       => 0.2,
-            BuilderMode::Builder      => 1.0,
+            BuilderMode::Off => 0.0,
+            BuilderMode::Growth => 0.2,
+            BuilderMode::Builder => 1.0,
             BuilderMode::SuperBuilder => 3.0,
         }
     }
@@ -220,27 +263,29 @@ impl BuilderMode {
     }
     pub fn label(self) -> &'static str {
         match self {
-            BuilderMode::Off          => "Off",
-            BuilderMode::Growth       => "Growth",
-            BuilderMode::Builder      => "Builder",
+            BuilderMode::Off => "Off",
+            BuilderMode::Growth => "Growth",
+            BuilderMode::Builder => "Builder",
             BuilderMode::SuperBuilder => "SuperBuilder",
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            BuilderMode::Off          => "off",
-            BuilderMode::Growth       => "growth",
-            BuilderMode::Builder      => "builder",
+            BuilderMode::Off => "off",
+            BuilderMode::Growth => "growth",
+            BuilderMode::Builder => "builder",
             BuilderMode::SuperBuilder => "super_builder",
         }
     }
     /// Short algorithm description shown in the Control tab.
     pub fn algo_description(self) -> &'static str {
         match self {
-            BuilderMode::Off          => "config.toml values (no algorithm override)",
-            BuilderMode::Growth       => "size 1.0–2.0×  TP base  SL base",
-            BuilderMode::Builder      => "size 1.5–3.5× (p^0.65)  TP 1.5×→1.0× base  SL widens early",
-            BuilderMode::SuperBuilder => "size 2.0–8.0× (p^0.35)  TP 2.0×→1.0× base  moon-chase p<25%",
+            BuilderMode::Off => "config.toml values (no algorithm override)",
+            BuilderMode::Growth => "size 1.0-2.0x  TP base  SL base",
+            BuilderMode::Builder => "size 1.5-3.5x (p^0.65)  TP 1.5x->1.0x base  SL widens early",
+            BuilderMode::SuperBuilder => {
+                "size 2.0-8.0x (p^0.35)  TP 2.0x->1.0x base  moon-chase p<25%"
+            }
         }
     }
 }
@@ -283,76 +328,76 @@ pub enum RateMode {
 impl RateMode {
     pub fn multiplier(self) -> f64 {
         match self {
-            RateMode::Bearish    => 0.3,
-            RateMode::Micro      => 0.1,
-            RateMode::Safe       => 0.5,
-            RateMode::Balanced   => 1.0,
+            RateMode::Bearish => 0.3,
+            RateMode::Micro => 0.1,
+            RateMode::Safe => 0.5,
+            RateMode::Balanced => 1.0,
             RateMode::Aggressive => 2.0,
-            RateMode::Degen      => 4.0,
-            RateMode::Bullish    => 6.0,
-            RateMode::Moon       => 8.0,
+            RateMode::Degen => 4.0,
+            RateMode::Bullish => 6.0,
+            RateMode::Moon => 8.0,
         }
     }
     pub fn tp_pct(self) -> f64 {
         match self {
-            RateMode::Bearish    =>    45.0,
-            RateMode::Micro      =>    60.0,
-            RateMode::Safe       =>    75.0,
-            RateMode::Balanced   =>   150.0,
-            RateMode::Aggressive =>   300.0,
-            RateMode::Degen      =>   450.0,
-            RateMode::Bullish    =>   750.0,
+            RateMode::Bearish => 45.0,
+            RateMode::Micro => 60.0,
+            RateMode::Safe => 75.0,
+            RateMode::Balanced => 150.0,
+            RateMode::Aggressive => 300.0,
+            RateMode::Degen => 450.0,
+            RateMode::Bullish => 750.0,
             // Moon targets 1000× — escalation ladder rides from 10000% → 20000% → 40000% → ...
-            RateMode::Moon       => 100000.0,
+            RateMode::Moon => 100000.0,
         }
     }
     /// Wallet % to use per trade — 0.0 means use fixed quote_amount instead
     pub fn wallet_pct(self) -> f64 {
         match self {
-            RateMode::Micro      => 0.3,
-            RateMode::Bearish    => 0.5,
-            RateMode::Safe       => 0.8,
-            RateMode::Balanced   => 1.5,
+            RateMode::Micro => 0.3,
+            RateMode::Bearish => 0.5,
+            RateMode::Safe => 0.8,
+            RateMode::Balanced => 1.5,
             RateMode::Aggressive => 3.0,
-            RateMode::Degen      => 6.0,
-            RateMode::Bullish    => 8.0,
-            RateMode::Moon       => 12.0,
+            RateMode::Degen => 6.0,
+            RateMode::Bullish => 8.0,
+            RateMode::Moon => 12.0,
         }
     }
     pub fn sl_pct(self) -> f64 {
         match self {
-            RateMode::Bearish    =>   8.0,
-            RateMode::Micro      =>  10.0,
-            RateMode::Safe       =>  10.0,
-            RateMode::Balanced   =>  15.0,
-            RateMode::Aggressive =>  25.0,
-            RateMode::Degen      =>  40.0,
-            RateMode::Bullish    =>  50.0,
-            RateMode::Moon       =>  60.0,
+            RateMode::Bearish => 8.0,
+            RateMode::Micro => 10.0,
+            RateMode::Safe => 10.0,
+            RateMode::Balanced => 15.0,
+            RateMode::Aggressive => 25.0,
+            RateMode::Degen => 40.0,
+            RateMode::Bullish => 50.0,
+            RateMode::Moon => 60.0,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
-            RateMode::Bearish    => "Bearish",
-            RateMode::Micro      => "Micro",
-            RateMode::Safe       => "Safe",
-            RateMode::Balanced   => "Balanced",
+            RateMode::Bearish => "Bearish",
+            RateMode::Micro => "Micro",
+            RateMode::Safe => "Safe",
+            RateMode::Balanced => "Balanced",
             RateMode::Aggressive => "Aggressive",
-            RateMode::Degen      => "Degen",
-            RateMode::Bullish    => "Bullish",
-            RateMode::Moon       => "Moon",
+            RateMode::Degen => "Degen",
+            RateMode::Bullish => "Bullish",
+            RateMode::Moon => "Moon",
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            RateMode::Bearish    => "bearish",
-            RateMode::Micro      => "micro",
-            RateMode::Safe       => "safe",
-            RateMode::Balanced   => "balanced",
+            RateMode::Bearish => "bearish",
+            RateMode::Micro => "micro",
+            RateMode::Safe => "safe",
+            RateMode::Balanced => "balanced",
             RateMode::Aggressive => "aggressive",
-            RateMode::Degen      => "degen",
-            RateMode::Bullish    => "bullish",
-            RateMode::Moon       => "moon",
+            RateMode::Degen => "degen",
+            RateMode::Bullish => "bullish",
+            RateMode::Moon => "moon",
         }
     }
     /// SOL per trade at base quote_amount=0.01
@@ -380,7 +425,9 @@ impl std::fmt::Display for BotMode {
 /// Returns None for blank/whitespace-only lines (suppresses empty log entries).
 fn format_sniper_log_line(raw: &str) -> Option<String> {
     let s = raw.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
 
     // Detect tracing-subscriber compact timestamp format:
     // starts with 4-digit year, has 'T' at position 10.
@@ -409,7 +456,9 @@ fn format_sniper_log_line(raw: &str) -> Option<String> {
             };
 
             let msg = message.trim();
-            if msg.is_empty() { return None; }
+            if msg.is_empty() {
+                return None;
+            }
             return Some(format!("[SNIPER] {} [{}] {}", time, level, msg));
         }
     }
@@ -468,6 +517,14 @@ impl AppState {
             live_positions: RwLock::new(Vec::new()),
             live_positions_file_seen: std::sync::atomic::AtomicBool::new(false),
             alert_history: RwLock::new(VecDeque::with_capacity(5)),
+            tournament_stats: RwLock::new(None),
+            deployer_reputation: RwLock::new(None),
+            last_trade_flash_ts: std::sync::atomic::AtomicI64::new(0),
+            last_trade_was_win: std::sync::atomic::AtomicBool::new(false),
+            cumulative_pnl_sol: RwLock::new(0.0),
+            session_peak_pnl_sol: RwLock::new(0.0),
+            pnl_equity_curve: RwLock::new(VecDeque::with_capacity(500)),
+            big_runner: RwLock::new(None),
         })
     }
 
@@ -516,16 +573,22 @@ impl AppState {
                 {
                     let mut sl = self.pnl_sparkline.write();
                     sl.push_back(spark_val);
-                    while sl.len() > SPARKLINE_CAPACITY { sl.pop_front(); }
+                    while sl.len() > SPARKLINE_CAPACITY {
+                        sl.pop_front();
+                    }
                 }
                 // Best / worst
                 {
                     let mut best = self.best_trade_pnl.write();
-                    if pnl > *best { *best = pnl; }
+                    if pnl > *best {
+                        *best = pnl;
+                    }
                 }
                 {
                     let mut worst = self.worst_trade_pnl.write();
-                    if pnl < *worst { *worst = pnl; }
+                    if pnl < *worst {
+                        *worst = pnl;
+                    }
                 }
                 // Win/loss streak
                 {
@@ -536,17 +599,57 @@ impl AppState {
                         *streak = if *streak <= 0 { *streak - 1 } else { -1 };
                     }
                 }
+                // Equity curve
+                {
+                    let mut cum = self.cumulative_pnl_sol.write();
+                    *cum += pnl;
+                    let cum_now = *cum;
+                    let ts = event.timestamp.timestamp();
+                    let mut curve = self.pnl_equity_curve.write();
+                    curve.push_back((ts, cum_now));
+                    while curve.len() > 500 {
+                        curve.pop_front();
+                    }
+                    let mut peak = self.session_peak_pnl_sol.write();
+                    if cum_now > *peak {
+                        *peak = cum_now;
+                    }
+                }
+                // Big runner callout (>= 500% PnL)
+                if event.pnl_pct >= 500.0 {
+                    *self.big_runner.write() =
+                        Some((event.pnl_pct, chrono::Utc::now().timestamp()));
+                }
+            }
+            // Border flash on any confirmed trade
+            if event.status == "✓" {
+                self.last_trade_flash_ts.store(
+                    chrono::Utc::now().timestamp_millis(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                self.last_trade_was_win
+                    .store(event.pnl >= 0.0, std::sync::atomic::Ordering::Relaxed);
             }
             // Alert history: record confirmed BUY/SELL events (last 5 visible in overview)
             if event.status == "✓" {
                 let title = format!("{} {}", event.status, event.kind.clone());
                 let body = if event.kind == "SELL" {
-                    format!("{}… PnL: {:.4} SOL", &event.mint[..8.min(event.mint.len())], event.pnl)
+                    format!(
+                        "{}… PnL: {:.4} SOL",
+                        &event.mint[..8.min(event.mint.len())],
+                        event.pnl
+                    )
                 } else {
-                    format!("{}… {:.4} SOL", &event.mint[..8.min(event.mint.len())], event.amount)
+                    format!(
+                        "{}… {:.4} SOL",
+                        &event.mint[..8.min(event.mint.len())],
+                        event.amount
+                    )
                 };
                 let mut ah = self.alert_history.write();
-                if ah.len() >= 5 { ah.pop_back(); }
+                if ah.len() >= 5 {
+                    ah.pop_back();
+                }
                 ah.push_front((event.timestamp, title, body));
             }
             let entry = TradeEntry {
@@ -557,6 +660,9 @@ impl AppState {
                 pnl: event.pnl,
                 status: event.status,
                 signature: event.signature,
+                exit_reason: event.exit_reason,
+                pnl_pct: event.pnl_pct,
+                position_age_secs: event.position_age_secs,
             };
             self.push_trade(entry);
             self.push_log(log_line);
@@ -593,7 +699,9 @@ impl AppState {
             }
         }
 
-        let Ok(mut file) = std::fs::File::open(LOG_FILE) else { return };
+        let Ok(mut file) = std::fs::File::open(LOG_FILE) else {
+            return;
+        };
 
         // If the file shrank (rotation, manual truncate), reset to the new length so
         // we don't perma-block on a stale offset past EOF.
@@ -604,7 +712,9 @@ impl AppState {
             }
         }
 
-        if file.seek(SeekFrom::Start(offset)).is_err() { return }
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return;
+        }
         let mut reader = BufReader::new(&mut file);
         let mut new_offset = offset;
         loop {
@@ -631,36 +741,75 @@ impl AppState {
     /// Read filter rejection stats from disk and cache them for the UI.
     pub fn poll_filter_stats_file(&self) {
         const STATS_FILE: &str = "scematica-filter-stats.json";
-        let Ok(data) = std::fs::read_to_string(STATS_FILE) else { return };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
+        let Ok(data) = std::fs::read_to_string(STATS_FILE) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return;
+        };
         *self.filter_stats.write() = Some(v);
     }
 
     /// Read NN agent stats from scematica-nn-stats.json.
     pub fn poll_nn_stats_file(&self) {
-        let Ok(data) = std::fs::read_to_string("scematica-nn-stats.json") else { return };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
+        let Ok(data) = std::fs::read_to_string("scematica-nn-stats.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return;
+        };
         *self.nn_stats.write() = Some(v);
+    }
+
+    /// Read NN tournament stats from scematica-nn-tournament.json.
+    pub fn poll_tournament_file(&self) {
+        let Ok(data) = std::fs::read_to_string("scematica-nn-tournament.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return;
+        };
+        *self.tournament_stats.write() = Some(v);
+    }
+
+    /// Read deployer reputation ledger from scematica-deployer-reputation.json.
+    pub fn poll_deployer_reputation_file(&self) {
+        let Ok(data) = std::fs::read_to_string("scematica-deployer-reputation.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return;
+        };
+        *self.deployer_reputation.write() = Some(v);
     }
 
     /// Read live open positions from scematica-positions.json (sniper writes every 1 s).
     pub fn poll_live_positions_file(&self) {
         const POS_FILE: &str = "scematica-positions.json";
-        let Ok(data) = std::fs::read_to_string(POS_FILE) else { return };
-        let Ok(positions) = serde_json::from_str::<Vec<LivePosition>>(&data) else { return };
+        let Ok(data) = std::fs::read_to_string(POS_FILE) else {
+            return;
+        };
+        let Ok(positions) = serde_json::from_str::<Vec<LivePosition>>(&data) else {
+            return;
+        };
         *self.live_positions.write() = positions;
         // Mark that the file has been seen at least once. After this point,
         // open_position_count() trusts the file count (even when 0) instead of
         // falling back to the trade-history deque — preventing phantom positions.
-        self.live_positions_file_seen.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.live_positions_file_seen
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read pool radar entries from scematica-pool-radar.json.
     /// Drops any entries older than 5 minutes.
     pub fn poll_radar_file(&self) {
         const RADAR_FILE: &str = "scematica-pool-radar.json";
-        let Ok(data) = std::fs::read_to_string(RADAR_FILE) else { return };
-        let Ok(mut pools) = serde_json::from_str::<Vec<RadarPool>>(&data) else { return };
+        let Ok(data) = std::fs::read_to_string(RADAR_FILE) else {
+            return;
+        };
+        let Ok(mut pools) = serde_json::from_str::<Vec<RadarPool>>(&data) else {
+            return;
+        };
         let now = chrono::Utc::now().timestamp();
         pools.retain(|p| now - p.timestamp <= RADAR_MAX_AGE_SECS);
         *self.radar_pools.write() = pools;
@@ -687,7 +836,9 @@ impl AppState {
             let mut ph = self.price_history.write();
             let entry = ph.entry(trade.mint.clone()).or_insert_with(VecDeque::new);
             entry.push_back(trade.amount);
-            if entry.len() > 60 { entry.pop_front(); }
+            if entry.len() > 60 {
+                entry.pop_front();
+            }
         }
         let mut trades = self.trades.write();
         trades.push_front(trade);
@@ -706,12 +857,14 @@ impl AppState {
 
     pub fn next_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = (*tab + 1) % 6;
+        *tab = (*tab + 1) % DASHBOARD_TAB_COUNT;
     }
 
     pub fn prev_tab(&self) {
         let mut tab = self.selected_tab.write();
-        *tab = tab.checked_sub(1).unwrap_or(5);
+        *tab = tab
+            .checked_sub(1)
+            .unwrap_or(DASHBOARD_TAB_COUNT.saturating_sub(1));
     }
 
     pub fn push_chat_line(&self, line: ChatLine) {
@@ -732,12 +885,19 @@ impl AppState {
     /// Before the file is seen (sniper not yet started), derives from trade history
     /// so the counter is non-zero during a session where the sniper ran previously.
     pub fn open_position_count(&self) -> usize {
-        if self.live_positions_file_seen.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .live_positions_file_seen
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.live_positions.read().len()
         } else {
             // Sniper hasn't written the positions file yet — derive from trade history
             let live = self.live_positions.read().len();
-            if live > 0 { live } else { self.open_position_mints().len() }
+            if live > 0 {
+                live
+            } else {
+                self.open_position_mints().len()
+            }
         }
     }
 
@@ -747,14 +907,20 @@ impl AppState {
         let trades = self.trades.read();
         let mut counts: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
         for t in trades.iter() {
-            if t.status != "✓" { continue; }
+            if t.status != "✓" {
+                continue;
+            }
             match t.kind.as_str() {
-                "BUY"  => *counts.entry(t.mint.clone()).or_insert(0) += 1,
+                "BUY" => *counts.entry(t.mint.clone()).or_insert(0) += 1,
                 "SELL" => *counts.entry(t.mint.clone()).or_insert(0) -= 1,
                 _ => {}
             }
         }
-        counts.into_iter().filter(|(_, v)| *v > 0).map(|(k, _)| k).collect()
+        counts
+            .into_iter()
+            .filter(|(_, v)| *v > 0)
+            .map(|(k, _)| k)
+            .collect()
     }
 
     /// Export the trades deque to a CSV file. Returns the path written.
@@ -765,14 +931,25 @@ impl AppState {
             chrono::Utc::now().format("%Y%m%d-%H%M%S")
         );
         let mut f = std::fs::File::create(&path)?;
-        writeln!(f, "timestamp,kind,status,mint,amount,pnl,signature")?;
+        writeln!(
+            f,
+            "timestamp,kind,status,mint,amount,pnl,pnl_pct,position_age_secs,exit_reason,signature"
+        )?;
         let trades = self.trades.read();
         for t in trades.iter() {
             writeln!(
                 f,
-                "{},{},{},{},{:.6},{:.6},{}",
+                "{},{},{},{},{:.6},{:.6},{:.2},{:.1},{},{}",
                 t.timestamp.format("%Y-%m-%dT%H:%M:%SZ"),
-                t.kind, t.status, t.mint, t.amount, t.pnl, t.signature
+                t.kind,
+                t.status,
+                t.mint,
+                t.amount,
+                t.pnl,
+                t.pnl_pct,
+                t.position_age_secs,
+                t.exit_reason,
+                t.signature
             )?;
         }
         Ok(path)

@@ -5,11 +5,12 @@ use spl_associated_token_account;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
-    config::SniperConfig,
+    config::{ExecutionConfig, SniperConfig},
     metrics::BotMetrics,
     token::{apply_slippage, get_ata, resolve_mint, ui_to_raw},
     types::known_tokens,
 };
+use scematica_nn::{DQNAgent, TradeAction, TradeState as NNState};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -159,6 +160,8 @@ pub struct Sniper {
     metrics: Arc<BotMetrics>,
     /// AI coordinator — None if no API key is configured
     ai: Option<Arc<AiCoordinator>>,
+    /// Deep Q* agent used for current-pool entry advice and trade learning.
+    nn_agent: Option<Arc<std::sync::Mutex<DQNAgent>>>,
     /// AtomicBool: true while a buy + sell-monitor pair owns the processing slot.
     processing_lock: Arc<std::sync::atomic::AtomicBool>,
     quote_mint: Pubkey,
@@ -330,6 +333,8 @@ impl Sniper {
         rpc: Arc<RpcClient>,
         metrics: Arc<BotMetrics>,
         alerts: Arc<AlertManager>,
+        nn_agent: Option<Arc<std::sync::Mutex<DQNAgent>>>,
+        execution: ExecutionConfig,
     ) -> Self {
         let quote_mint = resolve_mint(&config.quote_mint)
             .unwrap_or(known_tokens::WSOL_MINT);
@@ -345,7 +350,11 @@ impl Sniper {
             Some(Arc::clone(&deployer_ledger_shared)),
         );
 
-        let executor: Arc<dyn TxExecutor> = match config.quote_mint.as_str() {
+        let executor: Arc<dyn TxExecutor> = match execution.executor.as_str() {
+            "jito" => Arc::new(JitoExecutor::new(
+                execution.jito_url.clone(),
+                execution.custom_fee_sol,
+            )),
             _ if std::env::var("EXECUTOR").unwrap_or_default() == "jito" => {
                 Arc::new(JitoExecutor::new(
                     std::env::var("JITO_URL")
@@ -353,7 +362,17 @@ impl Sniper {
                     0.006,
                 ))
             }
-            _ => Arc::new(DefaultExecutor::new(400_000, 200_000, true, 3).with_dynamic_fees()),
+            _ => Arc::new(
+                DefaultExecutor::new(
+                    execution.compute_unit_limit,
+                    execution.compute_unit_price,
+                    execution.skip_preflight,
+                    config.max_buy_retries.max(1),
+                )
+                .with_dynamic_fees()
+                .with_priority_fee_hard_cap(execution.compute_unit_price_hard_cap)
+                .with_loaded_accounts_data_size_limit(execution.loaded_accounts_data_size_limit),
+            ),
         };
 
         let snipe_list = if config.use_snipe_list {
@@ -401,6 +420,7 @@ impl Sniper {
             executor,
             metrics,
             ai: AiCoordinator::from_env_optional().map(Arc::new),
+            nn_agent,
             processing_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             quote_mint,
             quote_decimals,
@@ -443,6 +463,49 @@ impl Sniper {
 
     /// Config base values — exposed so the builder-mode watcher in main.rs
     /// can compute mode-specific TP/SL/mult relative to the configured baseline.
+    fn build_nn_entry_state(
+        &self,
+        pool_size_sol: f64,
+        pool_age_secs: f64,
+        velocity_sol_per_sec: f64,
+        buy_pressure_ratio: f64,
+        pool_score: f64,
+        inflow_rate_sol_per_sec: f64,
+        wallet_balance_lamports: u64,
+    ) -> NNState {
+        let regime = match self.live_params.read().market_regime.as_str() {
+            "bull" | "mania" => 1,
+            "bear" | "panic" => -1,
+            _ => 0,
+        };
+        NNState {
+            pool_age_secs,
+            initial_liquidity_sol: pool_size_sol,
+            price_change_pct: 0.0,
+            volume_5min_sol: (inflow_rate_sol_per_sec.max(0.0) * 300.0).min(100.0),
+            buy_sell_ratio: buy_pressure_ratio.max(0.0).min(5.0),
+            lp_burned: true,
+            mint_renounced: true,
+            current_pnl_pct: 0.0,
+            position_age_secs: 0.0,
+            daily_pnl_sol: *self.daily_pnl_lamports.lock() as f64 / 1e9,
+            consecutive_wins: 0,
+            consecutive_losses: self.consecutive_losses.load(Ordering::Relaxed) as i32,
+            sol_balance_sol: wallet_balance_lamports as f64 / 1e9,
+            regime,
+            volatility: 0.0,
+            spread_pct: self.config.buy_slippage_pct.max(0.0) / 100.0,
+            time_of_day_norm: chrono::Utc::now().hour() as f64 / 24.0,
+            open_positions: self.open_positions.load(Ordering::Relaxed) as i32,
+            peak_pnl_pct: 0.0,
+            pool_score_norm: (pool_score / 100.0).clamp(0.0, 1.0),
+            deployer_rug_rate: 0.5,
+            volume_velocity: (inflow_rate_sol_per_sec / 5.0).clamp(-1.0, 1.0),
+            price_velocity: (velocity_sol_per_sec / 5.0).clamp(-1.0, 1.0),
+            price_acceleration: 0.0,
+        }
+    }
+
     pub fn base_take_profit_pct(&self) -> f64 { self.config.take_profit_pct }
     pub fn base_stop_loss_pct(&self)    -> f64 { self.config.stop_loss_pct  }
 
@@ -814,19 +877,40 @@ impl Sniper {
             let b = bv.ok().and_then(|r| r.ok()).and_then(|b| b.amount.parse::<u64>().ok()).unwrap_or(0);
             (q, b)
         };
+        let reserve_snapshot_at = std::time::Instant::now();
         let upfront_pool_size_sol = upfront_pool_size_lamports as f64 / 1e9;
         let detected_at_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let pool_age_secs = if pool.open_time > 0 && pool.open_time <= detected_at_secs {
+            detected_at_secs.saturating_sub(pool.open_time)
+        } else {
+            0
+        };
+        let historical_velocity_sol_per_sec = if pool_age_secs > 0 {
+            upfront_pool_size_sol / pool_age_secs as f64
+        } else {
+            0.0
+        };
+        let buy_pressure_ratio = if upfront_base_vault_lamports > 0 {
+            upfront_pool_size_lamports as f64 / upfront_base_vault_lamports as f64
+        } else {
+            0.0
+        };
         let upfront_score = PoolScorer::score(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, detected_at_secs);
+        let mut entry_score = upfront_score;
 
         // High-speed mode: skip filters, AI, scorer — go straight to buy. The operator
         // has explicitly opted in to extra rugs / failed buys / 429s in exchange for
         // entry latency. We still respect the listener's open_time gate above.
         let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
         if high_speed {
-            info!(mint = %pool.base_mint, "⚡ HIGH-SPEED — bypassing filters/AI/scorer");
+            if self.config.require_moonshot_confirmation {
+                info!(mint = %pool.base_mint, "⚡ HIGH-SPEED — bypassing standard filters/AI, moonshot gate still enforced");
+            } else {
+                info!(mint = %pool.base_mint, "⚡ HIGH-SPEED — bypassing filters/AI/scorer");
+            }
         }
 
         // Run filters (unless snipe list mode or high-speed mode) — hard cap at 25s
@@ -866,7 +950,7 @@ impl Sniper {
         // A non-zero boostAmount means the team has purchased DexScreener advertising.
         // This is a paid, verified marketing signal: the team spent real money, DexScreener
         // visitors are being directed to the token, and rug probability drops sharply.
-        // Boosted tokens bypass both the Fibonacci entry gate and the pool score gate.
+        // Moonshot mode still requires live/pre-graduation momentum confirmation.
         let (dex_boosted, dex_boost_usd) = if !high_speed {
             match self.dex_cache.check_boost(&pool.base_mint.to_string()).await {
                 Some(usd) => (true, usd),
@@ -881,9 +965,13 @@ impl Sniper {
                 name = %display_name,
                 symbol = %display_symbol,
                 boost_usd = %format!("${:.0}", dex_boost_usd),
-                "🚀 DEXSCREENER PAID BOOST — skipping Fibonacci + pool score gates (guaranteed buy)"
+                "🚀 DEXSCREENER PAID BOOST — marketing signal detected"
             );
         }
+        let pregrad_moonshot = pool.pumpfun_score >= self.config.moonshot_min_pumpfun_score;
+        let historical_moonshot = pool_age_secs > 0
+            && pool_age_secs <= 20
+            && historical_velocity_sol_per_sec >= self.config.moonshot_min_historical_velocity_sol_per_sec;
 
         // AI risk assessment (if available, and not high-speed)
         if !high_speed { if let Some(ai) = &self.ai {
@@ -970,16 +1058,7 @@ impl Sniper {
         // the pool scorer so we filter out dead pools (thin liquidity, stale age, low
         // velocity) as early as possible. High-speed mode and DexScreener-boosted tokens bypass.
         // Exceptional velocity (≥ φ² = 2.618 SOL/s) also bypasses: these are confirmed runners.
-        let exceptional_velocity = {
-            let now_s = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default().as_secs();
-            let age_s = if pool.open_time > 0 && pool.open_time <= now_s {
-                now_s.saturating_sub(pool.open_time).max(1)
-            } else { 1 };
-            let v = (upfront_pool_size_lamports as f64 / 1e9) / age_s as f64;
-            v >= 2.618 // φ² threshold from Fibonacci Protocol
-        };
+        let exceptional_velocity = pool_age_secs > 0 && historical_velocity_sol_per_sec >= 2.618;
         if !high_speed && !dex_boosted {
             let fib_decision = self.fib_system.evaluate_entry(
                 upfront_pool_size_lamports,
@@ -1020,18 +1099,14 @@ impl Sniper {
         }
 
         // ── Momentum confirmation (before pool scorer) ──────────────────────────
-        // The filter pipeline takes 400–800 ms to run. By the time we get here,
-        // a gaining pool has had active buyers adding SOL. A dead pool shows zero
-        // growth. We compare vault NOW to the upfront snapshot to compute:
-        //   1. Whether growth confirms buying (≥2% = proceed)
-        //   2. Instantaneous inflow rate (SOL/s) — passed to pool scorer as Signal 7
-        //
-        // Running the momentum check BEFORE the pool scorer allows the inflow rate to
-        // rescue borderline pools that are actively pumping right now.
-        //
-        // Skip for: exceptional velocity (≥2.618 SOL/s), DexScreener-boosted, high-speed.
+        // Moonshot mode is fail-closed: if a pool is not visibly gaining liquidity
+        // now, it needs strong pump.fun pre-graduation momentum or trusted historical
+        // AMM velocity to continue.
+        let mut live_momentum_confirmed = false;
         let inflow_rate_now_sol_per_sec: f64;
-        if !high_speed && !dex_boosted && !exceptional_velocity && upfront_pool_size_lamports > 0 {
+        let should_check_momentum = upfront_pool_size_lamports > 0
+            && (self.config.require_moonshot_confirmation || (!dex_boosted && !exceptional_velocity));
+        if should_check_momentum {
             let vault_now = tokio::time::timeout(
                 tokio::time::Duration::from_millis(800),
                 self.rpc.get_token_account_balance(&pool.quote_vault),
@@ -1039,57 +1114,85 @@ impl Sniper {
             let (confirmed, rate) = match vault_now {
                 Ok(Ok(qb)) => {
                     let current = qb.amount.parse::<u64>().unwrap_or(0);
-                    let min_growth = (upfront_pool_size_lamports / 50).max(10_000_000); // 2% or 0.01 SOL floor
-                    let grew = current >= upfront_pool_size_lamports + min_growth;
+                    let min_growth_pct = self.config.moonshot_min_growth_pct.max(0.0);
+                    let min_growth_by_pct = (upfront_pool_size_lamports as f64 * min_growth_pct / 100.0) as u64;
+                    let min_growth_floor = (self.config.moonshot_min_growth_sol.max(0.0) * 1e9) as u64;
+                    let min_growth = min_growth_by_pct.max(min_growth_floor).max(1);
                     let growth_lam = current.saturating_sub(upfront_pool_size_lamports);
-                    // Instantaneous inflow rate over the ~600ms filter evaluation window
-                    let spot_rate = growth_lam as f64 / 1e9 / 0.6;
+                    let elapsed_secs = reserve_snapshot_at.elapsed().as_secs_f64().clamp(0.20, 30.0);
+                    let spot_rate = growth_lam as f64 / 1e9 / elapsed_secs;
                     let growth_sol = growth_lam as f64 / 1e9;
-                    if grew {
+                    let grew = current >= upfront_pool_size_lamports.saturating_add(min_growth);
+                    let rate_ok = spot_rate >= self.config.moonshot_min_inflow_sol_per_sec;
+                    let live_ok = if self.config.require_moonshot_confirmation {
+                        grew && rate_ok
+                    } else {
+                        grew
+                    };
+                    if live_ok {
                         info!(
                             mint = %pool.base_mint,
                             growth_sol = %format!("+{:.4}", growth_sol),
                             inflow_rate = %format!("{:.3} SOL/s", spot_rate),
+                            elapsed_secs = %format!("{:.2}", elapsed_secs),
                             min_required_sol = %format!("{:.4}", min_growth as f64 / 1e9),
-                            "✅ Momentum confirmed — vault grew ≥2%, buyers active"
+                            "✅ Moonshot momentum confirmed — quote vault is growing"
                         );
                     } else {
                         let drift = current as f64 / 1e9 - upfront_pool_size_sol;
                         info!(
                             mint = %pool.base_mint,
                             drift_sol = %format!("{:.4}", drift),
+                            inflow_rate = %format!("{:.3} SOL/s", spot_rate),
+                            min_inflow = %format!("{:.3} SOL/s", self.config.moonshot_min_inflow_sol_per_sec),
                             needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
-                            "❌ Momentum check failed — vault grew <2%, insufficient buying"
+                            "❌ Moonshot momentum failed — insufficient live buying"
                         );
-                        self.filter_pipeline.stats.record_rejection("no_momentum");
+                        if !(self.config.require_moonshot_confirmation && (pregrad_moonshot || historical_moonshot)) {
+                            self.filter_pipeline.stats.record_rejection("no_momentum");
+                        }
                     }
-                    (grew, spot_rate)
+                    (live_ok, spot_rate)
                 }
                 _ => {
-                    debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding");
-                    (true, 0.0) // fail open; unknown rate
+                    if self.config.require_moonshot_confirmation && !pregrad_moonshot && !historical_moonshot {
+                        info!(
+                            mint = %pool.base_mint,
+                            "Moonshot momentum RPC timeout — skipping because momentum could not be verified"
+                        );
+                        self.filter_pipeline.stats.record_rejection("momentum_unknown");
+                        return;
+                    }
+                    debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding on alternate moonshot signal");
+                    (pregrad_moonshot || historical_moonshot, 0.0)
                 }
             };
-            if !confirmed {
+            if !confirmed && !(self.config.require_moonshot_confirmation && (pregrad_moonshot || historical_moonshot)) {
                 return;
             }
+            live_momentum_confirmed = confirmed && rate >= self.config.moonshot_min_inflow_sol_per_sec;
             inflow_rate_now_sol_per_sec = rate;
         } else {
-            inflow_rate_now_sol_per_sec = 0.0; // bypassed — pool scorer uses historical velocity
+            inflow_rate_now_sol_per_sec = 0.0;
         }
 
         // ── Pool predictive scoring (skipped in high-speed mode and for boosted tokens) ──
         // Uses all available signals: historical (size, age, velocity, buy-pressure, EV),
         // pumpfun_score (pre-graduation momentum carried on the pool struct), social_count,
         // and inflow_rate_now (live spot rate computed above).
-        if !high_speed && !dex_boosted && self.config.min_pool_score > 0.0 {
+        if (!high_speed || self.config.require_moonshot_confirmation) && !dex_boosted && self.config.min_pool_score > 0.0 {
             let final_score = crate::pool_scorer::PoolScorer::score_full(
                 &pool, upfront_pool_size_lamports, upfront_base_vault_lamports,
                 detected_at_secs, social_count, inflow_rate_now_sol_per_sec,
             );
-            // Pools actively pumping right now (≥0.5 SOL/s spot inflow) get a 10-point lower
-            // threshold — confirmed live momentum overrides borderline historical signals.
-            let effective_min = if inflow_rate_now_sol_per_sec >= 0.5 {
+            // Pools actively pumping right now get a lower threshold because live
+            // momentum is stronger than a stale historical score. In moonshot mode,
+            // pools without live inflow must clear the stricter moonshot score floor.
+            let effective_min = if self.config.require_moonshot_confirmation
+                && inflow_rate_now_sol_per_sec < self.config.moonshot_min_inflow_sol_per_sec
+            {
+                self.config.min_pool_score.max(self.config.moonshot_min_score)
+            } else if inflow_rate_now_sol_per_sec >= self.config.moonshot_min_inflow_sol_per_sec {
                 (self.config.min_pool_score - 10.0).max(45.0)
             } else {
                 self.config.min_pool_score
@@ -1107,6 +1210,7 @@ impl Sniper {
                 self.filter_pipeline.stats.record_rejection("pool_scorer");
                 return;
             }
+            entry_score = final_score;
             info!(
                 mint = %pool.base_mint,
                 score = %format!("{:.1}", final_score),
@@ -1118,6 +1222,46 @@ impl Sniper {
                 symbol = %display_symbol,
                 "Pool scorer: passed"
             );
+        }
+
+        if self.config.require_moonshot_confirmation {
+            let moonshot_score = crate::pool_scorer::PoolScorer::score_full(
+                &pool,
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                detected_at_secs,
+                social_count,
+                inflow_rate_now_sol_per_sec,
+            );
+            if moonshot_score > entry_score {
+                entry_score = moonshot_score;
+            }
+
+            let has_moonshot_signal = live_momentum_confirmed || pregrad_moonshot || historical_moonshot;
+            let score_floor = if live_momentum_confirmed {
+                (self.config.min_pool_score - 10.0).max(45.0)
+            } else {
+                self.config.min_pool_score.max(self.config.moonshot_min_score)
+            };
+
+            if !has_moonshot_signal || entry_score < score_floor {
+                info!(
+                    mint = %pool.base_mint,
+                    score = %format!("{:.1}", entry_score),
+                    score_floor = %format!("{:.1}", score_floor),
+                    live_inflow = %format!("{:.3} SOL/s", inflow_rate_now_sol_per_sec),
+                    historical_velocity = %format!("{:.3} SOL/s", historical_velocity_sol_per_sec),
+                    buy_pressure = %format!("{:.6}", buy_pressure_ratio),
+                    pumpfun_score = %format!("{:.1}", pool.pumpfun_score),
+                    pregrad_moonshot,
+                    historical_moonshot,
+                    live_momentum_confirmed,
+                    "Moonshot gate: skipping pool without enough runner confirmation"
+                );
+                self.write_radar_entry(&pool, upfront_pool_size_sol, false, entry_score);
+                self.filter_pipeline.stats.record_rejection("moonshot_gate");
+                return;
+            }
         }
 
         // ── Time-of-day block gate ────────────────────────────────────────────────
@@ -1141,11 +1285,11 @@ impl Sniper {
             let regime = self.live_params.read().market_regime.clone();
             if regime == "bear" || regime == "panic" {
                 let min_regime_score = 65.0;
-                if upfront_score < min_regime_score && !exceptional_velocity {
+                if entry_score < min_regime_score && !exceptional_velocity {
                     info!(
                         mint = %pool.base_mint,
                         regime = %regime,
-                        score = %format!("{:.1}", upfront_score),
+                        score = %format!("{:.1}", entry_score),
                         "Regime gate: bear/panic — skipping low-score pool"
                     );
                     self.filter_pipeline.stats.record_rejection("regime_gate");
@@ -1162,11 +1306,11 @@ impl Sniper {
         self.gas_war_last_pool_ms.store(now_ms, Ordering::Relaxed);
 
         // Write pool radar entry — pool passed all checks and is about to be bought
-        self.write_radar_entry(&pool, upfront_pool_size_sol, true, upfront_score);
+        self.write_radar_entry(&pool, upfront_pool_size_sol, true, entry_score);
 
         // Execute buy — pass upfront reserves so buy() can compute a real min_out
         // without another RPC round-trip.
-        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, upfront_score, inflow_rate_now_sol_per_sec, detected_at_secs).await {
+        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, entry_score, inflow_rate_now_sol_per_sec, detected_at_secs).await {
             error!(mint = %pool.base_mint, "buy() error: {}", e);
         }
     }
@@ -1300,52 +1444,94 @@ impl Sniper {
             }
         }
 
-        // NN agent gating: when epsilon < 0.3 (agent is confident), scale buy amount
-        // based on the recommended action. Uses file-based IPC consistent with the
-        // rest of this codebase — reads scematica-nn-stats.json (written every 5 s).
-        //
-        // Action → size multiplier:
-        //   BuyAgg (index 2): 1.5×  — agent sees a strong signal, upsize
-        //   Buy    (index 1): 1.0×  — baseline (no change)
-        //   Hold   (index 0): 0.5×  — agent is uncertain, downsize
-        //   SellPartial/SellAll: skip buy entirely (bearish signal)
-        if let Ok(nn_raw) = std::fs::read_to_string("scematica-nn-stats.json") {
-            if let Ok(nn_v) = serde_json::from_str::<serde_json::Value>(&nn_raw) {
-                let ready = nn_v["ready_to_advise"].as_bool().unwrap_or(false);
-                let epsilon = nn_v["epsilon"].as_f64().unwrap_or(1.0);
-                if ready && epsilon < 0.3 {
-                    let q_vals: Vec<f64> = nn_v["last_q_values"]
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
-                        .unwrap_or_default();
-                    // Skip gating when Q-values are all zero — NN hasn't observed
-                    // this pool yet. max_by on equal values returns the last index
-                    // (SellAll), which would block every buy with no real signal.
-                    let has_signal = !q_vals.is_empty() && !q_vals.iter().all(|&v| v == 0.0);
-                    if has_signal {
-                    if let Some(best_action) = q_vals.iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                        .map(|(i, _)| i)
-                    {
-                        let nn_mult = match best_action {
-                            2 => { // BuyAgg
-                                info!(mint = %pool.base_mint, epsilon, "NN: BuyAgg signal — sizing up 1.5×");
-                                1.5
-                            }
-                            1 => 1.0, // Buy — no change
-                            0 => { // Hold — downsize
-                                info!(mint = %pool.base_mint, epsilon, "NN: Hold signal — sizing down 0.5×");
-                                0.5
-                            }
-                            _ => { // SellPartial or SellAll — skip buy
-                                info!(mint = %pool.base_mint, epsilon, "NN: Sell signal — skipping buy");
-                                return Ok(());
-                            }
-                        };
-                        effective_quote_amount_raw =
-                            (effective_quote_amount_raw as f64 * nn_mult) as u64;
-                    }
+        if let Some(agent) = &self.nn_agent {
+            let nn_state = self.build_nn_entry_state(
+                pool_size_sol,
+                pool_age_secs_at_buy,
+                velocity_sol_per_sec_at_buy,
+                buy_pressure_ratio_at_buy,
+                upfront_score,
+                inflow_rate_now_sol_per_sec,
+                native_balance_early,
+            );
+            let advice = if let Ok(mut ag) = agent.lock() {
+                let ready = ag.ready_to_advise();
+                let stats = ag.stats();
+                let (action, q_vals) = ag.advise(&nn_state);
+                ag.write_explanation(&nn_state, "scematica-nn-advice.json");
+                Some((
+                    action,
+                    q_vals,
+                    ready,
+                    stats.epsilon,
+                    stats.replay_size,
+                    stats.train_steps,
+                ))
+            } else {
+                None
+            };
+
+            if let Some((action, q_vals, ready, epsilon, replay_size, train_steps)) = advice {
+                let has_signal = q_vals.iter().any(|v| v.is_finite() && v.abs() > 1e-9);
+                if !has_signal {
+                    debug!(
+                        mint = %pool.base_mint,
+                        action = action.label(),
+                        "DQ*: advice produced zero Q-signal; leaving size unchanged"
+                    );
+                } else if !ready {
+                    info!(
+                        mint = %pool.base_mint,
+                        action = action.label(),
+                        epsilon,
+                        replay_size,
+                        train_steps,
+                        "DQ*: warm-up advice recorded; not enforcing yet"
+                    );
+                } else {
+                    match action {
+                        TradeAction::BuyAggressive => {
+                            effective_quote_amount_raw =
+                                (effective_quote_amount_raw as f64 * 1.5) as u64;
+                            info!(
+                                mint = %pool.base_mint,
+                                epsilon,
+                                replay_size,
+                                train_steps,
+                                "DQ*: BuyAggressive advice - sizing up 1.5x"
+                            );
+                        }
+                        TradeAction::BuyStandard => {
+                            info!(
+                                mint = %pool.base_mint,
+                                epsilon,
+                                replay_size,
+                                train_steps,
+                                "DQ*: BuyStandard advice - keeping base size"
+                            );
+                        }
+                        TradeAction::Hold => {
+                            effective_quote_amount_raw =
+                                (effective_quote_amount_raw as f64 * 0.5) as u64;
+                            info!(
+                                mint = %pool.base_mint,
+                                epsilon,
+                                replay_size,
+                                train_steps,
+                                "DQ*: Hold advice - sizing down 0.5x"
+                            );
+                        }
+                        TradeAction::SellPartial | TradeAction::SellAll => {
+                            info!(
+                                mint = %pool.base_mint,
+                                action = action.label(),
+                                epsilon,
+                                replay_size,
+                                train_steps,
+                                "DQ*: exit/bearish advice - skipping buy"
+                            );
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -1563,6 +1749,19 @@ impl Sniper {
         } else {
             None
         };
+
+        if self.config.max_concurrent_positions > 0 {
+            let open = self.open_positions.load(Ordering::Relaxed);
+            if open >= self.config.max_concurrent_positions {
+                debug!(
+                    mint = %pool.base_mint,
+                    open,
+                    max = self.config.max_concurrent_positions,
+                    "Max concurrent positions reached after buy slot acquisition — skipping"
+                );
+                return Ok(());
+            }
+        }
 
         // Count this as a real attempt only after the lock is secured —
         // pools skipped by try_acquire() above were never attempted.
@@ -3890,7 +4089,12 @@ impl SellMonitor {
                     // quote_ata was recreated before the swap (idempotent) and holds the
                     // swap output. Falls back to estimated_out if the RPC call fails.
                     let actual_received: u64 = if let Ok(qb) = self.rpc.get_token_account_balance(&quote_ata).await {
-                        qb.amount.parse::<u64>().unwrap_or(estimated_out)
+                        let observed = qb.amount.parse::<u64>().unwrap_or(estimated_out);
+                        if observed == 0 && estimated_out > 0 {
+                            estimated_out
+                        } else {
+                            observed
+                        }
                     } else {
                         estimated_out
                     };

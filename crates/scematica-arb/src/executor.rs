@@ -180,6 +180,13 @@ impl ArbExecutor {
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
                         exit_reason: String::new(),
+                        pool_size_sol: 0.0,
+                        pool_age_secs: 0.0,
+                        velocity_sol_per_sec: 0.0,
+                        buy_pressure_ratio: 0.0,
+                        pool_score: 0.0,
+                        pumpfun_score: 0.0,
+                        inflow_rate_sol_per_sec: 0.0,
                     }
                     .append_to_file(TRADES_FILE);
 
@@ -202,6 +209,13 @@ impl ArbExecutor {
                         pnl_pct: 0.0,
                         position_age_secs: 0.0,
                         exit_reason: String::new(),
+                        pool_size_sol: 0.0,
+                        pool_age_secs: 0.0,
+                        velocity_sol_per_sec: 0.0,
+                        buy_pressure_ratio: 0.0,
+                        pool_score: 0.0,
+                        pumpfun_score: 0.0,
+                        inflow_rate_sol_per_sec: 0.0,
                     }
                     .append_to_file(TRADES_FILE);
 
@@ -232,9 +246,12 @@ impl ArbExecutor {
             .copied()
             .unwrap_or(scematica_core::types::known_tokens::USDC_MINT);
 
-        // StartSwap instruction
-        // We set min_output to input_amount + 1 lamport to ensure some profit
-        let min_output = (path.input_amount as u64) + 1;
+        // StartSwap instruction.
+        // Require enough raw start-token profit to cover priority fees and the
+        // configured profit floor, not merely input_amount + 1.
+        let cu_fee_lamports = (self.compute_unit_limit as u64 * self.compute_unit_price) / 1_000_000;
+        let gas_adjusted_min = (cu_fee_lamports * 3).max(self.min_profit_lamports);
+        let min_output = (path.input_amount as u64).saturating_add(gas_adjusted_min);
         ixs.push(self.build_start_swap_ix(path.input_amount as u64, min_output, &start_mint)?);
 
         // Per-hop swap instructions

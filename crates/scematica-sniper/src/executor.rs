@@ -36,6 +36,8 @@ pub trait TxExecutor: Send + Sync {
 pub struct DefaultExecutor {
     pub compute_unit_limit: u32,
     pub compute_unit_price: u64,
+    pub compute_unit_price_hard_cap: u64,
+    pub loaded_accounts_data_size_limit: u32,
     pub skip_preflight: bool,
     pub max_retries: u32,
     /// When true, fetches recent priority fees and uses the p75 percentile
@@ -52,10 +54,22 @@ impl DefaultExecutor {
         Self {
             compute_unit_limit,
             compute_unit_price,
+            compute_unit_price_hard_cap: 0,
+            loaded_accounts_data_size_limit: 0,
             skip_preflight,
             max_retries,
             dynamic_fees: false,
         }
+    }
+
+    pub fn with_priority_fee_hard_cap(mut self, hard_cap: u64) -> Self {
+        self.compute_unit_price_hard_cap = hard_cap;
+        self
+    }
+
+    pub fn with_loaded_accounts_data_size_limit(mut self, bytes_limit: u32) -> Self {
+        self.loaded_accounts_data_size_limit = bytes_limit;
+        self
     }
 
     /// Enable dynamic priority fee: fetches getRecentPrioritizationFees and uses p75.
@@ -104,7 +118,12 @@ impl TxExecutor for DefaultExecutor {
             } else {
                 self.compute_unit_price
             };
-            if high_speed { base.saturating_mul(3) } else { base }
+            let escalated = if high_speed { base.saturating_mul(3) } else { base };
+            if self.compute_unit_price_hard_cap > 0 {
+                escalated.min(self.compute_unit_price_hard_cap)
+            } else {
+                escalated
+            }
         };
 
         // Capture caller-supplied instruction count BEFORE moving into all_ixs —
@@ -114,6 +133,14 @@ impl TxExecutor for DefaultExecutor {
             ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
             ComputeBudgetInstruction::set_compute_unit_price(cpu_price),
         ];
+        if self.loaded_accounts_data_size_limit > 0 {
+            all_ixs.insert(
+                0,
+                ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(
+                    self.loaded_accounts_data_size_limit,
+                ),
+            );
+        }
         all_ixs.extend(instructions);
 
         let send_config = solana_client::rpc_config::RpcSendTransactionConfig {

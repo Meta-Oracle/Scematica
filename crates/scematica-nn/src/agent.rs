@@ -19,7 +19,7 @@ pub struct AgentStats {
     pub total_reward: f64,
     pub avg_loss: f64,
     pub target_updates: usize,
-    /// True once epsilon < 0.5 and replay has enough samples to advise trades.
+    /// True once at least one training step has produced usable network weights.
     pub ready_to_advise: bool,
     pub last_action: Option<String>,
     pub last_q_values: Vec<f64>,
@@ -195,6 +195,19 @@ impl DQNAgent {
             .map(|(i, _)| i)
             .unwrap_or(0);
         (TradeAction::from_index(best), q)
+    }
+
+    /// Greedy advice for live trading. Unlike `select_action`, this never explores,
+    /// but it still records the action/Q-values so stats and the dashboard reflect
+    /// the latest pool the sniper asked about.
+    pub fn advise(&mut self, state: &TradeState) -> (TradeAction, Vec<f64>) {
+        let (mut action, q) = self.greedy_action(state);
+        if q.iter().all(|v| v.is_finite() && v.abs() <= 1e-9) {
+            action = TradeAction::Hold;
+        }
+        self.last_q_values = q.clone();
+        self.last_action = Some(action);
+        (action, q)
     }
 
     // ── Learning ────────────────────────────────────────────────────────────
@@ -897,14 +910,14 @@ impl DQNAgent {
             total_reward: self.total_reward,
             avg_loss,
             target_updates: self.target_updates,
-            ready_to_advise: self.epsilon < 0.5 && self.replay.len() >= self.batch_size,
+            ready_to_advise: self.ready_to_advise(),
             last_action: self.last_action.map(|a| a.label().to_string()),
             last_q_values: self.last_q_values.clone(),
         }
     }
 
     pub fn ready_to_advise(&self) -> bool {
-        self.epsilon < 0.5 && self.replay.len() >= self.batch_size
+        self.train_steps > 0
     }
 }
 

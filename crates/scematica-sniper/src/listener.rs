@@ -68,7 +68,7 @@ impl PoolListener {
                 program_ids::RAYDIUM_AMM_V4.to_string(),
                 {
                     "encoding": "base64",
-                    "commitment": "confirmed",
+                    "commitment": "processed",
                     "filters": [
                         { "dataSize": 752 }
                     ]

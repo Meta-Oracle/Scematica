@@ -140,7 +140,7 @@ impl PoolScorer {
                 };
                 (lr, v)
             } else {
-                (0.70, 0.0) // no velocity data: penalise (dead-pool risk)
+                (0.35, 0.0) // no velocity data: strong dead-pool risk
             };
         p *= velocity_lr;
 
@@ -160,6 +160,8 @@ impl PoolScorer {
                 0.90 // sell-skewed or balanced — no bullish signal
             };
             p *= pressure_lr;
+        } else {
+            p *= 0.80; // no base vault read means no buy-pressure confirmation
         }
 
         // Signal 5: Expected-value from AMM constant-product formula
@@ -340,6 +342,21 @@ mod tests {
         let pool = make_pool(0); // open_time=0 (pump.fun style)
         let score = PoolScorer::score(&pool, 12_000_000_000, 500_000_000, now);
         assert!(score >= 70.0, "fresh pump.fun graduation scored too low: {}", score);
+    }
+
+    #[test]
+    fn unknown_velocity_without_pressure_scores_low() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let pool = make_pool(0);
+        let score = PoolScorer::score(&pool, 18_000_000_000, 0, now);
+        assert!(
+            score < 60.0,
+            "unknown-velocity pool without buy pressure scored too high: {}",
+            score
+        );
     }
 
     #[test]

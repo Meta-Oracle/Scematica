@@ -1,13 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
-use scematica_nn::{AgentStats, DQNAgent, TradeAction, TradeState as NNState};
 use scematica_core::{
-    config::BotConfig,
-    metrics::BotMetrics,
-    token::raw_to_ui,
-    types::known_tokens,
-    wallet::Wallet,
+    config::BotConfig, metrics::BotMetrics, token::raw_to_ui, types::known_tokens, wallet::Wallet,
 };
+use scematica_nn::{AgentStats, DQNAgent, TradeAction, TradeState as NNState};
 use scematica_sniper::{
     alerts::AlertManager,
     listener::{ListenerEvent, PoolListener},
@@ -15,7 +11,7 @@ use scematica_sniper::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, signer::Signer};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -65,6 +61,88 @@ impl Drop for LockGuard {
     }
 }
 
+fn event_f64(v: &serde_json::Value, key: &str) -> f64 {
+    v.get(key).and_then(|x| x.as_f64()).unwrap_or(0.0)
+}
+
+fn event_confirmed(v: &serde_json::Value) -> bool {
+    v.get("status")
+        .and_then(|x| x.as_str())
+        .map(|status| status == "\u{2713}" || status.eq_ignore_ascii_case("confirmed"))
+        .unwrap_or(false)
+}
+
+fn trade_state_from_event(
+    v: &serde_json::Value,
+    daily_pnl_sol: f64,
+    consecutive_wins: i32,
+    consecutive_losses: i32,
+) -> NNState {
+    use chrono::Timelike;
+
+    let pnl_pct = event_f64(v, "pnl_pct").clamp(-200.0, 500.0);
+    let pool_score = event_f64(v, "pool_score");
+    let inflow_rate = event_f64(v, "inflow_rate_sol_per_sec");
+    let velocity = event_f64(v, "velocity_sol_per_sec");
+    NNState {
+        pool_age_secs: event_f64(v, "pool_age_secs"),
+        initial_liquidity_sol: event_f64(v, "pool_size_sol"),
+        price_change_pct: pnl_pct / 100.0,
+        volume_5min_sol: (inflow_rate.max(0.0) * 300.0).min(100.0),
+        buy_sell_ratio: event_f64(v, "buy_pressure_ratio").max(0.0).min(5.0),
+        lp_burned: true,
+        mint_renounced: true,
+        current_pnl_pct: pnl_pct / 100.0,
+        position_age_secs: event_f64(v, "position_age_secs"),
+        daily_pnl_sol,
+        consecutive_wins,
+        consecutive_losses,
+        sol_balance_sol: 0.0,
+        regime: 0,
+        volatility: 0.0,
+        spread_pct: 0.0,
+        time_of_day_norm: chrono::Utc::now().hour() as f64 / 24.0,
+        open_positions: 0,
+        peak_pnl_pct: (pnl_pct / 100.0).max(0.0),
+        pool_score_norm: (pool_score / 100.0).clamp(0.0, 1.0),
+        deployer_rug_rate: 0.5,
+        volume_velocity: (inflow_rate / 5.0).clamp(-1.0, 1.0),
+        price_velocity: (velocity / 5.0).clamp(-1.0, 1.0),
+        price_acceleration: 0.0,
+    }
+}
+
+fn infer_buy_action(v: &serde_json::Value) -> TradeAction {
+    let pool_score = event_f64(v, "pool_score");
+    let pumpfun_score = event_f64(v, "pumpfun_score");
+    let inflow_rate = event_f64(v, "inflow_rate_sol_per_sec");
+    let velocity = event_f64(v, "velocity_sol_per_sec");
+    if pool_score >= 90.0 || pumpfun_score >= 90.0 || inflow_rate >= 1.5 || velocity >= 2.618 {
+        TradeAction::BuyAggressive
+    } else {
+        TradeAction::BuyStandard
+    }
+}
+
+fn train_nn_transition(
+    agent: &Arc<Mutex<DQNAgent>>,
+    state: NNState,
+    action: TradeAction,
+    reward: f64,
+    next_state: NNState,
+    done: bool,
+) {
+    if let Ok(mut ag) = agent.lock() {
+        ag.observe(state, action, reward, next_state, done);
+        for _ in 0..4 {
+            let Some(loss) = ag.train_step() else {
+                break;
+            };
+            debug!("NN train loss={:.6}", loss);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -72,10 +150,9 @@ async fn main() -> Result<()> {
     // Init tracing — write to stderr AND scematica-sniper.log so the dashboard can tail it
     {
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&args.log_level));
-        let stderr_layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr);
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+        let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
         let file_appender = tracing_appender::rolling::never(".", "scematica-sniper.log");
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
         let file_layer = tracing_subscriber::fmt::layer()
@@ -91,7 +168,10 @@ async fn main() -> Result<()> {
     }
 
     info!("╔══════════════════════════════════════╗");
-    info!("║     SCEMATICA SNIPER  v{}          ║", env!("CARGO_PKG_VERSION"));
+    info!(
+        "║     SCEMATICA SNIPER  v{}          ║",
+        env!("CARGO_PKG_VERSION")
+    );
     info!("╚══════════════════════════════════════╝");
 
     // ── Single-instance guard ───────────────────────────────────────────────
@@ -108,7 +188,10 @@ async fn main() -> Result<()> {
                          Stop the existing instance or delete {} if you know it's stale.",
                         pid, LOCK_FILE,
                     );
-                    return Err(anyhow::anyhow!("duplicate sniper instance detected (PID {})", pid));
+                    return Err(anyhow::anyhow!(
+                        "duplicate sniper instance detected (PID {})",
+                        pid
+                    ));
                 }
                 warn!("Stale {} from dead PID {} — overwriting", LOCK_FILE, pid);
             }
@@ -209,10 +292,13 @@ async fn main() -> Result<()> {
 
         let mut gate_passed = false;
         for attempt in 1..=5 {
-            match rpc.get_token_accounts_by_owner(
-                &wallet_kp.pubkey(),
-                TokenAccountsFilter::Mint(known_tokens::SCEMATICA_MINT),
-            ).await {
+            match rpc
+                .get_token_accounts_by_owner(
+                    &wallet_kp.pubkey(),
+                    TokenAccountsFilter::Mint(known_tokens::SCEMATICA_MINT),
+                )
+                .await
+            {
                 Ok(accounts) => {
                     let mut held = 0.0f64;
                     for keyed in &accounts {
@@ -233,15 +319,22 @@ async fn main() -> Result<()> {
                         );
                         return Err(anyhow::anyhow!(
                             "SCEMA balance gate: need {:.0}, have {:.0}",
-                            MIN_SCEMA_REQUIRED, held
+                            MIN_SCEMA_REQUIRED,
+                            held
                         ));
                     }
-                    info!("✅ SCEMA gate passed: {:.0} SCEMA held (required: {:.0})", held, MIN_SCEMA_REQUIRED);
+                    info!(
+                        "✅ SCEMA gate passed: {:.0} SCEMA held (required: {:.0})",
+                        held, MIN_SCEMA_REQUIRED
+                    );
                     gate_passed = true;
                     break;
                 }
                 Err(e) => {
-                    warn!("SCEMA gate attempt {}/5 failed: {} — retrying in 3s...", attempt, e);
+                    warn!(
+                        "SCEMA gate attempt {}/5 failed: {} — retrying in 3s...",
+                        attempt, e
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                 }
             }
@@ -259,6 +352,22 @@ async fn main() -> Result<()> {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    let nn_agent: Arc<Mutex<DQNAgent>> = Arc::new(Mutex::new(
+        match DQNAgent::load("scematica-nn-agent.json") {
+            Ok(a) => {
+                info!("NN agent loaded from checkpoint");
+                a
+            }
+            Err(_) => {
+                info!(
+                    "NN agent initialised fresh (STATE_DIM={}, ACTIONS=5)",
+                    scematica_nn::STATE_DIM
+                );
+                DQNAgent::new()
+            }
+        },
+    ));
+
     // Create sniper
     let sniper = Arc::new(Sniper::new(
         config.sniper.clone(),
@@ -266,13 +375,21 @@ async fn main() -> Result<()> {
         rpc.clone(),
         metrics.clone(),
         alerts.clone(),
+        Some(Arc::clone(&nn_agent)),
+        config.execution.clone(),
     ));
 
     // Record session start balance for drawdown tracking
     if let Ok(start_bal) = rpc.get_balance(&wallet_kp.pubkey()).await {
         use std::sync::atomic::Ordering;
-        sniper.session_start_lamports.store(start_bal, Ordering::Relaxed);
-        info!("Session start balance: {:.4} SOL ({} lamports)", start_bal as f64 / 1e9, start_bal);
+        sniper
+            .session_start_lamports
+            .store(start_bal, Ordering::Relaxed);
+        info!(
+            "Session start balance: {:.4} SOL ({} lamports)",
+            start_bal as f64 / 1e9,
+            start_bal
+        );
     }
 
     // Load persisted pool cache so previous-run tokens can be sold immediately
@@ -355,8 +472,12 @@ async fn main() -> Result<()> {
                     });
                 } else if !active && was_active {
                     // Reset buy counter so the next batch starts fresh
-                    sniper_sm.buy_count.store(0, std::sync::atomic::Ordering::Relaxed);
-                    info!("✅ Sell mode deactivated — buy counter reset, resuming normal operation");
+                    sniper_sm
+                        .buy_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    info!(
+                        "✅ Sell mode deactivated — buy counter reset, resuming normal operation"
+                    );
                 }
                 was_active = active;
             }
@@ -386,7 +507,10 @@ async fn main() -> Result<()> {
                         if first {
                             warn!("💥 DUMP MODE activated — force-selling ALL positions with zero slippage");
                         } else {
-                            warn!("AUTO DUMP: retrying unsold positions (tick {})", active_ticks);
+                            warn!(
+                                "AUTO DUMP: retrying unsold positions (tick {})",
+                                active_ticks
+                            );
                         }
                         let sniper_ref = sniper_dm.clone();
                         tokio::spawn(async move {
@@ -416,34 +540,45 @@ async fn main() -> Result<()> {
             let mut last_mode = String::new();
             loop {
                 interval.tick().await;
-                let Ok(data) = std::fs::read_to_string("scematica-rate-mode.json") else { continue };
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
+                let Ok(data) = std::fs::read_to_string("scematica-rate-mode.json") else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+                    continue;
+                };
                 let mode_str = v["mode"].as_str().unwrap_or("").to_string();
-                if mode_str.is_empty() { continue; }
+                if mode_str.is_empty() {
+                    continue;
+                }
                 // Dedup: skip if nothing changed (mode name AND wallet_pct both stable)
                 let file_wp = v["wallet_pct"].as_f64().unwrap_or(0.0);
                 let dedup_key = format!("{}:{:.3}", mode_str, file_wp);
-                if dedup_key == last_mode { continue; }
+                if dedup_key == last_mode {
+                    continue;
+                }
                 last_mode = dedup_key;
 
                 // Look up the mode in config.toml (case-insensitive).
                 // config is the single source of truth for TP/SL/sizing — not the file,
                 // which may carry stale dashboard enum values that diverge from config.toml.
-                let config_mode = sniper_rm.config.rate_modes.iter().find(|m| {
-                    m.name.to_lowercase() == mode_str.to_lowercase() && m.enabled
-                }).cloned();
+                let config_mode = sniper_rm
+                    .config
+                    .rate_modes
+                    .iter()
+                    .find(|m| m.name.to_lowercase() == mode_str.to_lowercase() && m.enabled)
+                    .cloned();
 
                 let mut params = sniper_rm.live_params.write();
                 if let Some(m) = config_mode {
                     // Apply every field from config — this is the authoritative definition.
-                    params.take_profit_pct        = m.take_profit_pct;
-                    params.stop_loss_pct          = m.stop_loss_pct;
-                    params.take_profit_pct_mode   = m.take_profit_pct;
-                    params.stop_loss_pct_mode     = m.stop_loss_pct;
-                    params.quote_amount_mode      = m.quote_amount;
-                    params.wallet_pct             = m.wallet_pct;
+                    params.take_profit_pct = m.take_profit_pct;
+                    params.stop_loss_pct = m.stop_loss_pct;
+                    params.take_profit_pct_mode = m.take_profit_pct;
+                    params.stop_loss_pct_mode = m.stop_loss_pct;
+                    params.quote_amount_mode = m.quote_amount;
+                    params.wallet_pct = m.wallet_pct;
                     params.momentum_max_escalations_mode = m.momentum_max_escalations;
-                    params.active_mode_name       = m.name.clone();
+                    params.active_mode_name = m.name.clone();
                     // Reset multiplier to 1.0 so strategy-agent adjustments start
                     // from a clean baseline rather than stacking on the prior mode's value.
                     params.amount_multiplier = 1.0;
@@ -453,10 +588,20 @@ async fn main() -> Result<()> {
                     );
                 } else {
                     // Mode not found in config — fall back to file values
-                    if let Some(tp) = v["tp_pct"].as_f64()       { params.take_profit_pct = tp; params.take_profit_pct_mode = tp; }
-                    if let Some(sl) = v["sl_pct"].as_f64()       { params.stop_loss_pct   = sl; params.stop_loss_pct_mode   = sl; }
-                    if let Some(qa) = v["quote_amount"].as_f64() { params.quote_amount_mode = qa; }
-                    if let Some(wp) = v["wallet_pct"].as_f64()   { params.wallet_pct = wp; }
+                    if let Some(tp) = v["tp_pct"].as_f64() {
+                        params.take_profit_pct = tp;
+                        params.take_profit_pct_mode = tp;
+                    }
+                    if let Some(sl) = v["sl_pct"].as_f64() {
+                        params.stop_loss_pct = sl;
+                        params.stop_loss_pct_mode = sl;
+                    }
+                    if let Some(qa) = v["quote_amount"].as_f64() {
+                        params.quote_amount_mode = qa;
+                    }
+                    if let Some(wp) = v["wallet_pct"].as_f64() {
+                        params.wallet_pct = wp;
+                    }
                     params.amount_multiplier = 1.0;
                     info!(
                         "⚡ Rate mode → {} (file fallback — not in config)  |  {:.1}% wallet  TP {:.0}%  SL {:.0}%",
@@ -485,14 +630,24 @@ async fn main() -> Result<()> {
                     sniper_wm.config.weekend_mode.clone()
                 } else {
                     let wm = &sniper_wm.config.weekday_mode;
-                    if wm.is_empty() { "Balanced".to_string() } else { wm.clone() }
+                    if wm.is_empty() {
+                        "Balanced".to_string()
+                    } else {
+                        wm.clone()
+                    }
                 };
-                if target_mode == last_applied { continue; }
+                if target_mode == last_applied {
+                    continue;
+                }
                 // Only auto-switch if the mode exists in config
-                let known = sniper_wm.config.rate_modes.iter().any(|m| {
-                    m.name.to_lowercase() == target_mode.to_lowercase() && m.enabled
-                });
-                if !known { continue; }
+                let known = sniper_wm
+                    .config
+                    .rate_modes
+                    .iter()
+                    .any(|m| m.name.to_lowercase() == target_mode.to_lowercase() && m.enabled);
+                if !known {
+                    continue;
+                }
                 let json = serde_json::json!({ "mode": target_mode });
                 if let Ok(s) = serde_json::to_string(&json) {
                     let tmp = "scematica-rate-mode.json.tmp";
@@ -540,15 +695,19 @@ async fn main() -> Result<()> {
         let sniper_bm = sniper.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            let mut last_label  = String::new();
-            let mut last_mult   = 0.0f64;
+            let mut last_label = String::new();
+            let mut last_mult = 0.0f64;
             loop {
                 interval.tick().await;
                 const PATH: &str = "scematica-builder-mode.json";
                 if !std::path::Path::new(PATH).exists() {
                     if !last_label.is_empty() {
-                        sniper_bm.wallet_target_lamports_override.store(0, Ordering::Relaxed);
-                        sniper_bm.progressive_scaling.store(false, Ordering::Relaxed);
+                        sniper_bm
+                            .wallet_target_lamports_override
+                            .store(0, Ordering::Relaxed);
+                        sniper_bm
+                            .progressive_scaling
+                            .store(false, Ordering::Relaxed);
                         sniper_bm.moon_chase.store(false, Ordering::Relaxed);
                         {
                             let mut lp = sniper_bm.live_params.write();
@@ -560,30 +719,43 @@ async fn main() -> Result<()> {
                     }
                     continue;
                 }
-                let Ok(data) = std::fs::read_to_string(PATH) else { continue };
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
-                let label      = v["mode"].as_str().unwrap_or("").to_string();
+                let Ok(data) = std::fs::read_to_string(PATH) else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+                    continue;
+                };
+                let label = v["mode"].as_str().unwrap_or("").to_string();
                 let target_sol = v["target_sol"].as_f64().unwrap_or(0.0);
 
                 // On label change: set target and log mode switch
                 if label != last_label {
                     let target_lam = (target_sol * 1e9) as u64;
-                    sniper_bm.wallet_target_lamports_override.store(target_lam, Ordering::Relaxed);
+                    sniper_bm
+                        .wallet_target_lamports_override
+                        .store(target_lam, Ordering::Relaxed);
                     // Both Builder and SuperBuilder use live_params for sizing,
                     // not the buy() progressive scaler (which is additive and
                     // would double-multiply with live_params.amount_multiplier).
-                    sniper_bm.progressive_scaling.store(false, Ordering::Relaxed);
-                    info!("🏗️  Builder mode → {} | target {:.2} SOL", label, target_sol);
+                    sniper_bm
+                        .progressive_scaling
+                        .store(false, Ordering::Relaxed);
+                    info!(
+                        "🏗️  Builder mode → {} | target {:.2} SOL",
+                        label, target_sol
+                    );
                     last_label = label.clone();
                 }
 
                 // Every tick: recompute optimal live_params from current progress
-                let wallet_sol  = sniper_bm.approx_wallet_sol();
-                let base_tp     = sniper_bm.base_take_profit_pct();
-                let base_sl     = sniper_bm.base_stop_loss_pct();
-                let progress    = if target_sol > 0.0 {
+                let wallet_sol = sniper_bm.approx_wallet_sol();
+                let base_tp = sniper_bm.base_take_profit_pct();
+                let base_sl = sniper_bm.base_stop_loss_pct();
+                let progress = if target_sol > 0.0 {
                     (wallet_sol / target_sol).clamp(0.0, 1.0)
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 let (mult, tp, sl, moon_on) = match label.as_str() {
                     "builder" => {
@@ -626,8 +798,8 @@ async fn main() -> Result<()> {
                 {
                     let mut lp = sniper_bm.live_params.write();
                     lp.amount_multiplier = mult;
-                    lp.take_profit_pct   = tp;
-                    lp.stop_loss_pct     = sl;
+                    lp.take_profit_pct = tp;
+                    lp.stop_loss_pct = sl;
                 }
             }
         });
@@ -704,12 +876,24 @@ async fn main() -> Result<()> {
         let wallet_pk = wallet_kp.pubkey();
         let max_dd = config.sniper.max_drawdown_pct;
         tokio::spawn(async move {
-            if max_dd <= 0.0 { return; }
+            if max_dd <= 0.0 {
+                return;
+            }
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 let start = sniper_dd.session_start_lamports.load(Ordering::Relaxed);
-                if start == 0 { continue; }
+                if start == 0 {
+                    continue;
+                }
+                let open_positions = sniper_dd.open_positions.load(Ordering::Relaxed);
+                if open_positions > 0 {
+                    tracing::debug!(
+                        open_positions,
+                        "Max drawdown guard deferred while positions are open"
+                    );
+                    continue;
+                }
                 let current = match rpc_dd.get_balance(&wallet_pk).await {
                     Ok(b) => b,
                     Err(_) => continue,
@@ -717,7 +901,9 @@ async fn main() -> Result<()> {
 
                 let drawdown_pct = if current < start {
                     (start - current) as f64 / start as f64 * 100.0
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 // Trip condition — set sell-mode with reason=max_drawdown.
                 if drawdown_pct >= max_dd {
@@ -753,7 +939,9 @@ async fn main() -> Result<()> {
                         // next drawdown measurement starts from now, not from the original
                         // session start. Without this reset the guard re-trips immediately
                         // on the next buy (wallet drops briefly below an already-low baseline).
-                        sniper_dd.session_start_lamports.store(current, Ordering::Relaxed);
+                        sniper_dd
+                            .session_start_lamports
+                            .store(current, Ordering::Relaxed);
                         info!(
                             "🟢 Drawdown recovered ({:.1}% < {:.1}% threshold) — baseline reset to {:.4} SOL, sell mode lifted",
                             drawdown_pct, max_dd, current as f64 / 1e9,
@@ -794,39 +982,40 @@ async fn main() -> Result<()> {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let Ok(meta) = std::fs::metadata(&config_path) else { continue };
+                let Ok(meta) = std::fs::metadata(&config_path) else {
+                    continue;
+                };
                 let Ok(mtime) = meta.modified() else { continue };
-                if last_mtime == Some(mtime) { continue; }
+                if last_mtime == Some(mtime) {
+                    continue;
+                }
                 last_mtime = Some(mtime);
                 // Reload and update only live parameters (no restart required)
                 match scematica_core::config::BotConfig::from_file(&config_path) {
                     Ok(new_cfg) => {
                         let mut params = sniper_hr.live_params.write();
-                        params.take_profit_pct  = new_cfg.sniper.take_profit_pct;
-                        params.stop_loss_pct    = new_cfg.sniper.stop_loss_pct;
+                        params.take_profit_pct = new_cfg.sniper.take_profit_pct;
+                        params.stop_loss_pct = new_cfg.sniper.stop_loss_pct;
                         // amount_multiplier intentionally not reset — rate mode owns it
                         info!(
                             "🔄 Config hot-reloaded: TP {:.1}%  SL {:.1}%",
                             params.take_profit_pct, params.stop_loss_pct
                         );
                     }
-                    Err(e) => warn!("Config hot-reload parse error: {} — keeping current params", e),
+                    Err(e) => warn!(
+                        "Config hot-reload parse error: {} — keeping current params",
+                        e
+                    ),
                 }
             }
         });
     }
 
     // ── Deep Q* Neural Network agent ────────────────────────────────────────
-    // Observer mode: learns from completed trades by polling scematica-trades.jsonl.
-    // Once epsilon < 0.5 (ready_to_advise=true) it can gate buy decisions.
+    // Learns from every trade row and shares the live agent used by buy advice.
+    // Trained checkpoints advise immediately; fresh agents advise after training starts.
     {
-        use std::sync::{Arc, Mutex};
-        let nn_agent: Arc<Mutex<DQNAgent>> = Arc::new(Mutex::new(
-            match DQNAgent::load("scematica-nn-agent.json") {
-                Ok(a) => { info!("🧠 NN agent loaded from checkpoint"); a }
-                Err(_) => { info!("🧠 NN agent initialised fresh (STATE_DIM={}, ACTIONS=5)", scematica_nn::STATE_DIM); DQNAgent::new() }
-            }
-        ));
+        let nn_agent = Arc::clone(&nn_agent);
 
         // Initial stats write — without this, the dashboard's NN panel sits blank
         // for the first 5 s after launch (until the flush task ticks for the first
@@ -841,39 +1030,96 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Observer task: polls scematica-trades.jsonl for new SELL events, extracts
-        // reward from PnL, constructs (state, action, reward, next_state) tuples, trains.
-        //
-        // Field-name contract: TradeEvent serialises as `kind`/`pnl`/`pnl_pct`/
-        // `position_age_secs` (see scematica-core/src/metrics.rs). The previous
-        // version of this loop read `action`/`pnl_sol` — which never matched — so
-        // the agent silently never trained and the dashboard panel was pinned to
-        // ε=1.0, steps=0, replay=0 forever. Keep these key names in sync with
-        // TradeEvent or the agent will go dark again.
+        // Observer task: polls scematica-trades.jsonl and trains from BUY, SELL,
+        // and ARB rows. BUY rows carry pool context; paired SELL rows provide the
+        // outcome reward that teaches entry selection.
         {
             let agent = Arc::clone(&nn_agent);
             tokio::spawn(async move {
                 let mut last_seen: usize = 0;
-                let mut consecutive_wins: i32  = 0;
+                let mut pending_buys: std::collections::HashMap<String, (NNState, TradeAction)> =
+                    std::collections::HashMap::new();
+                let mut daily_pnl_sol: f64 = 0.0;
+                let mut consecutive_wins: i32 = 0;
                 let mut consecutive_losses: i32 = 0;
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
-                    let Ok(raw) = std::fs::read_to_string("scematica-trades.jsonl") else { continue };
+                    let Ok(raw) = std::fs::read_to_string("scematica-trades.jsonl") else {
+                        continue;
+                    };
                     let lines: Vec<&str> = raw.lines().collect();
-                    if lines.len() <= last_seen { continue; }
+                    if lines.len() < last_seen {
+                        last_seen = 0;
+                        pending_buys.clear();
+                    }
+                    if lines.len() == last_seen {
+                        continue;
+                    }
 
                     for line in &lines[last_seen..] {
-                        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                        if v["kind"].as_str() != Some("SELL") { continue; }
-                        // Only train on confirmed sells — failed sells carry no usable price signal
-                        // (the sniper marks them with pnl_pct=-100 as a fallback for hard failures,
-                        // but we want learning to focus on real market outcomes).
-                        let confirmed = v["status"].as_str() == Some("✓");
+                        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                            continue;
+                        };
+                        let kind = v["kind"].as_str().unwrap_or("");
+                        let mint = v["mint"].as_str().unwrap_or("").to_string();
+                        if kind == "BUY" {
+                            let state = trade_state_from_event(
+                                &v,
+                                daily_pnl_sol,
+                                consecutive_wins,
+                                consecutive_losses,
+                            );
+                            let action = infer_buy_action(&v);
+                            if event_confirmed(&v) {
+                                if !mint.is_empty() {
+                                    pending_buys.insert(mint, (state, action));
+                                }
+                            } else {
+                                train_nn_transition(
+                                    &agent,
+                                    state,
+                                    action,
+                                    -5.0,
+                                    NNState::default(),
+                                    true,
+                                );
+                            }
+                            continue;
+                        }
+                        if kind == "ARB" {
+                            let pnl_sol = event_f64(&v, "pnl");
+                            let amount = event_f64(&v, "amount");
+                            daily_pnl_sol += pnl_sol;
+                            let mut arb_state = trade_state_from_event(
+                                &v,
+                                daily_pnl_sol,
+                                consecutive_wins,
+                                consecutive_losses,
+                            );
+                            if amount > 0.0 && arb_state.current_pnl_pct == 0.0 {
+                                arb_state.current_pnl_pct = pnl_sol / amount;
+                                arb_state.price_change_pct = pnl_sol / amount;
+                            }
+                            train_nn_transition(
+                                &agent,
+                                arb_state,
+                                TradeAction::Hold,
+                                (pnl_sol * 10_000.0).clamp(-5.0, 5.0),
+                                NNState::default(),
+                                true,
+                            );
+                            continue;
+                        }
+                        if kind != "SELL" {
+                            continue;
+                        }
+                        let confirmed = event_confirmed(&v);
 
                         let pnl_sol = v["pnl"].as_f64().unwrap_or(0.0);
-                        let pnl_pct = v["pnl_pct"].as_f64()
-                            .filter(|&p| p != 0.0)  // treat missing/zero as absent
+                        let pnl_pct = v["pnl_pct"]
+                            .as_f64()
+                            .filter(|&p| p != 0.0) // treat missing/zero as absent
                             .unwrap_or_else(|| {
                                 // Old entries lack pnl_pct. Skip them (use 0 = neutral)
                                 // rather than backfilling pnl_sol*10000 which diverged Q-net.
@@ -881,18 +1127,25 @@ async fn main() -> Result<()> {
                             })
                             .clamp(-200.0, 500.0); // hard cap regardless of source
                         let age_secs = v["position_age_secs"].as_f64().unwrap_or(0.0);
+                        daily_pnl_sol += pnl_sol;
 
                         // Update streak tracking
                         if pnl_sol > 0.0 {
-                            consecutive_wins  += 1;
+                            consecutive_wins += 1;
                             consecutive_losses = 0;
                         } else {
                             consecutive_losses += 1;
-                            consecutive_wins   = 0;
+                            consecutive_wins = 0;
                         }
 
                         let state = NNState::from_trade_fields(
-                            pnl_pct, age_secs, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
+                            pnl_pct / 100.0,
+                            age_secs,
+                            daily_pnl_sol,
+                            consecutive_wins,
+                            consecutive_losses,
+                            0.0,
+                            0,
                         );
                         let action = TradeAction::SellAll;
                         let reward = if confirmed {
@@ -903,15 +1156,32 @@ async fn main() -> Result<()> {
                             -1.0
                         };
                         let next_state = NNState::from_trade_fields(
-                            0.0, 0.0, 0.0, consecutive_wins, consecutive_losses, 0.0, 0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            consecutive_wins,
+                            consecutive_losses,
+                            0.0,
+                            0,
                         );
 
-                        if let Ok(mut ag) = agent.lock() {
-                            ag.observe(state, action, reward, next_state, true);
-                            if let Some(loss) = ag.train_step() {
-                                debug!("NN train loss={:.6}", loss);
-                            }
+                        let sell_state = trade_state_from_event(
+                            &v,
+                            daily_pnl_sol,
+                            consecutive_wins,
+                            consecutive_losses,
+                        );
+                        if let Some((entry_state, entry_action)) = pending_buys.remove(&mint) {
+                            train_nn_transition(
+                                &agent,
+                                entry_state,
+                                entry_action,
+                                reward,
+                                sell_state,
+                                true,
+                            );
                         }
+                        train_nn_transition(&agent, state, action, reward * 0.25, next_state, true);
                     }
                     last_seen = lines.len();
                 }
@@ -952,7 +1222,7 @@ async fn main() -> Result<()> {
                     interval.tick().await;
                     if let Ok(ag) = agent.lock() {
                         match ag.save("scematica-nn-agent.json") {
-                            Ok(_)  => info!("🧠 NN agent checkpoint saved"),
+                            Ok(_) => info!("🧠 NN agent checkpoint saved"),
                             Err(e) => tracing::warn!("NN checkpoint save failed: {}", e),
                         }
                     }
@@ -1034,7 +1304,10 @@ async fn main() -> Result<()> {
                 }
             }
         });
-        info!("👁 Whale copy listener started ({} wallets)", config.sniper.copy_wallets.len());
+        info!(
+            "👁 Whale copy listener started ({} wallets)",
+            config.sniper.copy_wallets.len()
+        );
     }
 
     // Spawn listener
@@ -1043,12 +1316,8 @@ async fn main() -> Result<()> {
     let event_tx_clone = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            let listener = PoolListener::new(
-                &ws_url,
-                wallet_pubkey,
-                quote_mint,
-                event_tx_clone.clone(),
-            );
+            let listener =
+                PoolListener::new(&ws_url, wallet_pubkey, quote_mint, event_tx_clone.clone());
             if let Err(e) = listener.run().await {
                 error!("Listener error: {}. Reconnecting in 5s...", e);
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -1095,7 +1364,8 @@ async fn main() -> Result<()> {
                     if ath > last_ath {
                         info!(
                             "🏆 New ATH balance: {:.4} SOL ({} lamports)",
-                            ath as f64 / 1e9, ath
+                            ath as f64 / 1e9,
+                            ath
                         );
                         last_ath = ath;
                     }
@@ -1103,7 +1373,9 @@ async fn main() -> Result<()> {
                     if dd > 5.0 {
                         debug!(
                             "ATH drawdown: {:.1}% (current={:.4} SOL, ATH={:.4} SOL)",
-                            dd, balance as f64 / 1e9, ath as f64 / 1e9
+                            dd,
+                            balance as f64 / 1e9,
+                            ath as f64 / 1e9
                         );
                     }
                 }
@@ -1115,7 +1387,9 @@ async fn main() -> Result<()> {
     {
         let sniper_gb = sniper.clone();
         tokio::spawn(async move {
-            if sniper_gb.grief_breaker.is_none() { return; }
+            if sniper_gb.grief_breaker.is_none() {
+                return;
+            }
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
@@ -1167,17 +1441,24 @@ async fn main() -> Result<()> {
     // trending — typically 0.5–3 s ahead of the Raydium AMM V4 listener.
     if config.sniper.pumpfun_trending_enabled {
         use scematica_sniper::pumpfun_trending::{PumpFunTrendingConfig, PumpFunTrendingMonitor};
-        let pf_tx  = event_tx.clone();
+        let pf_tx = event_tx.clone();
         let rpc_url = config.rpc.endpoint.clone();
         let pf_cfg = PumpFunTrendingConfig {
             min_trending_score: config.sniper.pumpfun_trending_score,
-            min_curve_pct:      config.sniper.pumpfun_min_curve_pct,
-            track_window_secs:  config.sniper.pumpfun_window_secs,
+            min_curve_pct: config.sniper.pumpfun_min_curve_pct,
+            track_window_secs: config.sniper.pumpfun_window_secs,
+            max_migration_age_secs: config.sniper.pumpfun_max_migration_age_secs,
+            min_recent_buys: config.sniper.pumpfun_min_recent_buys,
+            min_net_buy_sol: config.sniper.pumpfun_min_net_buy_sol,
+            max_last_buy_age_secs: config.sniper.pumpfun_max_last_buy_age_secs,
             max_tracked_tokens: 300,
         };
         info!(
-            "PumpFun trending monitor starting (min_score={:.0}, min_curve={:.0}%)",
-            pf_cfg.min_trending_score, pf_cfg.min_curve_pct
+            "PumpFun trending monitor starting (min_score={:.0}, min_curve={:.0}%, min_buys={}, min_net_buy={:.2} SOL)",
+            pf_cfg.min_trending_score,
+            pf_cfg.min_curve_pct,
+            pf_cfg.min_recent_buys,
+            pf_cfg.min_net_buy_sol,
         );
         tokio::spawn(async move {
             let monitor = PumpFunTrendingMonitor::new(rpc_url, pf_tx, pf_cfg);
@@ -1203,8 +1484,12 @@ async fn main() -> Result<()> {
                 loop {
                     interval.tick().await;
 
-                    let start = sniper_pe.session_start_lamports.load(std::sync::atomic::Ordering::Relaxed);
-                    if start == 0 { continue; }
+                    let start = sniper_pe
+                        .session_start_lamports
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if start == 0 {
+                        continue;
+                    }
 
                     let current = match rpc_pe.get_balance(&wallet_kp_pe.pubkey()).await {
                         Ok(b) => b,
@@ -1274,7 +1559,9 @@ async fn main() -> Result<()> {
             });
             info!(
                 "💰 Profit extraction enabled: {:.0}% of profit when session PnL > {:.4} SOL → {}",
-                extract_pct, extract_threshold, &extract_wallet_log[..8.min(extract_wallet_log.len())]
+                extract_pct,
+                extract_threshold,
+                &extract_wallet_log[..8.min(extract_wallet_log.len())]
             );
         }
     }

@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use anyhow::Result;
 
 /// Rate mode profile: defines entry size, TP%, SL% for a specific risk posture
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +235,44 @@ pub struct SniperConfig {
     /// Minimum historical AMM velocity in SOL/s when pool open_time is trustworthy.
     #[serde(default = "default_moonshot_min_historical_velocity_sol_per_sec")]
     pub moonshot_min_historical_velocity_sol_per_sec: f64,
+
+    /// Final fail-closed entry gate for "best of best" pool selection.
+    /// When enabled, a pool must clear a high score floor and show multiple
+    /// independent runner signals before buy execution can start.
+    #[serde(default)]
+    pub elite_pool_mode: bool,
+    /// Minimum final pool score required by elite mode.
+    #[serde(default = "default_elite_min_score")]
+    pub elite_min_score: f64,
+    /// Minimum number of independent runner signals required by elite mode.
+    #[serde(default = "default_elite_min_signal_count")]
+    pub elite_min_signal_count: u8,
+    /// Minimum quote-vault size in SOL required by elite mode.
+    #[serde(default = "default_elite_min_pool_size_sol")]
+    pub elite_min_pool_size_sol: f64,
+    /// Maximum quote-vault size in SOL allowed by elite mode. 0 disables max.
+    #[serde(default = "default_elite_max_pool_size_sol")]
+    pub elite_max_pool_size_sol: f64,
+    /// Maximum trustworthy pool age in seconds. Unknown ages can pass only when
+    /// live or pre-graduation momentum supplies the freshness signal.
+    #[serde(default = "default_elite_max_age_secs")]
+    pub elite_max_age_secs: u64,
+    /// Live quote-vault inflow in SOL/s required to count as a runner signal.
+    #[serde(default = "default_elite_min_inflow_sol_per_sec")]
+    pub elite_min_inflow_sol_per_sec: f64,
+    /// Pump.fun pre-graduation score required to count as a runner signal.
+    #[serde(default = "default_elite_min_pumpfun_score")]
+    pub elite_min_pumpfun_score: f64,
+    /// Historical AMM velocity in SOL/s required to count as a runner signal.
+    #[serde(default = "default_elite_min_historical_velocity_sol_per_sec")]
+    pub elite_min_historical_velocity_sol_per_sec: f64,
+    /// AMM quote/base vault skew required to count as a buy-pressure signal.
+    #[serde(default = "default_elite_min_buy_pressure_ratio")]
+    pub elite_min_buy_pressure_ratio: f64,
+    /// Require either live inflow or pre-graduation momentum. This prevents
+    /// historical-only or paid-boost-only pools from passing as elite runners.
+    #[serde(default = "default_elite_require_live_or_pregrad")]
+    pub elite_require_live_or_pregrad: bool,
 
     // ── Multi-RPC endpoints ────────────────────────────────────────────────────
     /// Additional RPC endpoints for automatic failover
@@ -490,20 +528,78 @@ pub struct SniperConfig {
     pub pool_drain_exit_pct: f64,
 }
 
-fn default_pumpfun_trending_score() -> f64 { 55.0 }
-fn default_pumpfun_min_curve_pct()   -> f64 { 40.0 }
-fn default_pumpfun_window_secs()     -> u64 { 120  }
-fn default_pumpfun_max_migration_age_secs() -> u64 { 120 }
-fn default_pumpfun_min_recent_buys() -> u32 { 3 }
-fn default_pumpfun_min_net_buy_sol() -> f64 { 0.25 }
-fn default_pumpfun_max_last_buy_age_secs() -> u64 { 20 }
-fn default_moonshot_min_score() -> f64 { 85.0 }
-fn default_moonshot_min_inflow_sol_per_sec() -> f64 { 0.50 }
-fn default_moonshot_min_growth_pct() -> f64 { 2.0 }
-fn default_moonshot_min_growth_sol() -> f64 { 0.01 }
-fn default_moonshot_min_pumpfun_score() -> f64 { 85.0 }
-fn default_moonshot_min_historical_velocity_sol_per_sec() -> f64 { 2.0 }
-fn default_compute_unit_price_hard_cap() -> u64 { 2_000_000 }
+fn default_pumpfun_trending_score() -> f64 {
+    55.0
+}
+fn default_pumpfun_min_curve_pct() -> f64 {
+    40.0
+}
+fn default_pumpfun_window_secs() -> u64 {
+    120
+}
+fn default_pumpfun_max_migration_age_secs() -> u64 {
+    120
+}
+fn default_pumpfun_min_recent_buys() -> u32 {
+    3
+}
+fn default_pumpfun_min_net_buy_sol() -> f64 {
+    0.25
+}
+fn default_pumpfun_max_last_buy_age_secs() -> u64 {
+    20
+}
+fn default_moonshot_min_score() -> f64 {
+    85.0
+}
+fn default_moonshot_min_inflow_sol_per_sec() -> f64 {
+    0.50
+}
+fn default_moonshot_min_growth_pct() -> f64 {
+    2.0
+}
+fn default_moonshot_min_growth_sol() -> f64 {
+    0.01
+}
+fn default_moonshot_min_pumpfun_score() -> f64 {
+    85.0
+}
+fn default_moonshot_min_historical_velocity_sol_per_sec() -> f64 {
+    2.0
+}
+fn default_elite_min_score() -> f64 {
+    92.0
+}
+fn default_elite_min_signal_count() -> u8 {
+    2
+}
+fn default_elite_min_pool_size_sol() -> f64 {
+    20.0
+}
+fn default_elite_max_pool_size_sol() -> f64 {
+    100.0
+}
+fn default_elite_max_age_secs() -> u64 {
+    30
+}
+fn default_elite_min_inflow_sol_per_sec() -> f64 {
+    0.75
+}
+fn default_elite_min_pumpfun_score() -> f64 {
+    90.0
+}
+fn default_elite_min_historical_velocity_sol_per_sec() -> f64 {
+    2.618
+}
+fn default_elite_min_buy_pressure_ratio() -> f64 {
+    0.02
+}
+fn default_elite_require_live_or_pregrad() -> bool {
+    true
+}
+fn default_compute_unit_price_hard_cap() -> u64 {
+    2_000_000
+}
 
 impl Default for SniperConfig {
     fn default() -> Self {
@@ -567,13 +663,76 @@ impl Default for SniperConfig {
             // v1.6.0: Rate modes — 7 profiles from Micro (0.001 SOL) to Moon (0.1 SOL)
             // Default to Balanced (0.01 SOL, 40% win rate from Phase 1 analysis)
             rate_modes: vec![
-                RateMode { name: "Micro".into(),      order: 1, quote_amount: 0.001, wallet_pct: 0.3,  take_profit_pct: 50.0,     stop_loss_pct: 8.0,  momentum_max_escalations: 3,  enabled: true },
-                RateMode { name: "Bearish".into(),    order: 2, quote_amount: 0.003, wallet_pct: 0.5,  take_profit_pct: 75.0,     stop_loss_pct: 10.0, momentum_max_escalations: 4,  enabled: true },
-                RateMode { name: "Safe".into(),       order: 3, quote_amount: 0.005, wallet_pct: 0.8,  take_profit_pct: 100.0,    stop_loss_pct: 12.0, momentum_max_escalations: 5,  enabled: true },
-                RateMode { name: "Balanced".into(),   order: 4, quote_amount: 0.01,  wallet_pct: 1.5,  take_profit_pct: 175.0,    stop_loss_pct: 12.0, momentum_max_escalations: 7,  enabled: true },
-                RateMode { name: "Aggressive".into(), order: 5, quote_amount: 0.02,  wallet_pct: 3.0,  take_profit_pct: 300.0,    stop_loss_pct: 15.0, momentum_max_escalations: 7,  enabled: true },
-                RateMode { name: "Degen".into(),      order: 6, quote_amount: 0.04,  wallet_pct: 6.0,  take_profit_pct: 450.0,    stop_loss_pct: 25.0, momentum_max_escalations: 7,  enabled: true },
-                RateMode { name: "Moon".into(),       order: 7, quote_amount: 0.1,   wallet_pct: 12.0, take_profit_pct: 100000.0, stop_loss_pct: 60.0, momentum_max_escalations: 12, enabled: true },
+                RateMode {
+                    name: "Micro".into(),
+                    order: 1,
+                    quote_amount: 0.001,
+                    wallet_pct: 0.3,
+                    take_profit_pct: 50.0,
+                    stop_loss_pct: 8.0,
+                    momentum_max_escalations: 3,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Bearish".into(),
+                    order: 2,
+                    quote_amount: 0.003,
+                    wallet_pct: 0.5,
+                    take_profit_pct: 75.0,
+                    stop_loss_pct: 10.0,
+                    momentum_max_escalations: 4,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Safe".into(),
+                    order: 3,
+                    quote_amount: 0.005,
+                    wallet_pct: 0.8,
+                    take_profit_pct: 100.0,
+                    stop_loss_pct: 12.0,
+                    momentum_max_escalations: 5,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Balanced".into(),
+                    order: 4,
+                    quote_amount: 0.01,
+                    wallet_pct: 1.5,
+                    take_profit_pct: 175.0,
+                    stop_loss_pct: 12.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Aggressive".into(),
+                    order: 5,
+                    quote_amount: 0.02,
+                    wallet_pct: 3.0,
+                    take_profit_pct: 300.0,
+                    stop_loss_pct: 15.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Degen".into(),
+                    order: 6,
+                    quote_amount: 0.04,
+                    wallet_pct: 6.0,
+                    take_profit_pct: 450.0,
+                    stop_loss_pct: 25.0,
+                    momentum_max_escalations: 7,
+                    enabled: true,
+                },
+                RateMode {
+                    name: "Moon".into(),
+                    order: 7,
+                    quote_amount: 0.1,
+                    wallet_pct: 12.0,
+                    take_profit_pct: 100000.0,
+                    stop_loss_pct: 60.0,
+                    momentum_max_escalations: 12,
+                    enabled: true,
+                },
             ],
             active_mode_name: "Balanced".to_string(),
             kelly_sizing: false,
@@ -600,7 +759,20 @@ impl Default for SniperConfig {
             moonshot_min_growth_pct: default_moonshot_min_growth_pct(),
             moonshot_min_growth_sol: default_moonshot_min_growth_sol(),
             moonshot_min_pumpfun_score: default_moonshot_min_pumpfun_score(),
-            moonshot_min_historical_velocity_sol_per_sec: default_moonshot_min_historical_velocity_sol_per_sec(),
+            moonshot_min_historical_velocity_sol_per_sec:
+                default_moonshot_min_historical_velocity_sol_per_sec(),
+            elite_pool_mode: false,
+            elite_min_score: default_elite_min_score(),
+            elite_min_signal_count: default_elite_min_signal_count(),
+            elite_min_pool_size_sol: default_elite_min_pool_size_sol(),
+            elite_max_pool_size_sol: default_elite_max_pool_size_sol(),
+            elite_max_age_secs: default_elite_max_age_secs(),
+            elite_min_inflow_sol_per_sec: default_elite_min_inflow_sol_per_sec(),
+            elite_min_pumpfun_score: default_elite_min_pumpfun_score(),
+            elite_min_historical_velocity_sol_per_sec:
+                default_elite_min_historical_velocity_sol_per_sec(),
+            elite_min_buy_pressure_ratio: default_elite_min_buy_pressure_ratio(),
+            elite_require_live_or_pregrad: default_elite_require_live_or_pregrad(),
             extra_rpc_endpoints: vec![],
             adaptive_slippage: false,
             sandwich_shield: false,
@@ -657,9 +829,9 @@ impl Default for SniperConfig {
             // Data shows tokens commonly pump 100-300% on launch; selling 20% at 45%
             // was giving up upside on every strong winner.
             tiered_partial_tp_levels: vec![
-                (100.0, 15.0),  // first partial at +100% — sell 15% (was 45%→20%)
-                (300.0, 20.0),  // second at +300% — sell 20% (was 100%→25%)
-                (600.0, 25.0),  // third at +600% — sell 25% (was 200%→25%)
+                (100.0, 15.0), // first partial at +100% — sell 15% (was 45%→20%)
+                (300.0, 20.0), // second at +300% — sell 20% (was 100%→25%)
+                (600.0, 25.0), // third at +600% — sell 25% (was 200%→25%)
             ],
             // v1.0.0 reliability defaults
             flash_crash_pct: 22.0,
@@ -779,10 +951,7 @@ impl SniperConfig {
 
     /// List all enabled rate modes sorted by order
     pub fn enabled_rate_modes(&self) -> Vec<&RateMode> {
-        let mut modes: Vec<_> = self.rate_modes
-            .iter()
-            .filter(|m| m.enabled)
-            .collect();
+        let mut modes: Vec<_> = self.rate_modes.iter().filter(|m| m.enabled).collect();
         modes.sort_by_key(|m| m.order);
         modes
     }
@@ -1013,7 +1182,7 @@ impl BotConfig {
     /// Load config from environment variables (dotenv) and overrides from config file
     pub fn from_env() -> Result<Self> {
         dotenv::dotenv().ok();
-        
+
         // Try loading from config.toml first, then fall back to env
         let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".into());
         if std::path::Path::new(&config_path).exists() {

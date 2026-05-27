@@ -1,4 +1,13 @@
-import type { FilterStats, HealthStatus, Metrics, NNStats, Pool, Trade } from './types'
+import type {
+  FilterStats,
+  HealthStatus,
+  Metrics,
+  NNStats,
+  Pool,
+  PoolDecision,
+  Trade,
+  TxTelemetry,
+} from './types'
 
 // All requests go to the Next.js proxy route (/api/*), which forwards
 // server-side to the Rust API. The browser never touches port 3001 directly.
@@ -22,4 +31,6 @@ export const api = {
   pools:     (limit = 30) => get<{ pools: Pool[]; total: number }>('/api/pools', { limit: String(limit) }),
   logs:      (lines = 80) => get<{ lines: string[] }>('/api/logs', { lines: String(lines) }),
   trades:    (limit = 20) => get<{ trades: Trade[] }>('/api/trades', { limit: String(limit) }),
+  decisions: (limit = 40) => get<{ decisions: PoolDecision[] }>('/api/decisions', { limit: String(limit) }),
+  txTelemetry: (limit = 40) => get<{ telemetry: TxTelemetry[] }>('/api/tx-telemetry', { limit: String(limit) }),
 }

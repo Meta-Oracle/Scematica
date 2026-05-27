@@ -1,4 +1,6 @@
 import { CABanner }        from '@/components/CABanner'
+import { DecisionLedger }  from '@/components/DecisionLedger'
+import { ExecutionQuality } from '@/components/ExecutionQuality'
 import { FilterStatsPanel } from '@/components/FilterStats'
 import { GatedControls }    from '@/components/GatedControls'
 import { HealthBadge }      from '@/components/HealthBadge'
@@ -94,6 +96,12 @@ export default function Home() {
         <Row2 height="h-80"
           left={<PoolRadar />}
           right={<FilterStatsPanel />}
+        />
+
+        {/* Decision + Execution Quality */}
+        <Row2 height="h-72"
+          left={<DecisionLedger />}
+          right={<ExecutionQuality />}
         />
 
         {/* Trades + Open Positions */}

@@ -5,6 +5,7 @@ members = [
     "crates/scematica-arb",
     "crates/scematica-executor",
     "crates/scematica-dashboard",
+    "crates/scematica-api",
     "crates/scematica-ai",
     "crates/scematica-nn",
     "crates/scematica-protocol",

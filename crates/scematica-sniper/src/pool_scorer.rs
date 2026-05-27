@@ -83,17 +83,19 @@ impl PoolScorer {
         let size_lr = if size_sol < 3.0 {
             0.05 // hard reject (already handled above but keep consistent)
         } else if size_sol < 5.0 {
-            0.20 // very risky
-        } else if size_sol < 6.5 {
-            0.55 // borderline
-        } else if size_sol <= 14.0 {
-            4.5  // sweet spot lower band: 6.5-14 SOL
-        } else if size_sol <= 28.0 {
-            3.8  // sweet spot upper band: 14-28 SOL
-        } else if size_sol <= 60.0 {
-            1.8  // large-cap launch: fewer rugs, less edge
+            0.15 // very risky
+        } else if size_sol < 10.0 {
+            0.35 // thin micro-cap
+        } else if size_sol < 20.0 {
+            0.85 // can run, but recent live data underperformed
+        } else if size_sol <= 45.0 {
+            4.2 // elite sweet spot: depth plus early momentum
+        } else if size_sol <= 85.0 {
+            3.2 // strong migration / launch-liquidity band
+        } else if size_sol <= 120.0 {
+            1.5 // viable but often later in the first move
         } else if size_sol <= 150.0 {
-            0.80 // established pool, initial pump likely over
+            0.70 // established pool, initial pump likely over
         } else {
             0.30 // whale pool, no entry edge
         };
@@ -185,13 +187,13 @@ impl PoolScorer {
         // was already piling in, confirming organic demand rather than a cold launch.
         if pool.pumpfun_score > 0.0 {
             let pf_lr = if pool.pumpfun_score >= 90.0 {
-                3.5  // exceptional: stampede-level pre-graduation buying
+                3.5 // exceptional: stampede-level pre-graduation buying
             } else if pool.pumpfun_score >= 80.0 {
-                2.8  // very strong: sustained community momentum
+                2.8 // very strong: sustained community momentum
             } else if pool.pumpfun_score >= 70.0 {
-                2.0  // strong: meets our trending threshold
+                2.0 // strong: meets our trending threshold
             } else {
-                1.3  // mild: some momentum, didn't hit threshold
+                1.3 // mild: some momentum, didn't hit threshold
             };
             p *= pf_lr;
         }
@@ -227,20 +229,24 @@ impl PoolScorer {
         inflow_rate_now_sol_per_sec: f64,
     ) -> f64 {
         let base = Self::score_with_socials(
-            pool, pool_size_lamports, base_vault_lamports, detected_at_secs, social_count,
+            pool,
+            pool_size_lamports,
+            base_vault_lamports,
+            detected_at_secs,
+            social_count,
         );
         // Instantaneous inflow rate: additive post-sigmoid boost.
         // Calibrated so a 1+ SOL/s spot inflow rescues borderline pools (score 58 → 68).
         let inflow_boost = if inflow_rate_now_sol_per_sec >= 3.0 {
-            18.0  // stampede: 3+ SOL/s pouring in — confirmed runner
+            18.0 // stampede: 3+ SOL/s pouring in — confirmed runner
         } else if inflow_rate_now_sol_per_sec >= 1.5 {
-            12.0  // very strong: likely parabolic pump
+            12.0 // very strong: likely parabolic pump
         } else if inflow_rate_now_sol_per_sec >= 0.5 {
-            7.0   // solid: active buying during evaluation window
+            7.0 // solid: active buying during evaluation window
         } else if inflow_rate_now_sol_per_sec >= 0.2 {
-            3.0   // mild: some buying visible
+            3.0 // mild: some buying visible
         } else {
-            0.0   // unknown or zero — no boost
+            0.0 // unknown or zero — no boost
         };
         (base + inflow_boost).max(0.0).min(100.0)
     }
@@ -254,7 +260,12 @@ impl PoolScorer {
         detected_at_secs: u64,
         social_count: u8,
     ) -> f64 {
-        let base = Self::score(pool, pool_size_lamports, base_vault_lamports, detected_at_secs);
+        let base = Self::score(
+            pool,
+            pool_size_lamports,
+            base_vault_lamports,
+            detected_at_secs,
+        );
         // Social LR adjustment: applied AFTER logistic sigmoid so the boost is additive
         // on the score, not the posterior (prevents over-weighting on already-high scores).
         let social_boost = match social_count {
@@ -314,9 +325,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        // 15 SOL sweet spot, 5s old (ultra-fresh), with buy pressure
+        // 30 SOL sweet spot, 5s old (ultra-fresh), with buy pressure
         let pool = make_pool(now - 5);
-        let score = PoolScorer::score(&pool, 15_000_000_000, 1_000_000_000, 0);
+        let score = PoolScorer::score(&pool, 30_000_000_000, 1_000_000_000, 0);
         // Should be high: good size + ultra-fresh + strong velocity + buy pressure
         assert!(score >= 85.0, "perfect pool scored too low: {}", score);
     }
@@ -338,10 +349,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        // 12 SOL pool (typical pump.fun graduation), detected now, with buy pressure
+        // 30 SOL pool, detected now, with buy pressure
         let pool = make_pool(0); // open_time=0 (pump.fun style)
-        let score = PoolScorer::score(&pool, 12_000_000_000, 500_000_000, now);
-        assert!(score >= 70.0, "fresh pump.fun graduation scored too low: {}", score);
+        let score = PoolScorer::score(&pool, 30_000_000_000, 500_000_000, now);
+        assert!(
+            score >= 70.0,
+            "fresh pump.fun graduation scored too low: {}",
+            score
+        );
     }
 
     #[test]

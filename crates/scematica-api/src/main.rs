@@ -5,6 +5,8 @@
 //! GET  /api/filters                   scematica-filter-stats.json
 //! GET  /api/logs                      last N lines of scematica-sniper.log
 //! GET  /api/trades                    scematica-trades.jsonl (last N)
+//! GET  /api/decisions                 scematica-pool-decisions.jsonl (last N)
+//! GET  /api/tx-telemetry              scematica-tx-telemetry.jsonl (last N)
 //! GET  /api/nn                        scematica-nn-stats.json
 //! GET  /api/health                    sniper liveness (lock file + process)
 //! GET  /api/controls                  full control state snapshot
@@ -16,6 +18,7 @@
 //! POST /api/controls/builder-mode     { "mode": "off"|"growth"|"builder"|"super_builder" }
 //! GET  /health                        API server liveness
 
+use axum::http::StatusCode;
 use axum::{
     extract::Query,
     http::Method,
@@ -23,7 +26,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -36,39 +38,47 @@ use tracing::info;
 
 // ── file paths ────────────────────────────────────────────────────────────────
 
-const METRICS_FILE:      &str = "scematica-metrics.json";
-const POOL_RADAR_FILE:   &str = "scematica-pool-radar.json";
+const METRICS_FILE: &str = "scematica-metrics.json";
+const POOL_RADAR_FILE: &str = "scematica-pool-radar.json";
 const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
-const NN_STATS_FILE:     &str = "scematica-nn-stats.json";
-const LOG_FILE:          &str = "scematica-sniper.log";
-const LOCK_FILE:         &str = "scematica-sniper.lock";
-const TRADES_FILE:       &str = "scematica-trades.jsonl";
-const SELL_MODE_FILE:    &str = "scematica-sell-mode.json";
-const DUMP_MODE_FILE:    &str = "scematica-dump-mode.json";
-const RATE_MODE_FILE:    &str = "scematica-rate-mode.json";
-const MOON_CHASE_FILE:   &str = "scematica-moon-chase.json";
+const NN_STATS_FILE: &str = "scematica-nn-stats.json";
+const LOG_FILE: &str = "scematica-sniper.log";
+const LOCK_FILE: &str = "scematica-sniper.lock";
+const TRADES_FILE: &str = "scematica-trades.jsonl";
+const POOL_DECISIONS_FILE: &str = "scematica-pool-decisions.jsonl";
+const TX_TELEMETRY_FILE: &str = "scematica-tx-telemetry.jsonl";
+const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
+const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
+const RATE_MODE_FILE: &str = "scematica-rate-mode.json";
+const MOON_CHASE_FILE: &str = "scematica-moon-chase.json";
 const BUILDER_MODE_FILE: &str = "scematica-builder-mode.json";
-const HIGH_SPEED_FILE:   &str = "scematica-highspeed-mode.json";
+const HIGH_SPEED_FILE: &str = "scematica-highspeed-mode.json";
 
 // ── query params ──────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)] struct LogQuery   { lines: Option<usize> }
-#[derive(Deserialize)] struct LimitQuery { limit: Option<usize> }
+#[derive(Deserialize)]
+struct LogQuery {
+    lines: Option<usize>,
+}
+#[derive(Deserialize)]
+struct LimitQuery {
+    limit: Option<usize>,
+}
 
 // ── rate preset lookup ────────────────────────────────────────────────────────
 
 /// Returns (tp_pct, sl_pct, multiplier) for a given rate mode name.
 fn rate_preset(mode: &str) -> (f64, f64, f64) {
     match mode {
-        "bearish"    => (45.0,   8.0,  0.3),
-        "micro"      => (60.0,   10.0, 0.1),
-        "safe"       => (75.0,   10.0, 0.5),
-        "balanced"   => (150.0,  15.0, 1.0),
-        "aggressive" => (300.0,  25.0, 2.0),
-        "degen"      => (450.0,  40.0, 4.0),
-        "bullish"    => (750.0,  50.0, 6.0),
-        "moon"       => (1200.0, 60.0, 8.0),
-        _            => (150.0,  15.0, 1.0), // balanced default
+        "bearish" => (45.0, 8.0, 0.3),
+        "micro" => (60.0, 10.0, 0.1),
+        "safe" => (75.0, 10.0, 0.5),
+        "balanced" => (150.0, 15.0, 1.0),
+        "aggressive" => (300.0, 25.0, 2.0),
+        "degen" => (450.0, 40.0, 4.0),
+        "bullish" => (750.0, 50.0, 6.0),
+        "moon" => (1200.0, 60.0, 8.0),
+        _ => (150.0, 15.0, 1.0), // balanced default
     }
 }
 
@@ -95,12 +105,28 @@ fn file_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
 }
 
+fn read_last_jsonl_values(path: &str, limit: usize) -> Vec<Value> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect::<Vec<Value>>()
+        .into_iter()
+        .rev()
+        .take(limit)
+        .collect()
+}
+
 // ── GET handlers ──────────────────────────────────────────────────────────────
 
 async fn metrics_handler() -> impl IntoResponse {
     let v = read_json_file(METRICS_FILE);
     if v.is_null() {
-        (StatusCode::NOT_FOUND, Json(json!({"error":"metrics not available"}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"metrics not available"})),
+        )
+            .into_response()
     } else {
         Json(v).into_response()
     }
@@ -145,24 +171,34 @@ async fn logs_handler(Query(q): Query<LogQuery>) -> impl IntoResponse {
 
 async fn trades_handler(Query(q): Query<LimitQuery>) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(50);
-    let content = fs::read_to_string(TRADES_FILE).unwrap_or_default();
-    let trades: Vec<Value> = content
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect::<Vec<Value>>()
-        .into_iter()
-        .rev()
-        .take(limit)
-        .collect();
+    let trades = read_last_jsonl_values(TRADES_FILE, limit);
     Json(json!({ "trades": trades }))
 }
 
+async fn decisions_handler(Query(q): Query<LimitQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(80).min(250);
+    let decisions = read_last_jsonl_values(POOL_DECISIONS_FILE, limit);
+    Json(json!({ "decisions": decisions }))
+}
+
+async fn tx_telemetry_handler(Query(q): Query<LimitQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(80).min(250);
+    let telemetry = read_last_jsonl_values(TX_TELEMETRY_FILE, limit);
+    Json(json!({ "telemetry": telemetry }))
+}
+
 fn read_last_n_lines(path: &str, n: usize) -> Vec<String> {
-    let Ok(mut file) = fs::File::open(path) else { return vec![] };
-    let Ok(len) = file.seek(SeekFrom::End(0)) else { return vec![] };
+    let Ok(mut file) = fs::File::open(path) else {
+        return vec![];
+    };
+    let Ok(len) = file.seek(SeekFrom::End(0)) else {
+        return vec![];
+    };
     let chunk = (n * 200).min(len as usize) as u64;
     let start = len.saturating_sub(chunk);
-    if file.seek(SeekFrom::Start(start)).is_err() { return vec![] }
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return vec![];
+    }
     let reader = BufReader::new(file);
     let all: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
     all.into_iter().rev().take(n).rev().collect()
@@ -171,26 +207,55 @@ fn read_last_n_lines(path: &str, n: usize) -> Vec<String> {
 // ── control GET ───────────────────────────────────────────────────────────────
 
 async fn controls_get_handler() -> impl IntoResponse {
-    let sell    = read_json_file(SELL_MODE_FILE);
-    let dump    = read_json_file(DUMP_MODE_FILE);
-    let rate    = read_json_file(RATE_MODE_FILE);
+    let sell = read_json_file(SELL_MODE_FILE);
+    let dump = read_json_file(DUMP_MODE_FILE);
+    let rate = read_json_file(RATE_MODE_FILE);
     let builder = read_json_file(BUILDER_MODE_FILE);
 
-    let sell_mode  = sell.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    let dump_mode  = dump.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    let rate_mode  = rate.get("mode").and_then(|v| v.as_str()).unwrap_or("balanced").to_string();
+    let sell_mode = sell
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dump_mode = dump
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let rate_mode = rate
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("balanced")
+        .to_string();
     let high_speed = file_exists(HIGH_SPEED_FILE)
-        || rate.get("high_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+        || rate
+            .get("high_speed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
     let moon_chase = file_exists(MOON_CHASE_FILE);
 
-    let builder_mode       = builder.get("mode").and_then(|v| v.as_str()).unwrap_or("off").to_string();
-    let builder_target_sol = builder.get("target_sol").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let builder_mode = builder
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("off")
+        .to_string();
+    let builder_target_sol = builder
+        .get("target_sol")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     // TP/SL/multiplier: prefer values written in the file, fall back to preset
     let (preset_tp, preset_sl, preset_mult) = rate_preset(&rate_mode);
-    let tp_pct     = rate.get("tp_pct")    .and_then(|v| v.as_f64()).unwrap_or(preset_tp);
-    let sl_pct     = rate.get("sl_pct")    .and_then(|v| v.as_f64()).unwrap_or(preset_sl);
-    let multiplier = rate.get("multiplier").and_then(|v| v.as_f64()).unwrap_or(preset_mult);
+    let tp_pct = rate
+        .get("tp_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(preset_tp);
+    let sl_pct = rate
+        .get("sl_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(preset_sl);
+    let multiplier = rate
+        .get("multiplier")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(preset_mult);
 
     Json(json!({
         "sell_mode":          sell_mode,
@@ -208,16 +273,29 @@ async fn controls_get_handler() -> impl IntoResponse {
 
 // ── control POST bodies ───────────────────────────────────────────────────────
 
-#[derive(Deserialize)] struct EnabledBody     { enabled: bool }
-#[derive(Deserialize)] struct RateModeBody    { mode: String }
-#[derive(Deserialize)] struct BuilderModeBody { mode: String }
+#[derive(Deserialize)]
+struct EnabledBody {
+    enabled: bool,
+}
+#[derive(Deserialize)]
+struct RateModeBody {
+    mode: String,
+}
+#[derive(Deserialize)]
+struct BuilderModeBody {
+    mode: String,
+}
 
 async fn sell_mode_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
     let v = json!({ "enabled": b.enabled, "paused_by": "web" });
     if atomic_write(SELL_MODE_FILE, &v) {
         Json(json!({"ok": true, "sell_mode": b.enabled})).into_response()
     } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"write failed"}))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"write failed"})),
+        )
+            .into_response()
     }
 }
 
@@ -226,15 +304,22 @@ async fn dump_mode_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
     if atomic_write(DUMP_MODE_FILE, &v) {
         Json(json!({"ok": true, "dump_mode": b.enabled})).into_response()
     } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"write failed"}))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"write failed"})),
+        )
+            .into_response()
     }
 }
 
 async fn rate_mode_handler(Json(b): Json<RateModeBody>) -> impl IntoResponse {
     let (tp_pct, sl_pct, multiplier) = rate_preset(&b.mode);
-    let existing   = read_json_file(RATE_MODE_FILE);
+    let existing = read_json_file(RATE_MODE_FILE);
     let high_speed = file_exists(HIGH_SPEED_FILE)
-        || existing.get("high_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+        || existing
+            .get("high_speed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
     let v = json!({
         "mode":       b.mode,
@@ -246,7 +331,11 @@ async fn rate_mode_handler(Json(b): Json<RateModeBody>) -> impl IntoResponse {
     if atomic_write(RATE_MODE_FILE, &v) {
         Json(json!({"ok": true, "mode": b.mode, "tp_pct": tp_pct, "sl_pct": sl_pct, "multiplier": multiplier})).into_response()
     } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"write failed"}))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"write failed"})),
+        )
+            .into_response()
     }
 }
 
@@ -258,7 +347,11 @@ async fn high_speed_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
         let _ = fs::remove_file(HIGH_SPEED_FILE);
     }
     let existing = read_json_file(RATE_MODE_FILE);
-    let mode = existing.get("mode").and_then(|v| v.as_str()).unwrap_or("balanced").to_string();
+    let mode = existing
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("balanced")
+        .to_string();
     let (tp_pct, sl_pct, multiplier) = rate_preset(&mode);
     let v = json!({ "mode": mode, "tp_pct": tp_pct, "sl_pct": sl_pct, "multiplier": multiplier, "high_speed": b.enabled });
     atomic_write(RATE_MODE_FILE, &v);
@@ -270,7 +363,11 @@ async fn moon_chase_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
         if fs::write(MOON_CHASE_FILE, "{}").is_ok() {
             Json(json!({"ok": true, "moon_chase": true})).into_response()
         } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"write failed"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"write failed"})),
+            )
+                .into_response()
         }
     } else {
         let _ = fs::remove_file(MOON_CHASE_FILE);
@@ -284,32 +381,55 @@ async fn builder_mode_handler(Json(b): Json<BuilderModeBody>) -> impl IntoRespon
         return Json(json!({"ok": true, "builder_mode": "off"})).into_response();
     }
     let target_sol: f64 = match b.mode.as_str() {
-        "growth"       => 0.2,
-        "builder"      => 1.0,
+        "growth" => 0.2,
+        "builder" => 1.0,
         "super_builder" => 3.0,
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error":"unknown builder mode"}))).into_response(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"unknown builder mode"})),
+            )
+                .into_response()
+        }
     };
     let v = json!({ "mode": b.mode, "target_sol": target_sol });
     if atomic_write(BUILDER_MODE_FILE, &v) {
         Json(json!({"ok": true, "builder_mode": b.mode, "target_sol": target_sol})).into_response()
     } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"write failed"}))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"write failed"})),
+        )
+            .into_response()
     }
 }
 
 // ── health ────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct HealthResponse { api: &'static str, sniper_running: bool, sniper_pid: Option<u32> }
+struct HealthResponse {
+    api: &'static str,
+    sniper_running: bool,
+    sniper_pid: Option<u32>,
+}
 
 async fn health_handler() -> Json<HealthResponse> {
     let (running, pid) = check_sniper_liveness();
-    Json(HealthResponse { api: "ok", sniper_running: running, sniper_pid: pid })
+    Json(HealthResponse {
+        api: "ok",
+        sniper_running: running,
+        sniper_pid: pid,
+    })
 }
 
 fn check_sniper_liveness() -> (bool, Option<u32>) {
-    let Ok(content) = fs::read_to_string(LOCK_FILE) else { return (false, None) };
-    let pid: u32 = match content.trim().parse() { Ok(p) => p, Err(_) => return (false, None) };
+    let Ok(content) = fs::read_to_string(LOCK_FILE) else {
+        return (false, None);
+    };
+    let pid: u32 = match content.trim().parse() {
+        Ok(p) => p,
+        Err(_) => return (false, None),
+    };
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
@@ -317,17 +437,25 @@ fn check_sniper_liveness() -> (bool, Option<u32>) {
             .args(["/FI", &format!("PID eq {}", pid), "/NH"])
             .output();
         if let Ok(o) = out {
-            return (String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()), Some(pid));
+            return (
+                String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
+                Some(pid),
+            );
         }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        return (std::path::Path::new(&format!("/proc/{}", pid)).exists(), Some(pid));
+        return (
+            std::path::Path::new(&format!("/proc/{}", pid)).exists(),
+            Some(pid),
+        );
     }
     (false, None)
 }
 
-async fn api_health() -> &'static str { "ok" }
+async fn api_health() -> &'static str {
+    "ok"
+}
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
@@ -346,21 +474,23 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/health",                          get(api_health))
-        .route("/api/metrics",                     get(metrics_handler))
-        .route("/api/pools",                       get(pools_handler))
-        .route("/api/filters",                     get(filters_handler))
-        .route("/api/logs",                        get(logs_handler))
-        .route("/api/trades",                      get(trades_handler))
-        .route("/api/nn",                          get(nn_handler))
-        .route("/api/health",                      get(health_handler))
-        .route("/api/controls",                    get(controls_get_handler))
-        .route("/api/controls/sell-mode",          post(sell_mode_handler))
-        .route("/api/controls/dump-mode",          post(dump_mode_handler))
-        .route("/api/controls/rate-mode",          post(rate_mode_handler))
-        .route("/api/controls/high-speed",         post(high_speed_handler))
-        .route("/api/controls/moon-chase",         post(moon_chase_handler))
-        .route("/api/controls/builder-mode",       post(builder_mode_handler))
+        .route("/health", get(api_health))
+        .route("/api/metrics", get(metrics_handler))
+        .route("/api/pools", get(pools_handler))
+        .route("/api/filters", get(filters_handler))
+        .route("/api/logs", get(logs_handler))
+        .route("/api/trades", get(trades_handler))
+        .route("/api/decisions", get(decisions_handler))
+        .route("/api/tx-telemetry", get(tx_telemetry_handler))
+        .route("/api/nn", get(nn_handler))
+        .route("/api/health", get(health_handler))
+        .route("/api/controls", get(controls_get_handler))
+        .route("/api/controls/sell-mode", post(sell_mode_handler))
+        .route("/api/controls/dump-mode", post(dump_mode_handler))
+        .route("/api/controls/rate-mode", post(rate_mode_handler))
+        .route("/api/controls/high-speed", post(high_speed_handler))
+        .route("/api/controls/moon-chase", post(moon_chase_handler))
+        .route("/api/controls/builder-mode", post(builder_mode_handler))
         .layer(cors);
 
     let port: u16 = std::env::var("PORT")

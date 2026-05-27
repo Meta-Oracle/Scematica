@@ -229,7 +229,8 @@ impl DQNAgent {
         self.total_reward += reward;
         let sv = state.to_vec();
         let nsv = next_state.to_vec();
-        self.n_step_buffer.push((sv, action.index(), reward, nsv, done));
+        self.n_step_buffer
+            .push((sv, action.index(), reward, nsv, done));
 
         // Flush on terminal or once we have n_step samples
         if done || self.n_step_buffer.len() >= self.n_step {
@@ -242,7 +243,9 @@ impl DQNAgent {
 
     /// Compute multi-step returns from the pending buffer and push to replay.
     fn flush_n_step_buffer(&mut self) {
-        if self.n_step_buffer.is_empty() { return; }
+        if self.n_step_buffer.is_empty() {
+            return;
+        }
 
         // Walk from the front: each entry gets a n-step return looking forward
         let n = self.n_step_buffer.len();
@@ -260,7 +263,10 @@ impl DQNAgent {
                 gamma_k *= self.gamma;
                 final_next = nsk.clone();
                 final_done = dk;
-                if dk { terminal = true; break; }
+                if dk {
+                    terminal = true;
+                    break;
+                }
             }
 
             self.replay.push(Transition {
@@ -332,9 +338,9 @@ impl DQNAgent {
             let mask: Vec<bool> = (0..ACTION_DIM).map(|i| i == t.action).collect();
 
             // Scale gradient by IS weight to correct for non-uniform sampling bias
-            total_loss +=
-                self.online_net
-                    .backward_step(&t.state, &targets, &mask, self.lr, is_weight);
+            total_loss += self
+                .online_net
+                .backward_step(&t.state, &targets, &mask, self.lr, is_weight);
         }
 
         // Feed TD errors back to the buffer so high-surprise transitions are sampled more
@@ -354,8 +360,7 @@ impl DQNAgent {
 
             // Re-sample a smaller batch for the regime net (reuse existing sample)
             let regime_batch = self.replay.sample(self.batch_size.min(32));
-            let (regime_online, regime_target) =
-                self.regime_nets.get_mut(&regime).unwrap();
+            let (regime_online, regime_target) = self.regime_nets.get_mut(&regime).unwrap();
 
             for (t, &is_weight) in regime_batch
                 .transitions
@@ -506,7 +511,8 @@ impl DQNAgent {
             let online = QNetwork::new(&sizes);
             let mut target = QNetwork::new(&sizes);
             target.copy_from(&online);
-            self.regime_nets.insert(regime.to_string(), (online, target));
+            self.regime_nets
+                .insert(regime.to_string(), (online, target));
             info!("🧠 Created network pair for regime '{}'", regime);
         }
     }
@@ -594,9 +600,9 @@ impl DQNAgent {
                         spread_pct: rng.gen_range(0.02..0.08),
                         time_of_day_norm: rng.gen_range(0.0..1.0),
                         open_positions: rng.gen_range(1..4),
-                        peak_pnl_pct: rng.gen_range(0.8..2.5),    // strong pump signal
-                        volume_velocity: rng.gen_range(0.3..1.0),  // volume accelerating
-                        price_velocity: rng.gen_range(0.3..1.0),   // price accelerating up
+                        peak_pnl_pct: rng.gen_range(0.8..2.5), // strong pump signal
+                        volume_velocity: rng.gen_range(0.3..1.0), // volume accelerating
+                        price_velocity: rng.gen_range(0.3..1.0), // price accelerating up
                         deployer_rug_rate: rng.gen_range(0.0..0.3), // lower rug risk
                         ..Default::default()
                     };
@@ -741,7 +747,9 @@ impl DQNAgent {
     ///
     /// Returns the new (epsilon_decay, lr, gamma) triples for each variant.
     pub fn evolve_tournament_variants(&mut self, winner_idx: usize) -> Vec<(f64, f64, f64)> {
-        if self.tournament_hyperparams.is_empty() { return vec![]; }
+        if self.tournament_hyperparams.is_empty() {
+            return vec![];
+        }
         let winner_idx = winner_idx.min(self.tournament_hyperparams.len() - 1);
         let (wd, wl, wg) = self.tournament_hyperparams[winner_idx];
         let mut rng = rand::thread_rng();
@@ -761,7 +769,10 @@ impl DQNAgent {
         self.tournament_hyperparams = new_params.clone();
         info!(
             "🧠 Tournament evolved: winner hyperparams ({:.4},{:.4},{:.4}) → {} mutants",
-            wd, wl, wg, self.tournament_hyperparams.len() - 1
+            wd,
+            wl,
+            wg,
+            self.tournament_hyperparams.len() - 1
         );
         new_params
     }
@@ -775,7 +786,13 @@ impl DQNAgent {
         let q_raw = self.online_net.forward(&sv);
 
         // Pair each Q-value with its action label
-        let action_labels = ["Hold", "BuyStandard", "BuyAggressive", "SellPartial", "SellAll"];
+        let action_labels = [
+            "Hold",
+            "BuyStandard",
+            "BuyAggressive",
+            "SellPartial",
+            "SellAll",
+        ];
         let q_values: Vec<(String, f64)> = action_labels
             .iter()
             .zip(q_raw.iter())
@@ -826,7 +843,11 @@ impl DQNAgent {
 
         // Confidence: max_q / sum_abs_q
         let sum_abs: f64 = q_raw.iter().map(|v| v.abs()).sum();
-        let confidence = if sum_abs > 1e-9 { best_q.abs() / sum_abs } else { 0.0 };
+        let confidence = if sum_abs > 1e-9 {
+            best_q.abs() / sum_abs
+        } else {
+            0.0
+        };
 
         TradeDecisionExplanation {
             action: action_labels[best_idx].to_string(),
@@ -871,8 +892,16 @@ impl DQNAgent {
 
         // Checkpoint versioning: silently reset if STATE_DIM or ACTION_DIM changed
         // rather than panicking on mismatched weight matrix shapes.
-        let saved_state_dim = if ckpt.state_dim == 0 { 18 } else { ckpt.state_dim };
-        let saved_action_dim = if ckpt.action_dim == 0 { 5 } else { ckpt.action_dim };
+        let saved_state_dim = if ckpt.state_dim == 0 {
+            18
+        } else {
+            ckpt.state_dim
+        };
+        let saved_action_dim = if ckpt.action_dim == 0 {
+            5
+        } else {
+            ckpt.action_dim
+        };
         if saved_state_dim != STATE_DIM || saved_action_dim != ACTION_DIM {
             info!(
                 "NN checkpoint has state_dim={}/{} action_dim={}/{} — resetting agent",
@@ -917,7 +946,11 @@ impl DQNAgent {
     }
 
     pub fn ready_to_advise(&self) -> bool {
-        self.train_steps > 0
+        self.train_steps >= 500
+            && self
+                .last_q_values
+                .iter()
+                .any(|v| v.is_finite() && v.abs() > 1e-9)
     }
 }
 

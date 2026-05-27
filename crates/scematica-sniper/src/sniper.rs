@@ -1,8 +1,6 @@
 use chrono::Timelike;
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
-use spl_associated_token_account;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use scematica_ai::agents::AiCoordinator;
 use scematica_core::{
     config::{ExecutionConfig, SniperConfig},
@@ -12,17 +10,15 @@ use scematica_core::{
 };
 use scematica_nn::{DQNAgent, TradeAction, TradeState as NNState};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
-};
+use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
+use spl_associated_token_account;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use anyhow::Result;
+use scematica_core::types::DexKind;
+use scematica_executor::{get_builder, SwapInstructionBuilder};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
-use anyhow::Result;
-use scematica_executor::{get_builder, SwapInstructionBuilder};
-use scematica_core::types::DexKind;
 
 use crate::{
     alerts::AlertManager,
@@ -31,7 +27,9 @@ use crate::{
     day_weight::DayWeighter,
     executor::{DefaultExecutor, JitoExecutor, TxExecutor},
     fibonacci_momentum::FibonacciMomentum,
-    fibonacci_recovery_system::{FibonacciRecoveryConfig, FibonacciRecoveryStats, FibonacciRecoverySystem},
+    fibonacci_recovery_system::{
+        FibonacciRecoveryConfig, FibonacciRecoveryStats, FibonacciRecoverySystem,
+    },
     filters::FilterPipeline,
     grief_breaker::GriefBreaker,
     kelly::KellySizer,
@@ -39,8 +37,10 @@ use crate::{
     pool_scorer::PoolScorer,
     reputation::DeployerLedger,
 };
-use scematica_core::metrics::{TradeEvent, TRADES_FILE};
-use scematica_core::metrics::{StrategySnapshot, STRATEGY_FILE};
+use scematica_core::metrics::{
+    PoolDecisionEvent, StrategySnapshot, TradeEvent, POOL_DECISIONS_FILE, STRATEGY_FILE,
+    TRADES_FILE,
+};
 
 /// Raydium constant-product AMM output with 0.25% fee.
 /// out = (reserve_out * amount_in * 9975) / (reserve_in * 10000 + amount_in * 9975)
@@ -48,7 +48,9 @@ use scematica_core::metrics::{StrategySnapshot, STRATEGY_FILE};
 fn amm_out(amount_in: u64, reserve_in: u64, reserve_out: u64) -> u64 {
     let num = (reserve_out as u128) * (amount_in as u128) * 9975u128;
     let den = (reserve_in as u128) * 10000u128 + (amount_in as u128) * 9975u128;
-    if den == 0 { return 0; }
+    if den == 0 {
+        return 0;
+    }
     (num / den) as u64
 }
 
@@ -67,14 +69,15 @@ struct ProcessingSlot<'a> {
 impl<'a> ProcessingSlot<'a> {
     /// Try to claim the slot atomically. Returns `None` if already held.
     fn try_acquire(lock: &'a Arc<AtomicBool>) -> Option<Self> {
-        if lock.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if lock
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             Some(Self { lock, armed: true })
         } else {
             None
         }
     }
-
-
 }
 
 impl<'a> Drop for ProcessingSlot<'a> {
@@ -113,23 +116,24 @@ pub struct LiveParams {
 impl LiveParams {
     pub fn from_config(config: &SniperConfig) -> Self {
         let active_mode = config.get_active_rate_mode().cloned();
-        let (quote_amount, tp_pct, sl_pct, momentum_max, wallet_pct) = if let Some(mode) = active_mode {
-            (
-                mode.quote_amount,
-                mode.take_profit_pct,
-                mode.stop_loss_pct,
-                mode.momentum_max_escalations,
-                mode.wallet_pct,
-            )
-        } else {
-            (
-                config.quote_amount,
-                config.take_profit_pct,
-                config.stop_loss_pct,
-                config.momentum_max_escalations,
-                0.0,
-            )
-        };
+        let (quote_amount, tp_pct, sl_pct, momentum_max, wallet_pct) =
+            if let Some(mode) = active_mode {
+                (
+                    mode.quote_amount,
+                    mode.take_profit_pct,
+                    mode.stop_loss_pct,
+                    mode.momentum_max_escalations,
+                    mode.wallet_pct,
+                )
+            } else {
+                (
+                    config.quote_amount,
+                    config.take_profit_pct,
+                    config.stop_loss_pct,
+                    config.momentum_max_escalations,
+                    0.0,
+                )
+            };
 
         Self {
             take_profit_pct: config.take_profit_pct,
@@ -336,9 +340,12 @@ impl Sniper {
         nn_agent: Option<Arc<std::sync::Mutex<DQNAgent>>>,
         execution: ExecutionConfig,
     ) -> Self {
-        let quote_mint = resolve_mint(&config.quote_mint)
-            .unwrap_or(known_tokens::WSOL_MINT);
-        let quote_decimals = if config.quote_mint.to_uppercase() == "USDC" { 6 } else { 9 };
+        let quote_mint = resolve_mint(&config.quote_mint).unwrap_or(known_tokens::WSOL_MINT);
+        let quote_decimals = if config.quote_mint.to_uppercase() == "USDC" {
+            6
+        } else {
+            9
+        };
         let quote_amount_raw = ui_to_raw(config.quote_amount, quote_decimals);
 
         let deployer_ledger_shared = Arc::new(Mutex::new(DeployerLedger::load()));
@@ -396,7 +403,10 @@ impl Sniper {
         };
 
         let kelly_sizer = if config.kelly_sizing {
-            Some(KellySizer::with_min_trades(config.kelly_fraction, config.kelly_min_trades))
+            Some(KellySizer::with_min_trades(
+                config.kelly_fraction,
+                config.kelly_min_trades,
+            ))
         } else {
             None
         };
@@ -425,8 +435,9 @@ impl Sniper {
             quote_mint,
             quote_decimals,
             quote_amount_raw,
-            raydium_builder: Arc::from(get_builder(DexKind::Raydium, rpc.clone())
-                .expect("Raydium builder not found")),
+            raydium_builder: Arc::from(
+                get_builder(DexKind::Raydium, rpc.clone()).expect("Raydium builder not found"),
+            ),
             live_params,
             trade_history: Arc::new(Mutex::new(Vec::new())),
             sell_mode: Arc::new(AtomicBool::new(false)),
@@ -506,15 +517,19 @@ impl Sniper {
         }
     }
 
-    pub fn base_take_profit_pct(&self) -> f64 { self.config.take_profit_pct }
-    pub fn base_stop_loss_pct(&self)    -> f64 { self.config.stop_loss_pct  }
+    pub fn base_take_profit_pct(&self) -> f64 {
+        self.config.take_profit_pct
+    }
+    pub fn base_stop_loss_pct(&self) -> f64 {
+        self.config.stop_loss_pct
+    }
 
     /// Approximate current wallet in SOL (session_start + realised daily PnL).
     /// Avoids an RPC call; used by builder-mode compounding equations every 5 s.
     pub fn approx_wallet_sol(&self) -> f64 {
         use std::sync::atomic::Ordering;
         let start = self.session_start_lamports.load(Ordering::Relaxed) as i64;
-        let pnl   = *self.daily_pnl_lamports.lock();
+        let pnl = *self.daily_pnl_lamports.lock();
         (start + pnl).max(0) as f64 / 1e9
     }
 
@@ -534,7 +549,10 @@ impl Sniper {
 
             let history = self.trade_history.lock().clone();
             if history.len() < 5 {
-                debug!("Strategy agent: not enough trades yet ({}/5)", history.len());
+                debug!(
+                    "Strategy agent: not enough trades yet ({}/5)",
+                    history.len()
+                );
                 continue;
             }
 
@@ -543,14 +561,17 @@ impl Sniper {
             let total_pnl = snap.total_pnl_sol();
             let win_rate = snap.win_rate();
 
-            let adjustment = ai.strategy.get_adjustment(
-                &history,
-                total_pnl,
-                params.take_profit_pct,
-                params.stop_loss_pct,
-                scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
-                win_rate,
-            ).await;
+            let adjustment = ai
+                .strategy
+                .get_adjustment(
+                    &history,
+                    total_pnl,
+                    params.take_profit_pct,
+                    params.stop_loss_pct,
+                    scematica_core::token::raw_to_ui(self.quote_amount_raw, self.quote_decimals),
+                    win_rate,
+                )
+                .await;
 
             // Apply the adjustment
             let mut live = self.live_params.write();
@@ -648,11 +669,10 @@ impl Sniper {
         });
 
         // Load existing entries (silently skip if file is absent or corrupt)
-        let mut entries: Vec<serde_json::Value> =
-            std::fs::read_to_string(RADAR_FILE)
-                .ok()
-                .and_then(|d| serde_json::from_str(&d).ok())
-                .unwrap_or_default();
+        let mut entries: Vec<serde_json::Value> = std::fs::read_to_string(RADAR_FILE)
+            .ok()
+            .and_then(|d| serde_json::from_str(&d).ok())
+            .unwrap_or_default();
 
         entries.push(entry);
 
@@ -670,13 +690,181 @@ impl Sniper {
         }
     }
 
+    fn write_pool_decision_minimal(
+        &self,
+        pool: &CachedPool,
+        decision: &str,
+        stage: &str,
+        reason: impl Into<String>,
+    ) {
+        self.write_pool_decision(
+            pool,
+            decision,
+            stage,
+            reason,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            pool.pumpfun_score,
+            0.0,
+            self.high_speed_mode.load(Ordering::Relaxed),
+            false,
+            0.0,
+            0,
+            0.0,
+            "",
+            0.0,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_pool_decision(
+        &self,
+        pool: &CachedPool,
+        decision: &str,
+        stage: &str,
+        reason: impl Into<String>,
+        pool_size_sol: f64,
+        pool_age_secs: f64,
+        velocity_sol_per_sec: f64,
+        buy_pressure_ratio: f64,
+        pool_score: f64,
+        pumpfun_score: f64,
+        inflow_rate_sol_per_sec: f64,
+        high_speed: bool,
+        dex_boosted: bool,
+        dex_boost_usd: f64,
+        social_count: u8,
+        effective_min_score: f64,
+        dq_action: impl Into<String>,
+        dq_confidence: f64,
+    ) {
+        let now = chrono::Utc::now();
+        PoolDecisionEvent {
+            timestamp: now,
+            mint: pool.base_mint.to_string(),
+            pool: pool.id.to_string(),
+            quote_mint: pool.quote_mint.to_string(),
+            decision: decision.to_string(),
+            stage: stage.to_string(),
+            reason: reason.into(),
+            pool_size_sol,
+            pool_age_secs,
+            velocity_sol_per_sec,
+            buy_pressure_ratio,
+            pool_score,
+            pumpfun_score,
+            inflow_rate_sol_per_sec,
+            high_speed,
+            dex_boosted,
+            dex_boost_usd,
+            social_count,
+            effective_min_score,
+            dq_action: dq_action.into(),
+            dq_confidence,
+            utc_hour: now.hour() as u8,
+        }
+        .append_to_file(POOL_DECISIONS_FILE);
+    }
+
     /// Main event handler — called for each event from the listener
+    #[allow(clippy::too_many_arguments)]
+    fn elite_pool_rejection_reason(
+        &self,
+        pool_size_sol: f64,
+        pool_age_secs: u64,
+        historical_velocity_sol_per_sec: f64,
+        buy_pressure_ratio: f64,
+        pool_score: f64,
+        pumpfun_score: f64,
+        inflow_rate_sol_per_sec: f64,
+    ) -> Option<String> {
+        if !self.config.elite_pool_mode {
+            return None;
+        }
+
+        let mut signals: Vec<&'static str> = Vec::new();
+        let live_inflow = inflow_rate_sol_per_sec >= self.config.elite_min_inflow_sol_per_sec;
+        let pregrad = pumpfun_score >= self.config.elite_min_pumpfun_score;
+        let historical_velocity = pool_age_secs > 0
+            && pool_age_secs <= self.config.elite_max_age_secs
+            && historical_velocity_sol_per_sec
+                >= self.config.elite_min_historical_velocity_sol_per_sec;
+        let buy_pressure = buy_pressure_ratio >= self.config.elite_min_buy_pressure_ratio;
+
+        if live_inflow {
+            signals.push("live_inflow");
+        }
+        if pregrad {
+            signals.push("pumpfun_pregrad");
+        }
+        if historical_velocity {
+            signals.push("historical_velocity");
+        }
+        if buy_pressure {
+            signals.push("buy_pressure");
+        }
+
+        let mut reasons = Vec::new();
+        if pool_score < self.config.elite_min_score {
+            reasons.push(format!(
+                "score={:.1}<elite_min={:.1}",
+                pool_score, self.config.elite_min_score
+            ));
+        }
+        if pool_size_sol < self.config.elite_min_pool_size_sol {
+            reasons.push(format!(
+                "pool_size={:.2}<elite_min={:.2}",
+                pool_size_sol, self.config.elite_min_pool_size_sol
+            ));
+        }
+        if self.config.elite_max_pool_size_sol > 0.0
+            && pool_size_sol > self.config.elite_max_pool_size_sol
+        {
+            reasons.push(format!(
+                "pool_size={:.2}>elite_max={:.2}",
+                pool_size_sol, self.config.elite_max_pool_size_sol
+            ));
+        }
+        if pool_age_secs > self.config.elite_max_age_secs {
+            reasons.push(format!(
+                "age_secs={}>elite_max={}",
+                pool_age_secs, self.config.elite_max_age_secs
+            ));
+        }
+
+        let min_signals = self.config.elite_min_signal_count.max(1) as usize;
+        if signals.len() < min_signals {
+            reasons.push(format!("signals={}<min={}", signals.len(), min_signals));
+        }
+        if self.config.elite_require_live_or_pregrad && !(live_inflow || pregrad) {
+            reasons.push("missing_live_or_pregrad_momentum".to_string());
+        }
+
+        if reasons.is_empty() {
+            None
+        } else {
+            let signal_text = if signals.is_empty() {
+                "none".to_string()
+            } else {
+                signals.join("|")
+            };
+            Some(format!("{};signals={}", reasons.join(";"), signal_text))
+        }
+    }
+
     pub async fn handle_event(&self, event: ListenerEvent) {
         match event {
             ListenerEvent::NewPool(pool) => {
                 self.on_new_pool(pool).await;
             }
-            ListenerEvent::WalletUpdate { account, mint, amount } => {
+            ListenerEvent::WalletUpdate {
+                account,
+                mint,
+                amount,
+            } => {
                 self.on_wallet_update(account, mint, amount).await;
             }
             ListenerEvent::NewMarket(_) => {}
@@ -695,12 +883,14 @@ impl Sniper {
                 pool = %pool.id,
                 "Pool already in persisted cache — skipping (clear pool-cache.json to re-eval)"
             );
+            self.write_pool_decision_minimal(&pool, "ignored", "dedup", "persisted_pool_cache");
             return;
         }
 
         // Skip if quote mint doesn't match
         if pool.quote_mint != self.quote_mint {
             debug!(mint = %pool.base_mint, "Skipping pool: wrong quote mint");
+            self.write_pool_decision_minimal(&pool, "ignored", "quote_mint", "wrong_quote_mint");
             return;
         }
 
@@ -708,6 +898,7 @@ impl Sniper {
         if let Some(sl) = &self.snipe_list {
             if !sl.is_listed(&mint_str) {
                 debug!(mint = %pool.base_mint, "Skipping: not in snipe list");
+                self.write_pool_decision_minimal(&pool, "rejected", "snipe_list", "not_listed");
                 return;
             }
         }
@@ -728,7 +919,8 @@ impl Sniper {
                 .as_secs();
             let last = self.skip_log_throttle_secs.load(Ordering::Relaxed);
             if now_secs.saturating_sub(last) >= 30 {
-                if self.skip_log_throttle_secs
+                if self
+                    .skip_log_throttle_secs
                     .compare_exchange(last, now_secs, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
@@ -743,6 +935,12 @@ impl Sniper {
                     );
                 }
             }
+            self.write_pool_decision_minimal(
+                &pool,
+                "ignored",
+                "operator_mode",
+                if dump_on { "dump_mode" } else { "sell_mode" },
+            );
             return;
         }
 
@@ -751,6 +949,7 @@ impl Sniper {
             let count = self.buy_count.load(Ordering::Relaxed);
             if count >= self.config.max_buys {
                 warn!(mint = %pool.base_mint, count, limit = self.config.max_buys, "Buy limit reached — sell mode should be active");
+                self.write_pool_decision_minimal(&pool, "ignored", "buy_limit", "max_buys_reached");
                 return;
             }
         }
@@ -760,6 +959,12 @@ impl Sniper {
             let open = self.open_positions.load(Ordering::Relaxed);
             if open >= self.config.max_concurrent_positions {
                 debug!(mint = %pool.base_mint, open, "Max concurrent positions reached — skipping");
+                self.write_pool_decision_minimal(
+                    &pool,
+                    "ignored",
+                    "exposure",
+                    "max_concurrent_positions",
+                );
                 return;
             }
         }
@@ -776,6 +981,7 @@ impl Sniper {
             let loss_sol = loss_lamports as f64 / 1e9;
             if loss_sol >= self.config.daily_loss_limit_sol {
                 warn!(mint = %pool.base_mint, loss_sol, "Daily loss limit reached — skipping buy");
+                self.write_pool_decision_minimal(&pool, "ignored", "risk", "daily_loss_limit");
                 return;
             }
         }
@@ -788,13 +994,18 @@ impl Sniper {
                     window_loss_sol = gb.window_loss_sol(),
                     "Grief-loss circuit breaker tripped — skipping buy"
                 );
+                self.write_pool_decision_minimal(&pool, "ignored", "risk", "grief_breaker");
                 return;
             }
         }
 
         // ── ATH drawdown guard ─────────────────────────────────────────────────
         if self.ath_drawdown_pct > 0.0 {
-            let current = self.rpc.get_balance(&self.wallet.pubkey()).await.unwrap_or(0);
+            let current = self
+                .rpc
+                .get_balance(&self.wallet.pubkey())
+                .await
+                .unwrap_or(0);
             let dd = self.ath_tracker.drawdown_pct(current);
             if dd >= self.ath_drawdown_pct {
                 warn!(
@@ -803,6 +1014,7 @@ impl Sniper {
                     threshold_pct = %format!("{:.1}%", self.ath_drawdown_pct),
                     "ATH drawdown limit reached — skipping buy"
                 );
+                self.write_pool_decision_minimal(&pool, "ignored", "risk", "ath_drawdown");
                 return;
             }
         }
@@ -817,6 +1029,7 @@ impl Sniper {
             if until_ms > now_ms {
                 let remaining_secs = (until_ms - now_ms) / 1000;
                 debug!(mint = %pool.base_mint, remaining_secs, "Session heat cooldown active — skipping buy");
+                self.write_pool_decision_minimal(&pool, "ignored", "risk", "session_heat_cooldown");
                 return;
             }
         }
@@ -839,6 +1052,7 @@ impl Sniper {
                 now = now_secs,
                 "Pool not yet open — skipping"
             );
+            self.write_pool_decision_minimal(&pool, "rejected", "pool_age", "not_open_yet");
             return;
         }
 
@@ -851,6 +1065,7 @@ impl Sniper {
                 age_secs,
                 "Pool is stale (>5 min old) — skipping to avoid buying the top"
             );
+            self.write_pool_decision_minimal(&pool, "rejected", "pool_age", "stale_pool");
             return;
         }
 
@@ -873,8 +1088,16 @@ impl Sniper {
                     self.rpc.get_token_account_balance(&pool.base_vault),
                 ),
             );
-            let q = qv.ok().and_then(|r| r.ok()).and_then(|b| b.amount.parse::<u64>().ok()).unwrap_or(0);
-            let b = bv.ok().and_then(|r| r.ok()).and_then(|b| b.amount.parse::<u64>().ok()).unwrap_or(0);
+            let q = qv
+                .ok()
+                .and_then(|r| r.ok())
+                .and_then(|b| b.amount.parse::<u64>().ok())
+                .unwrap_or(0);
+            let b = bv
+                .ok()
+                .and_then(|r| r.ok())
+                .and_then(|b| b.amount.parse::<u64>().ok())
+                .unwrap_or(0);
             (q, b)
         };
         let reserve_snapshot_at = std::time::Instant::now();
@@ -898,14 +1121,22 @@ impl Sniper {
         } else {
             0.0
         };
-        let upfront_score = PoolScorer::score(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, detected_at_secs);
+        let upfront_score = PoolScorer::score(
+            &pool,
+            upfront_pool_size_lamports,
+            upfront_base_vault_lamports,
+            detected_at_secs,
+        );
         let mut entry_score = upfront_score;
+        let mut selected_score_floor = self.config.min_pool_score;
 
         // High-speed mode: skip filters, AI, scorer — go straight to buy. The operator
         // has explicitly opted in to extra rugs / failed buys / 429s in exchange for
         // entry latency. We still respect the listener's open_time gate above.
         let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
-        if high_speed {
+        if high_speed && self.config.elite_pool_mode {
+            info!(mint = %pool.base_mint, "HIGH-SPEED: bypassing standard filters/AI, elite pool gate still enforced");
+        } else if high_speed {
             if self.config.require_moonshot_confirmation {
                 info!(mint = %pool.base_mint, "⚡ HIGH-SPEED — bypassing standard filters/AI, moonshot gate still enforced");
             } else {
@@ -919,17 +1150,58 @@ impl Sniper {
             let filter_result = tokio::time::timeout(
                 tokio::time::Duration::from_secs(25),
                 self.filter_pipeline.execute(&pool),
-            ).await;
+            )
+            .await;
             match filter_result {
                 Ok(true) => {}
                 Ok(false) => {
                     info!(mint = %pool.base_mint, "Pool rejected by filters");
                     self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                    self.write_pool_decision(
+                        &pool,
+                        "rejected",
+                        "filters",
+                        "filter_rejected",
+                        upfront_pool_size_sol,
+                        pool_age_secs as f64,
+                        historical_velocity_sol_per_sec,
+                        buy_pressure_ratio,
+                        upfront_score,
+                        pool.pumpfun_score,
+                        0.0,
+                        high_speed,
+                        false,
+                        0.0,
+                        0,
+                        selected_score_floor,
+                        "",
+                        0.0,
+                    );
                     return;
                 }
                 Err(_) => {
                     warn!(mint = %pool.base_mint, "Filter pipeline timed out (25s) — skipping pool");
                     self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                    self.write_pool_decision(
+                        &pool,
+                        "rejected",
+                        "filters",
+                        "filter_timeout",
+                        upfront_pool_size_sol,
+                        pool_age_secs as f64,
+                        historical_velocity_sol_per_sec,
+                        buy_pressure_ratio,
+                        upfront_score,
+                        pool.pumpfun_score,
+                        0.0,
+                        high_speed,
+                        false,
+                        0.0,
+                        0,
+                        selected_score_floor,
+                        "",
+                        0.0,
+                    );
                     return;
                 }
             }
@@ -939,12 +1211,22 @@ impl Sniper {
         // Provides real name/symbol for AI and social_count for pool scorer enrichment.
         let (token_name, token_symbol, social_count) = {
             let key = pool.base_mint.to_string();
-            self.filter_pipeline.metadata.get(&key)
+            self.filter_pipeline
+                .metadata
+                .get(&key)
                 .map(|m| (m.name.clone(), m.symbol.clone(), m.social_count))
                 .unwrap_or_default()
         };
-        let display_name  = if token_name.is_empty()   { "UNKNOWN".to_string() } else { token_name };
-        let display_symbol = if token_symbol.is_empty() { "UNKNOWN".to_string() } else { token_symbol };
+        let display_name = if token_name.is_empty() {
+            "UNKNOWN".to_string()
+        } else {
+            token_name
+        };
+        let display_symbol = if token_symbol.is_empty() {
+            "UNKNOWN".to_string()
+        } else {
+            token_symbol
+        };
 
         // ── DexScreener paid-boost check ───────────────────────────────────────
         // A non-zero boostAmount means the team has purchased DexScreener advertising.
@@ -952,7 +1234,11 @@ impl Sniper {
         // visitors are being directed to the token, and rug probability drops sharply.
         // Moonshot mode still requires live/pre-graduation momentum confirmation.
         let (dex_boosted, dex_boost_usd) = if !high_speed {
-            match self.dex_cache.check_boost(&pool.base_mint.to_string()).await {
+            match self
+                .dex_cache
+                .check_boost(&pool.base_mint.to_string())
+                .await
+            {
                 Some(usd) => (true, usd),
                 None => (false, 0.0),
             }
@@ -971,87 +1257,125 @@ impl Sniper {
         let pregrad_moonshot = pool.pumpfun_score >= self.config.moonshot_min_pumpfun_score;
         let historical_moonshot = pool_age_secs > 0
             && pool_age_secs <= 20
-            && historical_velocity_sol_per_sec >= self.config.moonshot_min_historical_velocity_sol_per_sec;
+            && historical_velocity_sol_per_sec
+                >= self.config.moonshot_min_historical_velocity_sol_per_sec;
 
         // AI risk assessment (if available, and not high-speed)
-        if !high_speed { if let Some(ai) = &self.ai {
-            let pool_size_sol = scematica_core::token::raw_to_ui(upfront_pool_size_lamports, pool.quote_decimals);
-            let open_hour = (pool.open_time % 86400 / 3600) as u8;
+        if !high_speed {
+            if let Some(ai) = &self.ai {
+                let pool_size_sol = scematica_core::token::raw_to_ui(
+                    upfront_pool_size_lamports,
+                    pool.quote_decimals,
+                );
+                let open_hour = (pool.open_time % 86400 / 3600) as u8;
 
-            // Compute quantitative AMM signals to pass to the AI — these are the
-            // real predictors of profitability, not just binary safety flags.
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let pool_age_secs = if pool.open_time > 0 && pool.open_time <= now_secs {
-                now_secs.saturating_sub(pool.open_time)
-            } else { 0 };
-            let velocity_sol_per_sec = if pool.open_time > 0 && pool_age_secs > 0 {
-                pool_size_sol / pool_age_secs as f64
-            } else { 0.0 };
-            let buy_pressure_ratio = if upfront_base_vault_lamports > 0 {
-                upfront_pool_size_lamports as f64 / upfront_base_vault_lamports as f64
-            } else { 0.0 };
-            let amm_expected_inflow_pct = if pool_size_sol > 0.0 && velocity_sol_per_sec > 0.0 {
-                (velocity_sol_per_sec * 10.0 / pool_size_sol) * 100.0
-            } else { 0.0 };
-
-            // Feed safe values for disabled on-chain filters: the AI should evaluate
-            // momentum signals, not re-check things the filter pipeline already handled.
-            let risk = ai.risk.score_token_v2(
-                &pool.base_mint.to_string(),
-                &display_name,
-                &display_symbol,
-                pool_size_sol,
-                true,   // mint_renounced (disabled filter — treated as safe)
-                false,  // freezable     (disabled filter — treated as safe)
-                true,   // lp_burned     (disabled filter — treated as safe)
-                false,  // mutable_metadata
-                self.config.filters.check_socials,
-                open_hour,
-                velocity_sol_per_sec,
-                buy_pressure_ratio,
-                amm_expected_inflow_pct,
-                pool_age_secs,
-            ).await;
-
-            info!(
-                mint = %pool.base_mint,
-                name = %display_name,
-                symbol = %display_symbol,
-                social_count,
-                score = risk.score,
-                recommendation = %risk.recommendation,
-                velocity = %format!("{:.3} SOL/s", velocity_sol_per_sec),
-                pressure = %format!("{:.4}", buy_pressure_ratio),
-                reasoning = %risk.reasoning,
-                "AI risk assessment"
-            );
-
-            // Only block on a genuine AI rejection (low score, real flags).
-            // When AI infrastructure fails (no key, rate limit, network), the
-            // default_pass function returns score=70/buy — we proceed on on-chain filters.
-            if !risk.should_buy() {
-                let ai_failed = risk.red_flags.iter()
-                    .any(|f| f.contains("AI assessment failed") || f.contains("AI unavailable"));
-                if ai_failed {
-                    warn!(
-                        mint = %pool.base_mint,
-                        "AI infrastructure unavailable — proceeding on on-chain filters"
-                    );
+                // Compute quantitative AMM signals to pass to the AI — these are the
+                // real predictors of profitability, not just binary safety flags.
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let pool_age_secs = if pool.open_time > 0 && pool.open_time <= now_secs {
+                    now_secs.saturating_sub(pool.open_time)
                 } else {
-                    info!(
-                        mint = %pool.base_mint,
-                        score = risk.score,
-                        flags = ?risk.red_flags,
-                        "AI rejected token — skipping buy"
-                    );
-                    self.filter_pipeline.stats.record_rejection("ai_risk");
-                    return;
+                    0
+                };
+                let velocity_sol_per_sec = if pool.open_time > 0 && pool_age_secs > 0 {
+                    pool_size_sol / pool_age_secs as f64
+                } else {
+                    0.0
+                };
+                let buy_pressure_ratio = if upfront_base_vault_lamports > 0 {
+                    upfront_pool_size_lamports as f64 / upfront_base_vault_lamports as f64
+                } else {
+                    0.0
+                };
+                let amm_expected_inflow_pct = if pool_size_sol > 0.0 && velocity_sol_per_sec > 0.0 {
+                    (velocity_sol_per_sec * 10.0 / pool_size_sol) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Feed safe values for disabled on-chain filters: the AI should evaluate
+                // momentum signals, not re-check things the filter pipeline already handled.
+                let risk = ai
+                    .risk
+                    .score_token_v2(
+                        &pool.base_mint.to_string(),
+                        &display_name,
+                        &display_symbol,
+                        pool_size_sol,
+                        true,  // mint_renounced (disabled filter — treated as safe)
+                        false, // freezable     (disabled filter — treated as safe)
+                        true,  // lp_burned     (disabled filter — treated as safe)
+                        false, // mutable_metadata
+                        self.config.filters.check_socials,
+                        open_hour,
+                        velocity_sol_per_sec,
+                        buy_pressure_ratio,
+                        amm_expected_inflow_pct,
+                        pool_age_secs,
+                    )
+                    .await;
+
+                info!(
+                    mint = %pool.base_mint,
+                    name = %display_name,
+                    symbol = %display_symbol,
+                    social_count,
+                    score = risk.score,
+                    recommendation = %risk.recommendation,
+                    velocity = %format!("{:.3} SOL/s", velocity_sol_per_sec),
+                    pressure = %format!("{:.4}", buy_pressure_ratio),
+                    reasoning = %risk.reasoning,
+                    "AI risk assessment"
+                );
+
+                // Only block on a genuine AI rejection (low score, real flags).
+                // When AI infrastructure fails (no key, rate limit, network), the
+                // default_pass function returns score=70/buy — we proceed on on-chain filters.
+                if !risk.should_buy() {
+                    let ai_failed = risk.red_flags.iter().any(|f| {
+                        f.contains("AI assessment failed") || f.contains("AI unavailable")
+                    });
+                    if ai_failed {
+                        warn!(
+                            mint = %pool.base_mint,
+                            "AI infrastructure unavailable — proceeding on on-chain filters"
+                        );
+                    } else {
+                        info!(
+                            mint = %pool.base_mint,
+                            score = risk.score,
+                            flags = ?risk.red_flags,
+                            "AI rejected token — skipping buy"
+                        );
+                        self.filter_pipeline.stats.record_rejection("ai_risk");
+                        self.write_pool_decision(
+                            &pool,
+                            "rejected",
+                            "ai_risk",
+                            format!("score={:.1};flags={}", risk.score, risk.red_flags.join("|")),
+                            upfront_pool_size_sol,
+                            pool_age_secs as f64,
+                            historical_velocity_sol_per_sec,
+                            buy_pressure_ratio,
+                            upfront_score,
+                            pool.pumpfun_score,
+                            0.0,
+                            high_speed,
+                            dex_boosted,
+                            dex_boost_usd,
+                            social_count,
+                            selected_score_floor,
+                            "",
+                            0.0,
+                        );
+                        return;
+                    }
                 }
             }
-        } } // close `if let Some(ai)` and the outer `if !high_speed` guard
+        } // close `if let Some(ai)` and the outer `if !high_speed` guard
 
         // ── Fibonacci entry gate ────────────────────────────────────────────────
         // Evaluate pool against Fibonacci golden ratio patterns. This gate runs BEFORE
@@ -1073,8 +1397,30 @@ impl Sniper {
                     reason = %fib_decision.reason,
                     "❌ Fibonacci gate: REJECTED"
                 );
-                self.filter_pipeline.stats.record_rejection("fibonacci_gate");
+                self.filter_pipeline
+                    .stats
+                    .record_rejection("fibonacci_gate");
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "fibonacci_gate",
+                    fib_decision.reason.clone(),
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    upfront_score,
+                    pool.pumpfun_score,
+                    0.0,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    selected_score_floor,
+                    "",
+                    0.0,
+                );
                 return;
             }
             if exceptional_velocity && !fib_decision.should_enter {
@@ -1095,7 +1441,9 @@ impl Sniper {
             );
 
             // Record entry for stats tracking
-            self.fib_stats.lock().record_entry(fib_decision.fibonacci_score);
+            self.fib_stats
+                .lock()
+                .record_entry(fib_decision.fibonacci_score);
         }
 
         // ── Momentum confirmation (before pool scorer) ──────────────────────────
@@ -1105,21 +1453,29 @@ impl Sniper {
         let mut live_momentum_confirmed = false;
         let inflow_rate_now_sol_per_sec: f64;
         let should_check_momentum = upfront_pool_size_lamports > 0
-            && (self.config.require_moonshot_confirmation || (!dex_boosted && !exceptional_velocity));
+            && (self.config.require_moonshot_confirmation
+                || self.config.elite_pool_mode
+                || (!dex_boosted && !exceptional_velocity));
         if should_check_momentum {
             let vault_now = tokio::time::timeout(
                 tokio::time::Duration::from_millis(800),
                 self.rpc.get_token_account_balance(&pool.quote_vault),
-            ).await;
+            )
+            .await;
             let (confirmed, rate) = match vault_now {
                 Ok(Ok(qb)) => {
                     let current = qb.amount.parse::<u64>().unwrap_or(0);
                     let min_growth_pct = self.config.moonshot_min_growth_pct.max(0.0);
-                    let min_growth_by_pct = (upfront_pool_size_lamports as f64 * min_growth_pct / 100.0) as u64;
-                    let min_growth_floor = (self.config.moonshot_min_growth_sol.max(0.0) * 1e9) as u64;
+                    let min_growth_by_pct =
+                        (upfront_pool_size_lamports as f64 * min_growth_pct / 100.0) as u64;
+                    let min_growth_floor =
+                        (self.config.moonshot_min_growth_sol.max(0.0) * 1e9) as u64;
                     let min_growth = min_growth_by_pct.max(min_growth_floor).max(1);
                     let growth_lam = current.saturating_sub(upfront_pool_size_lamports);
-                    let elapsed_secs = reserve_snapshot_at.elapsed().as_secs_f64().clamp(0.20, 30.0);
+                    let elapsed_secs = reserve_snapshot_at
+                        .elapsed()
+                        .as_secs_f64()
+                        .clamp(0.20, 30.0);
                     let spot_rate = growth_lam as f64 / 1e9 / elapsed_secs;
                     let growth_sol = growth_lam as f64 / 1e9;
                     let grew = current >= upfront_pool_size_lamports.saturating_add(min_growth);
@@ -1148,29 +1504,80 @@ impl Sniper {
                             needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
                             "❌ Moonshot momentum failed — insufficient live buying"
                         );
-                        if !(self.config.require_moonshot_confirmation && (pregrad_moonshot || historical_moonshot)) {
+                        if !(self.config.require_moonshot_confirmation
+                            && (pregrad_moonshot || historical_moonshot))
+                        {
                             self.filter_pipeline.stats.record_rejection("no_momentum");
                         }
                     }
                     (live_ok, spot_rate)
                 }
                 _ => {
-                    if self.config.require_moonshot_confirmation && !pregrad_moonshot && !historical_moonshot {
+                    if self.config.require_moonshot_confirmation
+                        && !pregrad_moonshot
+                        && !historical_moonshot
+                    {
                         info!(
                             mint = %pool.base_mint,
                             "Moonshot momentum RPC timeout — skipping because momentum could not be verified"
                         );
-                        self.filter_pipeline.stats.record_rejection("momentum_unknown");
+                        self.filter_pipeline
+                            .stats
+                            .record_rejection("momentum_unknown");
+                        self.write_pool_decision(
+                            &pool,
+                            "rejected",
+                            "momentum_gate",
+                            "momentum_rpc_timeout",
+                            upfront_pool_size_sol,
+                            pool_age_secs as f64,
+                            historical_velocity_sol_per_sec,
+                            buy_pressure_ratio,
+                            upfront_score,
+                            pool.pumpfun_score,
+                            0.0,
+                            high_speed,
+                            dex_boosted,
+                            dex_boost_usd,
+                            social_count,
+                            selected_score_floor,
+                            "",
+                            0.0,
+                        );
                         return;
                     }
                     debug!(mint = %pool.base_mint, "Momentum check RPC timeout — proceeding on alternate moonshot signal");
                     (pregrad_moonshot || historical_moonshot, 0.0)
                 }
             };
-            if !confirmed && !(self.config.require_moonshot_confirmation && (pregrad_moonshot || historical_moonshot)) {
+            if !confirmed
+                && !(self.config.require_moonshot_confirmation
+                    && (pregrad_moonshot || historical_moonshot))
+            {
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "momentum_gate",
+                    format!("inflow_rate={:.3};live_momentum=false", rate),
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    upfront_score,
+                    pool.pumpfun_score,
+                    rate,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    selected_score_floor,
+                    "",
+                    0.0,
+                );
                 return;
             }
-            live_momentum_confirmed = confirmed && rate >= self.config.moonshot_min_inflow_sol_per_sec;
+            live_momentum_confirmed =
+                confirmed && rate >= self.config.moonshot_min_inflow_sol_per_sec;
             inflow_rate_now_sol_per_sec = rate;
         } else {
             inflow_rate_now_sol_per_sec = 0.0;
@@ -1180,23 +1587,35 @@ impl Sniper {
         // Uses all available signals: historical (size, age, velocity, buy-pressure, EV),
         // pumpfun_score (pre-graduation momentum carried on the pool struct), social_count,
         // and inflow_rate_now (live spot rate computed above).
-        if (!high_speed || self.config.require_moonshot_confirmation) && !dex_boosted && self.config.min_pool_score > 0.0 {
+        if (!high_speed || self.config.require_moonshot_confirmation || self.config.elite_pool_mode)
+            && !dex_boosted
+            && self.config.min_pool_score > 0.0
+        {
             let final_score = crate::pool_scorer::PoolScorer::score_full(
-                &pool, upfront_pool_size_lamports, upfront_base_vault_lamports,
-                detected_at_secs, social_count, inflow_rate_now_sol_per_sec,
+                &pool,
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                detected_at_secs,
+                social_count,
+                inflow_rate_now_sol_per_sec,
             );
             // Pools actively pumping right now get a lower threshold because live
             // momentum is stronger than a stale historical score. In moonshot mode,
             // pools without live inflow must clear the stricter moonshot score floor.
-            let effective_min = if self.config.require_moonshot_confirmation
+            let effective_min = if self.config.elite_pool_mode {
+                self.config.min_pool_score.max(self.config.elite_min_score)
+            } else if self.config.require_moonshot_confirmation
                 && inflow_rate_now_sol_per_sec < self.config.moonshot_min_inflow_sol_per_sec
             {
-                self.config.min_pool_score.max(self.config.moonshot_min_score)
+                self.config
+                    .min_pool_score
+                    .max(self.config.moonshot_min_score)
             } else if inflow_rate_now_sol_per_sec >= self.config.moonshot_min_inflow_sol_per_sec {
                 (self.config.min_pool_score - 10.0).max(45.0)
             } else {
                 self.config.min_pool_score
             };
+            selected_score_floor = effective_min;
             if final_score < effective_min {
                 info!(
                     mint = %pool.base_mint,
@@ -1208,6 +1627,26 @@ impl Sniper {
                 );
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, final_score);
                 self.filter_pipeline.stats.record_rejection("pool_scorer");
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "pool_scorer",
+                    format!("score={:.1}<min={:.1}", final_score, effective_min),
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    final_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    effective_min,
+                    "",
+                    0.0,
+                );
                 return;
             }
             entry_score = final_score;
@@ -1237,12 +1676,18 @@ impl Sniper {
                 entry_score = moonshot_score;
             }
 
-            let has_moonshot_signal = live_momentum_confirmed || pregrad_moonshot || historical_moonshot;
-            let score_floor = if live_momentum_confirmed {
+            let has_moonshot_signal =
+                live_momentum_confirmed || pregrad_moonshot || historical_moonshot;
+            let score_floor = if self.config.elite_pool_mode {
+                self.config.min_pool_score.max(self.config.elite_min_score)
+            } else if live_momentum_confirmed {
                 (self.config.min_pool_score - 10.0).max(45.0)
             } else {
-                self.config.min_pool_score.max(self.config.moonshot_min_score)
+                self.config
+                    .min_pool_score
+                    .max(self.config.moonshot_min_score)
             };
+            selected_score_floor = score_floor;
 
             if !has_moonshot_signal || entry_score < score_floor {
                 info!(
@@ -1260,6 +1705,29 @@ impl Sniper {
                 );
                 self.write_radar_entry(&pool, upfront_pool_size_sol, false, entry_score);
                 self.filter_pipeline.stats.record_rejection("moonshot_gate");
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "moonshot_gate",
+                    format!(
+                        "signal={};score={:.1}<floor={:.1}",
+                        has_moonshot_signal, entry_score, score_floor
+                    ),
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    entry_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    score_floor,
+                    "",
+                    0.0,
+                );
                 return;
             }
         }
@@ -1267,6 +1735,76 @@ impl Sniper {
         // ── Time-of-day block gate ────────────────────────────────────────────────
         // Completely skip buying during configured UTC hours (e.g. 01:00, 21:00 which
         // show 0% win rate in live data). Distinct from time_of_day_weighting (sizing).
+        if self.config.elite_pool_mode {
+            let elite_score = crate::pool_scorer::PoolScorer::score_full(
+                &pool,
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                detected_at_secs,
+                social_count,
+                inflow_rate_now_sol_per_sec,
+            );
+            if elite_score > entry_score {
+                entry_score = elite_score;
+            }
+            selected_score_floor = selected_score_floor.max(self.config.elite_min_score);
+
+            if let Some(reason) = self.elite_pool_rejection_reason(
+                upfront_pool_size_sol,
+                pool_age_secs,
+                historical_velocity_sol_per_sec,
+                buy_pressure_ratio,
+                entry_score,
+                pool.pumpfun_score,
+                inflow_rate_now_sol_per_sec,
+            ) {
+                info!(
+                    mint = %pool.base_mint,
+                    score = %format!("{:.1}", entry_score),
+                    live_inflow = %format!("{:.3} SOL/s", inflow_rate_now_sol_per_sec),
+                    historical_velocity = %format!("{:.3} SOL/s", historical_velocity_sol_per_sec),
+                    buy_pressure = %format!("{:.6}", buy_pressure_ratio),
+                    pumpfun_score = %format!("{:.1}", pool.pumpfun_score),
+                    reason = %reason,
+                    "Elite pool gate: rejected"
+                );
+                self.write_radar_entry(&pool, upfront_pool_size_sol, false, entry_score);
+                self.filter_pipeline
+                    .stats
+                    .record_rejection("elite_pool_gate");
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "elite_pool_gate",
+                    reason,
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    entry_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    selected_score_floor,
+                    "",
+                    0.0,
+                );
+                return;
+            }
+
+            info!(
+                mint = %pool.base_mint,
+                score = %format!("{:.1}", entry_score),
+                live_inflow = %format!("{:.3} SOL/s", inflow_rate_now_sol_per_sec),
+                historical_velocity = %format!("{:.3} SOL/s", historical_velocity_sol_per_sec),
+                pumpfun_score = %format!("{:.1}", pool.pumpfun_score),
+                "Elite pool gate: passed"
+            );
+        }
+
         if !self.config.blocked_hours_utc.is_empty() {
             let utc_hour = chrono::Utc::now().hour() as u8;
             if self.config.blocked_hours_utc.contains(&utc_hour) {
@@ -1276,6 +1814,26 @@ impl Sniper {
                     "Time gate: blocked hour — skipping buy"
                 );
                 self.filter_pipeline.stats.record_rejection("time_gate");
+                self.write_pool_decision(
+                    &pool,
+                    "rejected",
+                    "time_gate",
+                    format!("blocked_hour_utc={}", utc_hour),
+                    upfront_pool_size_sol,
+                    pool_age_secs as f64,
+                    historical_velocity_sol_per_sec,
+                    buy_pressure_ratio,
+                    entry_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    dex_boosted,
+                    dex_boost_usd,
+                    social_count,
+                    selected_score_floor,
+                    "",
+                    0.0,
+                );
                 return;
             }
         }
@@ -1293,6 +1851,29 @@ impl Sniper {
                         "Regime gate: bear/panic — skipping low-score pool"
                     );
                     self.filter_pipeline.stats.record_rejection("regime_gate");
+                    self.write_pool_decision(
+                        &pool,
+                        "rejected",
+                        "regime_gate",
+                        format!(
+                            "regime={};score={:.1}<min={:.1}",
+                            regime, entry_score, min_regime_score
+                        ),
+                        upfront_pool_size_sol,
+                        pool_age_secs as f64,
+                        historical_velocity_sol_per_sec,
+                        buy_pressure_ratio,
+                        entry_score,
+                        pool.pumpfun_score,
+                        inflow_rate_now_sol_per_sec,
+                        high_speed,
+                        dex_boosted,
+                        dex_boost_usd,
+                        social_count,
+                        min_regime_score,
+                        "",
+                        0.0,
+                    );
                     return;
                 }
             }
@@ -1307,15 +1888,53 @@ impl Sniper {
 
         // Write pool radar entry — pool passed all checks and is about to be bought
         self.write_radar_entry(&pool, upfront_pool_size_sol, true, entry_score);
+        self.write_pool_decision(
+            &pool,
+            "accepted",
+            "buy_ready",
+            "passed_all_gates",
+            upfront_pool_size_sol,
+            pool_age_secs as f64,
+            historical_velocity_sol_per_sec,
+            buy_pressure_ratio,
+            entry_score,
+            pool.pumpfun_score,
+            inflow_rate_now_sol_per_sec,
+            high_speed,
+            dex_boosted,
+            dex_boost_usd,
+            social_count,
+            selected_score_floor,
+            "",
+            0.0,
+        );
 
         // Execute buy — pass upfront reserves so buy() can compute a real min_out
         // without another RPC round-trip.
-        if let Err(e) = self.buy(&pool, upfront_pool_size_lamports, upfront_base_vault_lamports, entry_score, inflow_rate_now_sol_per_sec, detected_at_secs).await {
+        if let Err(e) = self
+            .buy(
+                &pool,
+                upfront_pool_size_lamports,
+                upfront_base_vault_lamports,
+                entry_score,
+                inflow_rate_now_sol_per_sec,
+                detected_at_secs,
+            )
+            .await
+        {
             error!(mint = %pool.base_mint, "buy() error: {}", e);
         }
     }
 
-    async fn buy(&self, pool: &CachedPool, quote_reserve_lam: u64, base_reserve_lam: u64, upfront_score: f64, inflow_rate_now_sol_per_sec: f64, detected_at_secs: u64) -> Result<()> {
+    async fn buy(
+        &self,
+        pool: &CachedPool,
+        quote_reserve_lam: u64,
+        base_reserve_lam: u64,
+        upfront_score: f64,
+        inflow_rate_now_sol_per_sec: f64,
+        detected_at_secs: u64,
+    ) -> Result<()> {
         // ── POOL SIZE VALIDATION: Enforce min/max pool size at buy time ──
         // The filter gate uses upfront data; we re-validate here to catch stale/drained pools
         let pool_size_sol = quote_reserve_lam as f64 / 1e9;
@@ -1336,7 +1955,10 @@ impl Sniper {
         } else {
             0.0
         };
-        
+        let mut dq_action = String::new();
+        let mut dq_confidence = 0.0;
+        let mut high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+
         if pool_size_sol < self.config.filters.min_pool_size {
             info!(
                 mint = %pool.base_mint,
@@ -1344,22 +1966,74 @@ impl Sniper {
                 min_required = %format!("{:.2}", self.config.filters.min_pool_size),
                 "Pool size too small at buy time — SKIPPING (filter gate passed but pool drained)"
             );
+            self.write_pool_decision(
+                pool,
+                "rejected",
+                "buy_pool_size",
+                format!(
+                    "pool_size={:.4}<min={:.4}",
+                    pool_size_sol, self.config.filters.min_pool_size
+                ),
+                pool_size_sol,
+                pool_age_secs_at_buy,
+                velocity_sol_per_sec_at_buy,
+                buy_pressure_ratio_at_buy,
+                upfront_score,
+                pool.pumpfun_score,
+                inflow_rate_now_sol_per_sec,
+                high_speed,
+                false,
+                0.0,
+                0,
+                self.config.min_pool_score,
+                dq_action.as_str(),
+                dq_confidence,
+            );
             return Ok(());
         }
 
-        if self.config.filters.max_pool_size > 0.0 && pool_size_sol > self.config.filters.max_pool_size {
+        if self.config.filters.max_pool_size > 0.0
+            && pool_size_sol > self.config.filters.max_pool_size
+        {
             info!(
                 mint = %pool.base_mint,
                 pool_size_sol = %format!("{:.2}", pool_size_sol),
                 max_allowed = %format!("{:.2}", self.config.filters.max_pool_size),
                 "Pool size too large at buy time — SKIPPING (whale influence)"
             );
+            self.write_pool_decision(
+                pool,
+                "rejected",
+                "buy_pool_size",
+                format!(
+                    "pool_size={:.4}>max={:.4}",
+                    pool_size_sol, self.config.filters.max_pool_size
+                ),
+                pool_size_sol,
+                pool_age_secs_at_buy,
+                velocity_sol_per_sec_at_buy,
+                buy_pressure_ratio_at_buy,
+                upfront_score,
+                pool.pumpfun_score,
+                inflow_rate_now_sol_per_sec,
+                high_speed,
+                false,
+                0.0,
+                0,
+                self.config.min_pool_score,
+                dq_action.as_str(),
+                dq_confidence,
+            );
             return Ok(());
         }
 
         // ── Fetch wallet balance early — needed for wallet-pct sizing and reserve check ──
         let wallet_pubkey_early = self.wallet.pubkey();
-        let native_balance_early = self.rpc.get_balance(&wallet_pubkey_early).await.unwrap_or(0);
+        let native_balance_early = self
+            .rpc
+            .get_balance(&wallet_pubkey_early)
+            .await
+            .unwrap_or(0);
 
         // ── Compute effective quote amount ─────────────────────────────────────
         // When wallet_pct > 0: position = wallet × wallet_pct%, floored at the
@@ -1411,8 +2085,7 @@ impl Sniper {
                 let approx_wallet = (start_lam + daily_pnl).max(0) as u64;
                 let progress = (approx_wallet as f64 / target_lam as f64).clamp(0.0, 1.0);
                 let prog_mult = 1.0 + 1.5 * progress;
-                effective_quote_amount_raw =
-                    (effective_quote_amount_raw as f64 * prog_mult) as u64;
+                effective_quote_amount_raw = (effective_quote_amount_raw as f64 * prog_mult) as u64;
                 if (prog_mult - 1.0).abs() > 0.05 {
                     info!(
                         mint = %pool.base_mint,
@@ -1472,6 +2145,13 @@ impl Sniper {
             };
 
             if let Some((action, q_vals, ready, epsilon, replay_size, train_steps)) = advice {
+                dq_action = action.label().to_string();
+                dq_confidence = q_vals
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .map(f64::abs)
+                    .fold(0.0, f64::max);
                 let has_signal = q_vals.iter().any(|v| v.is_finite() && v.abs() > 1e-9);
                 if !has_signal {
                     debug!(
@@ -1530,6 +2210,26 @@ impl Sniper {
                                 train_steps,
                                 "DQ*: exit/bearish advice - skipping buy"
                             );
+                            self.write_pool_decision(
+                                pool,
+                                "rejected",
+                                "dq_advice",
+                                format!("action={};confidence={:.4}", dq_action, dq_confidence),
+                                pool_size_sol,
+                                pool_age_secs_at_buy,
+                                velocity_sol_per_sec_at_buy,
+                                buy_pressure_ratio_at_buy,
+                                upfront_score,
+                                pool.pumpfun_score,
+                                inflow_rate_now_sol_per_sec,
+                                high_speed,
+                                false,
+                                0.0,
+                                0,
+                                self.config.min_pool_score,
+                                dq_action.as_str(),
+                                dq_confidence,
+                            );
                             return Ok(());
                         }
                     }
@@ -1538,7 +2238,7 @@ impl Sniper {
         }
 
         // Fibonacci position sizing: scale by entry decision confidence
-        let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+        high_speed = self.high_speed_mode.load(Ordering::Relaxed);
         let detected_at_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1550,7 +2250,7 @@ impl Sniper {
                 detected_at_secs,
             );
             if fib_decision.position_multiplier != 1.0 {
-                effective_quote_amount_raw = 
+                effective_quote_amount_raw =
                     (effective_quote_amount_raw as f64 * fib_decision.position_multiplier) as u64;
                 info!(
                     mint = %pool.base_mint,
@@ -1618,11 +2318,32 @@ impl Sniper {
                         cooldown_remaining_mins = (cooldown.saturating_sub(now_secs.saturating_sub(*entry))) / 60,
                         "Dedup: mint purchased within cooldown window — skipping"
                     );
+                    self.write_pool_decision(
+                        pool,
+                        "ignored",
+                        "dedup",
+                        "mint_cooldown",
+                        pool_size_sol,
+                        pool_age_secs_at_buy,
+                        velocity_sol_per_sec_at_buy,
+                        buy_pressure_ratio_at_buy,
+                        upfront_score,
+                        pool.pumpfun_score,
+                        inflow_rate_now_sol_per_sec,
+                        high_speed,
+                        false,
+                        0.0,
+                        0,
+                        self.config.min_pool_score,
+                        dq_action.as_str(),
+                        dq_confidence,
+                    );
                     return Ok(());
                 }
             }
             // Prune expired entries so the map doesn't grow unbounded during long sessions.
-            self.recently_bought.retain(|_, ts| now_secs.saturating_sub(*ts) < cooldown);
+            self.recently_bought
+                .retain(|_, ts| now_secs.saturating_sub(*ts) < cooldown);
         }
 
         let wallet_pubkey = wallet_pubkey_early; // reuse — same key, already fetched above
@@ -1641,6 +2362,30 @@ impl Sniper {
                 required_sol = min_required as f64 / 1e9,
                 "Insufficient SOL — skipping buy"
             );
+            self.write_pool_decision(
+                pool,
+                "ignored",
+                "wallet_balance",
+                format!(
+                    "balance_sol={:.4}<required_sol={:.4}",
+                    native_balance as f64 / 1e9,
+                    min_required as f64 / 1e9
+                ),
+                pool_size_sol,
+                pool_age_secs_at_buy,
+                velocity_sol_per_sec_at_buy,
+                buy_pressure_ratio_at_buy,
+                upfront_score,
+                pool.pumpfun_score,
+                inflow_rate_now_sol_per_sec,
+                high_speed,
+                false,
+                0.0,
+                0,
+                self.config.min_pool_score,
+                dq_action.as_str(),
+                dq_confidence,
+            );
             return Ok(());
         }
 
@@ -1648,11 +2393,19 @@ impl Sniper {
         // Use the upfront reserves passed from on_new_pool (saved vs another RPC
         // call). Falls back to 0 (accept any) if reserves are unknown/zero.
         let buy_min_out = if quote_reserve_lam > 0 && base_reserve_lam > 0 {
-            let expected = amm_out(effective_quote_amount_raw, quote_reserve_lam, base_reserve_lam);
+            let expected = amm_out(
+                effective_quote_amount_raw,
+                quote_reserve_lam,
+                base_reserve_lam,
+            );
             if expected > 0 {
                 scematica_core::token::apply_slippage(expected, self.config.buy_slippage_pct)
-            } else { 0 }
-        } else { 0 };
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         // Confirmation window: wait briefly and verify price hasn't already pumped 15%+.
         // Skipped in high-speed mode; skipped when confirmation_window_ms == 0 or quote
@@ -1661,11 +2414,16 @@ impl Sniper {
             && !self.high_speed_mode.load(Ordering::Relaxed)
             && quote_reserve_lam > 0
         {
-            tokio::time::sleep(tokio::time::Duration::from_millis(self.config.confirmation_window_ms)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                self.config.confirmation_window_ms,
+            ))
+            .await;
             if let Ok(Ok(qb)) = tokio::time::timeout(
                 tokio::time::Duration::from_secs(2),
                 self.rpc.get_token_account_balance(&pool.quote_vault),
-            ).await {
+            )
+            .await
+            {
                 if let Ok(current_q) = qb.amount.parse::<u64>() {
                     // Quote vault draining = early buyers already dumping.
                     // Raised 15% → 25%: for 1000x runners, a 20% initial pump is
@@ -1673,12 +2431,33 @@ impl Sniper {
                     // movers that hadn't peaked yet. Only abort on clear dumps (>25%).
                     if current_q < quote_reserve_lam {
                         let drain_pct = (quote_reserve_lam - current_q) as f64
-                            / quote_reserve_lam as f64 * 100.0;
+                            / quote_reserve_lam as f64
+                            * 100.0;
                         if drain_pct > 25.0 {
                             info!(
                                 mint = %pool.base_mint,
                                 drain_pct = %format!("{:.1}%", drain_pct),
                                 "Confirmation window: vault drained >25% — early dump, skipping buy"
+                            );
+                            self.write_pool_decision(
+                                pool,
+                                "rejected",
+                                "confirmation_window",
+                                format!("quote_vault_drain_pct={:.1}", drain_pct),
+                                pool_size_sol,
+                                pool_age_secs_at_buy,
+                                velocity_sol_per_sec_at_buy,
+                                buy_pressure_ratio_at_buy,
+                                upfront_score,
+                                pool.pumpfun_score,
+                                inflow_rate_now_sol_per_sec,
+                                high_speed,
+                                false,
+                                0.0,
+                                0,
+                                self.config.min_pool_score,
+                                dq_action.as_str(),
+                                dq_confidence,
                             );
                             return Ok(());
                         }
@@ -1690,19 +2469,43 @@ impl Sniper {
         // Build swap instructions BEFORE acquiring the lock so a build failure
         // doesn't leave the lock permanently set (which would silently drop all
         // future pools).
-        let ixs = match self.raydium_builder.build_swap(
-            &pool.id,
-            &wallet_pubkey,
-            &self.quote_mint,
-            &pool.base_mint,
-            &quote_ata,
-            &base_ata,
-            effective_quote_amount_raw,
-            buy_min_out,
-        ).await {
+        let ixs = match self
+            .raydium_builder
+            .build_swap(
+                &pool.id,
+                &wallet_pubkey,
+                &self.quote_mint,
+                &pool.base_mint,
+                &quote_ata,
+                &base_ata,
+                effective_quote_amount_raw,
+                buy_min_out,
+            )
+            .await
+        {
             Ok(ixs) => ixs,
             Err(e) => {
                 error!(mint = %pool.base_mint, "Failed to build swap instructions: {}", e);
+                self.write_pool_decision(
+                    pool,
+                    "rejected",
+                    "build_swap",
+                    e.to_string(),
+                    pool_size_sol,
+                    pool_age_secs_at_buy,
+                    velocity_sol_per_sec_at_buy,
+                    buy_pressure_ratio_at_buy,
+                    upfront_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    false,
+                    0.0,
+                    0,
+                    self.config.min_pool_score,
+                    dq_action.as_str(),
+                    dq_confidence,
+                );
                 self.metrics.record_trade_failed();
                 return Err(e);
             }
@@ -1715,18 +2518,44 @@ impl Sniper {
             if let Ok(Ok(qb)) = tokio::time::timeout(
                 tokio::time::Duration::from_millis(800),
                 self.rpc.get_token_account_balance(&pool.quote_vault),
-            ).await {
+            )
+            .await
+            {
                 if let Ok(current_q) = qb.amount.parse::<u64>() {
                     let drain_pct = if current_q < quote_reserve_lam {
                         (quote_reserve_lam - current_q) as f64 / quote_reserve_lam as f64 * 100.0
-                    } else { 0.0 };
+                    } else {
+                        0.0
+                    };
                     if drain_pct > 50.0 {
                         info!(
                             mint = %pool.base_mint,
                             drain_pct = %format!("{:.1}%", drain_pct),
                             "Pre-send vault check: pool drained >50% — aborting buy (rug in progress)"
                         );
-                        self.filter_pipeline.stats.record_rejection("pre_send_drain");
+                        self.filter_pipeline
+                            .stats
+                            .record_rejection("pre_send_drain");
+                        self.write_pool_decision(
+                            pool,
+                            "rejected",
+                            "pre_send_drain",
+                            format!("quote_vault_drain_pct={:.1}", drain_pct),
+                            pool_size_sol,
+                            pool_age_secs_at_buy,
+                            velocity_sol_per_sec_at_buy,
+                            buy_pressure_ratio_at_buy,
+                            upfront_score,
+                            pool.pumpfun_score,
+                            inflow_rate_now_sol_per_sec,
+                            high_speed,
+                            false,
+                            0.0,
+                            0,
+                            self.config.min_pool_score,
+                            dq_action.as_str(),
+                            dq_confidence,
+                        );
                         return Ok(());
                     }
                 }
@@ -1737,12 +2566,32 @@ impl Sniper {
         // same WSOL ATA simultaneously. Released as soon as the buy tx confirms (NOT
         // held for the duration of sell monitoring — see release below).
         // High-speed mode bypasses so multiple pools can snipe in parallel.
-        let high_speed = self.high_speed_mode.load(Ordering::Relaxed);
+        high_speed = self.high_speed_mode.load(Ordering::Relaxed);
         let slot = if self.config.one_token_at_a_time && !high_speed {
             match ProcessingSlot::try_acquire(&self.processing_lock) {
                 Some(g) => Some(g),
                 None => {
                     debug!(mint = %pool.base_mint, "one_token_at_a_time: buy tx in flight, skipping");
+                    self.write_pool_decision(
+                        pool,
+                        "ignored",
+                        "execution_slot",
+                        "one_token_at_a_time_busy",
+                        pool_size_sol,
+                        pool_age_secs_at_buy,
+                        velocity_sol_per_sec_at_buy,
+                        buy_pressure_ratio_at_buy,
+                        upfront_score,
+                        pool.pumpfun_score,
+                        inflow_rate_now_sol_per_sec,
+                        high_speed,
+                        false,
+                        0.0,
+                        0,
+                        self.config.min_pool_score,
+                        dq_action.as_str(),
+                        dq_confidence,
+                    );
                     return Ok(());
                 }
             }
@@ -1759,6 +2608,26 @@ impl Sniper {
                     max = self.config.max_concurrent_positions,
                     "Max concurrent positions reached after buy slot acquisition — skipping"
                 );
+                self.write_pool_decision(
+                    pool,
+                    "ignored",
+                    "exposure",
+                    "max_concurrent_positions_after_slot",
+                    pool_size_sol,
+                    pool_age_secs_at_buy,
+                    velocity_sol_per_sec_at_buy,
+                    buy_pressure_ratio_at_buy,
+                    upfront_score,
+                    pool.pumpfun_score,
+                    inflow_rate_now_sol_per_sec,
+                    high_speed,
+                    false,
+                    0.0,
+                    0,
+                    self.config.min_pool_score,
+                    dq_action.as_str(),
+                    dq_confidence,
+                );
                 return Ok(());
             }
         }
@@ -1770,6 +2639,30 @@ impl Sniper {
             mint = %pool.base_mint,
             amount_sol = effective_quote_amount_raw as f64 / 1e9,
             "Executing buy"
+        );
+        self.write_pool_decision(
+            pool,
+            "accepted",
+            "execution",
+            format!(
+                "amount_sol={:.6};min_out={}",
+                effective_quote_amount_raw as f64 / 1e9,
+                buy_min_out
+            ),
+            pool_size_sol,
+            pool_age_secs_at_buy,
+            velocity_sol_per_sec_at_buy,
+            buy_pressure_ratio_at_buy,
+            upfront_score,
+            pool.pumpfun_score,
+            inflow_rate_now_sol_per_sec,
+            high_speed,
+            false,
+            0.0,
+            0,
+            self.config.min_pool_score,
+            dq_action.as_str(),
+            dq_confidence,
         );
 
         // Build the final instruction list:
@@ -1811,12 +2704,11 @@ impl Sniper {
                 &wallet_pubkey,
                 &pool.base_mint,
                 &spl_token::id(),
-            )
+            ),
         );
 
         final_ixs.extend(ixs);
         let ixs = final_ixs;
-
 
         // Per-attempt deadline — independently of the executor's own internal cap.
         // Defense in depth: even if a custom executor (e.g. Jito) blocks forever
@@ -1824,11 +2716,16 @@ impl Sniper {
         const BUY_ATTEMPT_DEADLINE: tokio::time::Duration = tokio::time::Duration::from_secs(8);
 
         for attempt in 0..self.config.max_buy_retries {
-            info!("Buy attempt {}/{}", attempt + 1, self.config.max_buy_retries);
+            info!(
+                "Buy attempt {}/{}",
+                attempt + 1,
+                self.config.max_buy_retries
+            );
             let exec_outcome = tokio::time::timeout(
                 BUY_ATTEMPT_DEADLINE,
                 self.executor.execute(ixs.clone(), &self.wallet, &self.rpc),
-            ).await;
+            )
+            .await;
             let exec_result = match exec_outcome {
                 Ok(r) => r,
                 Err(_) => {
@@ -1865,12 +2762,13 @@ impl Sniper {
                         kind: "BUY".into(),
                         mint: pool.base_mint.to_string(),
                         symbol: String::new(),
-                        amount: scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals),
+                        amount: scematica_core::token::raw_to_ui(
+                            effective_quote_amount_raw,
+                            self.quote_decimals,
+                        ),
                         pnl: 0.0,
                         status: "✓".into(),
-                        signature: result.signature
-                            .map(|s| s.to_string())
-                            .unwrap_or_default(),
+                        signature: result.signature.map(|s| s.to_string()).unwrap_or_default(),
                         dex: "Raydium".into(),
                         hops: 1,
                         pnl_pct: 0.0,
@@ -1883,7 +2781,8 @@ impl Sniper {
                         pool_score: upfront_score,
                         pumpfun_score: pool.pumpfun_score,
                         inflow_rate_sol_per_sec: inflow_rate_now_sol_per_sec,
-                    }.append_to_file(TRADES_FILE);
+                    }
+                    .append_to_file(TRADES_FILE);
 
                     // Track open positions
                     self.open_positions.fetch_add(1, Ordering::Relaxed);
@@ -1892,12 +2791,21 @@ impl Sniper {
                     {
                         let alerts = self.alerts.clone();
                         let mint_str = pool.base_mint.to_string();
-                        let amount_sol = scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals);
+                        let amount_sol = scematica_core::token::raw_to_ui(
+                            effective_quote_amount_raw,
+                            self.quote_decimals,
+                        );
                         tokio::spawn(async move {
-                            alerts.send(
-                                "BUY Confirmed",
-                                &format!("Mint: {}...\nAmount: {:.4} SOL", &mint_str[..8], amount_sol),
-                            ).await;
+                            alerts
+                                .send(
+                                    "BUY Confirmed",
+                                    &format!(
+                                        "Mint: {}...\nAmount: {:.4} SOL",
+                                        &mint_str[..8],
+                                        amount_sol
+                                    ),
+                                )
+                                .await;
                         });
                     }
 
@@ -1958,7 +2866,10 @@ impl Sniper {
             kind: "BUY".into(),
             mint: pool.base_mint.to_string(),
             symbol: String::new(),
-            amount: scematica_core::token::raw_to_ui(effective_quote_amount_raw, self.quote_decimals),
+            amount: scematica_core::token::raw_to_ui(
+                effective_quote_amount_raw,
+                self.quote_decimals,
+            ),
             pnl: 0.0,
             status: "✗".into(),
             signature: String::new(),
@@ -1974,7 +2885,28 @@ impl Sniper {
             pool_score: upfront_score,
             pumpfun_score: pool.pumpfun_score,
             inflow_rate_sol_per_sec: inflow_rate_now_sol_per_sec,
-        }.append_to_file(TRADES_FILE);
+        }
+        .append_to_file(TRADES_FILE);
+        self.write_pool_decision(
+            pool,
+            "rejected",
+            "execution",
+            "buy_not_confirmed",
+            pool_size_sol,
+            pool_age_secs_at_buy,
+            velocity_sol_per_sec_at_buy,
+            buy_pressure_ratio_at_buy,
+            upfront_score,
+            pool.pumpfun_score,
+            inflow_rate_now_sol_per_sec,
+            high_speed,
+            false,
+            0.0,
+            0,
+            self.config.min_pool_score,
+            dq_action.as_str(),
+            dq_confidence,
+        );
         // ProcessingSlot::Drop releases the lock when `slot` goes out of scope here.
         Ok(())
     }
@@ -2039,8 +2971,7 @@ impl Sniper {
                             let q: u64 = quote_balance.amount.parse().unwrap_or(1);
                             let b: u64 = base_balance.amount.parse().unwrap_or(1);
                             // Estimate: current_value ≈ amount * (q / b)
-                            let current_value =
-                                (amount as u128 * q as u128 / b as u128) as u64;
+                            let current_value = (amount as u128 * q as u128 / b as u128) as u64;
 
                             debug!(
                                 mint = %pool.base_mint,
@@ -2088,7 +3019,6 @@ impl Sniper {
 
             tokio::time::sleep(interval).await;
         }
-
     }
 
     #[allow(dead_code)]
@@ -2108,7 +3038,13 @@ impl Sniper {
     /// position for hours. A confirmed 100% loss is better than an unconfirmed
     /// position that blocks capital and generates retry noise.
     #[allow(dead_code)]
-    async fn sell_with_min_out(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, forced_min_out: Option<u64>) {
+    async fn sell_with_min_out(
+        &self,
+        pool: &CachedPool,
+        base_ata: &Pubkey,
+        amount: u64,
+        forced_min_out: Option<u64>,
+    ) {
         info!(mint = %pool.base_mint, amount, "Executing sell");
         self.metrics.record_trade_attempt();
 
@@ -2141,29 +3077,45 @@ impl Sniper {
                 }
             };
 
-            let ixs = match self.raydium_builder.build_swap(
-                &pool.id,
-                &wallet_pubkey,
-                &pool.base_mint,
-                &self.quote_mint,
-                base_ata,
-                &quote_ata,
-                amount,
-                min_out,
-            ).await {
+            let ixs = match self
+                .raydium_builder
+                .build_swap(
+                    &pool.id,
+                    &wallet_pubkey,
+                    &pool.base_mint,
+                    &self.quote_mint,
+                    base_ata,
+                    &quote_ata,
+                    amount,
+                    min_out,
+                )
+                .await
+            {
                 Ok(ixs) => ixs,
                 Err(e) => {
-                    error!("Failed to build sell instructions (attempt {}): {}", attempt + 1, e);
-                    if attempt + 1 >= max_retries { break; }
+                    error!(
+                        "Failed to build sell instructions (attempt {}): {}",
+                        attempt + 1,
+                        e
+                    );
+                    if attempt + 1 >= max_retries {
+                        break;
+                    }
                     continue;
                 }
             };
 
             info!(
                 "Sell attempt {}/{} (min_out={})",
-                attempt + 1, max_retries, min_out
+                attempt + 1,
+                max_retries,
+                min_out
             );
-            match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
+            match self
+                .executor
+                .execute(ixs.clone(), &self.wallet, &self.rpc)
+                .await
+            {
                 Ok(result) if result.confirmed => {
                     info!(
                         mint = %pool.base_mint,
@@ -2180,9 +3132,7 @@ impl Sniper {
                         amount: scematica_core::token::raw_to_ui(amount, pool.base_decimals),
                         pnl: 0.0,
                         status: "✓".into(),
-                        signature: result.signature
-                            .map(|s| s.to_string())
-                            .unwrap_or_default(),
+                        signature: result.signature.map(|s| s.to_string()).unwrap_or_default(),
                         dex: "Raydium".into(),
                         hops: 1,
                         pnl_pct: 0.0,
@@ -2195,7 +3145,8 @@ impl Sniper {
                         pool_score: 0.0,
                         pumpfun_score: 0.0,
                         inflow_rate_sol_per_sec: 0.0,
-                    }.append_to_file(TRADES_FILE);
+                    }
+                    .append_to_file(TRADES_FILE);
                     return;
                 }
                 Ok(result) => {
@@ -2235,7 +3186,8 @@ impl Sniper {
             pool_score: 0.0,
             pumpfun_score: 0.0,
             inflow_rate_sol_per_sec: 0.0,
-        }.append_to_file(TRADES_FILE);
+        }
+        .append_to_file(TRADES_FILE);
     }
 
     /// Estimate SOL return for a sell via Raydium constant-product AMM.
@@ -2244,22 +3196,30 @@ impl Sniper {
         let q = match tokio::time::timeout(
             tokio::time::Duration::from_secs(2),
             self.rpc.get_token_account_balance(&pool.quote_vault),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(b)) => b.amount.parse::<u64>().unwrap_or(0),
             _ => return 0,
         };
         let b = match tokio::time::timeout(
             tokio::time::Duration::from_secs(2),
             self.rpc.get_token_account_balance(&pool.base_vault),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(b)) => b.amount.parse::<u64>().unwrap_or(1),
             _ => return 0,
         };
-        if q == 0 || b == 0 { return 0; }
+        if q == 0 || b == 0 {
+            return 0;
+        }
         // AMM out: out = q * amount_in * 9975 / (b * 10000 + amount_in * 9975)
         let num = (q as u128) * (token_amount_in as u128) * 9975u128;
         let den = (b as u128) * 10000u128 + (token_amount_in as u128) * 9975u128;
-        if den == 0 { return 0; }
+        if den == 0 {
+            return 0;
+        }
         (num / den) as u64
     }
 
@@ -2284,15 +3244,24 @@ impl Sniper {
 
         let mut all_keyed = Vec::new();
         for program_id in [spl_token::id(), TOKEN_2022_PROGRAM] {
-            match self.rpc
+            match self
+                .rpc
                 .get_token_accounts_by_owner(
                     &wallet_pubkey,
                     TokenAccountsFilter::ProgramId(program_id),
                 )
                 .await
             {
-                Ok(a) => { info!("Startup scan: {} accounts under {}", a.len(), program_id); all_keyed.extend(a); }
-                Err(e) => { warn!("Startup scan: failed to list accounts under {}: {}", program_id, e); }
+                Ok(a) => {
+                    info!("Startup scan: {} accounts under {}", a.len(), program_id);
+                    all_keyed.extend(a);
+                }
+                Err(e) => {
+                    warn!(
+                        "Startup scan: failed to list accounts under {}: {}",
+                        program_id, e
+                    );
+                }
             }
         }
         let keyed_accounts = all_keyed;
@@ -2440,7 +3409,8 @@ impl Sniper {
         // Scan both token programs — Pump.fun coins are Token-2022
         let mut all_keyed = Vec::new();
         for program_id in [spl_token::id(), TOKEN_2022_PROGRAM] {
-            match self.rpc
+            match self
+                .rpc
                 .get_token_accounts_by_owner(
                     &wallet_pubkey,
                     TokenAccountsFilter::ProgramId(program_id),
@@ -2448,7 +3418,11 @@ impl Sniper {
                 .await
             {
                 Ok(accounts) => {
-                    info!("AUTO DUMP: found {} accounts under {}", accounts.len(), program_id);
+                    info!(
+                        "AUTO DUMP: found {} accounts under {}",
+                        accounts.len(),
+                        program_id
+                    );
                     all_keyed.extend(accounts);
                 }
                 Err(e) => warn!("AUTO DUMP: scan failed for program {}: {}", program_id, e),
@@ -2489,9 +3463,7 @@ impl Sniper {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                let amount = u64::from_le_bytes(
-                    raw.data[64..72].try_into().unwrap_or([0u8; 8]),
-                );
+                let amount = u64::from_le_bytes(raw.data[64..72].try_into().unwrap_or([0u8; 8]));
                 (mint, amount)
             } else {
                 continue;
@@ -2533,7 +3505,9 @@ impl Sniper {
             tokio::spawn(async move {
                 // Auto-dump path: position age is unknown (could be from a previous session),
                 // so feed 0 to the NN observer rather than fabricating a time signal.
-                monitor.sell_with_retry(&pool, &ata_pk, amount, 0.0, "dump_mode").await;
+                monitor
+                    .sell_with_retry(&pool, &ata_pk, amount, 0.0, "dump_mode")
+                    .await;
             });
             spawned += 1;
         }
@@ -2548,10 +3522,10 @@ impl Sniper {
     /// Find a Raydium AMM V4 pool where `base_mint` is the base token.
     /// Issues a single `getProgramAccounts` call with memcmp + dataSize filters.
     async fn find_raydium_pool_for_mint(&self, base_mint: &Pubkey) -> Option<CachedPool> {
+        use scematica_core::dex::{program_ids, raydium_v4::*};
         use solana_account_decoder::UiAccountEncoding;
         use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
         use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
-        use scematica_core::dex::{program_ids, raydium_v4::*};
 
         let config = RpcProgramAccountsConfig {
             filters: Some(vec![
@@ -2568,7 +3542,8 @@ impl Sniper {
             ..Default::default()
         };
 
-        let pools = match self.rpc
+        let pools = match self
+            .rpc
             .get_program_accounts_with_config(&program_ids::RAYDIUM_AMM_V4, config)
             .await
         {
@@ -2589,14 +3564,14 @@ impl Sniper {
             Pubkey::try_from(&data[BASE_MINT_OFFSET..BASE_MINT_OFFSET + 32]).ok()?;
         let pool_quote_mint =
             Pubkey::try_from(&data[QUOTE_MINT_OFFSET..QUOTE_MINT_OFFSET + 32]).ok()?;
-        let base_vault =
-            Pubkey::try_from(&data[BASE_VAULT_OFFSET..BASE_VAULT_OFFSET + 32]).ok()?;
+        let base_vault = Pubkey::try_from(&data[BASE_VAULT_OFFSET..BASE_VAULT_OFFSET + 32]).ok()?;
         let quote_vault =
             Pubkey::try_from(&data[QUOTE_VAULT_OFFSET..QUOTE_VAULT_OFFSET + 32]).ok()?;
-        let market_id =
-            Pubkey::try_from(&data[MARKET_ID_OFFSET..MARKET_ID_OFFSET + 32]).ok()?;
+        let market_id = Pubkey::try_from(&data[MARKET_ID_OFFSET..MARKET_ID_OFFSET + 32]).ok()?;
         let open_time = u64::from_le_bytes(
-            data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8].try_into().ok()?,
+            data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8]
+                .try_into()
+                .ok()?,
         );
 
         if pool_quote_mint == Pubkey::default() || base_vault == Pubkey::default() {
@@ -2727,30 +3702,32 @@ impl SellMonitor {
         let entry_unix_secs = chrono::Utc::now().timestamp();
 
         // Create Fibonacci momentum tracker for this position
-        let mut fib_momentum = FibonacciMomentum::new(
-            self.entry_amount_raw,
-            entry_unix_secs as u64,
-        );
+        let mut fib_momentum =
+            FibonacciMomentum::new(self.entry_amount_raw, entry_unix_secs as u64);
 
         // Register this position in the live registry so the dashboard sees it
         // immediately. We update the entry on every price check below and
         // remove it when the monitor exits (any branch).
         let pos_key = pool.base_mint.to_string();
         let initial_sl_lam = (self.entry_amount_raw as f64
-            * (1.0 - self.live_params.read().stop_loss_pct / 100.0)) as u64;
-        self.live_positions.insert(pos_key.clone(), LivePositionSnapshot {
-            mint: pos_key.clone(),
-            entry_lamports: self.entry_amount_raw,
-            current_value_lamports: self.entry_amount_raw,
-            peak_value_lamports: self.entry_amount_raw,
-            entry_unix_secs,
-            dynamic_tp_pct: self.live_params.read().take_profit_pct,
-            escalations: 0,
-            last_check_unix_secs: entry_unix_secs,
-            current_sl_lamports: initial_sl_lam,
-            current_sl_pct: -(self.live_params.read().stop_loss_pct),
-            decline_streak: 0,
-        });
+            * (1.0 - self.live_params.read().stop_loss_pct / 100.0))
+            as u64;
+        self.live_positions.insert(
+            pos_key.clone(),
+            LivePositionSnapshot {
+                mint: pos_key.clone(),
+                entry_lamports: self.entry_amount_raw,
+                current_value_lamports: self.entry_amount_raw,
+                peak_value_lamports: self.entry_amount_raw,
+                entry_unix_secs,
+                dynamic_tp_pct: self.live_params.read().take_profit_pct,
+                escalations: 0,
+                last_check_unix_secs: entry_unix_secs,
+                current_sl_lamports: initial_sl_lam,
+                current_sl_pct: -(self.live_params.read().stop_loss_pct),
+                decline_streak: 0,
+            },
+        );
         // RAII guard: ensure the position is removed from the registry no matter
         // which branch of monitor_and_sell exits the function.
         struct PositionGuard {
@@ -2758,7 +3735,9 @@ impl SellMonitor {
             key: String,
         }
         impl Drop for PositionGuard {
-            fn drop(&mut self) { self.map.remove(&self.key); }
+            fn drop(&mut self) {
+                self.map.remove(&self.key);
+            }
         }
         let _pos_guard = PositionGuard {
             map: self.live_positions.clone(),
@@ -2776,22 +3755,29 @@ impl SellMonitor {
         // The 3x balance fetches per check now run in parallel (tokio::join!), so 75 ms is a realistic
         // floor on a Helius/Triton endpoint — the previous 100 ms left RPC capacity idle between polls.
         let fast_phase_checks: u64 = 30;
-        let fast_poll_ms: u64        = 75;
-        let fast_interval    = tokio::time::Duration::from_millis(fast_poll_ms);
-        let normal_floor_ms          = 250u64;
-        let normal_interval  = tokio::time::Duration::from_millis(
+        let fast_poll_ms: u64 = 75;
+        let fast_interval = tokio::time::Duration::from_millis(fast_poll_ms);
+        let normal_floor_ms = 250u64;
+        let normal_interval = tokio::time::Duration::from_millis(
             self.config.price_check_interval_ms.max(normal_floor_ms),
         );
-        let fast_budget_ms   = fast_phase_checks * fast_poll_ms;
-        let remaining_budget = self.config.price_check_duration_ms.saturating_sub(fast_budget_ms);
-        let normal_checks    = if self.config.price_check_interval_ms > 0 {
+        let fast_budget_ms = fast_phase_checks * fast_poll_ms;
+        let remaining_budget = self
+            .config
+            .price_check_duration_ms
+            .saturating_sub(fast_budget_ms);
+        let normal_checks = if self.config.price_check_interval_ms > 0 {
             remaining_budget / self.config.price_check_interval_ms.max(normal_floor_ms)
-        } else { 0 };
+        } else {
+            0
+        };
         let max_checks = fast_phase_checks + normal_checks;
 
         // Partial TP state
-        let partial_tp_enabled = self.config.partial_tp_pct > 0.0 && self.config.partial_tp_trigger > 0.0;
-        let partial_tp_target  = (self.entry_amount_raw as f64 * (1.0 + self.config.partial_tp_trigger / 100.0)) as u64;
+        let partial_tp_enabled =
+            self.config.partial_tp_pct > 0.0 && self.config.partial_tp_trigger > 0.0;
+        let partial_tp_target =
+            (self.entry_amount_raw as f64 * (1.0 + self.config.partial_tp_trigger / 100.0)) as u64;
         let mut partial_tp_done = false;
 
         // Trailing stop state — peak tracks best value seen since entry
@@ -2828,7 +3814,11 @@ impl SellMonitor {
             // Read escalation count from live_params (set by rate-mode watcher on switch),
             // falling back to static config if the mode field is 0 (unset).
             let mode_esc = self.live_params.read().momentum_max_escalations_mode;
-            let max_esc = if mode_esc > 0 { mode_esc } else { self.config.momentum_max_escalations };
+            let max_esc = if mode_esc > 0 {
+                mode_esc
+            } else {
+                self.config.momentum_max_escalations
+            };
             (
                 max_esc,
                 self.config.momentum_escalation_factor,
@@ -2859,8 +3849,8 @@ impl SellMonitor {
         // Tiered partial-TP state: each level fires at most once. We track
         // which trigger %s have already been honored so a sustained pump above
         // the level doesn't re-fire the same partial sell on every check.
-        let tiered_enabled = self.config.tiered_partial_tp
-            && !self.config.tiered_partial_tp_levels.is_empty();
+        let tiered_enabled =
+            self.config.tiered_partial_tp && !self.config.tiered_partial_tp_levels.is_empty();
         let mut tiered_fired: Vec<bool> = vec![false; self.config.tiered_partial_tp_levels.len()];
 
         // Profit-lock counter: tracks consecutive checks where value > entry.
@@ -2898,7 +3888,14 @@ impl SellMonitor {
                     if let Ok(bal) = self.rpc.get_token_account_balance(&base_ata).await {
                         let amount: u64 = bal.amount.parse().unwrap_or(0);
                         if amount > 0 {
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "timeout").await;
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                "timeout",
+                            )
+                            .await;
                         }
                     }
                     break;
@@ -2927,7 +3924,14 @@ impl SellMonitor {
                         let amount: u64 = balance.amount.parse().unwrap_or(0);
                         if amount > 0 {
                             let mode_reason = if dump_on { "dump_mode" } else { "sell_mode" };
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), mode_reason).await;
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                mode_reason,
+                            )
+                            .await;
                         }
                     }
                     break;
@@ -2946,7 +3950,8 @@ impl SellMonitor {
             if take_profit_pct > dynamic_tp_pct {
                 dynamic_tp_pct = take_profit_pct;
             }
-            let mut target_profit = (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
+            let mut target_profit =
+                (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
 
             // Profit-first growth mode: while the wallet is still being built up to
             // `wallet_target_sol`, gate the stop-loss so the bot doesn't bleed out
@@ -2960,8 +3965,8 @@ impl SellMonitor {
             // a non-zero value wins over config.wallet_target_sol so the operator can
             // hot-switch between Growth/Builder/SuperBuilder without restarting.
             let effective_stop_loss_pct = if self.config.profit_first_mode {
-                let start_lam   = self.session_start_lamports.load(Ordering::Relaxed);
-                let daily_pnl   = *self.daily_pnl_lamports.lock();
+                let start_lam = self.session_start_lamports.load(Ordering::Relaxed);
+                let daily_pnl = *self.daily_pnl_lamports.lock();
                 let approx_wallet_sol = (start_lam as i64 + daily_pnl) as f64 / 1e9;
                 let override_lam = self.wallet_target_lamports_override.load(Ordering::Relaxed);
                 let target_sol = if override_lam > 0 {
@@ -2978,7 +3983,8 @@ impl SellMonitor {
             } else {
                 stop_loss_pct
             };
-            let mut stop_loss_amount = (self.entry_amount_raw as f64 * (1.0 - effective_stop_loss_pct / 100.0)) as u64;
+            let mut stop_loss_amount =
+                (self.entry_amount_raw as f64 * (1.0 - effective_stop_loss_pct / 100.0)) as u64;
 
             // Fan out the three balance reads concurrently with a 2 s wall-clock cap.
             // Without this cap, a single stalled RPC would freeze the whole sell loop —
@@ -2992,20 +3998,27 @@ impl SellMonitor {
                     self.rpc.get_token_account_balance(&pool.base_vault),
                 )
             };
-            let (ata_res, qb_res, bb_res) = match tokio::time::timeout(SELL_POLL_DEADLINE, fetch_fut).await {
-                Ok(t) => t,
-                Err(_) => {
-                    tracing::debug!(
-                        mint = %pool.base_mint,
-                        "Sell-monitor balance fetch timed out — skipping this iteration"
-                    );
-                    checks += 1;
-                    if checks >= max_checks { break; }
-                    let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
-                    tokio::time::sleep(sleep_dur).await;
-                    continue;
-                }
-            };
+            let (ata_res, qb_res, bb_res) =
+                match tokio::time::timeout(SELL_POLL_DEADLINE, fetch_fut).await {
+                    Ok(t) => t,
+                    Err(_) => {
+                        tracing::debug!(
+                            mint = %pool.base_mint,
+                            "Sell-monitor balance fetch timed out — skipping this iteration"
+                        );
+                        checks += 1;
+                        if checks >= max_checks {
+                            break;
+                        }
+                        let sleep_dur = if checks < fast_phase_checks {
+                            fast_interval
+                        } else {
+                            normal_interval
+                        };
+                        tokio::time::sleep(sleep_dur).await;
+                        continue;
+                    }
+                };
             match ata_res {
                 Ok(balance) => {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
@@ -3022,8 +4035,14 @@ impl SellMonitor {
                         }
                         // Grace period: skip the rest of this iteration but stay in loop
                         checks += 1;
-                        if checks >= max_checks { break; }
-                        let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+                        if checks >= max_checks {
+                            break;
+                        }
+                        let sleep_dur = if checks < fast_phase_checks {
+                            fast_interval
+                        } else {
+                            normal_interval
+                        };
                         tokio::time::sleep(sleep_dur).await;
                         continue;
                     }
@@ -3038,7 +4057,7 @@ impl SellMonitor {
                         // ── Fibonacci momentum update and exit evaluation ───────────
                         let current_time_secs = chrono::Utc::now().timestamp() as u64;
                         let _fib_signal = fib_momentum.update(current_value, current_time_secs, q);
-                        
+
                         let fib_exit = self.fib_system.evaluate_exit(
                             &fib_momentum,
                             current_value,
@@ -3050,7 +4069,7 @@ impl SellMonitor {
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
                             let pnl_sol = pnl_lamports as f64 / 1e9;
                             let hold_time = current_time_secs - entry_unix_secs as u64;
-                            
+
                             tracing::info!(
                                 mint = %pool.base_mint,
                                 reason = %fib_exit.exit_reason,
@@ -3060,14 +4079,31 @@ impl SellMonitor {
                                 hold_time_secs = hold_time,
                                 "🎯 Fibonacci exit triggered"
                             );
-                            
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "fibonacci").await;
-                            self.fib_stats.lock().record_exit(&fib_exit, hold_time, pnl_lamports);
-                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
-                            
+
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                "fibonacci",
+                            )
+                            .await;
+                            self.fib_stats
+                                .lock()
+                                .record_exit(&fib_exit, hold_time, pnl_lamports);
+                            self.record_sell_outcome(
+                                pnl_lamports > 0,
+                                pnl_lamports,
+                                pnl_sol,
+                                &pool.base_mint.to_string(),
+                            )
+                            .await;
+
                             // Log Fibonacci stats every 10 exits
                             let stats = self.fib_stats.lock();
-                            let total_exits = stats.dead_pool_exits + stats.fibonacci_tp_exits + stats.golden_retrace_exits;
+                            let total_exits = stats.dead_pool_exits
+                                + stats.fibonacci_tp_exits
+                                + stats.golden_retrace_exits;
                             if total_exits > 0 && total_exits % 10 == 0 {
                                 tracing::info!(
                                     "📊 Fibonacci Recovery Stats: Entries={} ({:.0}% high-score) | Win Rate={:.1}% | Avg PnL={:.4} SOL | Avg Hold={:.1}s | Dead Pool Exits={} | Fib TP Exits={} | Total PnL={:.4} SOL",
@@ -3081,7 +4117,7 @@ impl SellMonitor {
                                     stats.total_pnl_lamports as f64 / 1e9,
                                 );
                             }
-                            
+
                             break;
                         }
 
@@ -3093,7 +4129,9 @@ impl SellMonitor {
                         }
 
                         // Capture entry quote vault on the first valid check
-                        if entry_q == 0 { entry_q = q; }
+                        if entry_q == 0 {
+                            entry_q = q;
+                        }
 
                         // ── Swell signal: net SOL flow into pool ────────────────
                         // Positive avg = active buys still arriving (pool swelling).
@@ -3120,11 +4158,15 @@ impl SellMonitor {
                         let exit_gate_met = current_pnl_pct_raw >= initial_tp_pct;
 
                         // ── Whale exit: single-check vault drop ─────────────────
-                        if self.config.whale_exit_vault_drop_pct > 0.0 && prev_q > 0 && q < prev_q
-                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
+                        if self.config.whale_exit_vault_drop_pct > 0.0
+                            && prev_q > 0
+                            && q < prev_q
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met)
+                        {
                             let vault_drop_pct = (prev_q - q) as f64 / prev_q as f64 * 100.0;
                             if vault_drop_pct >= self.config.whale_exit_vault_drop_pct {
-                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_lamports =
+                                    current_value as i64 - self.entry_amount_raw as i64;
                                 let pnl_sol = pnl_lamports as f64 / 1e9;
                                 tracing::warn!(
                                     mint = %pool.base_mint,
@@ -3133,8 +4175,21 @@ impl SellMonitor {
                                     pnl_sol,
                                     "🐋 Whale exit: vault drop detected — selling immediately"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
-                                self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "dump_detected",
+                                )
+                                .await;
+                                self.record_sell_outcome(
+                                    pnl_lamports > 0,
+                                    pnl_lamports,
+                                    pnl_sol,
+                                    &pool.base_mint.to_string(),
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -3148,10 +4203,12 @@ impl SellMonitor {
                             && current_value > self.entry_amount_raw
                             && exit_gate_met
                         {
-                            let exhaustion_floor =
-                                (entry_q as f64 * (1.0 - self.config.volume_exhaustion_pct / 100.0)) as u64;
+                            let exhaustion_floor = (entry_q as f64
+                                * (1.0 - self.config.volume_exhaustion_pct / 100.0))
+                                as u64;
                             if q < exhaustion_floor {
-                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_lamports =
+                                    current_value as i64 - self.entry_amount_raw as i64;
                                 let pnl_sol = pnl_lamports as f64 / 1e9;
                                 tracing::info!(
                                     mint = %pool.base_mint,
@@ -3159,8 +4216,21 @@ impl SellMonitor {
                                     pnl_sol,
                                     "Volume exhaustion exit — locking profit before liquidity dries up"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "volume_exhaustion").await;
-                                self.record_sell_outcome(true, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "volume_exhaustion",
+                                )
+                                .await;
+                                self.record_sell_outcome(
+                                    true,
+                                    pnl_lamports,
+                                    pnl_sol,
+                                    &pool.base_mint.to_string(),
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -3179,8 +4249,12 @@ impl SellMonitor {
                         // Trailing stop: only activates at/above TP to prevent sub-entry exits.
                         // Uses configured trailing_stop_loss_pct (wide for 1000x riding).
                         if trailing_enabled && exit_gate_met {
-                            let trail = (peak_value as f64 * (1.0 - self.config.trailing_stop_loss_pct / 100.0)) as u64;
-                            if trail > stop_loss_amount { stop_loss_amount = trail; }
+                            let trail = (peak_value as f64
+                                * (1.0 - self.config.trailing_stop_loss_pct / 100.0))
+                                as u64;
+                            if trail > stop_loss_amount {
+                                stop_loss_amount = trail;
+                            }
                         }
 
                         // Flash-crash detector: if a SINGLE check shows a value drop
@@ -3189,12 +4263,17 @@ impl SellMonitor {
                         // positives on the fill price vs entry discrepancy), exit now.
                         // This fires before the 3-consecutive-decline counter can even
                         // accumulate — crucial for vertical dumps (rug/snipe target).
-                        if self.config.flash_crash_pct > 0.0 && checks >= 3 && prev_value > current_value
-                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
+                        if self.config.flash_crash_pct > 0.0
+                            && checks >= 3
+                            && prev_value > current_value
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met)
+                        {
                             let single_drop_pct = (prev_value as f64 - current_value as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
+                                / self.entry_amount_raw as f64
+                                * 100.0;
                             if single_drop_pct >= self.config.flash_crash_pct {
-                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_lamports =
+                                    current_value as i64 - self.entry_amount_raw as i64;
                                 let pnl_sol = pnl_lamports as f64 / 1e9;
                                 tracing::warn!(
                                     mint = %pool.base_mint,
@@ -3202,8 +4281,21 @@ impl SellMonitor {
                                     pnl_sol,
                                     "⚡ Flash-crash detected — emergency exit"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
-                                self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "dump_detected",
+                                )
+                                .await;
+                                self.record_sell_outcome(
+                                    pnl_lamports > 0,
+                                    pnl_lamports,
+                                    pnl_sol,
+                                    &pool.base_mint.to_string(),
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -3236,7 +4328,8 @@ impl SellMonitor {
                         // exit (lock in before round-trip).
                         if self.config.momentum_hold {
                             let delta_pct = (current_value as f64 - prev_value as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
+                                / self.entry_amount_raw as f64
+                                * 100.0;
                             velocity_window.push_back(delta_pct);
                             while velocity_window.len() > momentum_window_cap {
                                 velocity_window.pop_front();
@@ -3248,10 +4341,13 @@ impl SellMonitor {
                                 velocity_window.iter().sum::<f64>() / velocity_window.len() as f64
                             };
 
-                            let current_pnl_pct = (current_value as f64 - self.entry_amount_raw as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
-                            let peak_pnl_pct    = (peak_value    as f64 - self.entry_amount_raw as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
+                            let current_pnl_pct = (current_value as f64
+                                - self.entry_amount_raw as f64)
+                                / self.entry_amount_raw as f64
+                                * 100.0;
+                            let peak_pnl_pct = (peak_value as f64 - self.entry_amount_raw as f64)
+                                / self.entry_amount_raw as f64
+                                * 100.0;
                             let pullback_pct = peak_pnl_pct - current_pnl_pct;
 
                             // (A) TP escalation: position is at/above current TP, momentum
@@ -3289,7 +4385,9 @@ impl SellMonitor {
                                 escalation_count += 1;
                                 // Refresh target_profit so the TP check at the bottom of THIS
                                 // iteration uses the new (higher) threshold — not the stale one.
-                                target_profit = (self.entry_amount_raw as f64 * (1.0 + dynamic_tp_pct / 100.0)) as u64;
+                                target_profit = (self.entry_amount_raw as f64
+                                    * (1.0 + dynamic_tp_pct / 100.0))
+                                    as u64;
                             }
 
                             // (B) Adaptive pullback-from-peak exit. The threshold
@@ -3310,7 +4408,8 @@ impl SellMonitor {
                                 && peak_pnl_pct >= self.config.momentum_min_peak_pct
                                 && pullback_pct >= pullback_eff
                             {
-                                let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                let pnl_lamports =
+                                    current_value as i64 - self.entry_amount_raw as i64;
                                 let pnl_sol = pnl_lamports as f64 / 1e9;
                                 tracing::warn!(
                                     mint = %pool.base_mint,
@@ -3321,8 +4420,21 @@ impl SellMonitor {
                                     pnl_sol,
                                     "📉 Adaptive pullback exit — locking gains before reversal"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "trailing_stop").await;
-                                self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "trailing_stop",
+                                )
+                                .await;
+                                self.record_sell_outcome(
+                                    pnl_lamports > 0,
+                                    pnl_lamports,
+                                    pnl_sol,
+                                    &pool.base_mint.to_string(),
+                                )
+                                .await;
                                 break;
                             }
 
@@ -3343,14 +4455,12 @@ impl SellMonitor {
                                     decay_window.pop_front();
                                 }
                                 if decay_window.len() == decay_window_cap {
-                                    let prev_half_avg: f64 = decay_window
-                                        .iter()
-                                        .take(decay_half)
-                                        .sum::<f64>() / decay_half as f64;
-                                    let recent_half_avg: f64 = decay_window
-                                        .iter()
-                                        .skip(decay_half)
-                                        .sum::<f64>() / decay_half as f64;
+                                    let prev_half_avg: f64 =
+                                        decay_window.iter().take(decay_half).sum::<f64>()
+                                            / decay_half as f64;
+                                    let recent_half_avg: f64 =
+                                        decay_window.iter().skip(decay_half).sum::<f64>()
+                                            / decay_half as f64;
                                     let decay_drop = prev_half_avg - recent_half_avg;
                                     // Fire when velocity has fallen meaningfully
                                     // AND the previous half was still upward
@@ -3358,7 +4468,8 @@ impl SellMonitor {
                                     if decay_drop >= self.config.velocity_decay_drop_threshold
                                         && prev_half_avg > 0.0
                                     {
-                                        let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                        let pnl_lamports =
+                                            current_value as i64 - self.entry_amount_raw as i64;
                                         let pnl_sol = pnl_lamports as f64 / 1e9;
                                         tracing::info!(
                                             mint = %pool.base_mint,
@@ -3370,8 +4481,21 @@ impl SellMonitor {
                                             pnl_sol,
                                             "🎯 Velocity-decay exit — momentum inflection caught"
                                         );
-                                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "velocity_decay").await;
-                                        self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                        self.sell_with_retry(
+                                            &pool,
+                                            &base_ata,
+                                            amount,
+                                            position_started.elapsed().as_secs_f64(),
+                                            "velocity_decay",
+                                        )
+                                        .await;
+                                        self.record_sell_outcome(
+                                            pnl_lamports > 0,
+                                            pnl_lamports,
+                                            pnl_sol,
+                                            &pool.base_mint.to_string(),
+                                        )
+                                        .await;
                                         break;
                                     }
                                 }
@@ -3383,15 +4507,16 @@ impl SellMonitor {
                         // without needing its own RPC reads. One tiny write per check.
                         if let Some(mut entry) = self.live_positions.get_mut(&pos_key) {
                             entry.current_value_lamports = current_value;
-                            entry.peak_value_lamports    = peak_value;
-                            entry.dynamic_tp_pct         = dynamic_tp_pct;
-                            entry.escalations            = escalation_count;
-                            entry.last_check_unix_secs   = chrono::Utc::now().timestamp();
-                            entry.current_sl_lamports    = stop_loss_amount;
-                            entry.current_sl_pct         = (stop_loss_amount as f64
+                            entry.peak_value_lamports = peak_value;
+                            entry.dynamic_tp_pct = dynamic_tp_pct;
+                            entry.escalations = escalation_count;
+                            entry.last_check_unix_secs = chrono::Utc::now().timestamp();
+                            entry.current_sl_lamports = stop_loss_amount;
+                            entry.current_sl_pct = (stop_loss_amount as f64
                                 - self.entry_amount_raw as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
-                            entry.decline_streak         = decline_streak;
+                                / self.entry_amount_raw as f64
+                                * 100.0;
+                            entry.decline_streak = decline_streak;
                         }
 
                         prev_value = current_value;
@@ -3404,10 +4529,13 @@ impl SellMonitor {
                         if self.config.no_pump_timeout_secs > 0 {
                             let age_secs = position_started.elapsed().as_secs();
                             if age_secs >= self.config.no_pump_timeout_secs {
-                                let peak_pnl_pct = (peak_value as f64 - self.entry_amount_raw as f64)
-                                    / self.entry_amount_raw as f64 * 100.0;
+                                let peak_pnl_pct = (peak_value as f64
+                                    - self.entry_amount_raw as f64)
+                                    / self.entry_amount_raw as f64
+                                    * 100.0;
                                 if peak_pnl_pct < self.config.no_pump_min_gain_pct {
-                                    let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
+                                    let pnl_lamports =
+                                        current_value as i64 - self.entry_amount_raw as i64;
                                     let pnl_sol = pnl_lamports as f64 / 1e9;
                                     tracing::info!(
                                         mint = %pool.base_mint,
@@ -3417,8 +4545,21 @@ impl SellMonitor {
                                         pnl_sol,
                                         "No pump detected — recycling dead position"
                                     );
-                                    self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "no_pump_timeout").await;
-                                    self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                                    self.sell_with_retry(
+                                        &pool,
+                                        &base_ata,
+                                        amount,
+                                        position_started.elapsed().as_secs_f64(),
+                                        "no_pump_timeout",
+                                    )
+                                    .await;
+                                    self.record_sell_outcome(
+                                        pnl_lamports > 0,
+                                        pnl_lamports,
+                                        pnl_sol,
+                                        &pool.base_mint.to_string(),
+                                    )
+                                    .await;
                                     break;
                                 }
                             }
@@ -3436,16 +4577,24 @@ impl SellMonitor {
                         // the remaining balance rather than all selling against the
                         // same starting `amount` and over-selling.
                         if tiered_enabled {
-                            let current_pnl_pct_now = (current_value as f64 - self.entry_amount_raw as f64)
-                                / self.entry_amount_raw as f64 * 100.0;
+                            let current_pnl_pct_now = (current_value as f64
+                                - self.entry_amount_raw as f64)
+                                / self.entry_amount_raw as f64
+                                * 100.0;
                             let mut any_fired_this_check = false;
                             let mut remaining_tokens = amount;
                             for (i, (trigger_pct, sell_pct)) in
                                 self.config.tiered_partial_tp_levels.iter().enumerate()
                             {
-                                if tiered_fired[i] || current_pnl_pct_now < *trigger_pct { continue; }
-                                let partial_amount = (remaining_tokens as f64 * sell_pct / 100.0) as u64;
-                                if partial_amount == 0 { tiered_fired[i] = true; continue; }
+                                if tiered_fired[i] || current_pnl_pct_now < *trigger_pct {
+                                    continue;
+                                }
+                                let partial_amount =
+                                    (remaining_tokens as f64 * sell_pct / 100.0) as u64;
+                                if partial_amount == 0 {
+                                    tiered_fired[i] = true;
+                                    continue;
+                                }
                                 tracing::info!(
                                     mint = %pool.base_mint,
                                     level = i + 1,
@@ -3456,12 +4605,21 @@ impl SellMonitor {
                                     current_pnl_pct = %format!("{:.1}%", current_pnl_pct_now),
                                     "🎯 Tiered partial TP — locking layer"
                                 );
-                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64(), "tiered_tp").await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    partial_amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "tiered_tp",
+                                )
+                                .await;
                                 remaining_tokens = remaining_tokens.saturating_sub(partial_amount);
                                 tiered_fired[i] = true;
                                 any_fired_this_check = true;
                                 // Move stop to breakeven after the FIRST tier fires.
-                                if i == 0 { stop_loss_amount = self.entry_amount_raw; }
+                                if i == 0 {
+                                    stop_loss_amount = self.entry_amount_raw;
+                                }
                             }
                             // Set legacy partial_tp_done so the fallback path below
                             // doesn't fire on top of the tiered ladder.
@@ -3473,17 +4631,34 @@ impl SellMonitor {
                                 // below fires in the SAME iteration against the pre-partial
                                 // token balance, causing a double-sell (partial + full exit).
                                 checks += 1;
-                                if checks >= max_checks { break; }
-                                let sleep_dur = if checks < fast_phase_checks { fast_interval } else { normal_interval };
+                                if checks >= max_checks {
+                                    break;
+                                }
+                                let sleep_dur = if checks < fast_phase_checks {
+                                    fast_interval
+                                } else {
+                                    normal_interval
+                                };
                                 tokio::time::sleep(sleep_dur).await;
                                 continue;
                             }
-                        } else if partial_tp_enabled && !partial_tp_done && current_value >= partial_tp_target {
+                        } else if partial_tp_enabled
+                            && !partial_tp_done
+                            && current_value >= partial_tp_target
+                        {
                             // Legacy single partial-TP path (fallback when tiered disabled)
-                            let partial_amount = (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;
+                            let partial_amount =
+                                (amount as f64 * self.config.partial_tp_pct / 100.0) as u64;
                             if partial_amount > 0 {
                                 tracing::info!(mint = %pool.base_mint, "Partial TP triggered — selling {}%", self.config.partial_tp_pct);
-                                self.sell_with_retry(&pool, &base_ata, partial_amount, position_started.elapsed().as_secs_f64(), "take_profit").await;
+                                self.sell_with_retry(
+                                    &pool,
+                                    &base_ata,
+                                    partial_amount,
+                                    position_started.elapsed().as_secs_f64(),
+                                    "take_profit",
+                                )
+                                .await;
                                 partial_tp_done = true;
                                 stop_loss_amount = self.entry_amount_raw; // move stop to breakeven
                             }
@@ -3494,22 +4669,31 @@ impl SellMonitor {
                         // is BOTH down meaningfully AND past the rug floor — otherwise the
                         // bot bails on every dip and never books any wins.
                         let dump_eligible = if self.config.profit_first_mode {
-                            let override_lam = self.wallet_target_lamports_override.load(Ordering::Relaxed);
+                            let override_lam =
+                                self.wallet_target_lamports_override.load(Ordering::Relaxed);
                             let target_lam = if override_lam > 0 {
                                 override_lam as i64
                             } else {
                                 (self.config.wallet_target_sol * 1e9) as i64
                             };
-                            let approx_wallet = self.session_start_lamports.load(Ordering::Relaxed) as i64
+                            let approx_wallet = self.session_start_lamports.load(Ordering::Relaxed)
+                                as i64
                                 + *self.daily_pnl_lamports.lock();
                             if target_lam > 0 && approx_wallet < target_lam {
                                 // Approx-wallet < target → only honor dump-detection if we're already
                                 // at or past the rug-only floor. Anything shallower, hold and wait.
                                 current_value <= stop_loss_amount
-                            } else { true }
-                        } else { true };
-                        if decline_streak >= 3 && checks >= fast_phase_checks && dump_eligible
-                            && (current_pnl_pct_raw < 0.0 || exit_gate_met) {
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        };
+                        if decline_streak >= 3
+                            && checks >= fast_phase_checks
+                            && dump_eligible
+                            && (current_pnl_pct_raw < 0.0 || exit_gate_met)
+                        {
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
                             let pnl_sol = pnl_lamports as f64 / 1e9;
                             tracing::warn!(
@@ -3517,8 +4701,21 @@ impl SellMonitor {
                                 decline_streak, current_value, pnl_sol,
                                 "Dump momentum detected — exiting position"
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "dump_detected").await;
-                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                "dump_detected",
+                            )
+                            .await;
+                            self.record_sell_outcome(
+                                pnl_lamports > 0,
+                                pnl_lamports,
+                                pnl_sol,
+                                &pool.base_mint.to_string(),
+                            )
+                            .await;
                             break;
                         }
 
@@ -3529,7 +4726,8 @@ impl SellMonitor {
                         // prices. This eliminates the 7-11 min 99%-exit pattern where velocity
                         // decay is disarmed once current drops below velocity_decay_min_pnl_pct.
                         if self.config.peak_stagnation_secs > 0
-                            && last_peak_improved.elapsed().as_secs() >= self.config.peak_stagnation_secs
+                            && last_peak_improved.elapsed().as_secs()
+                                >= self.config.peak_stagnation_secs
                             && current_pnl_pct_raw >= self.config.peak_stagnation_min_pnl_pct
                         {
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
@@ -3542,8 +4740,21 @@ impl SellMonitor {
                                 pnl_sol,
                                 "⏱ Peak stagnation exit — pool flat, recycling capital"
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "peak_stagnation").await;
-                            self.record_sell_outcome(pnl_lamports > 0, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                "peak_stagnation",
+                            )
+                            .await;
+                            self.record_sell_outcome(
+                                pnl_lamports > 0,
+                                pnl_lamports,
+                                pnl_sol,
+                                &pool.base_mint.to_string(),
+                            )
+                            .await;
                             break;
                         }
 
@@ -3551,7 +4762,11 @@ impl SellMonitor {
                             let profitable = current_value >= target_profit;
                             let pnl_lamports = current_value as i64 - self.entry_amount_raw as i64;
                             let pnl_sol = pnl_lamports as f64 / 1e9;
-                            let exit_r = if profitable { "take_profit" } else { "stop_loss" };
+                            let exit_r = if profitable {
+                                "take_profit"
+                            } else {
+                                "stop_loss"
+                            };
                             tracing::info!(
                                 mint = %pool.base_mint,
                                 current_value, target_profit,
@@ -3559,8 +4774,21 @@ impl SellMonitor {
                                 peak_value,
                                 "Sell triggered: {}", exit_r
                             );
-                            self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), exit_r).await;
-                            self.record_sell_outcome(profitable, pnl_lamports, pnl_sol, &pool.base_mint.to_string()).await;
+                            self.sell_with_retry(
+                                &pool,
+                                &base_ata,
+                                amount,
+                                position_started.elapsed().as_secs_f64(),
+                                exit_r,
+                            )
+                            .await;
+                            self.record_sell_outcome(
+                                profitable,
+                                pnl_lamports,
+                                pnl_sol,
+                                &pool.base_mint.to_string(),
+                            )
+                            .await;
                             break;
                         }
                     }
@@ -3591,8 +4819,12 @@ impl SellMonitor {
                         let in_loss = prev_value < self.entry_amount_raw;
                         // Hold if we're in a small loss but not yet at the rug floor.
                         above_rug_floor && in_loss
-                    } else { false }
-                } else { false };
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
 
                 if extend_for_recovery {
                     tracing::info!(
@@ -3619,7 +4851,14 @@ impl SellMonitor {
                 if let Ok(balance) = self.rpc.get_token_account_balance(&base_ata).await {
                     let amount: u64 = balance.amount.parse().unwrap_or(0);
                     if amount > 0 {
-                        self.sell_with_retry(&pool, &base_ata, amount, position_started.elapsed().as_secs_f64(), "timeout").await;
+                        self.sell_with_retry(
+                            &pool,
+                            &base_ata,
+                            amount,
+                            position_started.elapsed().as_secs_f64(),
+                            "timeout",
+                        )
+                        .await;
                         // Parallel reserve fetch for PnL estimate.
                         let (qb_res, bb_res) = tokio::join!(
                             self.rpc.get_token_account_balance(&pool.quote_vault),
@@ -3635,7 +4874,13 @@ impl SellMonitor {
                             let lam = -(self.entry_amount_raw as i64 / 50);
                             (lam, lam as f64 / 1e9)
                         };
-                        self.record_sell_outcome(pnl_lam > 0, pnl_lam, pnl_sol, &pool.base_mint.to_string()).await;
+                        self.record_sell_outcome(
+                            pnl_lam > 0,
+                            pnl_lam,
+                            pnl_sol,
+                            &pool.base_mint.to_string(),
+                        )
+                        .await;
                     }
                 }
                 break;
@@ -3705,22 +4950,38 @@ impl SellMonitor {
             let wallet_pk = wallet.pubkey();
             // Try SPL Token close; pump.fun Token-2022 accounts will fail silently.
             let close_ix = match spl_token::instruction::close_account(
-                &spl_token::id(), &base_ata, &wallet_pk, &wallet_pk, &[],
+                &spl_token::id(),
+                &base_ata,
+                &wallet_pk,
+                &wallet_pk,
+                &[],
             ) {
                 Ok(ix) => ix,
-                Err(e) => { tracing::debug!(mint = %mint_str, "ATA close ix build failed: {}", e); return; }
+                Err(e) => {
+                    tracing::debug!(mint = %mint_str, "ATA close ix build failed: {}", e);
+                    return;
+                }
             };
             let blockhash = match rpc.get_latest_blockhash().await {
                 Ok(b) => b,
-                Err(e) => { tracing::debug!(mint = %mint_str, "ATA close: blockhash fetch failed: {}", e); return; }
+                Err(e) => {
+                    tracing::debug!(mint = %mint_str, "ATA close: blockhash fetch failed: {}", e);
+                    return;
+                }
             };
             let msg = solana_sdk::message::Message::new_with_blockhash(
-                &[close_ix], Some(&wallet_pk), &blockhash,
+                &[close_ix],
+                Some(&wallet_pk),
+                &blockhash,
             );
             let tx = solana_sdk::transaction::Transaction::new(&[&*wallet], msg, blockhash);
             match rpc.send_transaction(&tx).await {
-                Ok(sig) => tracing::info!(mint = %mint_str, %sig, "ATA closed — ~0.002 SOL rent reclaimed"),
-                Err(e) => tracing::debug!(mint = %mint_str, "ATA close failed (may be Token-2022): {}", e),
+                Ok(sig) => {
+                    tracing::info!(mint = %mint_str, %sig, "ATA closed — ~0.002 SOL rent reclaimed")
+                }
+                Err(e) => {
+                    tracing::debug!(mint = %mint_str, "ATA close failed (may be Token-2022): {}", e)
+                }
             }
         });
     }
@@ -3728,7 +4989,9 @@ impl SellMonitor {
     /// Atomically append a mint to the blacklist file so it is never bought again.
     fn auto_blacklist_mint(path: &str, mint: &str) {
         let existing = std::fs::read_to_string(path).unwrap_or_default();
-        if existing.lines().any(|l| l.trim() == mint) { return; }
+        if existing.lines().any(|l| l.trim() == mint) {
+            return;
+        }
         let new_content = format!("{}\n{}\n", existing.trim_end(), mint);
         let tmp = format!("{}.tmp", path);
         if std::fs::write(&tmp, &new_content).is_ok() {
@@ -3737,7 +5000,13 @@ impl SellMonitor {
         tracing::warn!(mint = %&mint[..12.min(mint.len())], "🚫 Auto-blacklisted rug mint");
     }
 
-    async fn record_sell_outcome(&self, profitable: bool, pnl_lamports: i64, pnl_sol: f64, mint: &str) {
+    async fn record_sell_outcome(
+        &self,
+        profitable: bool,
+        pnl_lamports: i64,
+        pnl_sol: f64,
+        mint: &str,
+    ) {
         // Auto-blacklist mints that rug us completely — pnl ≤ −0.001 SOL and not profitable.
         // Prevents re-buying the same rugged pool (which caused 32 -100% losses from 14 mints).
         if !profitable && pnl_lamports <= -1_000_000 {
@@ -3748,7 +5017,9 @@ impl SellMonitor {
         {
             let mut history = self.trade_history.lock();
             history.push((profitable, pnl_sol));
-            if history.len() > 20 { history.remove(0); }
+            if history.len() > 20 {
+                history.remove(0);
+            }
         }
 
         // Record PnL to grief-loss circuit breaker
@@ -3771,7 +5042,8 @@ impl SellMonitor {
             use solana_sdk::program_pack::Pack;
             let deployer = match self.rpc.get_account(&mint_pk).await {
                 Ok(mint_acct) => match spl_token::state::Mint::unpack(&mint_acct.data) {
-                    Ok(m) => m.mint_authority
+                    Ok(m) => m
+                        .mint_authority
                         .map(|pk| pk.to_string())
                         .unwrap_or_else(|| mint_pk.to_string()),
                     Err(_) => mint_pk.to_string(),
@@ -3831,10 +5103,12 @@ impl SellMonitor {
         let emoji = if profitable { "✅" } else { "❌" };
         let mint_short = mint[..8.min(mint.len())].to_string();
         tokio::spawn(async move {
-            alerts.send(
-                &format!("{} SELL Confirmed", emoji),
-                &format!("Mint: {}...\nPnL: {:.4} SOL", mint_short, pnl_sol),
-            ).await;
+            alerts
+                .send(
+                    &format!("{} SELL Confirmed", emoji),
+                    &format!("Mint: {}...\nPnL: {:.4} SOL", mint_short, pnl_sol),
+                )
+                .await;
         });
     }
 
@@ -3848,7 +5122,14 @@ impl SellMonitor {
     /// Refreshes the token balance before each round so stale amounts don't
     /// block later rounds. `position_age_secs` is forwarded into the TradeEvent
     /// for the NN observer; pass 0.0 from call sites that don't track entry time.
-    async fn sell_with_retry(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64, exit_reason: &str) {
+    async fn sell_with_retry(
+        &self,
+        pool: &CachedPool,
+        base_ata: &Pubkey,
+        amount: u64,
+        position_age_secs: f64,
+        exit_reason: &str,
+    ) {
         // (delay_before_secs, sell_round passed to do_sell for slippage escalation)
         //
         // Timing tuned for rug-pull dynamics: the critical window is the first 3 s after
@@ -3887,7 +5168,8 @@ impl SellMonitor {
                     pool_score: 0.0,
                     pumpfun_score: 0.0,
                     inflow_rate_sol_per_sec: 0.0,
-                }.append_to_file(TRADES_FILE);
+                }
+                .append_to_file(TRADES_FILE);
                 return;
             }
         }
@@ -3901,10 +5183,10 @@ impl SellMonitor {
         //   round 3 – 2 s wait, min_out=0 (last resort before writing ✗)
         // Total wall-clock budget is now 3 s instead of 12 s.
         let rounds: &[(u64, u32)] = &[
-            (0, 0),   // immediate, normal slippage
-            (0, 1),   // immediate, 2× slippage
-            (1, 2),   // 1 s wait, min_out=0
-            (2, 2),   // 2 s wait, min_out=0 final attempt
+            (0, 0), // immediate, normal slippage
+            (0, 1), // immediate, 2× slippage
+            (1, 2), // 1 s wait, min_out=0
+            (2, 2), // 2 s wait, min_out=0 final attempt
         ];
 
         let mut current_amount = amount;
@@ -3921,7 +5203,17 @@ impl SellMonitor {
                 }
                 current_amount = fresh;
             }
-            match self.do_sell(pool, base_ata, current_amount, position_age_secs, *sell_round, exit_reason).await {
+            match self
+                .do_sell(
+                    pool,
+                    base_ata,
+                    current_amount,
+                    position_age_secs,
+                    *sell_round,
+                    exit_reason,
+                )
+                .await
+            {
                 Ok(()) => return,
                 Err(e) => {
                     let is_last = round_idx + 1 >= rounds.len();
@@ -3943,11 +5235,22 @@ impl SellMonitor {
     ///   0 = normal slippage (`config.sell_slippage_pct`)
     ///   1 = 2× slippage (wider tolerance on retries)
     ///   2+ = min_out=0 (accept any price — last resort)
-    async fn do_sell(&self, pool: &CachedPool, base_ata: &Pubkey, amount: u64, position_age_secs: f64, sell_round: u32, exit_reason: &str) -> Result<()> {
+    async fn do_sell(
+        &self,
+        pool: &CachedPool,
+        base_ata: &Pubkey,
+        amount: u64,
+        position_age_secs: f64,
+        sell_round: u32,
+        exit_reason: &str,
+    ) -> Result<()> {
         use scematica_core::token::apply_slippage;
 
         // Limit concurrent sell transactions to avoid 429 RPC hammering
-        let _permit = self.sell_sem.acquire().await
+        let _permit = self
+            .sell_sem
+            .acquire()
+            .await
             .map_err(|_| anyhow::anyhow!("sell semaphore closed"))?;
 
         self.metrics.record_trade_attempt();
@@ -4001,7 +5304,8 @@ impl SellMonitor {
                 pool_score: 0.0,
                 pumpfun_score: 0.0,
                 inflow_rate_sol_per_sec: 0.0,
-            }.append_to_file(TRADES_FILE);
+            }
+            .append_to_file(TRADES_FILE);
             return Ok(());
         }
 
@@ -4045,31 +5349,32 @@ impl SellMonitor {
             );
         }
 
-        let swap_ixs = self.raydium_builder.build_swap(
-            &pool.id,
-            &wallet_pubkey,
-            &pool.base_mint,
-            &self.quote_mint,
-            base_ata,
-            &quote_ata,
-            amount,
-            min_out,
-        ).await?;
+        let swap_ixs = self
+            .raydium_builder
+            .build_swap(
+                &pool.id,
+                &wallet_pubkey,
+                &pool.base_mint,
+                &self.quote_mint,
+                base_ata,
+                &quote_ata,
+                amount,
+                min_out,
+            )
+            .await?;
 
         let mut ixs = pre_ixs;
         ixs.extend(swap_ixs);
 
         // After selling base → WSOL, close the WSOL ATA to unwrap back to native SOL.
         if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
-            ixs.push(
-                spl_token::instruction::close_account(
-                    &spl_token::id(),
-                    &quote_ata,
-                    &wallet_pubkey,
-                    &wallet_pubkey,
-                    &[],
-                )?
-            );
+            ixs.push(spl_token::instruction::close_account(
+                &spl_token::id(),
+                &quote_ata,
+                &wallet_pubkey,
+                &wallet_pubkey,
+                &[],
+            )?);
         }
 
         let mut attempt = 0u32;
@@ -4081,27 +5386,34 @@ impl SellMonitor {
                 retries = self.config.max_sell_retries,
                 "Sell attempt"
             );
-            match self.executor.execute(ixs.clone(), &self.wallet, &self.rpc).await {
+            match self
+                .executor
+                .execute(ixs.clone(), &self.wallet, &self.rpc)
+                .await
+            {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
 
                     // Fetch actual received amount from quote ATA for accurate pnl.
                     // quote_ata was recreated before the swap (idempotent) and holds the
                     // swap output. Falls back to estimated_out if the RPC call fails.
-                    let actual_received: u64 = if let Ok(qb) = self.rpc.get_token_account_balance(&quote_ata).await {
-                        let observed = qb.amount.parse::<u64>().unwrap_or(estimated_out);
-                        if observed == 0 && estimated_out > 0 {
-                            estimated_out
+                    let actual_received: u64 =
+                        if let Ok(qb) = self.rpc.get_token_account_balance(&quote_ata).await {
+                            let observed = qb.amount.parse::<u64>().unwrap_or(estimated_out);
+                            if observed == 0 && estimated_out > 0 {
+                                estimated_out
+                            } else {
+                                observed
+                            }
                         } else {
-                            observed
-                        }
-                    } else {
-                        estimated_out
-                    };
+                            estimated_out
+                        };
                     let pnl_raw = actual_received as i64 - self.entry_amount_raw as i64;
                     let pnl_pct = if self.entry_amount_raw > 0 {
                         pnl_raw as f64 / self.entry_amount_raw as f64 * 100.0
-                    } else { 0.0 };
+                    } else {
+                        0.0
+                    };
                     TradeEvent {
                         timestamp: chrono::Utc::now(),
                         kind: "SELL".into(),
@@ -4123,7 +5435,8 @@ impl SellMonitor {
                         pool_score: 0.0,
                         pumpfun_score: 0.0,
                         inflow_rate_sol_per_sec: 0.0,
-                    }.append_to_file(TRADES_FILE);
+                    }
+                    .append_to_file(TRADES_FILE);
 
                     return Ok(());
                 }
@@ -4141,8 +5454,7 @@ impl SellMonitor {
                     // back — common on thin pump.fun pools where price moves >20% during the
                     // 6s window). Without the timeout branch, we'd burn all 5 retries on a
                     // tx the leader keeps dropping.
-                    let is_slippage_or_timeout =
-                        err.contains("0x26")
+                    let is_slippage_or_timeout = err.contains("0x26")
                         || err.contains("timeout after")
                         || err.contains("slippage");
                     if is_slippage_or_timeout && !tried_zero_slippage {
@@ -4151,7 +5463,9 @@ impl SellMonitor {
                         // landed but we missed the confirmation, we'd be trying to sell
                         // zero tokens. A fresh read here prevents a "no tokens to sell"
                         // fail-loop that burns remaining retries uselessly.
-                        let live_amount = if let Ok(bal) = self.rpc.get_token_account_balance(base_ata).await {
+                        let live_amount = if let Ok(bal) =
+                            self.rpc.get_token_account_balance(base_ata).await
+                        {
                             let fresh = bal.amount.parse::<u64>().unwrap_or(0);
                             if fresh == 0 {
                                 tracing::info!(mint = %pool.base_mint, "Token already fully sold (zero-slippage rebuild) — exiting");
@@ -4159,19 +5473,23 @@ impl SellMonitor {
                             }
                             fresh
                         } else {
-                            amount  // RPC failed — use original amount conservatively
+                            amount // RPC failed — use original amount conservatively
                         };
                         tracing::warn!(mint = %pool.base_mint, error = %err, live_amount, "Slippage/timeout — rebuilding sell with min_out=0");
-                        if let Ok(swap_rebuilt) = self.raydium_builder.build_swap(
-                            &pool.id,
-                            &wallet_pubkey,
-                            &pool.base_mint,
-                            &self.quote_mint,
-                            base_ata,
-                            &quote_ata,
-                            live_amount,
-                            0,
-                        ).await {
+                        if let Ok(swap_rebuilt) = self
+                            .raydium_builder
+                            .build_swap(
+                                &pool.id,
+                                &wallet_pubkey,
+                                &pool.base_mint,
+                                &self.quote_mint,
+                                base_ata,
+                                &quote_ata,
+                                live_amount,
+                                0,
+                            )
+                            .await
+                        {
                             let mut rebuilt: Vec<solana_sdk::instruction::Instruction> = Vec::new();
                             if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
                                 rebuilt.push(
@@ -4185,7 +5503,11 @@ impl SellMonitor {
                             rebuilt.extend(swap_rebuilt);
                             if self.quote_mint == scematica_core::types::known_tokens::WSOL_MINT {
                                 if let Ok(close_ix) = spl_token::instruction::close_account(
-                                    &spl_token::id(), &quote_ata, &wallet_pubkey, &wallet_pubkey, &[],
+                                    &spl_token::id(),
+                                    &quote_ata,
+                                    &wallet_pubkey,
+                                    &wallet_pubkey,
+                                    &[],
                                 ) {
                                     rebuilt.push(close_ix);
                                 }
@@ -4216,7 +5538,7 @@ impl SellMonitor {
             signature: String::new(),
             dex: "Raydium".into(),
             hops: 1,
-            pnl_pct: -100.0,           // total loss signal for the NN agent
+            pnl_pct: -100.0, // total loss signal for the NN agent
             position_age_secs,
             exit_reason: exit_reason.to_string(),
             pool_size_sol: 0.0,
@@ -4226,8 +5548,13 @@ impl SellMonitor {
             pool_score: 0.0,
             pumpfun_score: 0.0,
             inflow_rate_sol_per_sec: 0.0,
-        }.append_to_file(TRADES_FILE);
+        }
+        .append_to_file(TRADES_FILE);
 
-        anyhow::bail!("sell exhausted {} retries for {}", self.config.max_sell_retries, pool.base_mint)
+        anyhow::bail!(
+            "sell exhausted {} retries for {}",
+            self.config.max_sell_retries,
+            pool.base_mint
+        )
     }
 }

@@ -1,14 +1,22 @@
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Default path for the shared metrics file
 pub const METRICS_FILE: &str = "scematica-metrics.json";
 
 /// Default path for the append-only trade event log
 pub const TRADES_FILE: &str = "scematica-trades.jsonl";
+
+/// Append-only pool evaluation ledger. Records accepted and rejected pools with
+/// the exact signal snapshot that produced the decision.
+pub const POOL_DECISIONS_FILE: &str = "scematica-pool-decisions.jsonl";
+
+/// Append-only transaction execution telemetry. Records latency, retry, fee,
+/// and error-shape data for buy/sell/arb execution quality analysis.
+pub const TX_TELEMETRY_FILE: &str = "scematica-tx-telemetry.jsonl";
 
 /// Default path for the strategy agent snapshot file
 pub const STRATEGY_FILE: &str = "scematica-strategy.json";
@@ -146,6 +154,96 @@ impl TradeEvent {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolDecisionEvent {
+    pub timestamp: DateTime<Utc>,
+    pub mint: String,
+    pub pool: String,
+    pub quote_mint: String,
+    /// "accepted" | "rejected" | "ignored"
+    pub decision: String,
+    /// Gate or subsystem that made the decision.
+    pub stage: String,
+    /// Human-readable reason. Kept compact for dashboard/API rendering.
+    pub reason: String,
+    pub pool_size_sol: f64,
+    pub pool_age_secs: f64,
+    pub velocity_sol_per_sec: f64,
+    pub buy_pressure_ratio: f64,
+    pub pool_score: f64,
+    pub pumpfun_score: f64,
+    pub inflow_rate_sol_per_sec: f64,
+    pub high_speed: bool,
+    pub dex_boosted: bool,
+    pub dex_boost_usd: f64,
+    pub social_count: u8,
+    /// Score floor active at the decision point. 0.0 when not applicable.
+    pub effective_min_score: f64,
+    pub dq_action: String,
+    pub dq_confidence: f64,
+    pub utc_hour: u8,
+}
+
+impl PoolDecisionEvent {
+    pub fn append_to_file(&self, path: &str) {
+        use std::io::Write;
+        if let Ok(mut json) = serde_json::to_string(self) {
+            json.push('\n');
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = file.write_all(json.as_bytes());
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxTelemetryEvent {
+    pub timestamp: DateTime<Utc>,
+    /// "default" | "jito" | future executor name.
+    pub executor: String,
+    /// Heuristic label: "buy" | "sell" | "unknown".
+    pub tx_kind: String,
+    pub signature: String,
+    pub confirmed: bool,
+    pub error: String,
+    pub attempts: u32,
+    pub instruction_count: usize,
+    pub compute_unit_limit: u32,
+    pub compute_unit_price: u64,
+    pub compute_unit_price_hard_cap: u64,
+    pub loaded_accounts_data_size_limit: u32,
+    pub skip_preflight: bool,
+    pub high_speed: bool,
+    pub elapsed_ms: u64,
+    pub blockhash_fetch_ms_total: u64,
+    pub send_confirm_ms_total: u64,
+    pub retry_delay_ms_total: u64,
+    pub timeout_count: u32,
+    pub rate_limit_count: u32,
+    pub slippage_error_count: u32,
+    pub blockhash_error_count: u32,
+}
+
+impl TxTelemetryEvent {
+    pub fn append_to_file(&self, path: &str) {
+        use std::io::Write;
+        if let Ok(mut json) = serde_json::to_string(self) {
+            json.push('\n');
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = file.write_all(json.as_bytes());
+            }
+        }
+    }
+}
+
 /// Global bot metrics, updated atomically during operation
 #[derive(Debug, Default)]
 pub struct BotMetrics {
@@ -172,7 +270,8 @@ impl BotMetrics {
 
     pub fn record_trade_confirmed(&self, pnl_lamports: i64) {
         self.trades_confirmed.fetch_add(1, Ordering::Relaxed);
-        self.total_pnl_lamports.fetch_add(pnl_lamports, Ordering::Relaxed);
+        self.total_pnl_lamports
+            .fetch_add(pnl_lamports, Ordering::Relaxed);
     }
 
     pub fn record_trade_failed(&self) {
@@ -192,7 +291,9 @@ impl BotMetrics {
     }
 
     pub fn snapshot(&self) -> MetricsSnapshot {
-        let uptime_secs = self.start_time.read()
+        let uptime_secs = self
+            .start_time
+            .read()
             .map(|t| (Utc::now() - t).num_seconds() as u64)
             .unwrap_or(0);
 

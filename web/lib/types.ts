@@ -52,6 +52,56 @@ export interface Trade {
   position_age_secs: number
 }
 
+export interface PoolDecision {
+  timestamp: string
+  mint: string
+  pool: string
+  quote_mint: string
+  decision: 'accepted' | 'rejected' | 'ignored' | string
+  stage: string
+  reason: string
+  pool_size_sol: number
+  pool_age_secs: number
+  velocity_sol_per_sec: number
+  buy_pressure_ratio: number
+  pool_score: number
+  pumpfun_score: number
+  inflow_rate_sol_per_sec: number
+  high_speed: boolean
+  dex_boosted: boolean
+  dex_boost_usd: number
+  social_count: number
+  effective_min_score: number
+  dq_action: string
+  dq_confidence: number
+  utc_hour: number
+}
+
+export interface TxTelemetry {
+  timestamp: string
+  executor: string
+  tx_kind: 'buy' | 'sell' | 'unknown' | string
+  signature: string
+  confirmed: boolean
+  error: string
+  attempts: number
+  instruction_count: number
+  compute_unit_limit: number
+  compute_unit_price: number
+  compute_unit_price_hard_cap: number
+  loaded_accounts_data_size_limit: number
+  skip_preflight: boolean
+  high_speed: boolean
+  elapsed_ms: number
+  blockhash_fetch_ms_total: number
+  send_confirm_ms_total: number
+  retry_delay_ms_total: number
+  timeout_count: number
+  rate_limit_count: number
+  slippage_error_count: number
+  blockhash_error_count: number
+}
+
 export interface HealthStatus {
   api: string
   sniper_running: boolean

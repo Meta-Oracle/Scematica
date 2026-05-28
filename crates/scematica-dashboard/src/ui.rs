@@ -12,7 +12,10 @@ use ratatui::{
     Frame,
 };
 use scematica_core::types::known_tokens;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 #[allow(dead_code)]
 const SCEMATICA_LOGO: &str = r#"
@@ -26,8 +29,15 @@ const SCEMATICA_LOGO: &str = r#"
 
 static SPINNER: OnceLock<Mutex<LoaderSpinner>> = OnceLock::new();
 
-const TAB_TITLES: [&str; DASHBOARD_TAB_COUNT] =
-    ["Overview", "Trades", "Logs", "Config", "Chat", "Radar"];
+const TAB_TITLES: [&str; DASHBOARD_TAB_COUNT] = [
+    "Overview",
+    "Trades",
+    "Logs",
+    "Config",
+    "Chat",
+    "Radar",
+    "Intelligence",
+];
 const MIN_TERMINAL_WIDTH: u16 = 52;
 const MIN_TERMINAL_HEIGHT: u16 = 12;
 
@@ -133,6 +143,7 @@ pub fn render(f: &mut Frame, state: &Arc<AppState>) {
         3 => render_config(f, content_area, state),
         4 => render_chat(f, content_area, state),
         5 => render_radar(f, content_area, state),
+        6 => render_intelligence(f, content_area, state),
         _ => {}
     }
 
@@ -842,46 +853,84 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
     if let Some(v) = &*nn {
         let epsilon = v["epsilon"].as_f64().unwrap_or(1.0);
         let steps = v["step_count"].as_u64().unwrap_or(0);
+        let train_steps = v["train_steps"].as_u64().unwrap_or(0);
         let replay = v["replay_size"].as_u64().unwrap_or(0);
         let loss = v["avg_loss"].as_f64().unwrap_or(0.0);
         let reward = v["total_reward"].as_f64().unwrap_or(0.0);
+        let target_updates = v["target_updates"].as_u64().unwrap_or(0);
         let ready = v["ready_to_advise"].as_bool().unwrap_or(false);
         let last_act = v["last_action"].as_str().unwrap_or("-").to_string();
-        let ready_str = if ready { "YES" } else { "NO" };
-        let ready_col = if ready { Color::Green } else { Color::Yellow };
+        let q_vals: Vec<f64> = if let Some(arr) = v["last_q_values"].as_array() {
+            arr.iter().filter_map(|x| x.as_f64()).collect()
+        } else {
+            Vec::new()
+        };
+        let has_signal = q_vals.iter().any(|q| q.is_finite() && q.abs() > 1e-9);
+        let q_min = q_vals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let q_max = q_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let q_spread = if q_vals.is_empty() {
+            0.0
+        } else {
+            q_max - q_min
+        };
+        let sum_abs: f64 = q_vals.iter().map(|q| q.abs()).sum();
+        let confidence = if sum_abs > 1e-9 {
+            q_vals.iter().map(|q| q.abs()).fold(0.0, f64::max) / sum_abs
+        } else {
+            0.0
+        };
+        let policy = if epsilon >= 0.50 {
+            "explore"
+        } else if epsilon >= 0.10 {
+            "mixed"
+        } else {
+            "exploit"
+        };
+        let (status, status_col) = if ready {
+            ("ADVISING", Color::Green)
+        } else if train_steps < 500 {
+            ("TRAINING", Color::Yellow)
+        } else if !has_signal {
+            ("NO Q SIGNAL", Color::LightRed)
+        } else {
+            ("WARMUP", Color::Yellow)
+        };
 
         let rows = vec![
             Row::new(vec![
-                Cell::from("eps / Steps").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:.4}  /  {}", epsilon, steps)),
+                Cell::from("Status").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{} ({})", status, policy))
+                    .style(Style::default().fg(status_col).add_modifier(Modifier::BOLD)),
             ]),
             Row::new(vec![
-                Cell::from("Replay / Loss").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{}  /  {:.6}", replay, loss)),
+                Cell::from("Steps / Train").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{} / {}", steps, train_steps)),
             ]),
             Row::new(vec![
-                Cell::from("Total Reward").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:.2}", reward)),
+                Cell::from("Replay / Target").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{} / {}", replay, target_updates)),
+            ]),
+            Row::new(vec![
+                Cell::from("Epsilon").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.4}", epsilon)),
+            ]),
+            Row::new(vec![
+                Cell::from("Reward / Loss").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.2} / {:.4}", reward, loss)),
+            ]),
+            Row::new(vec![
+                Cell::from("Q Spread / Conf").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:.4} / {:.1}%", q_spread, confidence * 100.0)),
             ]),
             Row::new(vec![
                 Cell::from("Last Action").style(Style::default().fg(Color::DarkGray)),
                 Cell::from(last_act),
-            ]),
-            Row::new(vec![
-                Cell::from("Advising").style(Style::default().fg(Color::DarkGray)),
-                Cell::from(ready_str).style(Style::default().fg(ready_col)),
             ]),
         ];
         let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)]).block(block);
         f.render_widget(table, stats_area);
 
         // Q-value bar chart — one bar per action, width proportional to Q-value
-        let q_vals: Vec<f64> = if let Some(arr) = v["last_q_values"].as_array() {
-            arr.iter().filter_map(|x| x.as_f64()).collect()
-        } else {
-            Vec::new()
-        };
-
         if let Some(q_area) = q_area {
             let q_block = Block::default()
                 .title(" Q-values ")
@@ -889,8 +938,6 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 .border_style(Style::default().fg(Color::DarkGray));
 
             if !q_vals.is_empty() {
-                let q_min = q_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-                let q_max = q_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 let q_range = (q_max - q_min).max(1.0);
                 let max_action = q_vals
                     .iter()
@@ -943,6 +990,446 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 .border_style(Style::default().fg(Color::DarkGray));
             f.render_widget(q_block, q_area);
         }
+    }
+}
+
+fn render_intelligence(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    if area.width < 118 || area.height < 30 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(12),
+                Constraint::Length(9),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        render_nn_stats(f, chunks[0], state);
+        render_dq_advice(f, chunks[1], state);
+        render_pool_decision_ledger(f, chunks[2], state);
+        return;
+    }
+
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(15), Constraint::Min(0)])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(36),
+            Constraint::Percentage(32),
+            Constraint::Percentage(32),
+        ])
+        .split(vertical[0]);
+    render_nn_stats(f, top[0], state);
+    render_dq_advice(f, top[1], state);
+    render_pool_decision_summary(f, top[2], state);
+
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(vertical[1]);
+    render_pool_decision_ledger(f, bottom[0], state);
+    render_tx_telemetry(f, bottom[1], state);
+}
+
+fn render_dq_advice(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let advice = state.nn_advice.read();
+    let block = Block::default()
+        .title(" DQ* Current Advice ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let Some(v) = &*advice else {
+        let p = Paragraph::new(
+            "No advice snapshot yet. The sniper writes this after a DQ* entry evaluation.",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true })
+        .block(block);
+        f.render_widget(p, area);
+        return;
+    };
+
+    let action = v["action"].as_str().unwrap_or("-");
+    let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+    let reason = sanitize_display(v["top_reason"].as_str().unwrap_or("-"));
+    let action_col = match action {
+        "BuyAggressive" | "BuyStandard" => Color::Green,
+        "Hold" => Color::Yellow,
+        "SellPartial" | "SellAll" => Color::Red,
+        _ => Color::DarkGray,
+    };
+
+    let mut rows = vec![
+        Row::new(vec![
+            Cell::from("Action").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(action.to_string())
+                .style(Style::default().fg(action_col).add_modifier(Modifier::BOLD)),
+        ]),
+        Row::new(vec![
+            Cell::from("Confidence").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.1}%", confidence * 100.0)),
+        ]),
+        Row::new(vec![
+            Cell::from("Reason").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(truncate_cell(
+                &reason,
+                area.width.saturating_sub(16) as usize,
+            )),
+        ]),
+    ];
+
+    if let Some(q_values) = v["q_values"].as_array() {
+        rows.push(Row::new(vec![
+            Cell::from("Q Vector").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{} actions", q_values.len())),
+        ]));
+        for item in q_values.iter().take(5) {
+            let label = item
+                .as_array()
+                .and_then(|arr| arr.get(0))
+                .and_then(|x| x.as_str())
+                .unwrap_or("-");
+            let q = item
+                .as_array()
+                .and_then(|arr| arr.get(1))
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
+            rows.push(Row::new(vec![
+                Cell::from(format!("  {}", label)).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:+.4}", q)),
+            ]));
+        }
+    }
+
+    let table = Table::new(rows, [Constraint::Length(13), Constraint::Min(0)]).block(block);
+    f.render_widget(table, area);
+}
+
+fn render_pool_decision_summary(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let decisions = state.pool_decisions.read();
+    let block = Block::default()
+        .title(" Pool Selection Pulse ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if decisions.is_empty() {
+        let p = Paragraph::new("No pool decision ledger yet. Restart the sniper to populate scematica-pool-decisions.jsonl.")
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: true })
+            .block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    let total = decisions.len() as f64;
+    let accepted = decisions
+        .iter()
+        .filter(|d| d.decision == "accepted")
+        .count();
+    let rejected = decisions
+        .iter()
+        .filter(|d| d.decision == "rejected")
+        .count();
+    let ignored = decisions.iter().filter(|d| d.decision == "ignored").count();
+    let avg_score = {
+        let scored: Vec<f64> = decisions
+            .iter()
+            .filter(|d| d.pool_score > 0.0)
+            .map(|d| d.pool_score)
+            .collect();
+        if scored.is_empty() {
+            0.0
+        } else {
+            scored.iter().sum::<f64>() / scored.len() as f64
+        }
+    };
+    let avg_inflow = {
+        let with_inflow: Vec<f64> = decisions
+            .iter()
+            .filter(|d| d.inflow_rate_sol_per_sec > 0.0)
+            .map(|d| d.inflow_rate_sol_per_sec)
+            .collect();
+        if with_inflow.is_empty() {
+            0.0
+        } else {
+            with_inflow.iter().sum::<f64>() / with_inflow.len() as f64
+        }
+    };
+    let mut stages: HashMap<String, usize> = HashMap::new();
+    for d in decisions.iter().filter(|d| d.decision != "accepted") {
+        *stages.entry(d.stage.clone()).or_insert(0) += 1;
+    }
+    let mut stage_counts: Vec<_> = stages.into_iter().collect();
+    stage_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_stage = stage_counts
+        .first()
+        .map(|(stage, count)| format!("{} ({})", stage, count))
+        .unwrap_or_else(|| "-".to_string());
+    let latest = decisions.front().expect("non-empty decisions");
+
+    let rows = vec![
+        Row::new(vec![
+            Cell::from("Window").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{} decisions", decisions.len())),
+        ]),
+        Row::new(vec![
+            Cell::from("Accept Rate").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.1}%", accepted as f64 / total * 100.0))
+                .style(Style::default().fg(Color::Green)),
+        ]),
+        Row::new(vec![
+            Cell::from("Rejected/Ign").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{} / {}", rejected, ignored)),
+        ]),
+        Row::new(vec![
+            Cell::from("Avg Score").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.1}", avg_score)),
+        ]),
+        Row::new(vec![
+            Cell::from("Avg Inflow").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.3} SOL/s", avg_inflow)),
+        ]),
+        Row::new(vec![
+            Cell::from("Top Reject").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(top_stage),
+        ]),
+        Row::new(vec![
+            Cell::from("Latest").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{} / {}", latest.decision, latest.stage)),
+        ]),
+    ];
+    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(0)]).block(block);
+    f.render_widget(table, area);
+}
+
+fn render_pool_decision_ledger(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let decisions = state.pool_decisions.read();
+    let block = Block::default()
+        .title(" Pool Decision Ledger ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if decisions.is_empty() {
+        let p = Paragraph::new("No accepted/rejected pool decisions have been observed yet.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    let compact = area.width < 96;
+    let rows: Vec<Row> = decisions
+        .iter()
+        .take(area.height.saturating_sub(3) as usize)
+        .map(|d| {
+            let col = match d.decision.as_str() {
+                "accepted" => Color::Green,
+                "rejected" => Color::LightRed,
+                "ignored" => Color::DarkGray,
+                _ => Color::Yellow,
+            };
+            let reason = truncate_cell(&sanitize_display(&d.reason), if compact { 26 } else { 44 });
+            if compact {
+                Row::new(vec![
+                    Cell::from(d.timestamp.format("%H:%M:%S").to_string()),
+                    Cell::from(d.decision.clone()).style(Style::default().fg(col)),
+                    Cell::from(d.stage.clone()),
+                    Cell::from(format!("{:.0}/{:.0}", d.pool_score, d.effective_min_score)),
+                    Cell::from(reason),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(d.timestamp.format("%H:%M:%S").to_string()),
+                    Cell::from(d.decision.clone()).style(Style::default().fg(col)),
+                    Cell::from(d.stage.clone()),
+                    Cell::from(format!("{:.1}", d.pool_score)),
+                    Cell::from(format!("{:.1}", d.pool_size_sol)),
+                    Cell::from(format!("{:.3}", d.inflow_rate_sol_per_sec)),
+                    Cell::from(format!("{:.1}", d.pumpfun_score)),
+                    Cell::from(reason),
+                ])
+            }
+        })
+        .collect();
+
+    let (headers, widths) = if compact {
+        (
+            vec![
+                header_cell("Time"),
+                header_cell("Decision"),
+                header_cell("Stage"),
+                header_cell("Score"),
+                header_cell("Reason"),
+            ],
+            vec![
+                Constraint::Length(8),
+                Constraint::Length(9),
+                Constraint::Length(16),
+                Constraint::Length(8),
+                Constraint::Min(18),
+            ],
+        )
+    } else {
+        (
+            vec![
+                header_cell("Time"),
+                header_cell("Decision"),
+                header_cell("Stage"),
+                header_cell("Score"),
+                header_cell("SOL"),
+                header_cell("Inflow"),
+                header_cell("PF"),
+                header_cell("Reason"),
+            ],
+            vec![
+                Constraint::Length(8),
+                Constraint::Length(9),
+                Constraint::Length(17),
+                Constraint::Length(7),
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Length(6),
+                Constraint::Min(24),
+            ],
+        )
+    };
+
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers))
+        .block(block)
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    f.render_widget(table, area);
+}
+
+fn render_tx_telemetry(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
+    let telemetry = state.tx_telemetry.read();
+    let block = Block::default()
+        .title(" Execution Quality ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if telemetry.is_empty() {
+        let p = Paragraph::new(
+            "No tx telemetry yet. Buy/sell executions will appear here after the sniper restarts.",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true })
+        .block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    let total = telemetry.len() as f64;
+    let confirmed = telemetry.iter().filter(|t| t.confirmed).count();
+    let avg_ms = telemetry.iter().map(|t| t.elapsed_ms as f64).sum::<f64>() / total;
+    let rate_limits: u32 = telemetry.iter().map(|t| t.rate_limit_count).sum();
+    let slippage: u32 = telemetry.iter().map(|t| t.slippage_error_count).sum();
+    let timeouts: u32 = telemetry.iter().map(|t| t.timeout_count).sum();
+    let latest = telemetry.front().expect("non-empty telemetry");
+
+    let rows = vec![
+        Row::new(vec![
+            Cell::from("Confirm Rate").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.1}%", confirmed as f64 / total * 100.0))
+                .style(Style::default().fg(Color::Green)),
+        ]),
+        Row::new(vec![
+            Cell::from("Avg Latency").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{:.0} ms", avg_ms)),
+        ]),
+        Row::new(vec![
+            Cell::from("429 / Timeout").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!("{} / {}", rate_limits, timeouts)),
+        ]),
+        Row::new(vec![
+            Cell::from("Slippage Err").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(slippage.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("Latest").style(Style::default().fg(Color::DarkGray)),
+            Cell::from(format!(
+                "{} {}ms {}",
+                latest.tx_kind,
+                latest.elapsed_ms,
+                if latest.confirmed { "ok" } else { "fail" }
+            )),
+        ]),
+    ];
+
+    if area.height < 12 {
+        let table = Table::new(rows, [Constraint::Length(14), Constraint::Min(0)]).block(block);
+        f.render_widget(table, area);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(0)])
+        .split(area);
+    let table = Table::new(rows, [Constraint::Length(14), Constraint::Min(0)]).block(block);
+    f.render_widget(table, chunks[0]);
+
+    let recent_rows: Vec<Row> = telemetry
+        .iter()
+        .take(chunks[1].height.saturating_sub(3) as usize)
+        .map(|t| {
+            let col = if t.confirmed {
+                Color::Green
+            } else {
+                Color::LightRed
+            };
+            Row::new(vec![
+                Cell::from(t.timestamp.format("%H:%M:%S").to_string()),
+                Cell::from(t.tx_kind.clone()),
+                Cell::from(format!("{}ms", t.elapsed_ms)).style(Style::default().fg(col)),
+                Cell::from(format!(
+                    "r{} s{} t{}",
+                    t.rate_limit_count, t.slippage_error_count, t.timeout_count
+                )),
+            ])
+        })
+        .collect();
+    let recent = Table::new(
+        recent_rows,
+        [
+            Constraint::Length(8),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Min(10),
+        ],
+    )
+    .header(Row::new(vec![
+        header_cell("Time"),
+        header_cell("Kind"),
+        header_cell("Latency"),
+        header_cell("Errors"),
+    ]))
+    .block(
+        Block::default()
+            .title(" Recent Tx ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(recent, chunks[1]);
+}
+
+fn truncate_cell(value: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+
+    let char_count = value.chars().count();
+    if char_count <= max {
+        return value.to_string();
+    }
+
+    if max <= 3 {
+        ".".repeat(max)
+    } else {
+        let prefix: String = value.chars().take(max - 3).collect();
+        format!("{prefix}...")
     }
 }
 
@@ -1841,6 +2328,7 @@ fn render_footer(f: &mut Frame, area: Rect, current_tab: usize) {
         3 => " [s/a/b/x] Bot  [1-8] Rate  [g] Growth  [j] Builder  [k] SuperBld  [o] Off  [Up/Down] Scroll  [Tab] Switch  [q] Quit ",
         4 => " [Enter] Send  [Backspace] Delete  [y/n] Confirm/Reject  [Tab] Switch tab  [Esc] Quit ",
         5 => " Pool Radar - live scatter of evaluated pools (last 5 min)  [Tab] Switch tab  [q] Quit ",
+        6 => " Intelligence - Deep Q* agent, pool decisions, tx telemetry  [Tab] Switch tab  [q] Quit ",
         _ => " [Tab] Switch tab  [q] Quit  [Left/Right] Navigate ",
     };
     let footer = Paragraph::new(hint)
@@ -2118,7 +2606,7 @@ mod tests {
     fn render_handles_common_and_constrained_sizes() {
         let state = test_state();
         for (width, height) in [(160, 48), (120, 32), (80, 24), (52, 12), (40, 10)] {
-            for tab in 0..=DASHBOARD_TAB_COUNT {
+            for tab in 0..DASHBOARD_TAB_COUNT {
                 *state.selected_tab.write() = tab;
                 let backend = TestBackend::new(width, height);
                 let mut terminal = Terminal::new(backend).expect("test terminal");

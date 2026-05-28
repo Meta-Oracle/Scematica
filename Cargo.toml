@@ -11,6 +11,7 @@ members = [
     "crates/scematica-protocol",
     "tools/key-converter",
     "tools/pool-seeder",
+    "agent-playground",
 ]
 # The on-chain program uses Anchor and must be built separately with `anchor build`
 exclude = [

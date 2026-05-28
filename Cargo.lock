@@ -55,6 +55,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-playground"
+version = "1.8.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap 4.6.1",
+ "crossterm",
+ "futures",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

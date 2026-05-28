@@ -507,6 +507,11 @@ async fn main() -> Result<()> {
                     }
                     state.poll_filter_stats_file();
                     state.poll_nn_stats_file();
+                    state.poll_nn_advice_file();
+                    state.poll_tournament_file();
+                    state.poll_deployer_reputation_file();
+                    state.poll_pool_decision_file();
+                    state.poll_tx_telemetry_file();
                     state.poll_radar_file();
                     state.poll_live_positions_file();
                     state.sync_live_data();

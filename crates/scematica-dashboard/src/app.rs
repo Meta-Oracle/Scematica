@@ -6,8 +6,8 @@ use parking_lot::RwLock;
 use scematica_ai::chat_types::PendingToolCall;
 use scematica_ai::tool_dispatcher::LiveData;
 use scematica_core::metrics::{
-    BotMetrics, MetricsSnapshot, StrategySnapshot, TradeEvent, METRICS_FILE, STRATEGY_FILE,
-    TRADES_FILE,
+    BotMetrics, MetricsSnapshot, PoolDecisionEvent, StrategySnapshot, TradeEvent, TxTelemetryEvent,
+    METRICS_FILE, POOL_DECISIONS_FILE, STRATEGY_FILE, TRADES_FILE, TX_TELEMETRY_FILE,
 };
 use scematica_core::rpc::RpcConnection;
 use serde::{Deserialize, Serialize};
@@ -18,12 +18,16 @@ use std::sync::Arc;
 const MAX_LOG_LINES: usize = 200;
 /// Maximum number of trade history entries
 const MAX_TRADES: usize = 100;
+/// Maximum number of pool decision ledger entries held for the TUI.
+const MAX_POOL_DECISIONS: usize = 160;
+/// Maximum number of tx telemetry events held for the TUI.
+const MAX_TX_TELEMETRY: usize = 120;
 /// Number of PnL data points to keep for the sparkline
 const SPARKLINE_CAPACITY: usize = 60;
 /// Max age of radar pool entries (5 minutes)
 const RADAR_MAX_AGE_SECS: i64 = 300;
 /// Number of top-level dashboard tabs rendered by the TUI.
-pub const DASHBOARD_TAB_COUNT: usize = 6;
+pub const DASHBOARD_TAB_COUNT: usize = 7;
 
 #[derive(Debug, Clone)]
 pub struct TradeEntry {
@@ -191,6 +195,16 @@ pub struct AppState {
     pub filter_stats: RwLock<Option<serde_json::Value>>,
     /// Latest NN agent stats from scematica-nn-stats.json
     pub nn_stats: RwLock<Option<serde_json::Value>>,
+    /// Latest Deep Q* advice/explanation from scematica-nn-advice.json.
+    pub nn_advice: RwLock<Option<serde_json::Value>>,
+    /// Recent pool decision events from scematica-pool-decisions.jsonl.
+    pub pool_decisions: RwLock<VecDeque<PoolDecisionEvent>>,
+    /// Byte offset into the pool decision JSONL file.
+    pub pool_decision_file_offset: RwLock<u64>,
+    /// Recent transaction execution telemetry from scematica-tx-telemetry.jsonl.
+    pub tx_telemetry: RwLock<VecDeque<TxTelemetryEvent>>,
+    /// Byte offset into the tx telemetry JSONL file.
+    pub tx_telemetry_file_offset: RwLock<u64>,
     /// Log tab filter: substring/keyword the user typed after pressing '/'
     pub log_filter: RwLock<String>,
     /// True while the user is typing in the log filter bar
@@ -509,6 +523,11 @@ impl AppState {
             trade_streak: RwLock::new(0),
             filter_stats: RwLock::new(None),
             nn_stats: RwLock::new(None),
+            nn_advice: RwLock::new(None),
+            pool_decisions: RwLock::new(VecDeque::with_capacity(MAX_POOL_DECISIONS)),
+            pool_decision_file_offset: RwLock::new(0),
+            tx_telemetry: RwLock::new(VecDeque::with_capacity(MAX_TX_TELEMETRY)),
+            tx_telemetry_file_offset: RwLock::new(0),
             log_filter: RwLock::new(String::new()),
             log_filter_active: RwLock::new(false),
             config_scroll: RwLock::new(0),
@@ -759,6 +778,105 @@ impl AppState {
             return;
         };
         *self.nn_stats.write() = Some(v);
+    }
+
+    /// Read the latest Deep Q* advice/explanation.
+    pub fn poll_nn_advice_file(&self) {
+        let Ok(data) = std::fs::read_to_string("scematica-nn-advice.json") else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+            return;
+        };
+        *self.nn_advice.write() = Some(v);
+    }
+
+    /// Tail the pool decision ledger into memory for the Intelligence tab.
+    pub fn poll_pool_decision_file(&self) {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+        let mut offset = *self.pool_decision_file_offset.read();
+        if let Ok(meta) = std::fs::metadata(POOL_DECISIONS_FILE) {
+            if meta.len() < offset {
+                offset = 0;
+                *self.pool_decision_file_offset.write() = 0;
+                self.pool_decisions.write().clear();
+            }
+        }
+
+        let Ok(mut file) = std::fs::File::open(POOL_DECISIONS_FILE) else {
+            return;
+        };
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return;
+        }
+
+        let mut reader = BufReader::new(&mut file);
+        let mut new_offset = offset;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(n) => {
+                    new_offset += n as u64;
+                    if let Ok(event) = serde_json::from_str::<PoolDecisionEvent>(line.trim()) {
+                        let mut decisions = self.pool_decisions.write();
+                        decisions.push_front(event);
+                        while decisions.len() > MAX_POOL_DECISIONS {
+                            decisions.pop_back();
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if new_offset != offset {
+            *self.pool_decision_file_offset.write() = new_offset;
+        }
+    }
+
+    /// Tail tx execution telemetry into memory for latency/error displays.
+    pub fn poll_tx_telemetry_file(&self) {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+        let mut offset = *self.tx_telemetry_file_offset.read();
+        if let Ok(meta) = std::fs::metadata(TX_TELEMETRY_FILE) {
+            if meta.len() < offset {
+                offset = 0;
+                *self.tx_telemetry_file_offset.write() = 0;
+                self.tx_telemetry.write().clear();
+            }
+        }
+
+        let Ok(mut file) = std::fs::File::open(TX_TELEMETRY_FILE) else {
+            return;
+        };
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return;
+        }
+
+        let mut reader = BufReader::new(&mut file);
+        let mut new_offset = offset;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(n) => {
+                    new_offset += n as u64;
+                    if let Ok(event) = serde_json::from_str::<TxTelemetryEvent>(line.trim()) {
+                        let mut telemetry = self.tx_telemetry.write();
+                        telemetry.push_front(event);
+                        while telemetry.len() > MAX_TX_TELEMETRY {
+                            telemetry.pop_back();
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if new_offset != offset {
+            *self.tx_telemetry_file_offset.write() = new_offset;
+        }
     }
 
     /// Read NN tournament stats from scematica-nn-tournament.json.

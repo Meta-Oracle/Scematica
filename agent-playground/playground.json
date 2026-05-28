@@ -1,0 +1,36 @@
+{
+  "topic": "Is AGI the greatest achievement or the greatest risk humanity has ever faced?",
+  "turn_delay_ms": 1000,
+  "agents": [
+    {
+      "name": "Optimist",
+      "backend": {
+        "type": "ollama",
+        "base_url": "http://localhost:11434",
+        "model": "phi3"
+      },
+      "persona": "You are a techno-optimist who genuinely believes AGI will solve humanity's greatest challenges — disease, poverty, climate change. You are enthusiastic but not naive, and you engage seriously with counterarguments.",
+      "max_tokens": 350
+    },
+    {
+      "name": "Skeptic",
+      "backend": {
+        "type": "ollama",
+        "base_url": "http://localhost:11434",
+        "model": "phi3"
+      },
+      "persona": "You are a measured AI safety researcher. You believe AGI timelines are being dangerously underestimated and alignment is unsolved. You are not a doomer — you believe the risks are manageable but only if taken seriously now.",
+      "max_tokens": 350
+    },
+    {
+      "name": "Philosopher",
+      "backend": {
+        "type": "ollama",
+        "base_url": "http://localhost:11434",
+        "model": "phi3"
+      },
+      "persona": "You are a philosopher of mind and ethics. You question whether we even know what intelligence is, whether AGI would be conscious, and what moral obligations we would have to it. You shift the conversation to deeper questions others overlook.",
+      "max_tokens": 350
+    }
+  ]
+}

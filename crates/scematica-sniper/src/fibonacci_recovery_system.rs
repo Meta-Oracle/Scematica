@@ -10,7 +10,6 @@
 /// 2. Set dynamic TP levels (61.8%, 161.8%, 261.8%, 423.6%)
 /// 3. Implement fast dead-pool detection (3s timeout)
 /// 4. Scale position size by Fibonacci confidence score
-
 use crate::fibonacci_momentum::{FibonacciMomentum, FibonacciSignal, PHI};
 use crate::fibonacci_pool_scorer::FibonacciPoolScorer;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,19 +19,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct FibonacciRecoveryConfig {
     /// Minimum Fibonacci score to enter (0.0-1.0). Set to 0.75 for high-conviction only
     pub min_entry_score: f64,
-    
+
     /// Dead-pool timeout in seconds. Data shows 3s is optimal (all wins exit by 6s)
     pub dead_pool_timeout_secs: u64,
-    
+
     /// Minimum gain % to avoid dead-pool exit. Set to 5% (above AMM spread)
     pub dead_pool_min_gain_pct: f64,
-    
+
     /// Tiered TP levels based on Fibonacci extensions
     pub tp_levels: Vec<FibonacciTPLevel>,
-    
+
     /// Enable fast-exit mode (exit at first Fibonacci level hit)
     pub fast_exit_mode: bool,
-    
+
     /// Position size multiplier based on Fibonacci score
     pub use_fibonacci_sizing: bool,
 }
@@ -41,12 +40,21 @@ impl Default for FibonacciRecoveryConfig {
     fn default() -> Self {
         Self {
             min_entry_score: 0.50, // Moderate gate — velocity bypass handles exceptional pools below this
-            dead_pool_timeout_secs: 3, // Exit dead pools fast
-            dead_pool_min_gain_pct: 5.0, // Above AMM spread
+            dead_pool_timeout_secs: 5, // 3s was too fast — slow pumpers need >3s to develop
+            dead_pool_min_gain_pct: 2.0, // 5% was above AMM spread but cut slow-building winners
             tp_levels: vec![
-                FibonacciTPLevel { gain_pct: 61.8, sell_pct: 30.0 },  // φ - 1
-                FibonacciTPLevel { gain_pct: 161.8, sell_pct: 40.0 }, // φ
-                FibonacciTPLevel { gain_pct: 261.8, sell_pct: 30.0 }, // φ²
+                FibonacciTPLevel {
+                    gain_pct: 61.8,
+                    sell_pct: 30.0,
+                }, // φ - 1
+                FibonacciTPLevel {
+                    gain_pct: 161.8,
+                    sell_pct: 40.0,
+                }, // φ
+                FibonacciTPLevel {
+                    gain_pct: 261.8,
+                    sell_pct: 30.0,
+                }, // φ²
             ],
             fast_exit_mode: true, // Exit at first TP hit (matches live data)
             use_fibonacci_sizing: true,
@@ -99,12 +107,12 @@ impl FibonacciRecoverySystem {
         detected_at_secs: u64,
     ) -> FibonacciEntryDecision {
         let size_sol = pool_size_lamports as f64 / 1e9;
-        
+
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let age_secs = if detected_at_secs > 0 && detected_at_secs <= now_secs {
             now_secs.saturating_sub(detected_at_secs)
         } else {
@@ -203,22 +211,26 @@ impl FibonacciRecoverySystem {
         // Check for dead pool (critical for loss prevention)
         let entry_time = momentum.entry_time;
         let age_secs = current_time.saturating_sub(entry_time);
-        
+
         let current_gain_pct = if momentum.entry_value > 0 {
-            ((current_value as f64 - momentum.entry_value as f64) / momentum.entry_value as f64) * 100.0
+            ((current_value as f64 - momentum.entry_value as f64) / momentum.entry_value as f64)
+                * 100.0
         } else {
             0.0
         };
 
         let peak_gain_pct = if momentum.entry_value > 0 {
-            ((momentum.peak_value as f64 - momentum.entry_value as f64) / momentum.entry_value as f64) * 100.0
+            ((momentum.peak_value as f64 - momentum.entry_value as f64)
+                / momentum.entry_value as f64)
+                * 100.0
         } else {
             0.0
         };
 
         // Dead pool detection: exit if no movement after timeout
-        if age_secs >= self.config.dead_pool_timeout_secs 
-            && peak_gain_pct < self.config.dead_pool_min_gain_pct {
+        if age_secs >= self.config.dead_pool_timeout_secs
+            && peak_gain_pct < self.config.dead_pool_min_gain_pct
+        {
             return FibonacciExitDecision {
                 should_exit: true,
                 exit_reason: format!(
@@ -234,34 +246,58 @@ impl FibonacciRecoverySystem {
         // TP and retracement exits are handled by the main momentum-escalation ladder
         // (trailing stop + pullback exit) so we never cut runners short at 61.8%.
         match signal {
-            FibonacciSignal::TakeProfitAtFib { gain_pct, fib_level } => {
+            FibonacciSignal::TakeProfitAtFib {
+                gain_pct,
+                fib_level,
+            } => {
                 // Log the level but let the main system decide when to exit
                 FibonacciExitDecision {
                     should_exit: false,
-                    exit_reason: format!("FIB TP signal {:.0}% (level {}) — deferring to momentum ladder", gain_pct, fib_level),
+                    exit_reason: format!(
+                        "FIB TP signal {:.0}% (level {}) — deferring to momentum ladder",
+                        gain_pct, fib_level
+                    ),
                     expected_pnl_pct: gain_pct,
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::ExitGoldenRetrace { peak_gain_pct, current_gain_pct, retrace_pct } => {
+            FibonacciSignal::ExitGoldenRetrace {
+                peak_gain_pct,
+                current_gain_pct,
+                retrace_pct,
+            } => {
                 // Log but defer — main trailing stop handles retracements
                 FibonacciExitDecision {
                     should_exit: false,
-                    exit_reason: format!("Golden retrace {:.1}% from {:.1}% peak — deferring to trailing stop", retrace_pct, peak_gain_pct),
+                    exit_reason: format!(
+                        "Golden retrace {:.1}% from {:.1}% peak — deferring to trailing stop",
+                        retrace_pct, peak_gain_pct
+                    ),
                     expected_pnl_pct: current_gain_pct,
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::ExitVelocityCollapse { peak_gain_pct: _, current_gain_pct, velocity_ratio } => {
+            FibonacciSignal::ExitVelocityCollapse {
+                peak_gain_pct: _,
+                current_gain_pct,
+                velocity_ratio,
+            } => {
                 // Velocity collapse — defer to main system
                 FibonacciExitDecision {
                     should_exit: false,
-                    exit_reason: format!("Velocity collapse at {:.1}% (ratio {:.2}) — deferring", current_gain_pct, velocity_ratio),
+                    exit_reason: format!(
+                        "Velocity collapse at {:.1}% (ratio {:.2}) — deferring",
+                        current_gain_pct, velocity_ratio
+                    ),
                     expected_pnl_pct: current_gain_pct,
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::EscalateToNextFib { current_gain_pct, next_target_pct, velocity_ratio } => {
+            FibonacciSignal::EscalateToNextFib {
+                current_gain_pct,
+                next_target_pct,
+                velocity_ratio,
+            } => {
                 // Don't exit - escalate TP target
                 FibonacciExitDecision {
                     should_exit: false,
@@ -273,19 +309,27 @@ impl FibonacciRecoverySystem {
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::RunnerDetected { velocity_ratio, age_secs } => {
+            FibonacciSignal::RunnerDetected {
+                velocity_ratio,
+                age_secs,
+            } => {
                 // Don't exit - runner detected
                 FibonacciExitDecision {
                     should_exit: false,
                     exit_reason: format!(
                         "RUNNER DETECTED: Fibonacci velocity {:.2}φ at {}s",
-                        velocity_ratio / PHI, age_secs
+                        velocity_ratio / PHI,
+                        age_secs
                     ),
                     expected_pnl_pct: current_gain_pct,
                     is_dead_pool: false,
                 }
             }
-            FibonacciSignal::Hold { gain_pct, velocity_ratio, next_target_pct } => {
+            FibonacciSignal::Hold {
+                gain_pct,
+                velocity_ratio,
+                next_target_pct,
+            } => {
                 // Don't exit - hold for target
                 FibonacciExitDecision {
                     should_exit: false,
@@ -313,16 +357,15 @@ impl FibonacciRecoverySystem {
 
         // Apply Fibonacci progression for consecutive wins
         if consecutive_wins > 0 {
-            let win_multiplier = FibonacciMomentum::calculate_position_multiplier(
-                consecutive_wins,
-                1.0,
-            );
+            let win_multiplier =
+                FibonacciMomentum::calculate_position_multiplier(consecutive_wins, 1.0);
             size *= win_multiplier;
         }
 
         // Apply Fibonacci score multiplier
         if self.config.use_fibonacci_sizing {
-            let score_multiplier = FibonacciPoolScorer::fibonacci_position_multiplier(fibonacci_score);
+            let score_multiplier =
+                FibonacciPoolScorer::fibonacci_position_multiplier(fibonacci_score);
             size *= score_multiplier;
         }
 
@@ -373,14 +416,18 @@ impl FibonacciRecoveryStats {
         if fibonacci_score >= 0.75 {
             self.fibonacci_entries += 1;
         }
-        
+
         // Update running average
         let n = self.total_entries as f64;
-        self.avg_fibonacci_score = 
-            (self.avg_fibonacci_score * (n - 1.0) + fibonacci_score) / n;
+        self.avg_fibonacci_score = (self.avg_fibonacci_score * (n - 1.0) + fibonacci_score) / n;
     }
 
-    pub fn record_exit(&mut self, decision: &FibonacciExitDecision, hold_time_secs: u64, pnl_lamports: i64) {
+    pub fn record_exit(
+        &mut self,
+        decision: &FibonacciExitDecision,
+        hold_time_secs: u64,
+        pnl_lamports: i64,
+    ) {
         if decision.is_dead_pool {
             self.dead_pool_exits += 1;
         } else if decision.exit_reason.contains("FIBONACCI TP") {
@@ -390,17 +437,18 @@ impl FibonacciRecoveryStats {
         }
 
         self.total_pnl_lamports += pnl_lamports;
-        
+
         // Update running average hold time
         let n = (self.dead_pool_exits + self.fibonacci_tp_exits + self.golden_retrace_exits) as f64;
         if n > 0.0 {
-            self.avg_hold_time_secs = 
+            self.avg_hold_time_secs =
                 (self.avg_hold_time_secs * (n - 1.0) + hold_time_secs as f64) / n;
         }
     }
 
     pub fn win_rate(&self) -> f64 {
-        let total_exits = self.dead_pool_exits + self.fibonacci_tp_exits + self.golden_retrace_exits;
+        let total_exits =
+            self.dead_pool_exits + self.fibonacci_tp_exits + self.golden_retrace_exits;
         if total_exits == 0 {
             return 0.0;
         }
@@ -408,7 +456,8 @@ impl FibonacciRecoveryStats {
     }
 
     pub fn avg_pnl_sol(&self) -> f64 {
-        let total_exits = self.dead_pool_exits + self.fibonacci_tp_exits + self.golden_retrace_exits;
+        let total_exits =
+            self.dead_pool_exits + self.fibonacci_tp_exits + self.golden_retrace_exits;
         if total_exits == 0 {
             return 0.0;
         }
@@ -446,20 +495,10 @@ mod tests {
         let system = FibonacciRecoverySystem::new(config);
 
         // Perfect Fibonacci runner: 13 SOL, 3s old, 4.0 SOL/s, 2.0 pressure
-        assert!(system.is_fibonacci_runner(
-            13_000_000_000,
-            3,
-            4.0,
-            2.0
-        ));
+        assert!(system.is_fibonacci_runner(13_000_000_000, 3, 4.0, 2.0));
 
         // Not a runner: too old
-        assert!(!system.is_fibonacci_runner(
-            13_000_000_000,
-            10,
-            4.0,
-            2.0
-        ));
+        assert!(!system.is_fibonacci_runner(13_000_000_000, 10, 4.0, 2.0));
     }
 
     #[test]
@@ -473,13 +512,12 @@ mod tests {
             .as_secs();
 
         // High-quality pool: 13 SOL, 3s old
-        let decision = system.evaluate_entry(
-            13_000_000_000,
-            500_000_000,
-            now - 3,
-        );
+        let decision = system.evaluate_entry(13_000_000_000, 500_000_000, now - 3);
 
-        assert!(decision.fibonacci_score >= 0.35, "Should have high Fibonacci score");
+        assert!(
+            decision.fibonacci_score >= 0.35,
+            "Should have high Fibonacci score"
+        );
         assert!(decision.should_enter, "Should enter high-quality pool");
     }
 

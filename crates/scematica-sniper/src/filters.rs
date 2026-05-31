@@ -1,11 +1,11 @@
 use async_trait::async_trait;
+use dashmap::DashMap;
 use scematica_core::config::FilterConfig;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::pubkey::Pubkey;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use dashmap::DashMap;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::cache::CachedPool;
@@ -24,7 +24,11 @@ impl FilterStats {
         *self.inner.entry(filter_name.to_string()).or_insert(0) += 1;
     }
     pub fn snapshot(&self) -> Vec<(String, u32)> {
-        let mut v: Vec<_> = self.inner.iter().map(|e| (e.key().clone(), *e.value())).collect();
+        let mut v: Vec<_> = self
+            .inner
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
         v.sort_by(|a, b| b.1.cmp(&a.1));
         v
     }
@@ -66,8 +70,18 @@ pub struct FilterResult {
 }
 
 impl FilterResult {
-    pub fn pass() -> Self { Self { passed: true, reason: None } }
-    pub fn fail(reason: impl Into<String>) -> Self { Self { passed: false, reason: Some(reason.into()) } }
+    pub fn pass() -> Self {
+        Self {
+            passed: true,
+            reason: None,
+        }
+    }
+    pub fn fail(reason: impl Into<String>) -> Self {
+        Self {
+            passed: false,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 #[async_trait]
@@ -99,7 +113,8 @@ async fn get_account_retried(
         let result = tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_account(pubkey),
-        ).await;
+        )
+        .await;
         match result {
             Ok(Ok(a)) => return Some(a),
             Ok(Err(e)) => {
@@ -114,7 +129,11 @@ async fn get_account_retried(
                 }
             }
             Err(_) => {
-                debug!("RPC get_account timed out on attempt {}/{}", attempt + 1, retries);
+                debug!(
+                    "RPC get_account timed out on attempt {}/{}",
+                    attempt + 1,
+                    retries
+                );
                 return None;
             }
         }
@@ -133,7 +152,8 @@ async fn get_token_balance_retried(
         let result = tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_token_account_balance(pubkey),
-        ).await;
+        )
+        .await;
         match result {
             Ok(Ok(b)) => return b.amount.parse().ok(),
             Ok(Err(e)) => {
@@ -146,7 +166,11 @@ async fn get_token_balance_retried(
                 }
             }
             Err(_) => {
-                debug!("RPC get_token_balance timed out on attempt {}/{}", attempt + 1, retries);
+                debug!(
+                    "RPC get_token_balance timed out on attempt {}/{}",
+                    attempt + 1,
+                    retries
+                );
                 return None;
             }
         }
@@ -160,7 +184,9 @@ pub struct MintRenounceFilter;
 
 #[async_trait]
 impl PoolFilter for MintRenounceFilter {
-    fn name(&self) -> &str { "MintRenounced" }
+    fn name(&self) -> &str {
+        "MintRenounced"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         match get_account_retried(rpc, &pool.base_mint, 3).await {
             Some(account) if account.data.len() >= 4 => {
@@ -183,7 +209,9 @@ pub struct FreezableFilter;
 
 #[async_trait]
 impl PoolFilter for FreezableFilter {
-    fn name(&self) -> &str { "NotFreezable" }
+    fn name(&self) -> &str {
+        "NotFreezable"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         match get_account_retried(rpc, &pool.base_mint, 3).await {
             Some(account) if account.data.len() >= 82 => {
@@ -208,7 +236,9 @@ pub struct BurnFilter;
 
 #[async_trait]
 impl PoolFilter for BurnFilter {
-    fn name(&self) -> &str { "LPBurned" }
+    fn name(&self) -> &str {
+        "LPBurned"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         match get_token_balance_retried(rpc, &pool.base_vault, 3).await {
             Some(amount) if amount > 0 => FilterResult::pass(),
@@ -228,7 +258,9 @@ pub struct PoolSizeFilter {
 
 #[async_trait]
 impl PoolFilter for PoolSizeFilter {
-    fn name(&self) -> &str { "PoolSize" }
+    fn name(&self) -> &str {
+        "PoolSize"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         match get_token_balance_retried(rpc, &pool.quote_vault, 3).await {
             Some(amount) => {
@@ -250,20 +282,43 @@ impl PoolFilter for PoolSizeFilter {
 
 /// Known scam/rug keywords — case-insensitive substring match
 static SCAM_WORDS: &[&str] = &[
-    "test", "rug", "scam", "free", "airdrop", "safe", "moon100x", "1000x",
-    "elon", "trump", "biden", "shib2", "pepe2", "honeypot", "drain",
-    "presale", "stealth", "fair launch", "dev wallet",
+    "test",
+    "rug",
+    "scam",
+    "free",
+    "airdrop",
+    "safe",
+    "moon100x",
+    "1000x",
+    "elon",
+    "trump",
+    "biden",
+    "shib2",
+    "pepe2",
+    "honeypot",
+    "drain",
+    "presale",
+    "stealth",
+    "fair launch",
+    "dev wallet",
 ];
 
 pub struct NameFilter;
 
 #[async_trait]
 impl PoolFilter for NameFilter {
-    fn name(&self) -> &str { "NameFilter" }
+    fn name(&self) -> &str {
+        "NameFilter"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         // Derive Metaplex metadata PDA: ["metadata", METADATA_PROGRAM, mint]
-        const METADATA_PROGRAM: Pubkey = solana_sdk::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-        let seeds: &[&[u8]] = &[b"metadata", METADATA_PROGRAM.as_ref(), pool.base_mint.as_ref()];
+        const METADATA_PROGRAM: Pubkey =
+            solana_sdk::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+        let seeds: &[&[u8]] = &[
+            b"metadata",
+            METADATA_PROGRAM.as_ref(),
+            pool.base_mint.as_ref(),
+        ];
         let (metadata_pda, _) = Pubkey::find_program_address(seeds, &METADATA_PROGRAM);
 
         match rpc.get_account(&metadata_pda).await {
@@ -276,7 +331,11 @@ impl PoolFilter for NameFilter {
                 let combined = format!("{} {}", name, symbol).to_lowercase();
                 for word in SCAM_WORDS {
                     if combined.contains(word) {
-                        return FilterResult::fail(format!("Suspicious name: '{}' contains '{}'", combined.trim(), word));
+                        return FilterResult::fail(format!(
+                            "Suspicious name: '{}' contains '{}'",
+                            combined.trim(),
+                            word
+                        ));
                     }
                 }
                 debug!(mint = %pool.base_mint, name = %name.trim(), symbol = %symbol.trim(), "Name filter passed");
@@ -292,11 +351,15 @@ impl PoolFilter for NameFilter {
 }
 
 fn read_metaplex_string(data: &[u8], offset: usize) -> String {
-    if offset + 4 > data.len() { return String::new(); }
-    let len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap_or([0;4])) as usize;
+    if offset + 4 > data.len() {
+        return String::new();
+    }
+    let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
     let start = offset + 4;
     let end = (start + len).min(data.len());
-    String::from_utf8_lossy(&data[start..end]).trim_end_matches('\0').to_string()
+    String::from_utf8_lossy(&data[start..end])
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 /// Check recent transaction volume on the pool
@@ -306,20 +369,28 @@ pub struct VolumeFilter {
 
 #[async_trait]
 impl PoolFilter for VolumeFilter {
-    fn name(&self) -> &str { "VolumeSpike" }
+    fn name(&self) -> &str {
+        "VolumeSpike"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
         let config = GetConfirmedSignaturesForAddress2Config {
             limit: Some(self.min_txns as usize + 1),
             ..Default::default()
         };
-        match rpc.get_signatures_for_address_with_config(&pool.id, config).await {
+        match rpc
+            .get_signatures_for_address_with_config(&pool.id, config)
+            .await
+        {
             Ok(sigs) => {
                 let count = sigs.len() as u32;
                 if count >= self.min_txns {
                     FilterResult::pass()
                 } else {
-                    FilterResult::fail(format!("Insufficient volume: {} txns (need {})", count, self.min_txns))
+                    FilterResult::fail(format!(
+                        "Insufficient volume: {} txns (need {})",
+                        count, self.min_txns
+                    ))
                 }
             }
             Err(e) => {
@@ -338,14 +409,17 @@ pub struct LiquidityDepthFilter {
 
 #[async_trait]
 impl PoolFilter for LiquidityDepthFilter {
-    fn name(&self) -> &str { "LiquidityDepth" }
+    fn name(&self) -> &str {
+        "LiquidityDepth"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         let qb = match get_token_balance_retried(rpc, &pool.quote_vault, 3).await {
             Some(v) if v > 0 => v,
             _ => return FilterResult::pass(), // can't check — fail-open
         };
         // Constant product AMM: impact = amount / (reserve + amount)
-        let impact_pct = (self.quote_amount_raw as f64 / (qb as f64 + self.quote_amount_raw as f64)) * 100.0;
+        let impact_pct =
+            (self.quote_amount_raw as f64 / (qb as f64 + self.quote_amount_raw as f64)) * 100.0;
         if impact_pct > self.max_price_impact_pct {
             FilterResult::fail(format!(
                 "Price impact {:.1}% exceeds max {:.1}% (pool liquidity: {:.3} SOL)",
@@ -374,13 +448,17 @@ impl BlacklistFilter {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        Self { blacklist: Arc::new(set) }
+        Self {
+            blacklist: Arc::new(set),
+        }
     }
 }
 
 #[async_trait]
 impl PoolFilter for BlacklistFilter {
-    fn name(&self) -> &str { "Blacklist" }
+    fn name(&self) -> &str {
+        "Blacklist"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         // Check pool account owner as proxy for deployer
         match rpc.get_account(&pool.id).await {
@@ -403,13 +481,17 @@ pub struct HolderConcentrationFilter {
 
 #[async_trait]
 impl PoolFilter for HolderConcentrationFilter {
-    fn name(&self) -> &str { "HolderConcentration" }
+    fn name(&self) -> &str {
+        "HolderConcentration"
+    }
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         // Fetch the token's total supply (5s timeout)
         let supply = match tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_token_supply(&pool.base_mint),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(s)) => s.amount.parse::<u128>().unwrap_or(0),
             Ok(Err(e)) => {
                 warn!(mint = %pool.base_mint, "HolderConcentration: supply fetch failed: {} — skipping", e);
@@ -428,7 +510,9 @@ impl PoolFilter for HolderConcentrationFilter {
         let top = match tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_token_largest_accounts(&pool.base_mint),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(t)) => t,
             Ok(Err(e)) => {
                 warn!(mint = %pool.base_mint, "HolderConcentration: getLargestAccounts failed: {} — skipping", e);
@@ -440,7 +524,8 @@ impl PoolFilter for HolderConcentrationFilter {
             }
         };
 
-        let top10_amount: u128 = top.iter()
+        let top10_amount: u128 = top
+            .iter()
             .take(10)
             .filter_map(|a| a.amount.amount.parse::<u128>().ok())
             .sum();
@@ -477,30 +562,23 @@ impl DeployerReputationFilter {
 
 #[async_trait]
 impl PoolFilter for DeployerReputationFilter {
-    fn name(&self) -> &str { "DeployerReputation" }
-    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        let deployer = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
-            rpc.get_account(&pool.id),
-        ).await {
-            Ok(Ok(acct)) => acct.owner.to_string(),
-            Ok(Err(e)) => {
-                warn!(mint = %pool.base_mint, "DeployerReputation: account fetch failed: {} — skipping", e);
-                return FilterResult::pass();
-            }
-            Err(_) => {
-                warn!(mint = %pool.base_mint, "DeployerReputation: account fetch timed out — skipping");
-                return FilterResult::pass();
-            }
-        };
-        let score = self.ledger.lock().score(&deployer);
+    fn name(&self) -> &str {
+        "DeployerReputation"
+    }
+    async fn check(&self, pool: &CachedPool, _rpc: &Arc<RpcClient>) -> FilterResult {
+        // Reputation ledger is keyed by base_mint (set at sell time). Using the
+        // pool account owner always returns the Raydium program ID, never matching.
+        let mint_key = pool.base_mint.to_string();
+        let score = self.ledger.lock().score(&mint_key);
         if score < self.min_score {
             FilterResult::fail(format!(
-                "Deployer {} reputation score {:.2} < min {:.2}",
-                &deployer[..8.min(deployer.len())], score, self.min_score
+                "Mint {} reputation score {:.2} < min {:.2}",
+                &mint_key[..8.min(mint_key.len())],
+                score,
+                self.min_score
             ))
         } else {
-            debug!(mint = %pool.base_mint, deployer = %&deployer[..8.min(deployer.len())], score, "Deployer reputation OK");
+            debug!(mint = %pool.base_mint, score, "Deployer reputation OK");
             FilterResult::pass()
         }
     }
@@ -519,7 +597,9 @@ pub struct LiquidityMomentumFilter {
 
 #[async_trait]
 impl PoolFilter for LiquidityMomentumFilter {
-    fn name(&self) -> &str { "LiquidityMomentum" }
+    fn name(&self) -> &str {
+        "LiquidityMomentum"
+    }
 
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         let first = match get_token_balance_retried(rpc, &pool.quote_vault, 2).await {
@@ -574,35 +654,27 @@ pub struct CrossPoolCorrelationFilter {
 
 #[async_trait]
 impl PoolFilter for CrossPoolCorrelationFilter {
-    fn name(&self) -> &str { "CrossPoolCorrelation" }
+    fn name(&self) -> &str {
+        "CrossPoolCorrelation"
+    }
 
-    async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
-        let deployer = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
-            rpc.get_account(&pool.id),
-        ).await {
-            Ok(Ok(acct)) => acct.owner.to_string(),
-            Ok(Err(e)) => {
-                warn!(mint = %pool.base_mint, "CrossPoolCorrelation: account fetch failed: {} — skipping", e);
-                return FilterResult::pass();
-            }
-            Err(_) => {
-                warn!(mint = %pool.base_mint, "CrossPoolCorrelation: account fetch timed out — skipping");
-                return FilterResult::pass();
-            }
-        };
-
-        let rug_count = self.ledger.lock().recent_rug_count(&deployer);
+    async fn check(&self, pool: &CachedPool, _rpc: &Arc<RpcClient>) -> FilterResult {
+        // The reputation ledger is keyed by base_mint (set at sell time). Using
+        // pool.id account owner returns the Raydium AMM program ID for every pool,
+        // which never matches any ledger entry. Key on mint instead.
+        let mint_key = pool.base_mint.to_string();
+        let rug_count = self.ledger.lock().recent_rug_count(&mint_key);
 
         if rug_count > self.max_rugs_24h {
             FilterResult::fail(format!(
-                "Deployer {} has {} recent rugs (max allowed: {})",
-                &deployer[..8.min(deployer.len())], rug_count, self.max_rugs_24h
+                "Mint {} has {} recorded rugs (max allowed: {})",
+                &mint_key[..8.min(mint_key.len())],
+                rug_count,
+                self.max_rugs_24h
             ))
         } else {
             debug!(
                 mint = %pool.base_mint,
-                deployer = %&deployer[..8.min(deployer.len())],
                 rug_count,
                 "Cross-pool correlation OK"
             );
@@ -623,7 +695,9 @@ pub struct JupiterDiscrepancyFilter {
 
 #[async_trait]
 impl PoolFilter for JupiterDiscrepancyFilter {
-    fn name(&self) -> &str { "JupiterDiscrepancy" }
+    fn name(&self) -> &str {
+        "JupiterDiscrepancy"
+    }
 
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         // Estimate AMM price in lamports-per-base-token using reserve ratio.
@@ -641,7 +715,11 @@ impl PoolFilter for JupiterDiscrepancyFilter {
         let amm_price_lamports = quote_reserve as f64 / base_reserve as f64;
 
         // Fetch Jupiter price
-        let jup_price_lamports = match crate::jup_oracle::JupiterOracle::get_price_lamports(&pool.base_mint).await {
+        let jup_price_lamports = match crate::jup_oracle::JupiterOracle::get_price_lamports(
+            &pool.base_mint,
+        )
+        .await
+        {
             Some(p) => p,
             None => {
                 warn!(mint = %pool.base_mint, "JupiterDiscrepancy: Jupiter price unavailable — skipping");
@@ -649,7 +727,8 @@ impl PoolFilter for JupiterDiscrepancyFilter {
             }
         };
 
-        let premium = crate::jup_oracle::JupiterOracle::premium_pct(amm_price_lamports, jup_price_lamports);
+        let premium =
+            crate::jup_oracle::JupiterOracle::premium_pct(amm_price_lamports, jup_price_lamports);
 
         if premium < self.min_premium_pct {
             FilterResult::fail(format!(
@@ -678,7 +757,9 @@ pub struct DeployerWalletAgeFilter {
 
 #[async_trait]
 impl PoolFilter for DeployerWalletAgeFilter {
-    fn name(&self) -> &str { "DeployerWalletAge" }
+    fn name(&self) -> &str {
+        "DeployerWalletAge"
+    }
 
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         if self.min_age_hours == 0 {
@@ -699,7 +780,9 @@ impl PoolFilter for DeployerWalletAgeFilter {
         let sigs = match tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_signatures_for_address_with_config(&pool.base_mint, config),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(s)) if !s.is_empty() => s,
             Ok(Ok(_)) => {
                 debug!(mint = %pool.base_mint, "DeployerWalletAge: no signatures found — skipping");
@@ -748,7 +831,9 @@ impl PoolFilter for DeployerWalletAgeFilter {
 /// Fetch off-chain token metadata JSON from the Metaplex URI.
 /// Hard 1.5 s wall-clock cap so a slow CDN can't stall the filter pipeline.
 async fn fetch_token_uri_metadata(uri: &str) -> Option<serde_json::Value> {
-    if !uri.starts_with("http") { return None; }
+    if !uri.starts_with("http") {
+        return None;
+    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(1500))
         .user_agent("scematica-sniper/1.0")
@@ -757,11 +842,17 @@ async fn fetch_token_uri_metadata(uri: &str) -> Option<serde_json::Value> {
     let resp = tokio::time::timeout(
         tokio::time::Duration::from_millis(1800),
         client.get(uri).send(),
-    ).await.ok()?.ok()?;
+    )
+    .await
+    .ok()?
+    .ok()?;
     tokio::time::timeout(
         tokio::time::Duration::from_millis(1500),
         resp.json::<serde_json::Value>(),
-    ).await.ok()?.ok()
+    )
+    .await
+    .ok()?
+    .ok()
 }
 
 /// Enriches pool metadata with on-chain name/symbol and off-chain social links.
@@ -777,22 +868,31 @@ pub struct SocialLinksFilter {
 
 #[async_trait]
 impl PoolFilter for SocialLinksFilter {
-    fn name(&self) -> &str { "SocialLinks" }
+    fn name(&self) -> &str {
+        "SocialLinks"
+    }
 
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult {
         const METADATA_PROGRAM: Pubkey =
             solana_sdk::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-        let seeds: &[&[u8]] = &[b"metadata", METADATA_PROGRAM.as_ref(), pool.base_mint.as_ref()];
+        let seeds: &[&[u8]] = &[
+            b"metadata",
+            METADATA_PROGRAM.as_ref(),
+            pool.base_mint.as_ref(),
+        ];
         let (metadata_pda, _) = Pubkey::find_program_address(seeds, &METADATA_PROGRAM);
 
         let acct = match tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_account(&metadata_pda),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(a)) if a.data.len() > 120 => a,
             _ => {
                 debug!(mint = %pool.base_mint, "SocialLinks: no metadata account — skipping enrichment");
-                self.metadata_cache.insert(pool.base_mint.to_string(), TokenSocials::default());
+                self.metadata_cache
+                    .insert(pool.base_mint.to_string(), TokenSocials::default());
                 return FilterResult::pass();
             }
         };
@@ -819,26 +919,36 @@ impl PoolFilter for SocialLinksFilter {
                         .and_then(|v| v.as_str())
                         .map(|s| !s.trim().is_empty())
                         .unwrap_or(false)
-                        || meta.get("extensions")
+                        || meta
+                            .get("extensions")
                             .and_then(|e| e.get(key))
                             .and_then(|v| v.as_str())
                             .map(|s| !s.trim().is_empty())
                             .unwrap_or(false)
                 };
-                socials.twitter  = check("twitter");
+                socials.twitter = check("twitter");
                 socials.telegram = check("telegram");
-                socials.website  = check("website");
-                socials.discord  = check("discord");
+                socials.website = check("website");
+                socials.discord = check("discord");
                 // pump.fun also uses "createdOn" and root-level socials
-                if !socials.twitter  { socials.twitter  = check("twitter_url"); }
-                if !socials.telegram { socials.telegram = check("telegram_url"); }
+                if !socials.twitter {
+                    socials.twitter = check("twitter_url");
+                }
+                if !socials.telegram {
+                    socials.telegram = check("telegram_url");
+                }
             }
         }
 
-        socials.social_count = [socials.twitter, socials.telegram, socials.website, socials.discord]
-            .iter()
-            .filter(|&&b| b)
-            .count() as u8;
+        socials.social_count = [
+            socials.twitter,
+            socials.telegram,
+            socials.website,
+            socials.discord,
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count() as u8;
 
         tracing::debug!(
             mint = %pool.base_mint,
@@ -851,7 +961,8 @@ impl PoolFilter for SocialLinksFilter {
             "SocialLinks metadata enriched"
         );
 
-        self.metadata_cache.insert(pool.base_mint.to_string(), socials.clone());
+        self.metadata_cache
+            .insert(pool.base_mint.to_string(), socials.clone());
 
         if self.require_socials && socials.social_count == 0 {
             FilterResult::fail(format!(
@@ -898,11 +1009,17 @@ impl FilterPipeline {
             }
         }
         // [1 RPC] Freeze authority check — single getAccountInfo on mint
-        if config.check_freezable      { filters.push(Box::new(FreezableFilter)); }
+        if config.check_freezable {
+            filters.push(Box::new(FreezableFilter));
+        }
         // [1 RPC] Mint renounce check — same account data as FreezableFilter
-        if config.check_mint_renounced { filters.push(Box::new(MintRenounceFilter)); }
+        if config.check_mint_renounced {
+            filters.push(Box::new(MintRenounceFilter));
+        }
         // [1 RPC] Base vault balance check — quick reject for empty/rugged pools
-        if config.check_burned         { filters.push(Box::new(BurnFilter)); }
+        if config.check_burned {
+            filters.push(Box::new(BurnFilter));
+        }
         // [1 RPC] Pool size range check
         if config.min_pool_size > 0.0 || config.max_pool_size > 0.0 {
             filters.push(Box::new(PoolSizeFilter {
@@ -923,7 +1040,9 @@ impl FilterPipeline {
         }
         // [1 RPC] Recent tx volume check
         if config.check_volume && config.min_volume_txns > 0 {
-            filters.push(Box::new(VolumeFilter { min_txns: config.min_volume_txns }));
+            filters.push(Box::new(VolumeFilter {
+                min_txns: config.min_volume_txns,
+            }));
         }
         // [1 RPC + in-memory lookup] Deployer rug history via CrossPoolCorrelation
         // DeployerReputationFilter is DISABLED — `account.owner` always returns the
@@ -1007,12 +1126,14 @@ impl FilterPipeline {
         };
 
         // Cache the result
-        self.result_cache.insert(cache_key, (passed, std::time::Instant::now()));
+        self.result_cache
+            .insert(cache_key, (passed, std::time::Instant::now()));
 
         // Periodically evict stale cache entries (every ~100 evaluations on average)
         if self.stats.pools_seen.load(Ordering::Relaxed) % 100 == 0 {
             let ttl = self.cache_ttl_secs;
-            self.result_cache.retain(|_, (_, ts)| ts.elapsed().as_secs() < ttl);
+            self.result_cache
+                .retain(|_, (_, ts)| ts.elapsed().as_secs() < ttl);
         }
 
         if passed {

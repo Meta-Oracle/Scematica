@@ -38,7 +38,8 @@ use crate::{
     reputation::DeployerLedger,
 };
 use scematica_core::metrics::{
-    PoolDecisionEvent, StrategySnapshot, TradeEvent, POOL_DECISIONS_FILE, STRATEGY_FILE,
+    artifact_path, artifact_path_string, PoolDecisionEvent, StrategySnapshot, TradeEvent,
+    NN_ADVICE_FILE, POOL_DECISIONS_FILE, POOL_RADAR_FILE, SELL_MODE_FILE, STRATEGY_FILE,
     TRADES_FILE,
 };
 
@@ -581,6 +582,9 @@ impl Sniper {
                     live.take_profit_pct, tp, adjustment.market_regime
                 );
                 live.take_profit_pct = tp;
+                // Propagate to mode-specific field so the sell monitor (which
+                // reads take_profit_pct_mode first) actually uses the AI value.
+                live.take_profit_pct_mode = tp;
             }
             if let Some(sl) = adjustment.stop_loss_pct {
                 info!(
@@ -588,6 +592,7 @@ impl Sniper {
                     live.stop_loss_pct, sl, adjustment.market_regime
                 );
                 live.stop_loss_pct = sl;
+                live.stop_loss_pct_mode = sl;
             }
             if (adjustment.amount_multiplier - 1.0).abs() > 0.01 {
                 info!(
@@ -605,7 +610,10 @@ impl Sniper {
                     "Strategy agent: regime shift {} → {} — writing NN signal",
                     prev_regime, live.market_regime
                 );
-                let _ = std::fs::write("scematica-regime-shift.json", r#"{"shift":true}"#);
+                let _ = std::fs::write(
+                    artifact_path("scematica-regime-shift.json"),
+                    r#"{"shift":true}"#,
+                );
             }
 
             // Persist snapshot so the dashboard can display live params
@@ -645,7 +653,6 @@ impl Sniper {
     /// Reads the existing file, appends the new entry, trims to the last
     /// `RADAR_MAX_ENTRIES` records, then atomically writes back via a .tmp file.
     fn write_radar_entry(&self, pool: &CachedPool, pool_size_sol: f64, passed: bool, score: f64) {
-        const RADAR_FILE: &str = "scematica-pool-radar.json";
         const RADAR_MAX_ENTRIES: usize = 100;
 
         let now_secs = std::time::SystemTime::now()
@@ -669,7 +676,8 @@ impl Sniper {
         });
 
         // Load existing entries (silently skip if file is absent or corrupt)
-        let mut entries: Vec<serde_json::Value> = std::fs::read_to_string(RADAR_FILE)
+        let radar_path = artifact_path(POOL_RADAR_FILE);
+        let mut entries: Vec<serde_json::Value> = std::fs::read_to_string(&radar_path)
             .ok()
             .and_then(|d| serde_json::from_str(&d).ok())
             .unwrap_or_default();
@@ -683,9 +691,9 @@ impl Sniper {
         }
 
         if let Ok(json) = serde_json::to_string(&entries) {
-            let tmp = format!("{}.tmp", RADAR_FILE);
+            let tmp = artifact_path(format!("{}.tmp", POOL_RADAR_FILE));
             if std::fs::write(&tmp, &json).is_ok() {
-                let _ = std::fs::rename(&tmp, RADAR_FILE);
+                let _ = std::fs::rename(&tmp, radar_path);
             }
         }
     }
@@ -874,18 +882,14 @@ impl Sniper {
     async fn on_new_pool(&self, pool: CachedPool) {
         let mint_str = pool.base_mint.to_string();
 
-        // Cross-session dedup. The listener-level seen_pool_ids set already drops
-        // duplicate events within a session before they reach us, so this guard
-        // mostly fires for pools persisted to pool-cache.json from a prior run.
-        if self.pool_cache.contains(&pool.id.to_string()) {
-            debug!(
-                mint = %pool.base_mint,
-                pool = %pool.id,
-                "Pool already in persisted cache — skipping (clear pool-cache.json to re-eval)"
-            );
-            self.write_pool_decision_minimal(&pool, "ignored", "dedup", "persisted_pool_cache");
-            return;
-        }
+        // NOTE: We deliberately do NOT dedup against the persisted pool_cache here.
+        // pool-cache.json is a SELL-side lookup store (mint→pool) that accumulates
+        // every pool ever evaluated and is reloaded (up to 1000 entries) on restart.
+        // Using it as a buy gate permanently blocked ~34% of incoming pools across
+        // restarts (measured in scematica-pool-decisions.jsonl). Intra-session
+        // duplicate pool events are already dropped by the listener's seen_pool_ids
+        // set; re-buying a held mint is prevented by max_concurrent_positions +
+        // one_token_at_a_time; rapid re-entry is bounded by the mint cooldown.
 
         // Skip if quote mint doesn't match
         if pool.quote_mint != self.quote_mint {
@@ -2131,7 +2135,7 @@ impl Sniper {
                 let ready = ag.ready_to_advise();
                 let stats = ag.stats();
                 let (action, q_vals) = ag.advise(&nn_state);
-                ag.write_explanation(&nn_state, "scematica-nn-advice.json");
+                ag.write_explanation(&nn_state, &artifact_path_string(NN_ADVICE_FILE));
                 Some((
                     action,
                     q_vals,
@@ -2761,7 +2765,13 @@ impl Sniper {
                         timestamp: chrono::Utc::now(),
                         kind: "BUY".into(),
                         mint: pool.base_mint.to_string(),
-                        symbol: String::new(),
+                        symbol: self
+                            .filter_pipeline
+                            .metadata
+                            .get(&pool.base_mint.to_string())
+                            .map(|m| m.symbol.clone())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_default(),
                         amount: scematica_core::token::raw_to_ui(
                             effective_quote_amount_raw,
                             self.quote_decimals,
@@ -2865,7 +2875,13 @@ impl Sniper {
             timestamp: chrono::Utc::now(),
             kind: "BUY".into(),
             mint: pool.base_mint.to_string(),
-            symbol: String::new(),
+            symbol: self
+                .filter_pipeline
+                .metadata
+                .get(&pool.base_mint.to_string())
+                .map(|m| m.symbol.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default(),
             amount: scematica_core::token::raw_to_ui(
                 effective_quote_amount_raw,
                 self.quote_decimals,
@@ -3358,6 +3374,15 @@ impl Sniper {
                 continue;
             }
 
+            // Dedup guard: if live_positions already tracks this mint, a sell monitor
+            // is already running (spawned by buy() or an earlier scan_existing_positions
+            // call). Spawning a second monitor causes duplicate sells on the same ATA.
+            let mint_str = mint.to_string();
+            if self.live_positions.contains_key(&mint_str) {
+                debug!(mint = %mint, "Startup scan: sell monitor already running — skipping");
+                continue;
+            }
+
             info!(
                 mint = %mint,
                 pool = %pool.id,
@@ -3375,6 +3400,30 @@ impl Sniper {
             // this, startup-scan monitors underflow the u32 → wrap to u32::MAX,
             // breaking the buy-limit sell-mode auto-clear logic for the whole session.
             self.open_positions.fetch_add(1, Ordering::Relaxed);
+            // Register in live_positions now so subsequent scan calls see this mint
+            // as already-monitored.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.live_positions.insert(
+                mint_str.clone(),
+                LivePositionSnapshot {
+                    mint: mint_str,
+                    entry_lamports: self.quote_amount_raw,
+                    current_value_lamports: self.quote_amount_raw,
+                    peak_value_lamports: self.quote_amount_raw,
+                    entry_unix_secs: now_secs,
+                    dynamic_tp_pct: self.config.take_profit_pct,
+                    escalations: 0,
+                    last_check_unix_secs: now_secs,
+                    current_sl_lamports: (self.quote_amount_raw as f64
+                        * (1.0 - self.config.stop_loss_pct / 100.0))
+                        as u64,
+                    current_sl_pct: -self.config.stop_loss_pct,
+                    decline_streak: 0,
+                },
+            );
             let monitor = self.clone_for_sell(self.quote_amount_raw);
             tokio::spawn(async move {
                 monitor.monitor_and_sell(pool, ata_pk).await;
@@ -4921,13 +4970,14 @@ impl SellMonitor {
             // We deliberately only auto-clear OUR own trigger (reason=="buy_limit").
             // Dashboard- or drawdown-triggered sell modes carry different reasons and
             // must persist until the user / operator clears them.
-            let was_buy_limit = std::fs::read_to_string("scematica-sell-mode.json")
+            let sell_mode_path = artifact_path(SELL_MODE_FILE);
+            let was_buy_limit = std::fs::read_to_string(&sell_mode_path)
                 .map(|s| s.contains("buy_limit"))
                 .unwrap_or(false);
             if was_buy_limit {
                 let prev = self.buy_count.swap(0, Ordering::Relaxed);
                 self.sell_mode.store(false, Ordering::Relaxed);
-                let _ = std::fs::remove_file("scematica-sell-mode.json");
+                let _ = std::fs::remove_file(sell_mode_path);
                 tracing::info!(
                     cleared_buys = prev,
                     "All positions closed — buy counter reset, sell-mode lifted (buy_limit cycle complete)",

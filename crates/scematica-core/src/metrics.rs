@@ -1,8 +1,12 @@
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Environment override for all runtime JSON/JSONL artifacts.
+pub const DATA_DIR_ENV: &str = "SCEMATICA_DATA_DIR";
 
 /// Default path for the shared metrics file
 pub const METRICS_FILE: &str = "scematica-metrics.json";
@@ -21,6 +25,105 @@ pub const TX_TELEMETRY_FILE: &str = "scematica-tx-telemetry.jsonl";
 /// Default path for the strategy agent snapshot file
 pub const STRATEGY_FILE: &str = "scematica-strategy.json";
 
+/// Default path for the pool radar snapshot file.
+pub const POOL_RADAR_FILE: &str = "scematica-pool-radar.json";
+
+/// Default path for filter rejection/pass counters.
+pub const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
+
+/// Default path for the Deep Q* agent stats snapshot.
+pub const NN_STATS_FILE: &str = "scematica-nn-stats.json";
+
+/// Default path for the latest Deep Q* advice/explanation snapshot.
+pub const NN_ADVICE_FILE: &str = "scematica-nn-advice.json";
+
+/// Default path for the persisted Deep Q* checkpoint.
+pub const NN_AGENT_FILE: &str = "scematica-nn-agent.json";
+
+/// Default path for the sniper log.
+pub const LOG_FILE: &str = "scematica-sniper.log";
+
+/// Default path for the sniper process lock file.
+pub const LOCK_FILE: &str = "scematica-sniper.lock";
+
+/// Dashboard/API control files.
+pub const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
+pub const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
+pub const RATE_MODE_FILE: &str = "scematica-rate-mode.json";
+pub const MOON_CHASE_FILE: &str = "scematica-moon-chase.json";
+pub const BUILDER_MODE_FILE: &str = "scematica-builder-mode.json";
+pub const HIGH_SPEED_FILE: &str = "scematica-highspeed-mode.json";
+pub const POSITIONS_FILE: &str = "scematica-positions.json";
+pub const TOURNAMENT_FILE: &str = "scematica-nn-tournament.json";
+pub const DEPLOYER_REPUTATION_FILE: &str = "scematica-deployer-reputation.json";
+
+/// Resolve the directory used for runtime artifacts.
+///
+/// Priority:
+/// 1. `SCEMATICA_DATA_DIR`
+/// 2. the process CWD when it looks like the workspace root
+/// 3. the compile-time workspace root discovered from `scematica-core`
+/// 4. the process CWD as a final fallback
+pub fn artifact_dir() -> PathBuf {
+    if let Ok(value) = std::env::var(DATA_DIR_ENV) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return PathBuf::from(shellexpand::tilde(value).to_string());
+        }
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if cwd.join("config.toml").exists() || cwd.join(".git").exists() {
+        return cwd;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in manifest_dir.ancestors() {
+        if ancestor.join("Cargo.toml").exists() && ancestor.join("config.toml").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+
+    cwd
+}
+
+/// Resolve a runtime artifact path. Absolute paths pass through unchanged.
+pub fn artifact_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        artifact_dir().join(path)
+    }
+}
+
+/// Lossy string form for APIs that still take `&str` file paths.
+pub fn artifact_path_string(path: impl AsRef<Path>) -> String {
+    artifact_path(path).to_string_lossy().into_owned()
+}
+
+/// Create an empty artifact if it is missing. Existing files are not truncated.
+pub fn ensure_artifact_file(path: impl AsRef<Path>) {
+    let path = artifact_path(path);
+    ensure_parent_dir(&path);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+}
+
+fn ensure_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+}
+
+fn tmp_path(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
 /// Snapshot of the current live strategy parameters — written by the sniper,
 /// read by the dashboard on each tick.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +137,9 @@ pub struct StrategySnapshot {
 
 impl StrategySnapshot {
     pub fn write_to_file(&self, path: &str) {
-        let tmp = format!("{}.tmp", path);
+        let path = artifact_path(path);
+        ensure_parent_dir(&path);
+        let tmp = tmp_path(&path);
         if let Ok(json) = serde_json::to_string(self) {
             if std::fs::write(&tmp, &json).is_ok() {
                 let _ = std::fs::rename(&tmp, path);
@@ -43,6 +148,7 @@ impl StrategySnapshot {
     }
 
     pub fn load_from_file(path: &str) -> Option<Self> {
+        let path = artifact_path(path);
         let data = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&data).ok()
     }
@@ -118,6 +224,8 @@ impl TradeEvent {
     /// Creates the file if it doesn't exist. Never truncates.
     pub fn append_to_file(&self, path: &str) {
         use std::io::Write;
+        let path = artifact_path(path);
+        ensure_parent_dir(&path);
         if let Ok(mut json) = serde_json::to_string(self) {
             json.push('\n');
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -134,6 +242,7 @@ impl TradeEvent {
     /// Returns the new events and the updated byte offset for the next call.
     pub fn read_new_events(path: &str, byte_offset: u64) -> (Vec<TradeEvent>, u64) {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
+        let path = artifact_path(path);
         let mut file = match std::fs::File::open(path) {
             Ok(f) => f,
             Err(_) => return (vec![], byte_offset),
@@ -187,6 +296,8 @@ pub struct PoolDecisionEvent {
 impl PoolDecisionEvent {
     pub fn append_to_file(&self, path: &str) {
         use std::io::Write;
+        let path = artifact_path(path);
+        ensure_parent_dir(&path);
         if let Ok(mut json) = serde_json::to_string(self) {
             json.push('\n');
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -231,6 +342,8 @@ pub struct TxTelemetryEvent {
 impl TxTelemetryEvent {
     pub fn append_to_file(&self, path: &str) {
         use std::io::Write;
+        let path = artifact_path(path);
+        ensure_parent_dir(&path);
         if let Ok(mut json) = serde_json::to_string(self) {
             json.push('\n');
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -313,7 +426,9 @@ impl BotMetrics {
     /// Writes atomically via a temp file to avoid partial reads.
     pub fn flush_to_file(&self, path: &str) {
         let snap = self.snapshot();
-        let tmp = format!("{}.tmp", path);
+        let path = artifact_path(path);
+        ensure_parent_dir(&path);
+        let tmp = tmp_path(&path);
         if let Ok(json) = serde_json::to_string(&snap) {
             if std::fs::write(&tmp, &json).is_ok() {
                 let _ = std::fs::rename(&tmp, path);
@@ -349,6 +464,7 @@ impl MetricsSnapshot {
     /// Load a snapshot from the metrics file written by a running bot process.
     /// Returns None if the file doesn't exist or can't be parsed.
     pub fn load_from_file(path: &str) -> Option<Self> {
+        let path = artifact_path(path);
         let data = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&data).ok()
     }

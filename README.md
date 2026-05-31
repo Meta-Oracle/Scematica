@@ -1,10 +1,39 @@
-# Scematica v1.10.0
+# Scematica v1.11.0
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+
+---
+
+## What's New in v1.11.0
+
+### Intelligence Data Pipeline
+
+The sniper, API, terminal dashboard, and web dashboard now share one runtime artifact directory. By default this resolves to the workspace root; set `SCEMATICA_DATA_DIR` to override it for deployments. This fixes live runs where one process wrote `scematica-nn-advice.json`, `scematica-pool-decisions.jsonl`, or `scematica-tx-telemetry.jsonl` in a different working directory than the API/dashboard were reading.
+
+The sniper now creates the Intelligence artifacts at startup:
+
+| File | Producer | Consumer |
+|---|---|---|
+| `scematica-nn-advice.json` | Deep Q* agent startup + entry advice path | TUI Intelligence tab, web dashboard, `/api/nn-advice` |
+| `scematica-pool-decisions.jsonl` | Pool gate ledger in `sniper.rs` | TUI Intelligence tab, web dashboard, `/api/decisions` |
+| `scematica-tx-telemetry.jsonl` | Transaction executor in `executor.rs` | TUI Intelligence tab, web dashboard, `/api/tx-telemetry` |
+
+New API endpoints:
+
+```text
+GET /api/nn-advice
+GET /api/intelligence?limit=80
+```
+
+`/api/intelligence` returns the latest NN stats/advice plus recent pool decisions and transaction telemetry in one response. The web dashboard's Intelligence section now renders live DQ* advice, Q-values, pool decisions, and execution-quality telemetry from these endpoints.
+
+### Profit Claim Clarification
+
+`scematica_analysis.md` documents the profit model, risk controls, and limits of the system. Scematica can enforce execution and risk invariants, but it cannot honestly guarantee profit in adversarial, probabilistic markets.
 
 ---
 

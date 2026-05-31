@@ -80,7 +80,11 @@ export default function Home() {
           </div>
         </section>
 
-        <NNStatus />
+        {/* Intelligence */}
+        <section>
+          <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">â—ˆ Intelligence</p>
+          <NNStatus />
+        </section>
 
         {/* Controls */}
         <section>
@@ -98,7 +102,7 @@ export default function Home() {
           right={<FilterStatsPanel />}
         />
 
-        {/* Decision + Execution Quality */}
+        {/* Intelligence ledgers */}
         <Row2 height="h-72"
           left={<DecisionLedger />}
           right={<ExecutionQuality />}

@@ -37,6 +37,14 @@ export interface NNStats {
   last_q_values: number[]
 }
 
+export interface NNAdvice {
+  action: string
+  action_index: number
+  q_values: [string, number][]
+  top_reason: string
+  confidence: number
+}
+
 export interface Trade {
   timestamp: string          // ISO-8601
   kind: 'BUY' | 'SELL' | 'ARB'
@@ -106,4 +114,12 @@ export interface HealthStatus {
   api: string
   sniper_running: boolean
   sniper_pid?: number
+}
+
+export interface IntelligenceSnapshot {
+  nn: NNStats
+  advice: NNAdvice
+  decisions: PoolDecision[]
+  telemetry: TxTelemetry[]
+  paths?: Record<string, string>
 }

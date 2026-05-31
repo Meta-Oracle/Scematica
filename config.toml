@@ -62,27 +62,28 @@ blacklist_path = "blacklist.txt"
 
 # ── v1.7.0 Pool Quality Gate ───────────────────────────────────────────────────
 # Bayesian pool scorer (pool_scorer.rs). DexScreener-boosted tokens bypass this gate entirely.
-# Score 45 = P(win)≈0.06 posterior — minimum bar; still rejects ghost/dead/tiny pools.
-# Score 65 = P(win)≈0.09 — requires 6+ SOL + fresh + some velocity.
-# Score 85 = P(win)≈0.35 — requires 8-20 SOL + <10s + strong velocity.
+# After velocity fix: open_time=0 pools no longer get 0.35 dead-pool penalty.
+# Score 50 = unknown/stale pool, small size, no signals.
+# Score 80 = fresh detection + 15-20 SOL + no buy pressure (baseline runner candidate).
+# Score 92+ = fresh + 20-45 SOL + buy pressure confirmed OR pumpfun signal.
 min_pool_score = 92              # Elite-only mode: require top-decile runner profile before entry.
-require_moonshot_confirmation = true
+require_moonshot_confirmation = false     # Disabled: live inflow is 0 for all pools (arrive post-pump); score+fib gate quality instead
 moonshot_min_score = 92.0
-moonshot_min_inflow_sol_per_sec = 0.75
-moonshot_min_growth_pct = 2.0
+moonshot_min_inflow_sol_per_sec = 0.5
+moonshot_min_growth_pct = 1.0
 moonshot_min_growth_sol = 0.01
 moonshot_min_pumpfun_score = 90.0
 moonshot_min_historical_velocity_sol_per_sec = 2.618
-elite_pool_mode = true
+elite_pool_mode = false                   # Disabled: requires live_inflow or pregrad — neither fires for Raydium-listener pools
 elite_min_score = 92.0
 elite_min_signal_count = 2
 elite_min_pool_size_sol = 20.0
-elite_max_pool_size_sol = 100.0
+elite_max_pool_size_sol = 150.0
 elite_max_age_secs = 30
-elite_min_inflow_sol_per_sec = 0.75
+elite_min_inflow_sol_per_sec = 0.5
 elite_min_pumpfun_score = 90.0
 elite_min_historical_velocity_sol_per_sec = 2.618
-elite_min_buy_pressure_ratio = 0.02
+elite_min_buy_pressure_ratio = 0.0001
 elite_require_live_or_pregrad = true
 
 # ── v1.1.0 Kelly Position Sizing ────────────────────────────────────────────────
@@ -179,7 +180,7 @@ check_socials = false               # v1.6.0: Set true to hard-reject tokens wit
                                     # Scorer applies −4 to +10 boost based on social count
 filter_cache_ttl_secs = 30          # Cache filter results per pool
 min_pool_size = 20.0          # Recent tail: sub-20 SOL pools had weak win rate; only snipe deeper liquidity.
-max_pool_size = 100.0         # Catch momentum: pools can grow 5→50→100 SOL
+max_pool_size = 150.0         # Raised from 100 — 105-147 SOL pools were scoring 99.9 but being blocked
 check_name = true             # v1.2.0: Enabled — zero-cost scam-word filter
 check_volume = true           # v1.2.0: Require recent transaction activity
 min_volume_txns = 1           # Minimum transactions — 1 lets ultra-fresh pools through
@@ -194,7 +195,8 @@ max_top10_holder_pct = 99.0
 check_liquidity_momentum = false  # Disabled: Prevents false-rejecting consolidating runners
 
 # v1.1.0: Cross-pool correlation check
-check_cross_pool_correlation = false  # Disabled: keys off Raydium program ID (not deployer) — blocks all pools after 2 rugs
+# Re-enabled after key fix (was using Raydium program ID; now uses base_mint correctly)
+check_cross_pool_correlation = true
 
 # v1.2.0: Deployer rug history check
 max_deployer_rugs_24h = 2         # Block deployers with >2 rugs in 24h

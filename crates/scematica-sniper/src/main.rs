@@ -1,7 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
 use scematica_core::{
-    config::BotConfig, metrics::BotMetrics, token::raw_to_ui, types::known_tokens, wallet::Wallet,
+    config::BotConfig,
+    metrics::{
+        artifact_dir, artifact_path, artifact_path_string, ensure_artifact_file, BotMetrics,
+        BUILDER_MODE_FILE, DUMP_MODE_FILE, HIGH_SPEED_FILE, LOCK_FILE, LOG_FILE, MOON_CHASE_FILE,
+        NN_ADVICE_FILE, NN_AGENT_FILE, NN_STATS_FILE, POOL_DECISIONS_FILE, POSITIONS_FILE,
+        RATE_MODE_FILE, SELL_MODE_FILE, TRADES_FILE, TX_TELEMETRY_FILE,
+    },
+    token::raw_to_ui,
+    types::known_tokens,
+    wallet::Wallet,
 };
 use scematica_nn::{AgentStats, DQNAgent, TradeAction, TradeState as NNState};
 use scematica_sniper::{
@@ -57,7 +66,7 @@ fn is_process_alive(pid: u32) -> bool {
 struct LockGuard;
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file("scematica-sniper.lock");
+        let _ = std::fs::remove_file(artifact_path(LOCK_FILE));
     }
 }
 
@@ -153,7 +162,7 @@ async fn main() -> Result<()> {
         let filter =
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level));
         let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-        let file_appender = tracing_appender::rolling::never(".", "scematica-sniper.log");
+        let file_appender = tracing_appender::rolling::never(artifact_dir(), LOG_FILE);
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
         let file_layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
@@ -178,8 +187,8 @@ async fn main() -> Result<()> {
     // Two sniper processes sharing the same Helius WebSocket rate-limit each
     // other into uselessness (we observed ~1 pool/15 min instead of 1 pool/min).
     // Refuse to start if another instance is already alive.
-    const LOCK_FILE: &str = "scematica-sniper.lock";
-    if let Ok(prev) = std::fs::read_to_string(LOCK_FILE) {
+    let lock_file = artifact_path(LOCK_FILE);
+    if let Ok(prev) = std::fs::read_to_string(&lock_file) {
         if let Some(pid_str) = prev.lines().next() {
             if let Ok(pid) = pid_str.trim().parse::<u32>() {
                 if is_process_alive(pid) {
@@ -197,7 +206,7 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let _ = std::fs::write(LOCK_FILE, format!("{}\n", std::process::id()));
+    let _ = std::fs::write(&lock_file, format!("{}\n", std::process::id()));
     // Best-effort cleanup on graceful shutdown (Ctrl+C). Crashes leave the file
     // behind, but the next start's is_process_alive() check handles that.
     let _lock_guard = LockGuard;
@@ -352,8 +361,13 @@ async fn main() -> Result<()> {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    let nn_agent: Arc<Mutex<DQNAgent>> = Arc::new(Mutex::new(
-        match DQNAgent::load("scematica-nn-agent.json") {
+    ensure_artifact_file(TRADES_FILE);
+    ensure_artifact_file(POOL_DECISIONS_FILE);
+    ensure_artifact_file(TX_TELEMETRY_FILE);
+
+    let nn_agent_path = artifact_path_string(NN_AGENT_FILE);
+    let nn_agent: Arc<Mutex<DQNAgent>> =
+        Arc::new(Mutex::new(match DQNAgent::load(&nn_agent_path) {
             Ok(a) => {
                 info!("NN agent loaded from checkpoint");
                 a
@@ -365,8 +379,7 @@ async fn main() -> Result<()> {
                 );
                 DQNAgent::new()
             }
-        },
-    ));
+        }));
 
     // Create sniper
     let sniper = Arc::new(Sniper::new(
@@ -400,9 +413,7 @@ async fn main() -> Result<()> {
     // every pool with no obvious reason — exactly the "still gets hung up on sell
     // mode" footgun.
     {
-        const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
-        const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
-        if let Ok(contents) = std::fs::read_to_string(SELL_MODE_FILE) {
+        if let Ok(contents) = std::fs::read_to_string(artifact_path(SELL_MODE_FILE)) {
             let reason = serde_json::from_str::<serde_json::Value>(&contents)
                 .ok()
                 .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)))
@@ -413,7 +424,7 @@ async fn main() -> Result<()> {
                 reason,
             );
         }
-        if std::path::Path::new(DUMP_MODE_FILE).exists() {
+        if artifact_path(DUMP_MODE_FILE).exists() {
             warn!(
                 "🚨 STARTUP: scematica-dump-mode.json exists. DUMP MODE is engaged — all positions \
                  will be force-sold with zero slippage. Delete the file or press [d] to clear."
@@ -439,7 +450,7 @@ async fn main() -> Result<()> {
             let mut was_active = false;
             loop {
                 interval.tick().await;
-                let active = std::path::Path::new("scematica-highspeed-mode.json").exists();
+                let active = artifact_path(HIGH_SPEED_FILE).exists();
                 sniper_hs.high_speed_mode.store(active, Ordering::Relaxed);
                 if active && !was_active {
                     warn!("⚡ HIGH-SPEED MODE engaged — filters/AI/scorer bypassed, fee escalated, parallel buys enabled. Expect 429s and failed buys.");
@@ -462,7 +473,7 @@ async fn main() -> Result<()> {
             let mut was_active = false;
             loop {
                 interval.tick().await;
-                let active = std::path::Path::new("scematica-sell-mode.json").exists();
+                let active = artifact_path(SELL_MODE_FILE).exists();
                 sniper_sm.sell_mode.store(active, Ordering::Relaxed);
                 if active && !was_active {
                     warn!("🚨 SELL MODE activated — pausing buys and force-selling all positions");
@@ -497,7 +508,7 @@ async fn main() -> Result<()> {
             let mut active_ticks = 0u32;
             loop {
                 interval.tick().await;
-                let active = std::path::Path::new("scematica-dump-mode.json").exists();
+                let active = artifact_path(DUMP_MODE_FILE).exists();
                 sniper_dm.dump_mode.store(active, Ordering::Relaxed);
                 if active {
                     active_ticks += 1;
@@ -540,7 +551,7 @@ async fn main() -> Result<()> {
             let mut last_mode = String::new();
             loop {
                 interval.tick().await;
-                let Ok(data) = std::fs::read_to_string("scematica-rate-mode.json") else {
+                let Ok(data) = std::fs::read_to_string(artifact_path(RATE_MODE_FILE)) else {
                     continue;
                 };
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -650,9 +661,10 @@ async fn main() -> Result<()> {
                 }
                 let json = serde_json::json!({ "mode": target_mode });
                 if let Ok(s) = serde_json::to_string(&json) {
-                    let tmp = "scematica-rate-mode.json.tmp";
-                    if std::fs::write(tmp, &s).is_ok() {
-                        let _ = std::fs::rename(tmp, "scematica-rate-mode.json");
+                    let path = artifact_path(RATE_MODE_FILE);
+                    let tmp = artifact_path(format!("{}.tmp", RATE_MODE_FILE));
+                    if std::fs::write(&tmp, &s).is_ok() {
+                        let _ = std::fs::rename(&tmp, path);
                         info!(
                             "📅 Weekend auto-switch: {} → {} ({})",
                             last_applied, target_mode, weekday
@@ -699,8 +711,8 @@ async fn main() -> Result<()> {
             let mut last_mult = 0.0f64;
             loop {
                 interval.tick().await;
-                const PATH: &str = "scematica-builder-mode.json";
-                if !std::path::Path::new(PATH).exists() {
+                let path = artifact_path(BUILDER_MODE_FILE);
+                if !path.exists() {
                     if !last_label.is_empty() {
                         sniper_bm
                             .wallet_target_lamports_override
@@ -719,7 +731,7 @@ async fn main() -> Result<()> {
                     }
                     continue;
                 }
-                let Ok(data) = std::fs::read_to_string(PATH) else {
+                let Ok(data) = std::fs::read_to_string(&path) else {
                     continue;
                 };
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -821,9 +833,10 @@ async fn main() -> Result<()> {
                     .map(|e| e.value().clone())
                     .collect();
                 if let Ok(json) = serde_json::to_string(&snap) {
-                    let tmp = "scematica-positions.json.tmp";
-                    if std::fs::write(tmp, &json).is_ok() {
-                        let _ = std::fs::rename(tmp, "scematica-positions.json");
+                    let path = artifact_path(POSITIONS_FILE);
+                    let tmp = artifact_path(format!("{}.tmp", POSITIONS_FILE));
+                    if std::fs::write(&tmp, &json).is_ok() {
+                        let _ = std::fs::rename(&tmp, path);
                     }
                 }
             }
@@ -841,7 +854,7 @@ async fn main() -> Result<()> {
             let mut was_active = false;
             loop {
                 interval.tick().await;
-                let active = std::path::Path::new("scematica-moon-chase.json").exists();
+                let active = artifact_path(MOON_CHASE_FILE).exists();
                 sniper_mc.moon_chase.store(active, Ordering::Relaxed);
                 if active && !was_active {
                     warn!("🌙 MOON CHASE engaged — 8 escalations × 1.75×, pullback 25%, threshold 3%/check");
@@ -1025,8 +1038,9 @@ async fn main() -> Result<()> {
             if let Ok(ag) = nn_agent.lock() {
                 let stats: AgentStats = ag.stats();
                 if let Ok(s) = serde_json::to_string(&stats) {
-                    let _ = std::fs::write("scematica-nn-stats.json", s);
+                    let _ = std::fs::write(artifact_path(NN_STATS_FILE), s);
                 }
+                ag.write_explanation(&NNState::default(), &artifact_path_string(NN_ADVICE_FILE));
             }
         }
 
@@ -1045,7 +1059,7 @@ async fn main() -> Result<()> {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
-                    let Ok(raw) = std::fs::read_to_string("scematica-trades.jsonl") else {
+                    let Ok(raw) = std::fs::read_to_string(artifact_path(TRADES_FILE)) else {
                         continue;
                     };
                     let lines: Vec<&str> = raw.lines().collect();
@@ -1080,7 +1094,7 @@ async fn main() -> Result<()> {
                                     &agent,
                                     state,
                                     action,
-                                    -5.0,
+                                    -0.05,
                                     NNState::default(),
                                     true,
                                 );
@@ -1105,7 +1119,7 @@ async fn main() -> Result<()> {
                                 &agent,
                                 arb_state,
                                 TradeAction::Hold,
-                                (pnl_sol * 10_000.0).clamp(-5.0, 5.0),
+                                (pnl_sol * 100.0).clamp(-0.05, 0.05),
                                 NNState::default(),
                                 true,
                             );
@@ -1149,11 +1163,14 @@ async fn main() -> Result<()> {
                         );
                         let action = TradeAction::SellAll;
                         let reward = if confirmed {
-                            DQNAgent::shape_reward(pnl_pct, (age_secs / 60.0) as u32)
+                            // Divide by 100 to keep TD targets in [-3, +9] range so SGD
+                            // gradients stay bounded (raw shape_reward reaches ±900, blowing
+                            // the 1e-3 lr network into saturation within a few batches).
+                            DQNAgent::shape_reward(pnl_pct, (age_secs / 60.0) as u32) / 100.0
                         } else {
                             // Penalise hard-failed sells lightly so the agent learns to avoid pools
                             // where exits jam without flooding the signal with synthetic -100% events.
-                            -1.0
+                            -0.01
                         };
                         let next_state = NNState::from_trade_fields(
                             0.0,
@@ -1203,9 +1220,10 @@ async fn main() -> Result<()> {
                         if let Ok(s) = serde_json::to_string(&stats) {
                             // Atomic write: tmp → rename so the dashboard never reads a
                             // half-written file mid-flush.
-                            let tmp = "scematica-nn-stats.json.tmp";
-                            if std::fs::write(tmp, &s).is_ok() {
-                                let _ = std::fs::rename(tmp, "scematica-nn-stats.json");
+                            let path = artifact_path(NN_STATS_FILE);
+                            let tmp = artifact_path(format!("{}.tmp", NN_STATS_FILE));
+                            if std::fs::write(&tmp, &s).is_ok() {
+                                let _ = std::fs::rename(&tmp, path);
                             }
                         }
                     }
@@ -1221,7 +1239,7 @@ async fn main() -> Result<()> {
                 loop {
                     interval.tick().await;
                     if let Ok(ag) = agent.lock() {
-                        match ag.save("scematica-nn-agent.json") {
+                        match ag.save(&artifact_path_string(NN_AGENT_FILE)) {
                             Ok(_) => info!("🧠 NN agent checkpoint saved"),
                             Err(e) => tracing::warn!("NN checkpoint save failed: {}", e),
                         }
@@ -1238,7 +1256,9 @@ async fn main() -> Result<()> {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
                 loop {
                     interval.tick().await;
-                    if DQNAgent::poll_regime_shift_file("scematica-regime-shift.json") {
+                    if DQNAgent::poll_regime_shift_file(&artifact_path_string(
+                        "scematica-regime-shift.json",
+                    )) {
                         if let Ok(mut ag) = agent.lock() {
                             ag.notify_regime_shift();
                         }
@@ -1255,19 +1275,19 @@ async fn main() -> Result<()> {
     {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-            const TRADES_FILE: &str = "scematica-trades.jsonl";
             const MAX_LINES: usize = 10_000;
             loop {
                 interval.tick().await;
-                if let Ok(contents) = std::fs::read_to_string(TRADES_FILE) {
+                let trades_path = artifact_path(TRADES_FILE);
+                if let Ok(contents) = std::fs::read_to_string(&trades_path) {
                     let line_count = contents.lines().count();
                     if line_count >= MAX_LINES {
                         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                        let archive = format!("{}.bak-{}", TRADES_FILE, ts);
-                        if std::fs::rename(TRADES_FILE, &archive).is_ok() {
+                        let archive = artifact_path(format!("{}.bak-{}", TRADES_FILE, ts));
+                        if std::fs::rename(&trades_path, &archive).is_ok() {
                             info!(
                                 line_count,
-                                archive = %archive,
+                                archive = %archive.display(),
                                 "Trade log rotated — archived and starting fresh"
                             );
                         }

@@ -1,8 +1,9 @@
+use crate::app::{AppState, BotMode};
+use scematica_core::metrics::artifact_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-use crate::app::{AppState, BotMode};
 
 pub enum BotCommand {
     Start(BotMode),
@@ -11,10 +12,7 @@ pub enum BotCommand {
 
 /// Long-running task that owns child process handles and responds to start/stop commands.
 /// Updates `AppState.active_mode` as children come up or exit.
-pub async fn run_process_manager(
-    mut cmd_rx: mpsc::Receiver<BotCommand>,
-    state: Arc<AppState>,
-) {
+pub async fn run_process_manager(mut cmd_rx: mpsc::Receiver<BotCommand>, state: Arc<AppState>) {
     let mut sniper: Option<Child> = None;
     let mut arb: Option<Child> = None;
 
@@ -25,12 +23,7 @@ pub async fn run_process_manager(
         sync_mode(&state, sniper.is_some(), arb.is_some());
 
         // Wait up to 500 ms for a command, then loop to re-check children
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            cmd_rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(500), cmd_rx.recv()).await {
             Ok(Some(BotCommand::Start(mode))) => {
                 // Kill whatever is currently running
                 kill(&mut sniper, "Sniper", &state).await;
@@ -38,13 +31,17 @@ pub async fn run_process_manager(
 
                 if matches!(mode, BotMode::Sniper | BotMode::Both) {
                     match launch("sniper", &state) {
-                        Ok(child) => { sniper = Some(child); }
+                        Ok(child) => {
+                            sniper = Some(child);
+                        }
                         Err(e) => state.push_log(format!("[ERROR] {}", e)),
                     }
                 }
                 if matches!(mode, BotMode::Arb | BotMode::Both) {
                     match launch("arb", &state) {
-                        Ok(child) => { arb = Some(child); }
+                        Ok(child) => {
+                            arb = Some(child);
+                        }
                         Err(e) => state.push_log(format!("[ERROR] {}", e)),
                     }
                 }
@@ -102,10 +99,10 @@ async fn kill(child: &mut Option<Child>, label: &str, state: &Arc<AppState>) {
 
 fn sync_mode(state: &Arc<AppState>, sniper_up: bool, arb_up: bool) {
     let mode = match (sniper_up, arb_up) {
-        (true, true)  => BotMode::Both,
+        (true, true) => BotMode::Both,
         (true, false) => BotMode::Sniper,
         (false, true) => BotMode::Arb,
-        _             => BotMode::Idle,
+        _ => BotMode::Idle,
     };
     *state.active_mode.write() = mode;
 }
@@ -114,6 +111,7 @@ fn launch(name: &str, state: &Arc<AppState>) -> anyhow::Result<Child> {
     let bin = find_binary(name)?;
     state.push_log(format!("[BOT] Starting {} ({:?})", name, bin));
     let mut child = Command::new(&bin)
+        .current_dir(artifact_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
@@ -142,7 +140,9 @@ fn find_binary(name: &str) -> anyhow::Result<PathBuf> {
     let env_key = format!("SCEMATICA_{}_BIN", name.to_uppercase());
     if let Ok(p) = std::env::var(&env_key) {
         let path = PathBuf::from(&p);
-        if path.exists() { return Ok(path); }
+        if path.exists() {
+            return Ok(path);
+        }
     }
 
     // Check workspace-local target first, then the redirected external target dir.
@@ -151,11 +151,14 @@ fn find_binary(name: &str) -> anyhow::Result<PathBuf> {
     let candidates = ["target/release", "target/debug"];
     for dir in &candidates {
         let path = PathBuf::from(dir).join(&bin);
-        if path.exists() { return Ok(path); }
+        if path.exists() {
+            return Ok(path);
+        }
     }
 
     anyhow::bail!(
         "Cannot find '{}' binary. Build it first:\n  cargo build --bin {}",
-        bin, name
+        bin,
+        name
     )
 }

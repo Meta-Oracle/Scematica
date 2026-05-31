@@ -3,7 +3,7 @@
   "turn_delay_ms": 1000,
   "agents": [
     {
-      "name": "Optimist",
+      "name": "Optima",
       "backend": {
         "type": "ollama",
         "base_url": "http://localhost:11434",
@@ -13,7 +13,7 @@
       "max_tokens": 350
     },
     {
-      "name": "Skeptic",
+      "name": "Decima",
       "backend": {
         "type": "ollama",
         "base_url": "http://localhost:11434",
@@ -23,7 +23,7 @@
       "max_tokens": 350
     },
     {
-      "name": "Philosopher",
+      "name": "Decidius",
       "backend": {
         "type": "ollama",
         "base_url": "http://localhost:11434",

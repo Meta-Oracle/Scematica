@@ -5,12 +5,15 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use scematica_ai::{AiClient, ChatAgent};
 use scematica_ai::chat_types::AgentOutput;
 use scematica_ai::prompts::CHAT_AGENT_SYSTEM;
 use scematica_ai::tool_dispatcher::ToolDispatcher;
 use scematica_ai::types::ChatMessage;
-use scematica_core::metrics::BotMetrics;
+use scematica_ai::{AiClient, ChatAgent};
+use scematica_core::metrics::{
+    artifact_path, BotMetrics, BUILDER_MODE_FILE, DUMP_MODE_FILE, HIGH_SPEED_FILE, MOON_CHASE_FILE,
+    RATE_MODE_FILE, SELL_MODE_FILE, TRADES_FILE,
+};
 use scematica_core::token::raw_to_ui;
 use scematica_core::types::known_tokens;
 use scematica_dashboard::{
@@ -88,7 +91,9 @@ async fn main() -> Result<()> {
                 }
                 // SCEMA is Token-2022 — ATA address differs from legacy SPL.
                 // Use owner query so we find it regardless of token program.
-                if let Ok(accounts) = state_clone.rpc.client
+                if let Ok(accounts) = state_clone
+                    .rpc
+                    .client
                     .get_token_accounts_by_owner(
                         &wallet_pubkey,
                         TokenAccountsFilter::Mint(known_tokens::SCEMATICA_MINT),
@@ -135,7 +140,10 @@ async fn main() -> Result<()> {
             });
         }
 
-        s.push_log(format!("[INFO] Scematica dashboard | Wallet: {}", wallet_pubkey));
+        s.push_log(format!(
+            "[INFO] Scematica dashboard | Wallet: {}",
+            wallet_pubkey
+        ));
 
         // Process manager — owns child process handles, responds to BotCommand via mpsc
         let (bot_tx, bot_rx) = mpsc::channel::<BotCommand>(16);
@@ -247,13 +255,15 @@ async fn main() -> Result<()> {
             match event {
                 AppEvent::Key(key) => {
                     // If onboarding is still showing, Enter advances it and other keys are blocked
-                    let onboarding_done = state.onboarding.read().current_step == OnboardingStep::Completed;
+                    let onboarding_done =
+                        state.onboarding.read().current_step == OnboardingStep::Completed;
                     if !onboarding_done {
                         match key.code {
                             crossterm::event::KeyCode::Enter => {
                                 state.onboarding.write().next();
                             }
-                            crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
+                            crossterm::event::KeyCode::Esc
+                            | crossterm::event::KeyCode::Char('q') => {
                                 // Skip straight to done
                                 let mut ob = state.onboarding.write();
                                 ob.current_step = OnboardingStep::Completed;
@@ -265,7 +275,9 @@ async fn main() -> Result<()> {
 
                     let has_pending = state.chat_pending.read().is_some();
                     let log_filter_active = *state.log_filter_active.read();
-                    if let Some(action) = handle_key(key, current_tab, has_pending, log_filter_active) {
+                    if let Some(action) =
+                        handle_key(key, current_tab, has_pending, log_filter_active)
+                    {
                         match action {
                             DashboardAction::Quit => break,
                             DashboardAction::NextTab => state.next_tab(),
@@ -318,14 +330,16 @@ async fn main() -> Result<()> {
                                 let currently = *state.sell_mode_active.read();
                                 let next = !currently;
                                 *state.sell_mode_active.write() = next;
-                                const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
                                 if next {
-                                    let _ = std::fs::write(SELL_MODE_FILE, r#"{"active":true}"#);
+                                    let _ = std::fs::write(
+                                        artifact_path(SELL_MODE_FILE),
+                                        r#"{"active":true}"#,
+                                    );
                                     state.push_log(
                                         "[SELL MODE] Emergency sell mode ACTIVATED — buying paused, selling all positions".to_string()
                                     );
                                 } else {
-                                    let _ = std::fs::remove_file(SELL_MODE_FILE);
+                                    let _ = std::fs::remove_file(artifact_path(SELL_MODE_FILE));
                                     state.push_log(
                                         "[SELL MODE] Sell mode DEACTIVATED — resuming normal operation".to_string()
                                     );
@@ -335,16 +349,18 @@ async fn main() -> Result<()> {
                                 // Force-clear sell mode regardless of which subsystem set it.
                                 // Inspect the file (if any) so the log entry tells the operator
                                 // what they just overrode — drawdown? buy_limit? manual?
-                                const SELL_MODE_FILE: &str = "scematica-sell-mode.json";
-                                let prior_reason = std::fs::read_to_string(SELL_MODE_FILE)
+                                let sell_mode_path = artifact_path(SELL_MODE_FILE);
+                                let prior_reason = std::fs::read_to_string(&sell_mode_path)
                                     .ok()
                                     .and_then(|s| {
                                         serde_json::from_str::<serde_json::Value>(&s).ok()
                                     })
-                                    .and_then(|v| v.get("reason").and_then(|r| r.as_str().map(String::from)))
+                                    .and_then(|v| {
+                                        v.get("reason").and_then(|r| r.as_str().map(String::from))
+                                    })
                                     .unwrap_or_else(|| "manual".to_string());
-                                let existed = std::path::Path::new(SELL_MODE_FILE).exists();
-                                let _ = std::fs::remove_file(SELL_MODE_FILE);
+                                let existed = sell_mode_path.exists();
+                                let _ = std::fs::remove_file(&sell_mode_path);
                                 *state.sell_mode_active.write() = false;
                                 if existed {
                                     state.push_log(format!(
@@ -358,19 +374,22 @@ async fn main() -> Result<()> {
                                 }
                             }
                             DashboardAction::ToggleHighSpeed => {
-                                const HS_FILE: &str = "scematica-highspeed-mode.json";
                                 let currently = *state.high_speed_active.read();
                                 let next = !currently;
                                 *state.high_speed_active.write() = next;
                                 if next {
-                                    let _ = std::fs::write(HS_FILE, r#"{"active":true}"#);
+                                    let _ = std::fs::write(
+                                        artifact_path(HIGH_SPEED_FILE),
+                                        r#"{"active":true}"#,
+                                    );
                                     state.push_log(
                                         "[HIGH-SPEED] ⚡ ENGAGED — filters/AI/scorer bypassed, fee escalated, parallel buys. Expect 429s.".to_string()
                                     );
                                 } else {
-                                    let _ = std::fs::remove_file(HS_FILE);
+                                    let _ = std::fs::remove_file(artifact_path(HIGH_SPEED_FILE));
                                     state.push_log(
-                                        "[HIGH-SPEED] Disengaged — normal filter pipeline restored".to_string()
+                                        "[HIGH-SPEED] Disengaged — normal filter pipeline restored"
+                                            .to_string(),
                                     );
                                 }
                             }
@@ -378,38 +397,44 @@ async fn main() -> Result<()> {
                                 let currently = *state.dump_mode_active.read();
                                 let next = !currently;
                                 *state.dump_mode_active.write() = next;
-                                const DUMP_MODE_FILE: &str = "scematica-dump-mode.json";
                                 if next {
-                                    let _ = std::fs::write(DUMP_MODE_FILE, r#"{"active":true}"#);
+                                    let _ = std::fs::write(
+                                        artifact_path(DUMP_MODE_FILE),
+                                        r#"{"active":true}"#,
+                                    );
                                     state.push_log(
                                         "[DUMP MODE] AUTO DUMP ACTIVATED — force-selling ALL positions with zero slippage".to_string()
                                     );
                                 } else {
-                                    let _ = std::fs::remove_file(DUMP_MODE_FILE);
-                                    state.push_log(
-                                        "[DUMP MODE] Auto dump DEACTIVATED".to_string()
-                                    );
+                                    let _ = std::fs::remove_file(artifact_path(DUMP_MODE_FILE));
+                                    state.push_log("[DUMP MODE] Auto dump DEACTIVATED".to_string());
                                 }
                             }
-                            DashboardAction::ExportCsv => {
-                                match state.export_trades_csv() {
-                                    Ok(path) => state.push_log(format!("[EXPORT] Trades saved to {}", path)),
-                                    Err(e) => state.push_log(format!("[EXPORT] Failed: {}", e)),
+                            DashboardAction::ExportCsv => match state.export_trades_csv() {
+                                Ok(path) => {
+                                    state.push_log(format!("[EXPORT] Trades saved to {}", path))
                                 }
-                            }
+                                Err(e) => state.push_log(format!("[EXPORT] Failed: {}", e)),
+                            },
                             DashboardAction::ResetPositions => {
                                 // Back up the trades file, truncate it, and clear the in-memory
                                 // deque + offset. Next poll will be a no-op (file is empty).
                                 use std::fs;
                                 let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                                let backup = format!("scematica-trades.jsonl.bak-{}", ts);
-                                let backup_ok = fs::rename("scematica-trades.jsonl", &backup).is_ok();
-                                let trunc_ok = fs::write("scematica-trades.jsonl", []).is_ok();
+                                let backup = format!("{}.bak-{}", TRADES_FILE, ts);
+                                let trades_path = artifact_path(TRADES_FILE);
+                                let backup_path = artifact_path(&backup);
+                                let backup_ok = fs::rename(&trades_path, &backup_path).is_ok();
+                                let trunc_ok = fs::write(&trades_path, []).is_ok();
                                 state.trades.write().clear();
                                 *state.trade_file_offset.write() = 0;
                                 state.push_log(format!(
                                     "[RESET] Position counter cleared (backup: {}, ok={})",
-                                    if backup_ok { backup } else { "skipped".to_string() },
+                                    if backup_ok {
+                                        backup
+                                    } else {
+                                        "skipped".to_string()
+                                    },
                                     trunc_ok,
                                 ));
                             }
@@ -448,7 +473,8 @@ async fn main() -> Result<()> {
                                     "quote_amount": mode.buy_sol(),
                                     "wallet_pct": mode.wallet_pct(),
                                 });
-                                let _ = std::fs::write("scematica-rate-mode.json", json.to_string());
+                                let _ =
+                                    std::fs::write(artifact_path(RATE_MODE_FILE), json.to_string());
                                 state.push_log(format!(
                                     "[RATE] Mode → {}  |  {:.1}% wallet ({:.3} SOL base)  |  TP {:.0}%  SL {:.0}%",
                                     mode.label(), mode.wallet_pct(), mode.buy_sol(), mode.tp_pct(), mode.sl_pct()
@@ -465,17 +491,20 @@ async fn main() -> Result<()> {
                                         "pullback_exit_pct": 25.0,
                                         "escalation_threshold_pct": 3.0,
                                     });
-                                    let _ = std::fs::write("scematica-moon-chase.json", json.to_string());
+                                    let _ = std::fs::write(
+                                        artifact_path(MOON_CHASE_FILE),
+                                        json.to_string(),
+                                    );
                                     state.push_log("[MOON CHASE] 🌙 ENGAGED — 8 escalations × 1.75×, pullback 25%, threshold 3%/check");
                                 } else {
-                                    let _ = std::fs::remove_file("scematica-moon-chase.json");
+                                    let _ = std::fs::remove_file(artifact_path(MOON_CHASE_FILE));
                                     state.push_log("[MOON CHASE] disengaged — momentum-hold back to EV-optimal params");
                                 }
                             }
                             DashboardAction::SetBuilderMode(bm) => {
                                 *state.builder_mode.write() = bm;
                                 if bm == scematica_dashboard::app::BuilderMode::Off {
-                                    let _ = std::fs::remove_file("scematica-builder-mode.json");
+                                    let _ = std::fs::remove_file(artifact_path(BUILDER_MODE_FILE));
                                     state.push_log("[BUILDER] Mode → Off (sniper uses config.toml wallet_target_sol)");
                                 } else {
                                     let json = serde_json::json!({
@@ -483,7 +512,10 @@ async fn main() -> Result<()> {
                                         "target_sol": bm.target_sol(),
                                         "progressive_scaling": bm.progressive(),
                                     });
-                                    let _ = std::fs::write("scematica-builder-mode.json", json.to_string());
+                                    let _ = std::fs::write(
+                                        artifact_path(BUILDER_MODE_FILE),
+                                        json.to_string(),
+                                    );
                                     state.push_log(format!(
                                         "[BUILDER] Mode → {}  |  target {:.1} SOL  |  progressive scaling: {}",
                                         bm.label(), bm.target_sol(), if bm.progressive() { "ON" } else { "OFF" },
@@ -519,7 +551,7 @@ async fn main() -> Result<()> {
                     // Mirror the high-speed-mode file into local state so the UI label
                     // reflects external changes (e.g. user deletes the file by hand,
                     // or another tool toggles it).
-                    let hs_now = std::path::Path::new("scematica-highspeed-mode.json").exists();
+                    let hs_now = artifact_path(HIGH_SPEED_FILE).exists();
                     if *state.high_speed_active.read() != hs_now {
                         *state.high_speed_active.write() = hs_now;
                     }

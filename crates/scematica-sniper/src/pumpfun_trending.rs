@@ -22,17 +22,19 @@ const PUMPPORTAL_WS: &str = "wss://pumpportal.fun/api/data";
 const GRADUATION_SOL: f64 = 69.0;
 
 // Subscription messages sent on connect
-const SUB_NEW_TOKEN:  &str = r#"{"method":"subscribeNewToken"}"#;
+const SUB_NEW_TOKEN: &str = r#"{"method":"subscribeNewToken"}"#;
 const SUB_MIGRATIONS: &str = r#"{"method":"subscribeRaydiumMigrations"}"#;
 
-// Raydium AMM V4 pool state layout offsets (same as listener.rs)
-const BASE_MINT_OFFSET:   usize = 400;
-const QUOTE_MINT_OFFSET:  usize = 432;
-const BASE_VAULT_OFFSET:  usize = 336;
+// Raydium AMM V4 pool state layout offsets — must match crates/scematica-core/src/dex.rs.
+// These were previously wrong (MARKET_ID=464, OPEN_TIME=200, MIN_SIZE=496) which caused
+// the pumpfun migration path to decode garbage market IDs and wrong open timestamps.
+const BASE_MINT_OFFSET: usize = 400;
+const QUOTE_MINT_OFFSET: usize = 432;
+const BASE_VAULT_OFFSET: usize = 336;
 const QUOTE_VAULT_OFFSET: usize = 368;
-const MARKET_ID_OFFSET:   usize = 464;
-const OPEN_TIME_OFFSET:   usize = 200;
-const POOL_STATE_MIN_SIZE: usize = 496;
+const MARKET_ID_OFFSET: usize = 528; // was 464
+const OPEN_TIME_OFFSET: usize = 224; // was 200 (u128 lo-bits)
+const POOL_STATE_MIN_SIZE: usize = 752; // was 496
 
 /// Configuration for the Pump.fun trending monitor.
 /// All fields are optional — defaults are tuned for real-money sniping.
@@ -129,10 +131,17 @@ impl TokenWindow {
     fn add_trade(&mut self, is_buy: bool, sol_amount: f64, curve_sol: f64, window_secs: u64) {
         let now = Instant::now();
         self.trades.push_back((now, is_buy, sol_amount));
-        if curve_sol > 0.0 { self.curve_sol = curve_sol; }
+        if curve_sol > 0.0 {
+            self.curve_sol = curve_sol;
+        }
         // Prune entries outside the sliding window
         let cutoff = now - Duration::from_secs(window_secs);
-        while self.trades.front().map(|(t, ..)| *t < cutoff).unwrap_or(false) {
+        while self
+            .trades
+            .front()
+            .map(|(t, ..)| *t < cutoff)
+            .unwrap_or(false)
+        {
             self.trades.pop_front();
         }
     }
@@ -148,14 +157,17 @@ impl TokenWindow {
             return 0.0;
         }
 
-        let (buy_n, buy_vol, sell_vol) = self.trades.iter().fold(
-            (0u32, 0f64, 0f64),
-            |(bn, bv, sv), (_, is_buy, sol)| {
-                if *is_buy { (bn + 1, bv + sol, sv) }
-                else       { (bn, bv, sv + sol) }
-            },
-        );
-        let total_n  = self.trades.len() as f64;
+        let (buy_n, buy_vol, sell_vol) =
+            self.trades
+                .iter()
+                .fold((0u32, 0f64, 0f64), |(bn, bv, sv), (_, is_buy, sol)| {
+                    if *is_buy {
+                        (bn + 1, bv + sol, sv)
+                    } else {
+                        (bn, bv, sv + sol)
+                    }
+                });
+        let total_n = self.trades.len() as f64;
         let buy_ratio = buy_n as f64 / total_n;
         let total_vol = buy_vol + sell_vol;
 
@@ -164,7 +176,9 @@ impl TokenWindow {
 
         // Volume velocity: 2 SOL/min → full 30 pts
         // Span is at most window_secs; use actual elapsed from first trade
-        let span_secs = self.trades.front()
+        let span_secs = self
+            .trades
+            .front()
             .map(|(t, ..)| t.elapsed().as_secs_f64())
             .unwrap_or(1.0)
             .max(1.0);
@@ -271,7 +285,9 @@ impl PumpFunTrendingMonitor {
 
         // Subscribe to all new-token creates and Raydium migrations
         write.send(Message::Text(SUB_NEW_TOKEN.to_string())).await?;
-        write.send(Message::Text(SUB_MIGRATIONS.to_string())).await?;
+        write
+            .send(Message::Text(SUB_MIGRATIONS.to_string()))
+            .await?;
 
         // Channel: main loop sends subscription messages to the write task
         let (ws_tx, mut ws_rx) = mpsc::channel::<String>(256);
@@ -280,16 +296,18 @@ impl PumpFunTrendingMonitor {
         // Runs independently so the read loop is never blocked on a write.
         let write_task = tokio::spawn(async move {
             while let Some(msg) = ws_rx.recv().await {
-                if write.send(Message::Text(msg)).await.is_err() { break; }
+                if write.send(Message::Text(msg)).await.is_err() {
+                    break;
+                }
             }
         });
 
         // Per-token sliding-window state
         let windows: DashMap<String, TokenWindow> = DashMap::new();
 
-        let cfg       = &self.config;
-        let rpc       = Arc::clone(&self.rpc);
-        let event_tx  = self.tx.clone();
+        let cfg = &self.config;
+        let rpc = Arc::clone(&self.rpc);
+        let event_tx = self.tx.clone();
 
         while let Some(msg) = read.next().await {
             let raw = match msg? {
@@ -303,27 +321,30 @@ impl PumpFunTrendingMonitor {
                 serde_json::from_str(&raw).unwrap_or_default()
             } else {
                 match serde_json::from_str::<PumpEvent>(&raw) {
-                    Ok(e)  => vec![e],
+                    Ok(e) => vec![e],
                     Err(_) => continue,
                 }
             };
 
             for ev in events {
-                if ev.mint.is_empty() { continue; }
+                if ev.mint.is_empty() {
+                    continue;
+                }
 
                 match ev.tx_type.as_str() {
-
                     // ── New token created on bonding curve ────────────────────
                     "create" => {
                         debug!(mint = %ev.mint, name = %ev.name, symbol = %ev.symbol,
                                "PumpFun: new token");
 
-                        windows.entry(ev.mint.clone())
+                        windows
+                            .entry(ev.mint.clone())
                             .or_insert_with(|| TokenWindow::new(ev.v_sol_in_curve));
 
                         // Evict oldest entry if over the cap
                         if windows.len() > cfg.max_tracked_tokens {
-                            if let Some(stale) = windows.iter()
+                            if let Some(stale) = windows
+                                .iter()
                                 .min_by_key(|e| e.value().first_seen_secs)
                                 .map(|e| e.key().clone())
                             {
@@ -335,7 +356,8 @@ impl PumpFunTrendingMonitor {
                         let sub_msg = serde_json::json!({
                             "method": "subscribeTokenTrade",
                             "keys": [ev.mint],
-                        }).to_string();
+                        })
+                        .to_string();
                         let _ = ws_tx.send(sub_msg).await;
                     }
 
@@ -346,12 +368,14 @@ impl PumpFunTrendingMonitor {
                             .or_insert_with(|| TokenWindow::new(ev.v_sol_in_curve));
 
                         entry.add_trade(
-                            ev.is_buy, ev.sol_amount,
-                            ev.v_sol_in_curve, cfg.track_window_secs,
+                            ev.is_buy,
+                            ev.sol_amount,
+                            ev.v_sol_in_curve,
+                            cfg.track_window_secs,
                         );
 
-                        let score       = entry.trending_score();
-                        let curve_pct   = entry.curve_fill_pct();
+                        let score = entry.trending_score();
+                        let curve_pct = entry.curve_fill_pct();
                         let pre_flagged = entry.pre_flagged;
 
                         // Log when a token first crosses the trending threshold
@@ -475,14 +499,14 @@ impl PumpFunTrendingMonitor {
 
                         // Spawn pool fetch so the read loop isn't blocked
                         let pool_pk_str = ev.pool.clone();
-                        let mint_str    = ev.mint.clone();
-                        let rpc2        = Arc::clone(&rpc);
-                        let tx2         = event_tx.clone();
+                        let mint_str = ev.mint.clone();
+                        let rpc2 = Arc::clone(&rpc);
+                        let tx2 = event_tx.clone();
 
                         tokio::spawn(async move {
-                            if let Some(mut pool) = Self::fetch_and_decode_pool(
-                                &rpc2, &pool_pk_str, &mint_str,
-                            ).await {
+                            if let Some(mut pool) =
+                                Self::fetch_and_decode_pool(&rpc2, &pool_pk_str, &mint_str).await
+                            {
                                 // Carry the pre-graduation momentum score into the pool
                                 // so the pool scorer can use it as a Bayesian LR signal.
                                 pool.pumpfun_score = score;
@@ -555,7 +579,7 @@ impl PumpFunTrendingMonitor {
             id: pool_pk,
             base_mint,
             quote_mint: solana_sdk::pubkey!("So11111111111111111111111111111111111111112"),
-            base_vault: pool_pk,  // sniper will re-fetch from pool state
+            base_vault: pool_pk, // sniper will re-fetch from pool state
             quote_vault: pool_pk,
             market_id: pool_pk,
             open_time: std::time::SystemTime::now()
@@ -576,19 +600,23 @@ fn decode_pool_account(pool_pk: &Pubkey, data: &[u8]) -> Option<CachedPool> {
         return None;
     }
 
-    let base_mint  = Pubkey::try_from(&data[BASE_MINT_OFFSET  ..BASE_MINT_OFFSET   + 32]).ok()?;
-    let quote_mint = Pubkey::try_from(&data[QUOTE_MINT_OFFSET ..QUOTE_MINT_OFFSET  + 32]).ok()?;
-    let base_vault = Pubkey::try_from(&data[BASE_VAULT_OFFSET ..BASE_VAULT_OFFSET  + 32]).ok()?;
-    let quote_vault= Pubkey::try_from(&data[QUOTE_VAULT_OFFSET..QUOTE_VAULT_OFFSET + 32]).ok()?;
-    let market_id  = Pubkey::try_from(&data[MARKET_ID_OFFSET  ..MARKET_ID_OFFSET   + 32]).ok()?;
-    let open_time  = u64::from_le_bytes(
-        data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8].try_into().ok()?
+    let base_mint = Pubkey::try_from(&data[BASE_MINT_OFFSET..BASE_MINT_OFFSET + 32]).ok()?;
+    let quote_mint = Pubkey::try_from(&data[QUOTE_MINT_OFFSET..QUOTE_MINT_OFFSET + 32]).ok()?;
+    let base_vault = Pubkey::try_from(&data[BASE_VAULT_OFFSET..BASE_VAULT_OFFSET + 32]).ok()?;
+    let quote_vault = Pubkey::try_from(&data[QUOTE_VAULT_OFFSET..QUOTE_VAULT_OFFSET + 32]).ok()?;
+    let market_id = Pubkey::try_from(&data[MARKET_ID_OFFSET..MARKET_ID_OFFSET + 32]).ok()?;
+    let open_time = u64::from_le_bytes(
+        data[OPEN_TIME_OFFSET..OPEN_TIME_OFFSET + 8]
+            .try_into()
+            .ok()?,
     );
 
     // Reject zero pubkeys — pool not fully initialised yet
-    if base_mint  == Pubkey::default() || quote_mint   == Pubkey::default()
-    || base_vault == Pubkey::default() || quote_vault  == Pubkey::default()
-    || market_id  == Pubkey::default()
+    if base_mint == Pubkey::default()
+        || quote_mint == Pubkey::default()
+        || base_vault == Pubkey::default()
+        || quote_vault == Pubkey::default()
+        || market_id == Pubkey::default()
     {
         return None;
     }
@@ -601,8 +629,8 @@ fn decode_pool_account(pool_pk: &Pubkey, data: &[u8]) -> Option<CachedPool> {
         quote_vault,
         market_id,
         open_time,
-        base_decimals: 6,  // Pump.fun tokens are 6-decimal
-        quote_decimals: 9, // WSOL is 9-decimal
+        base_decimals: 6,   // Pump.fun tokens are 6-decimal
+        quote_decimals: 9,  // WSOL is 9-decimal
         pumpfun_score: 0.0, // set by caller after trending check
     })
 }

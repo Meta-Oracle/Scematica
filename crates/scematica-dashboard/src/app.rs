@@ -6,8 +6,10 @@ use parking_lot::RwLock;
 use scematica_ai::chat_types::PendingToolCall;
 use scematica_ai::tool_dispatcher::LiveData;
 use scematica_core::metrics::{
-    BotMetrics, MetricsSnapshot, PoolDecisionEvent, StrategySnapshot, TradeEvent, TxTelemetryEvent,
-    METRICS_FILE, POOL_DECISIONS_FILE, STRATEGY_FILE, TRADES_FILE, TX_TELEMETRY_FILE,
+    artifact_path, BotMetrics, MetricsSnapshot, PoolDecisionEvent, StrategySnapshot, TradeEvent,
+    TxTelemetryEvent, DEPLOYER_REPUTATION_FILE, FILTER_STATS_FILE, LOG_FILE, METRICS_FILE,
+    NN_ADVICE_FILE, NN_STATS_FILE, POOL_DECISIONS_FILE, POOL_RADAR_FILE, POSITIONS_FILE,
+    STRATEGY_FILE, TOURNAMENT_FILE, TRADES_FILE, TX_TELEMETRY_FILE,
 };
 use scematica_core::rpc::RpcConnection;
 use serde::{Deserialize, Serialize};
@@ -561,7 +563,7 @@ impl AppState {
         // File-shrink detection: if scematica-trades.jsonl was truncated or rotated
         // externally (e.g. user reset positions), the recorded offset is now past
         // EOF. Treat that as "reset" — clear the in-memory deque and re-read from 0.
-        if let Ok(meta) = std::fs::metadata(TRADES_FILE) {
+        if let Ok(meta) = std::fs::metadata(artifact_path(TRADES_FILE)) {
             if meta.len() < offset {
                 self.trades.write().clear();
                 *self.trade_file_offset.write() = 0;
@@ -702,14 +704,14 @@ impl AppState {
     /// Used when the sniper runs as a separate process (not dashboard-managed).
     pub fn poll_log_file(&self) {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
-        const LOG_FILE: &str = "scematica-sniper.log";
+        let log_file = artifact_path(LOG_FILE);
         let mut offset = *self.sniper_log_offset.read();
 
         // First call: seek to file end so we don't replay the entire prior session's
         // log into the dashboard buffer on startup. Stored offset == 0 + a non-empty
         // file ⇒ first run ⇒ jump past existing content and only show new lines.
         if offset == 0 {
-            if let Ok(meta) = std::fs::metadata(LOG_FILE) {
+            if let Ok(meta) = std::fs::metadata(&log_file) {
                 let end = meta.len();
                 if end > 0 {
                     offset = end;
@@ -718,7 +720,7 @@ impl AppState {
             }
         }
 
-        let Ok(mut file) = std::fs::File::open(LOG_FILE) else {
+        let Ok(mut file) = std::fs::File::open(&log_file) else {
             return;
         };
 
@@ -759,8 +761,7 @@ impl AppState {
 
     /// Read filter rejection stats from disk and cache them for the UI.
     pub fn poll_filter_stats_file(&self) {
-        const STATS_FILE: &str = "scematica-filter-stats.json";
-        let Ok(data) = std::fs::read_to_string(STATS_FILE) else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(FILTER_STATS_FILE)) else {
             return;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -771,7 +772,7 @@ impl AppState {
 
     /// Read NN agent stats from scematica-nn-stats.json.
     pub fn poll_nn_stats_file(&self) {
-        let Ok(data) = std::fs::read_to_string("scematica-nn-stats.json") else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(NN_STATS_FILE)) else {
             return;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -782,7 +783,7 @@ impl AppState {
 
     /// Read the latest Deep Q* advice/explanation.
     pub fn poll_nn_advice_file(&self) {
-        let Ok(data) = std::fs::read_to_string("scematica-nn-advice.json") else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(NN_ADVICE_FILE)) else {
             return;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -796,7 +797,7 @@ impl AppState {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
         let mut offset = *self.pool_decision_file_offset.read();
-        if let Ok(meta) = std::fs::metadata(POOL_DECISIONS_FILE) {
+        if let Ok(meta) = std::fs::metadata(artifact_path(POOL_DECISIONS_FILE)) {
             if meta.len() < offset {
                 offset = 0;
                 *self.pool_decision_file_offset.write() = 0;
@@ -804,7 +805,7 @@ impl AppState {
             }
         }
 
-        let Ok(mut file) = std::fs::File::open(POOL_DECISIONS_FILE) else {
+        let Ok(mut file) = std::fs::File::open(artifact_path(POOL_DECISIONS_FILE)) else {
             return;
         };
         if file.seek(SeekFrom::Start(offset)).is_err() {
@@ -840,7 +841,7 @@ impl AppState {
         use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
         let mut offset = *self.tx_telemetry_file_offset.read();
-        if let Ok(meta) = std::fs::metadata(TX_TELEMETRY_FILE) {
+        if let Ok(meta) = std::fs::metadata(artifact_path(TX_TELEMETRY_FILE)) {
             if meta.len() < offset {
                 offset = 0;
                 *self.tx_telemetry_file_offset.write() = 0;
@@ -848,7 +849,7 @@ impl AppState {
             }
         }
 
-        let Ok(mut file) = std::fs::File::open(TX_TELEMETRY_FILE) else {
+        let Ok(mut file) = std::fs::File::open(artifact_path(TX_TELEMETRY_FILE)) else {
             return;
         };
         if file.seek(SeekFrom::Start(offset)).is_err() {
@@ -881,7 +882,7 @@ impl AppState {
 
     /// Read NN tournament stats from scematica-nn-tournament.json.
     pub fn poll_tournament_file(&self) {
-        let Ok(data) = std::fs::read_to_string("scematica-nn-tournament.json") else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(TOURNAMENT_FILE)) else {
             return;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -892,7 +893,7 @@ impl AppState {
 
     /// Read deployer reputation ledger from scematica-deployer-reputation.json.
     pub fn poll_deployer_reputation_file(&self) {
-        let Ok(data) = std::fs::read_to_string("scematica-deployer-reputation.json") else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(DEPLOYER_REPUTATION_FILE)) else {
             return;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
@@ -903,8 +904,7 @@ impl AppState {
 
     /// Read live open positions from scematica-positions.json (sniper writes every 1 s).
     pub fn poll_live_positions_file(&self) {
-        const POS_FILE: &str = "scematica-positions.json";
-        let Ok(data) = std::fs::read_to_string(POS_FILE) else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(POSITIONS_FILE)) else {
             return;
         };
         let Ok(positions) = serde_json::from_str::<Vec<LivePosition>>(&data) else {
@@ -921,8 +921,7 @@ impl AppState {
     /// Read pool radar entries from scematica-pool-radar.json.
     /// Drops any entries older than 5 minutes.
     pub fn poll_radar_file(&self) {
-        const RADAR_FILE: &str = "scematica-pool-radar.json";
-        let Ok(data) = std::fs::read_to_string(RADAR_FILE) else {
+        let Ok(data) = std::fs::read_to_string(artifact_path(POOL_RADAR_FILE)) else {
             return;
         };
         let Ok(mut pools) = serde_json::from_str::<Vec<RadarPool>>(&data) else {

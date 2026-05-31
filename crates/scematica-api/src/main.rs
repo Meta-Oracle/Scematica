@@ -8,6 +8,8 @@
 //! GET  /api/decisions                 scematica-pool-decisions.jsonl (last N)
 //! GET  /api/tx-telemetry              scematica-tx-telemetry.jsonl (last N)
 //! GET  /api/nn                        scematica-nn-stats.json
+//! GET  /api/nn-advice                 scematica-nn-advice.json
+//! GET  /api/intelligence              combined NN/decision/tx snapshot
 //! GET  /api/health                    sniper liveness (lock file + process)
 //! GET  /api/controls                  full control state snapshot
 //! POST /api/controls/sell-mode        { "enabled": bool }
@@ -32,16 +34,19 @@ use std::{
     fs,
     io::{BufRead, BufReader, Seek, SeekFrom},
     net::SocketAddr,
+    path::{Path, PathBuf},
 };
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 // ── file paths ────────────────────────────────────────────────────────────────
 
+const DATA_DIR_ENV: &str = "SCEMATICA_DATA_DIR";
 const METRICS_FILE: &str = "scematica-metrics.json";
 const POOL_RADAR_FILE: &str = "scematica-pool-radar.json";
 const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
 const NN_STATS_FILE: &str = "scematica-nn-stats.json";
+const NN_ADVICE_FILE: &str = "scematica-nn-advice.json";
 const LOG_FILE: &str = "scematica-sniper.log";
 const LOCK_FILE: &str = "scematica-sniper.lock";
 const TRADES_FILE: &str = "scematica-trades.jsonl";
@@ -84,15 +89,53 @@ fn rate_preset(mode: &str) -> (f64, f64, f64) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+fn artifact_dir() -> PathBuf {
+    if let Ok(value) = std::env::var(DATA_DIR_ENV) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if cwd.join("config.toml").exists() || cwd.join(".git").exists() {
+        return cwd;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in manifest_dir.ancestors() {
+        if ancestor.join("Cargo.toml").exists() && ancestor.join("config.toml").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+
+    cwd
+}
+
+fn artifact_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        artifact_dir().join(path)
+    }
+}
+
 fn read_json_file(path: &str) -> Value {
-    fs::read_to_string(path)
+    fs::read_to_string(artifact_path(path))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(Value::Null)
 }
 
 fn atomic_write(path: &str, value: &Value) -> bool {
-    let tmp = format!("{}.tmp", path);
+    let path = artifact_path(path);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     if let Ok(s) = serde_json::to_string(value) {
         if fs::write(&tmp, &s).is_ok() {
             return fs::rename(&tmp, path).is_ok();
@@ -102,11 +145,11 @@ fn atomic_write(path: &str, value: &Value) -> bool {
 }
 
 fn file_exists(path: &str) -> bool {
-    std::path::Path::new(path).exists()
+    artifact_path(path).exists()
 }
 
 fn read_last_jsonl_values(path: &str, limit: usize) -> Vec<Value> {
-    fs::read_to_string(path)
+    fs::read_to_string(artifact_path(path))
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
@@ -163,6 +206,21 @@ async fn nn_handler() -> impl IntoResponse {
     }
 }
 
+async fn nn_advice_handler() -> impl IntoResponse {
+    let v = read_json_file(NN_ADVICE_FILE);
+    if v.is_null() {
+        Json(json!({
+            "action": "NoAdvice",
+            "action_index": 0,
+            "q_values": [],
+            "top_reason": "No DQ* advice snapshot has been written yet.",
+            "confidence": 0.0
+        }))
+    } else {
+        Json(v)
+    }
+}
+
 async fn logs_handler(Query(q): Query<LogQuery>) -> impl IntoResponse {
     let n = q.lines.unwrap_or(200).min(500);
     let lines = read_last_n_lines(LOG_FILE, n);
@@ -187,8 +245,41 @@ async fn tx_telemetry_handler(Query(q): Query<LimitQuery>) -> impl IntoResponse 
     Json(json!({ "telemetry": telemetry }))
 }
 
+async fn intelligence_handler(Query(q): Query<LimitQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(80).min(250);
+    let nn = read_json_file(NN_STATS_FILE);
+    let advice = read_json_file(NN_ADVICE_FILE);
+    let decisions = read_last_jsonl_values(POOL_DECISIONS_FILE, limit);
+    let telemetry = read_last_jsonl_values(TX_TELEMETRY_FILE, limit);
+    Json(json!({
+        "nn": if nn.is_null() {
+            json!({"step_count":0,"epsilon":1.0,"ready_to_advise":false})
+        } else {
+            nn
+        },
+        "advice": if advice.is_null() {
+            json!({
+                "action": "NoAdvice",
+                "action_index": 0,
+                "q_values": [],
+                "top_reason": "No DQ* advice snapshot has been written yet.",
+                "confidence": 0.0
+            })
+        } else {
+            advice
+        },
+        "decisions": decisions,
+        "telemetry": telemetry,
+        "paths": {
+            "nn_advice": artifact_path(NN_ADVICE_FILE).display().to_string(),
+            "pool_decisions": artifact_path(POOL_DECISIONS_FILE).display().to_string(),
+            "tx_telemetry": artifact_path(TX_TELEMETRY_FILE).display().to_string()
+        }
+    }))
+}
+
 fn read_last_n_lines(path: &str, n: usize) -> Vec<String> {
-    let Ok(mut file) = fs::File::open(path) else {
+    let Ok(mut file) = fs::File::open(artifact_path(path)) else {
         return vec![];
     };
     let Ok(len) = file.seek(SeekFrom::End(0)) else {
@@ -342,9 +433,9 @@ async fn rate_mode_handler(Json(b): Json<RateModeBody>) -> impl IntoResponse {
 async fn high_speed_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
     // Write both the presence-file (sniper watches) and the flag in rate-mode (API state)
     if b.enabled {
-        let _ = fs::write(HIGH_SPEED_FILE, "{}");
+        let _ = fs::write(artifact_path(HIGH_SPEED_FILE), "{}");
     } else {
-        let _ = fs::remove_file(HIGH_SPEED_FILE);
+        let _ = fs::remove_file(artifact_path(HIGH_SPEED_FILE));
     }
     let existing = read_json_file(RATE_MODE_FILE);
     let mode = existing
@@ -360,7 +451,7 @@ async fn high_speed_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
 
 async fn moon_chase_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
     if b.enabled {
-        if fs::write(MOON_CHASE_FILE, "{}").is_ok() {
+        if fs::write(artifact_path(MOON_CHASE_FILE), "{}").is_ok() {
             Json(json!({"ok": true, "moon_chase": true})).into_response()
         } else {
             (
@@ -370,14 +461,14 @@ async fn moon_chase_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
                 .into_response()
         }
     } else {
-        let _ = fs::remove_file(MOON_CHASE_FILE);
+        let _ = fs::remove_file(artifact_path(MOON_CHASE_FILE));
         Json(json!({"ok": true, "moon_chase": false})).into_response()
     }
 }
 
 async fn builder_mode_handler(Json(b): Json<BuilderModeBody>) -> impl IntoResponse {
     if b.mode == "off" {
-        let _ = fs::remove_file(BUILDER_MODE_FILE);
+        let _ = fs::remove_file(artifact_path(BUILDER_MODE_FILE));
         return Json(json!({"ok": true, "builder_mode": "off"})).into_response();
     }
     let target_sol: f64 = match b.mode.as_str() {
@@ -423,7 +514,7 @@ async fn health_handler() -> Json<HealthResponse> {
 }
 
 fn check_sniper_liveness() -> (bool, Option<u32>) {
-    let Ok(content) = fs::read_to_string(LOCK_FILE) else {
+    let Ok(content) = fs::read_to_string(artifact_path(LOCK_FILE)) else {
         return (false, None);
     };
     let pid: u32 = match content.trim().parse() {
@@ -483,6 +574,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/decisions", get(decisions_handler))
         .route("/api/tx-telemetry", get(tx_telemetry_handler))
         .route("/api/nn", get(nn_handler))
+        .route("/api/nn-advice", get(nn_advice_handler))
+        .route("/api/intelligence", get(intelligence_handler))
         .route("/api/health", get(health_handler))
         .route("/api/controls", get(controls_get_handler))
         .route("/api/controls/sell-mode", post(sell_mode_handler))

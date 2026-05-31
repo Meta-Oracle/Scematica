@@ -592,7 +592,10 @@ fn default_elite_min_historical_velocity_sol_per_sec() -> f64 {
     2.618
 }
 fn default_elite_min_buy_pressure_ratio() -> f64 {
-    0.02
+    // Calibrated for pump.fun meme tokens: quote_lamports/base_lamports ≈ 4e-5 at launch.
+    // Old value (0.02) was never reachable for any meme token — all pools were treated
+    // as having no buy pressure. New value triggers for pools showing 2× launch ratio.
+    0.0001
 }
 fn default_elite_require_live_or_pregrad() -> bool {
     true

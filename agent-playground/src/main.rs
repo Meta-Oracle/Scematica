@@ -115,7 +115,9 @@ async fn run<B: ratatui::backend::Backend>(
         // Non-blocking key poll at ~20 fps
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key(key).await?;
+                if key.kind == event::KeyEventKind::Press {
+                    app.handle_key(key).await?;
+                }
             }
         }
 

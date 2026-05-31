@@ -570,11 +570,11 @@ impl DQNAgent {
                         current_pnl_pct: -0.95,
                         ..state.clone()
                     };
-                    // Held through rug: -90% pnl, hold_steps=2 → shape_reward(-90,2) ≈ -295
+                    // Held through rug: -90% pnl, hold_steps=2 → shape_reward(-90,2)/100 ≈ -2.95
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::Hold.index(),
-                        reward: -295.0,
+                        reward: -2.95,
                         next_state: next_state.to_vec(),
                         done: true,
                     });
@@ -611,11 +611,11 @@ impl DQNAgent {
                         current_pnl_pct: 0.0,                        // sold at peak
                         ..state.clone()
                     };
-                    // Fast peak exit: +99% pnl, hold_steps=0 → shape_reward(99,0) ≈ +403
+                    // Fast peak exit: +99% pnl, hold_steps=0 → shape_reward(99,0)/100 ≈ +4.03
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::SellAll.index(),
-                        reward: 403.0,
+                        reward: 4.03,
                         next_state: next_state.to_vec(),
                         done: true,
                     });
@@ -650,11 +650,11 @@ impl DQNAgent {
                         current_pnl_pct: -1.0, // effectively a total loss
                         ..state.clone()
                     };
-                    // Capital locked for hours: -70% pnl, hold_steps=10+ → shape_reward(-70,10) ≈ -245
+                    // Capital locked for hours: -70% pnl, hold_steps=10+ → shape_reward(-70,10)/100 ≈ -2.45
                     self.replay.push(Transition {
                         state: state.to_vec(),
                         action: TradeAction::SellAll.index(),
-                        reward: -245.0,
+                        reward: -2.45,
                         next_state: next_state.to_vec(),
                         done: true,
                     });
@@ -702,7 +702,7 @@ impl DQNAgent {
         self.replay.push(Transition {
             state: hold_state.to_vec(),
             action: TradeAction::Hold.index(),
-            reward: 15.0, // small positive: good call to hold a pumping pool
+            reward: 0.15, // small positive: good call to hold a pumping pool
             next_state: next_hold.to_vec(),
             done: false,
         });
@@ -729,8 +729,8 @@ impl DQNAgent {
         self.replay.push(Transition {
             state: partial_state.to_vec(),
             action: TradeAction::SellPartial.index(),
-            // Reward = shape_reward of the partial pct captured
-            reward: DQNAgent::shape_reward(partial_state.current_pnl_pct * 100.0, 0),
+            // Divide by 100 to match the normalised reward scale used in the observer loop
+            reward: DQNAgent::shape_reward(partial_state.current_pnl_pct * 100.0, 0) / 100.0,
             next_state: next_partial.to_vec(),
             done: false,
         });
@@ -946,7 +946,11 @@ impl DQNAgent {
     }
 
     pub fn ready_to_advise(&self) -> bool {
-        self.train_steps >= 500
+        // Require substantial training before enforcing entry advice.
+        // At 500 steps the agent has seen only ~100 trades — not enough to distinguish
+        // entry quality. Pessimistic early weights cause it to veto all buys.
+        // 10k steps ≈ 2000 trades, providing stable policy before enforcement.
+        self.train_steps >= 10_000
             && self
                 .last_q_values
                 .iter()

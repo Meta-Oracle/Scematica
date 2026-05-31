@@ -2,7 +2,6 @@
 ///
 /// This module combines the existing Bayesian pool scorer with Fibonacci
 /// pattern recognition to maximize runner detection and PnL recovery.
-
 use crate::cache::CachedPool;
 use crate::fibonacci_momentum::FibonacciMomentum;
 use crate::pool_scorer::PoolScorer;
@@ -42,12 +41,17 @@ impl FibonacciPoolScorer {
                 social_count,
             )
         } else {
-            PoolScorer::score(pool, pool_size_lamports, base_vault_lamports, detected_at_secs)
+            PoolScorer::score(
+                pool,
+                pool_size_lamports,
+                base_vault_lamports,
+                detected_at_secs,
+            )
         };
 
         // Calculate Fibonacci metrics
         let size_sol = pool_size_lamports as f64 / 1e9;
-        
+
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -67,13 +71,21 @@ impl FibonacciPoolScorer {
             0
         };
 
-        // Calculate velocity
-        let velocity_sol_per_sec = if pool_size_lamports > 0 && pool.open_time > 0 && pool.open_time <= now_secs {
-            let age_s = now_secs.saturating_sub(pool.open_time).max(1) as f64;
-            size_sol / age_s
-        } else {
-            0.0
-        };
+        // Calculate velocity — same fallback logic as pool_scorer.rs:
+        // when open_time=0 (all pump.fun migrations), use a conservative 30s age
+        // estimate rather than returning 0.0 which kills Fibonacci signal entirely.
+        let velocity_sol_per_sec =
+            if pool_size_lamports > 0 && pool.open_time > 0 && pool.open_time <= now_secs {
+                let age_s = now_secs.saturating_sub(pool.open_time).max(1) as f64;
+                size_sol / age_s
+            } else if pool_size_lamports > 0
+                && detected_at_secs > 0
+                && detected_at_secs >= now_secs.saturating_sub(60)
+            {
+                size_sol / 30.0 // conservative 30s age estimate for freshly-detected open_time=0 pools
+            } else {
+                0.0
+            };
 
         // Calculate buy pressure ratio
         let buy_pressure_ratio = if base_vault_lamports > 0 {
@@ -232,15 +244,34 @@ mod tests {
         );
 
         // Should score very high due to Fibonacci bonus
-        assert!(score >= 90.0, "Perfect Fibonacci pool should score ≥90: {}", score);
+        assert!(
+            score >= 90.0,
+            "Perfect Fibonacci pool should score ≥90: {}",
+            score
+        );
     }
 
     #[test]
     fn test_position_multiplier_scaling() {
-        assert_eq!(FibonacciPoolScorer::fibonacci_position_multiplier(0.95), 2.0);
-        assert_eq!(FibonacciPoolScorer::fibonacci_position_multiplier(0.80), 1.618);
-        assert_eq!(FibonacciPoolScorer::fibonacci_position_multiplier(0.60), 1.0);
-        assert_eq!(FibonacciPoolScorer::fibonacci_position_multiplier(0.30), 0.75);
-        assert_eq!(FibonacciPoolScorer::fibonacci_position_multiplier(0.10), 0.5);
+        assert_eq!(
+            FibonacciPoolScorer::fibonacci_position_multiplier(0.95),
+            2.0
+        );
+        assert_eq!(
+            FibonacciPoolScorer::fibonacci_position_multiplier(0.80),
+            1.618
+        );
+        assert_eq!(
+            FibonacciPoolScorer::fibonacci_position_multiplier(0.60),
+            1.0
+        );
+        assert_eq!(
+            FibonacciPoolScorer::fibonacci_position_multiplier(0.30),
+            0.75
+        );
+        assert_eq!(
+            FibonacciPoolScorer::fibonacci_position_multiplier(0.10),
+            0.5
+        );
     }
 }

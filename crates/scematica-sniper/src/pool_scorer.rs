@@ -18,7 +18,8 @@ use crate::cache::CachedPool;
 /// Key empirical findings:
 ///  • Pools < 3 SOL: ~0% actual profit rate  → hard reject (score 0–5)
 ///  • Pools 6.5–28 SOL: highest win-rate     → LR 4.5
-///  • No velocity signal: dead-on-arrival    → LR 0.35
+///  • No velocity signal (stale pool): dead-on-arrival → LR 0.35
+///  • No velocity signal (fresh, open_time=0): neutral  → LR 1.0 (estimated)
 ///  • Strong velocity (>2 SOL/s): runner     → LR 3.0
 ///  • Buy pressure (high quote/base skew): confirms momentum → LR 2.0
 ///  • PumpFun score ≥90: exceptional pre-grad momentum → LR 3.5
@@ -122,9 +123,12 @@ impl PoolScorer {
         p *= age_lr;
 
         // Signal 3: SOL inflow velocity (SOL per second)
-        // Only meaningful when open_time is known (not detection-time fallback).
-        // High velocity = crowd piling in = runner candidate.
-        // No velocity data = we don't know if anyone is buying.
+        // Prefer pool.open_time when available. When open_time == 0 (most pump.fun
+        // Raydium migrations open immediately, leaving this field at zero), fall back
+        // to detected_at_secs for velocity estimation. If the detection timestamp is
+        // within the last 60 s the pool is fresh and we can compute a rough velocity.
+        // Using 0.35 ("no data → dead-pool suspect") for ALL open_time=0 pools was
+        // wrong — essentially every modern pump.fun pool has open_time=0.
         let (velocity_lr, velocity_sol_per_sec) =
             if pool_size_lamports > 0 && pool.open_time > 0 && pool.open_time <= now_secs {
                 let age_s = now_secs.saturating_sub(pool.open_time).max(1) as f64;
@@ -141,25 +145,54 @@ impl PoolScorer {
                     0.65 // slow — little buying interest
                 };
                 (lr, v)
+            } else if pool_size_lamports > 0
+                && detected_at_secs > 0
+                && detected_at_secs >= now_secs.saturating_sub(60)
+            {
+                // Pool was freshly detected; open_time=0 means it opens immediately
+                // (standard for pump.fun Raydium migrations). We cannot derive velocity
+                // without knowing when the pool was created — detected_at_secs is the
+                // current wall-clock, not the pool birth time. Use a size-proportional
+                // heuristic: larger pools accumulated more SOL and are more likely to be
+                // genuine runners than micro-caps. Avoids the 0.35 dead-pool penalty
+                // that wrongly tagged EVERY open_time=0 pool as suspicious.
+                let size_lr = if size_sol >= 20.0 {
+                    1.80 // large graduation — strong pre-existing demand
+                } else if size_sol >= 10.0 {
+                    1.40 // mid-tier graduation
+                } else if size_sol >= 5.0 {
+                    1.10 // small but plausible
+                } else {
+                    0.80 // tiny pool — likely micro/test launch
+                };
+                (size_lr, 0.0)
             } else {
-                (0.35, 0.0) // no velocity data: strong dead-pool risk
+                (0.35, 0.0) // stale or undetectable pool — dead-pool risk
             };
         p *= velocity_lr;
 
         // Signal 4: AMM buy-pressure ratio (quote_vault / base_vault)
         // Raydium x*y=k: as buyers purchase tokens the SOL side grows and token
         // side shrinks → ratio rises above the launch equilibrium.
-        // High ratio confirms buy pressure independent of velocity.
+        //
+        // Thresholds re-calibrated for meme token reality (live data confirms all
+        // ratios land in 0.00003–0.0002 range). Old thresholds (>=1.0, >=0.2, >=0.02)
+        // were from DeFi blue-chip pools and were NEVER triggered — all meme pools
+        // were getting LR=0.90 (slight negative) regardless of actual buy pressure.
+        // A typical pump.fun graduation: 35 SOL / ~800M tokens × 10^6 raw = 4.4e-5.
+        // Post-buying: ratio rises as SOL increases and tokens decrease.
         if base_vault_lamports > 0 {
             let ratio = pool_size_lamports as f64 / base_vault_lamports as f64;
-            let pressure_lr = if ratio >= 1.0 {
-                2.20 // heavily bought — strong confirmation
-            } else if ratio >= 0.2 {
-                1.60 // clear buy skew
-            } else if ratio >= 0.02 {
-                1.20 // mild pressure
+            let pressure_lr = if ratio >= 0.0002 {
+                2.20 // very heavily bought — 4–5× launch ratio, strong momentum
+            } else if ratio >= 0.0001 {
+                1.60 // clearly bought — 2–3× launch ratio
+            } else if ratio >= 0.00005 {
+                1.20 // mild buy skew — near/above typical launch equilibrium
+            } else if ratio >= 0.00002 {
+                1.00 // near launch balance — neutral
             } else {
-                0.90 // sell-skewed or balanced — no bullish signal
+                0.85 // token-heavy / sell-skewed — no bullish signal
             };
             p *= pressure_lr;
         } else {
@@ -361,15 +394,33 @@ mod tests {
 
     #[test]
     fn unknown_velocity_without_pressure_scores_low() {
+        // Pool with open_time=0 AND detected_at=0 (truly unknown / not recently detected).
+        // After the velocity-fallback fix, only pools with detected_at_secs=0 fall through
+        // to the 0.35 dead-pool LR. A recently-detected open_time=0 pool legitimately
+        // scores higher because we know it's fresh.
+        let pool = make_pool(0);
+        let score = PoolScorer::score(&pool, 18_000_000_000, 0, 0); // detected_at=0 → stale
+        assert!(
+            score < 60.0,
+            "stale unknown-velocity pool without buy pressure scored too high: {}",
+            score
+        );
+    }
+
+    #[test]
+    fn realistic_pumpfun_migration_scores_well() {
+        // Realistic pump.fun graduation: 35 SOL, ~800M tokens with 6 decimals.
+        // buy_pressure_ratio = 35e9 / 800e12 ≈ 4.4e-5.
+        // With open_time=0 and fresh detection, this should score well.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let pool = make_pool(0);
-        let score = PoolScorer::score(&pool, 18_000_000_000, 0, now);
+        let score = PoolScorer::score(&pool, 35_000_000_000, 800_000_000_000_000, now);
         assert!(
-            score < 60.0,
-            "unknown-velocity pool without buy pressure scored too high: {}",
+            score >= 80.0,
+            "realistic pump.fun migration scored too low: {}",
             score
         );
     }

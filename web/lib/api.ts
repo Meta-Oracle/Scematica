@@ -1,6 +1,8 @@
 import type {
   FilterStats,
   HealthStatus,
+  IntelligenceSnapshot,
+  NNAdvice,
   Metrics,
   NNStats,
   Pool,
@@ -27,6 +29,8 @@ export const api = {
   metrics:   () => get<Metrics>('/api/metrics'),
   filters:   () => get<FilterStats>('/api/filters'),
   nn:        () => get<NNStats>('/api/nn'),
+  nnAdvice:  () => get<NNAdvice>('/api/nn-advice'),
+  intelligence: (limit = 60) => get<IntelligenceSnapshot>('/api/intelligence', { limit: String(limit) }),
   health:    () => get<HealthStatus>('/api/health'),
   pools:     (limit = 30) => get<{ pools: Pool[]; total: number }>('/api/pools', { limit: String(limit) }),
   logs:      (lines = 80) => get<{ lines: string[] }>('/api/logs', { lines: String(lines) }),

@@ -21,7 +21,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "1.8.2"
+version = "1.11.0"
 edition = "2021"
 authors = ["Scematica Team"]
 license = "MIT"

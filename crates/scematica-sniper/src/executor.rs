@@ -1,7 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
-use scematica_core::metrics::{TxTelemetryEvent, TX_TELEMETRY_FILE};
+use scematica_core::metrics::{
+    artifact_path, TxTelemetryEvent, HIGH_SPEED_FILE, TX_TELEMETRY_FILE,
+};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -178,7 +180,7 @@ impl TxExecutor for DefaultExecutor {
         let mut blockhash_error_count = 0;
 
         // Read high-speed sentinel file once — shared for the whole execute() call.
-        let high_speed = std::path::Path::new("scematica-highspeed-mode.json").exists();
+        let high_speed = artifact_path(HIGH_SPEED_FILE).exists();
 
         let cpu_price = {
             let base = if self.dynamic_fees {

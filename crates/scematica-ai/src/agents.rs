@@ -1,7 +1,10 @@
 use crate::{
     client::AiClient,
     prompts,
-    types::{ArbScore, AiProvider, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment, TokenRiskScore},
+    types::{
+        AiProvider, ArbScore, DebateOpinion, DebateResult, MarketReport, StrategyAdjustment,
+        TokenRiskScore,
+    },
 };
 use chrono::Utc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,22 +20,26 @@ static RATE_LIMIT_UNTIL_SECS: AtomicU64 = AtomicU64::new(0);
 static FALLBACK_CLIENT: OnceLock<Option<AiClient>> = OnceLock::new();
 
 fn get_fallback() -> Option<&'static AiClient> {
-    FALLBACK_CLIENT.get_or_init(|| {
-        dotenv::dotenv().ok();
-        // Try OpenRouter as the fallback provider (free tier available)
-        if std::env::var("OPENROUTER_API_KEY").is_ok() {
-            AiClient::new(AiProvider::OpenRouter).ok()
-        } else if std::env::var("OLLAMA_HOST").is_ok() {
-            AiClient::new(AiProvider::Ollama).ok()
-        } else {
-            None
-        }
-    }).as_ref()
+    FALLBACK_CLIENT
+        .get_or_init(|| {
+            dotenv::dotenv().ok();
+            // Try OpenRouter as the fallback provider (free tier available)
+            if std::env::var("OPENROUTER_API_KEY").is_ok() {
+                AiClient::new(AiProvider::OpenRouter).ok()
+            } else if std::env::var("OLLAMA_HOST").is_ok() {
+                AiClient::new(AiProvider::Ollama).ok()
+            } else {
+                None
+            }
+        })
+        .as_ref()
 }
 
 fn is_rate_limited() -> bool {
     let until = RATE_LIMIT_UNTIL_SECS.load(Ordering::Relaxed);
-    if until == 0 { return false; }
+    if until == 0 {
+        return false;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -48,7 +55,10 @@ fn parse_retry_after(err: &str) -> u64 {
         let segment = rest[..end].trim();
         if let Some(m_pos) = segment.find('m') {
             let mins: u64 = segment[..m_pos].parse().unwrap_or(0);
-            let secs_str = segment.get(m_pos + 1..).unwrap_or("0").trim_end_matches('s');
+            let secs_str = segment
+                .get(m_pos + 1..)
+                .unwrap_or("0")
+                .trim_end_matches('s');
             let secs: u64 = secs_str.parse().unwrap_or(0);
             return mins * 60 + secs + 10; // +10s buffer
         }
@@ -67,17 +77,25 @@ fn handle_rate_limit(err: &str) {
         .unwrap_or_default()
         .as_secs();
     RATE_LIMIT_UNTIL_SECS.store(now + delay, Ordering::Relaxed);
-    warn!("AI rate-limited — suppressing calls for {}s (until cached expiry)", delay);
+    warn!(
+        "AI rate-limited — suppressing calls for {}s (until cached expiry)",
+        delay
+    );
 }
 
 fn is_rate_limit_err(e: &str) -> bool {
     // Groq: "429", "Rate limit reached", "try again in Xm Ys"
     // Anthropic: "rate_limit_error", "overloaded_error", or billing exhaustion.
     let lower = e.to_ascii_lowercase();
-    lower.contains("429") || lower.contains("rate_limit") || lower.contains("rate limit")
-        || lower.contains("quota") || lower.contains("try again in ")
-        || lower.contains("credit balance") || lower.contains("insufficient credit")
-        || lower.contains("billing") || lower.contains("overloaded_error")
+    lower.contains("429")
+        || lower.contains("rate_limit")
+        || lower.contains("rate limit")
+        || lower.contains("quota")
+        || lower.contains("try again in ")
+        || lower.contains("credit balance")
+        || lower.contains("insufficient credit")
+        || lower.contains("billing")
+        || lower.contains("overloaded_error")
 }
 
 // ─── Risk Agent ───────────────────────────────────────────────────────────────
@@ -110,10 +128,22 @@ impl RiskAgent {
         open_time_utc_hour: u8,
     ) -> TokenRiskScore {
         self.score_token_v2(
-            mint, symbol, name, pool_size_sol,
-            mint_renounced, freezable, lp_burned, mutable_metadata, has_socials,
-            open_time_utc_hour, 0.0, 0.0, 0.0, 0,
-        ).await
+            mint,
+            symbol,
+            name,
+            pool_size_sol,
+            mint_renounced,
+            freezable,
+            lp_burned,
+            mutable_metadata,
+            has_socials,
+            open_time_utc_hour,
+            0.0,
+            0.0,
+            0.0,
+            0,
+        )
+        .await
     }
 
     /// Full scoring with AMM velocity and momentum signals.
@@ -167,7 +197,10 @@ impl RiskAgent {
                 return Self::default_pass(mint, "rate-limited, no fallback");
             }
         } else {
-            let res = self.client.ask_json(prompts::RISK_AGENT_SYSTEM, &prompt).await;
+            let res = self
+                .client
+                .ask_json(prompts::RISK_AGENT_SYSTEM, &prompt)
+                .await;
             // On 429: cache the blackout, then try fallback in-band
             if let Err(ref e) = res {
                 let err_str = e.to_string();
@@ -188,24 +221,25 @@ impl RiskAgent {
         };
 
         match result {
-            Ok(json_str) => {
-                match serde_json::from_str::<TokenRiskScore>(&json_str) {
-                    Ok(mut score) => {
-                        score.timestamp = Utc::now();
-                        debug!(
-                            mint = %mint,
-                            score = score.score,
-                            recommendation = %score.recommendation,
-                            "AI risk score"
-                        );
-                        score
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse AI risk response: {} | raw: {}", e, json_str);
-                        Self::default_pass(mint, "Failed to parse AI response")
-                    }
+            Ok(json_str) => match serde_json::from_str::<TokenRiskScore>(&json_str) {
+                Ok(mut score) => {
+                    score.timestamp = Utc::now();
+                    debug!(
+                        mint = %mint,
+                        score = score.score,
+                        recommendation = %score.recommendation,
+                        "AI risk score"
+                    );
+                    score
                 }
-            }
+                Err(e) => {
+                    warn!(
+                        "Failed to parse AI risk response: {} | raw: {}",
+                        e, json_str
+                    );
+                    Self::default_pass(mint, "Failed to parse AI response")
+                }
+            },
             Err(e) => {
                 let err_str = e.to_string();
                 if is_rate_limit_err(&err_str) {
@@ -271,7 +305,11 @@ impl ArbAgent {
             pool_reserves,
         );
 
-        match self.client.ask_json(prompts::ARB_AGENT_SYSTEM, &prompt).await {
+        match self
+            .client
+            .ask_json(prompts::ARB_AGENT_SYSTEM, &prompt)
+            .await
+        {
             Ok(json_str) => {
                 match serde_json::from_str::<ArbScore>(&json_str) {
                     Ok(score) => {
@@ -302,7 +340,11 @@ impl ArbAgent {
                 ArbScore {
                     confidence: if net > 10_000 { 60 } else { 30 },
                     estimated_net_profit: net,
-                    recommendation: if net > 10_000 { "execute".into() } else { "skip".into() },
+                    recommendation: if net > 10_000 {
+                        "execute".into()
+                    } else {
+                        "skip".into()
+                    },
                     reasoning: format!("AI unavailable — threshold check: net={}", net),
                 }
             }
@@ -345,7 +387,11 @@ impl StrategyAgent {
             win_rate,
         );
 
-        match self.client.ask_json(prompts::STRATEGY_AGENT_SYSTEM, &prompt).await {
+        match self
+            .client
+            .ask_json(prompts::STRATEGY_AGENT_SYSTEM, &prompt)
+            .await
+        {
             Ok(json_str) => {
                 match serde_json::from_str::<StrategyAdjustment>(&json_str) {
                     Ok(adj) => {
@@ -411,19 +457,21 @@ impl ReportAgent {
             pools_tracked,
         );
 
-        match self.client.ask_json(prompts::REPORT_AGENT_SYSTEM, &prompt).await {
-            Ok(json_str) => {
-                match serde_json::from_str::<MarketReport>(&json_str) {
-                    Ok(mut report) => {
-                        report.timestamp = Utc::now();
-                        report
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse AI report: {}", e);
-                        Self::fallback_report(total_pnl_sol, trades_confirmed, trades_attempted)
-                    }
+        match self
+            .client
+            .ask_json(prompts::REPORT_AGENT_SYSTEM, &prompt)
+            .await
+        {
+            Ok(json_str) => match serde_json::from_str::<MarketReport>(&json_str) {
+                Ok(mut report) => {
+                    report.timestamp = Utc::now();
+                    report
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to parse AI report: {}", e);
+                    Self::fallback_report(total_pnl_sol, trades_confirmed, trades_attempted)
+                }
+            },
             Err(e) => {
                 warn!("AI report agent error: {}", e);
                 Self::fallback_report(total_pnl_sol, trades_confirmed, trades_attempted)
@@ -466,23 +514,25 @@ impl DebateAgent {
     pub async fn debate(&self, trade_type: &str, details: &str) -> DebateResult {
         let prompt = prompts::build_debate_prompt(trade_type, details);
 
-        match self.client.ask_json(prompts::DEBATE_AGENT_SYSTEM, &prompt).await {
-            Ok(json_str) => {
-                match serde_json::from_str::<DebateResult>(&json_str) {
-                    Ok(result) => {
-                        debug!(
-                            consensus = result.consensus_score,
-                            recommendation = %result.final_recommendation,
-                            "AI trade debate finished"
-                        );
-                        result
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse AI debate response: {}", e);
-                        Self::fallback_result("AI parse failed")
-                    }
+        match self
+            .client
+            .ask_json(prompts::DEBATE_AGENT_SYSTEM, &prompt)
+            .await
+        {
+            Ok(json_str) => match serde_json::from_str::<DebateResult>(&json_str) {
+                Ok(result) => {
+                    debug!(
+                        consensus = result.consensus_score,
+                        recommendation = %result.final_recommendation,
+                        "AI trade debate finished"
+                    );
+                    result
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to parse AI debate response: {}", e);
+                    Self::fallback_result("AI parse failed")
+                }
+            },
             Err(e) => {
                 warn!("AI debate agent error: {}", e);
                 Self::fallback_result(&e.to_string())

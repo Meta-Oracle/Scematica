@@ -6,16 +6,11 @@
 ///   3. Call `build_payment_payload` to create a signed partial transaction.
 ///   4. Base64-encode the `PaymentPayload` JSON and put it in the `X-Payment` header.
 ///   5. Retry the original request.
-
 use anyhow::{bail, Result};
 use base64::Engine;
 use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction,
-    message::Message,
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
-    transaction::Transaction,
+    compute_budget::ComputeBudgetInstruction, message::Message, pubkey::Pubkey, signature::Keypair,
+    signer::Signer, transaction::Transaction,
 };
 use spl_associated_token_account::get_associated_token_address;
 use spl_token::instruction::transfer_checked;
@@ -43,7 +38,7 @@ pub fn build_payment_payload(
         .map_err(|_| anyhow::anyhow!("Invalid pay_to address: {}", requirements.pay_to))?;
 
     let source_ata = get_associated_token_address(&payer_pubkey, &asset_mint);
-    let dest_ata   = get_associated_token_address(&pay_to, &asset_mint);
+    let dest_ata = get_associated_token_address(&pay_to, &asset_mint);
 
     // Compute budget to keep fees within spec bounds
     let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(50_000);
@@ -73,14 +68,19 @@ pub fn build_payment_payload(
     let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
 
     if requirements.scheme != "exact" {
-        bail!("Only 'exact' scheme is supported; got '{}'", requirements.scheme);
+        bail!(
+            "Only 'exact' scheme is supported; got '{}'",
+            requirements.scheme
+        );
     }
 
     Ok(PaymentPayload {
         x402_version: X402_VERSION,
         scheme: "exact".into(),
         network: requirements.network.clone(),
-        payload: SvmExactPayload { transaction: tx_b64 },
+        payload: SvmExactPayload {
+            transaction: tx_b64,
+        },
     })
 }
 

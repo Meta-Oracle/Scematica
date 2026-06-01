@@ -26,6 +26,7 @@ tower-http = { version = "0.4", features = ["cors", "trace"] }
 
 # Async
 tokio.workspace = true
+reqwest.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -44,4 +45,5 @@ thiserror.workspace = true
 # Utilities
 chrono.workspace = true
 dotenv.workspace = true
+bs58.workspace = true
 clap = { version = "4", features = ["derive"] }

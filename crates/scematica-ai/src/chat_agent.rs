@@ -1,11 +1,13 @@
-use anyhow::{Result, anyhow};
-use serde_json::Value;
+use crate::chat_types::{
+    classify_risk, AgentOutput, ChatResponse, PendingToolCall, RiskLevel, ToolCall, ToolResult,
+};
 use crate::client::AiClient;
 use crate::conversation::ConversationHistory;
-use crate::chat_types::{AgentOutput, PendingToolCall, ChatResponse, ToolCall, ToolResult, RiskLevel, classify_risk};
-use crate::tool_dispatcher::ToolDispatcher;
 use crate::tool_definitions::all_tools;
+use crate::tool_dispatcher::ToolDispatcher;
 use crate::types::{AiRequest, ChatMessage};
+use anyhow::{anyhow, Result};
+use serde_json::Value;
 
 pub struct ChatAgent {
     pub client: AiClient,
@@ -34,7 +36,10 @@ impl ChatAgent {
 
     /// Execute the pending tool call after user confirmation.
     pub async fn confirm_pending(&mut self) -> Result<AgentOutput> {
-        let pending = self.pending.take().ok_or_else(|| anyhow!("No pending tool call"))?;
+        let pending = self
+            .pending
+            .take()
+            .ok_or_else(|| anyhow!("No pending tool call"))?;
         self.execute_tool(pending).await
     }
 
@@ -57,7 +62,10 @@ impl ChatAgent {
         request.max_tokens = 1024;
 
         let response = self.client.chat(request).await?;
-        let choice = response.choices.first().ok_or_else(|| anyhow!("No choices in response"))?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("No choices in response"))?;
 
         if let Some(tool_calls) = &choice.message.tool_calls {
             if let Some(tc) = tool_calls.first() {
@@ -68,7 +76,11 @@ impl ChatAgent {
                 // Record the assistant message with tool_calls in history
                 let assistant_msg = ChatMessage {
                     role: "assistant".into(),
-                    content: if choice.message.content.is_empty() { None } else { Some(choice.message.content.clone()) },
+                    content: if choice.message.content.is_empty() {
+                        None
+                    } else {
+                        Some(choice.message.content.clone())
+                    },
                     tool_calls: Some(tool_calls.clone()),
                     tool_call_id: None,
                     name: None,
@@ -111,7 +123,8 @@ impl ChatAgent {
             ToolResult::Failure { message, .. } => format!("Error: {}", message),
         };
 
-        self.history.push_message(ChatMessage::tool_result(&pending.call_id, &result_text));
+        self.history
+            .push_message(ChatMessage::tool_result(&pending.call_id, &result_text));
 
         // Follow-up LLM call for natural language summary; don't allow another tool call
         let mut request = AiRequest::new(self.client.model.clone(), self.history.as_messages());
@@ -120,7 +133,10 @@ impl ChatAgent {
         request.max_tokens = 512;
 
         let response = self.client.chat(request).await?;
-        let choice = response.choices.first().ok_or_else(|| anyhow!("No choices in follow-up response"))?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow!("No choices in follow-up response"))?;
         let content = choice.message.content.clone();
         let tokens = response.usage.map(|u| u.total_tokens).unwrap_or(0);
         self.history.push_assistant(content.clone());
@@ -152,6 +168,21 @@ impl ChatAgent {
             "get_trade_history" => ToolCall::GetTradeHistory {
                 n: v["n"].as_u64().map(|x| x as u32),
             },
+            "x402_search" => ToolCall::X402Search {
+                query: v["query"].as_str().unwrap_or("").to_string(),
+                verified_only: v["verified_only"].as_bool(),
+                min_quality_score: v["min_quality_score"].as_f64(),
+                limit: v["limit"].as_u64().map(|x| x as u32),
+            },
+            "x402_check" => ToolCall::X402Check {
+                url: v["url"].as_str().unwrap_or("").to_string(),
+                method: v["method"].as_str().map(str::to_string),
+            },
+            "x402_fetch" | "x402_pay" => ToolCall::X402Fetch {
+                url: v["url"].as_str().unwrap_or("").to_string(),
+                method: v["method"].as_str().map(str::to_string),
+            },
+            "x402_wallet" => ToolCall::X402Wallet,
             "scan_arb" => ToolCall::ScanArb,
             "get_bot_status" => ToolCall::GetBotStatus,
             _ => ToolCall::GetBalance,
@@ -168,6 +199,18 @@ impl ChatAgent {
                 v["to"].as_str().unwrap_or("?")
             ),
             "set_bot_mode" => format!("Set bot mode to '{}'", v["mode"].as_str().unwrap_or("?")),
+            "x402_search" => format!(
+                "Search x402 marketplace for '{}'",
+                v["query"].as_str().unwrap_or("?")
+            ),
+            "x402_check" => format!("Check x402 price for {}", v["url"].as_str().unwrap_or("?")),
+            "x402_fetch" | "x402_pay" => {
+                format!(
+                    "Call paid x402 endpoint {}",
+                    v["url"].as_str().unwrap_or("?")
+                )
+            }
+            "x402_wallet" => "Check x402 wallet setup".to_string(),
             _ => name.replace('_', " "),
         }
     }

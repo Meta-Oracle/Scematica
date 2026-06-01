@@ -1,15 +1,43 @@
-use serde::{Deserialize, Serialize};
 use scematica_core::types::TradeEntry;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ToolCall {
-    SwapToken { from: String, to: String, amount_sol: f64, slippage_bps: Option<u32> },
-    GetQuote { from: String, to: String, amount_sol: f64 },
+    SwapToken {
+        from: String,
+        to: String,
+        amount_sol: f64,
+        slippage_bps: Option<u32>,
+    },
+    GetQuote {
+        from: String,
+        to: String,
+        amount_sol: f64,
+    },
     GetBalance,
-    SetBotMode { mode: String },
+    SetBotMode {
+        mode: String,
+    },
     ScanArb,
-    GetTradeHistory { n: Option<u32> },
+    GetTradeHistory {
+        n: Option<u32>,
+    },
     GetBotStatus,
+    X402Search {
+        query: String,
+        verified_only: Option<bool>,
+        min_quality_score: Option<f64>,
+        limit: Option<u32>,
+    },
+    X402Check {
+        url: String,
+        method: Option<String>,
+    },
+    X402Fetch {
+        url: String,
+        method: Option<String>,
+    },
+    X402Wallet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -29,8 +57,15 @@ pub struct PendingToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolResult {
-    Success { message: String, signature: Option<String>, data: Option<serde_json::Value> },
-    Failure { message: String, recoverable: bool },
+    Success {
+        message: String,
+        signature: Option<String>,
+        data: Option<serde_json::Value>,
+    },
+    Failure {
+        message: String,
+        recoverable: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +84,8 @@ pub enum AgentOutput {
 pub fn classify_risk(call: &ToolCall) -> RiskLevel {
     match call {
         ToolCall::SwapToken { .. } => RiskLevel::High,
+        ToolCall::X402Fetch { .. } => RiskLevel::High,
         ToolCall::SetBotMode { .. } => RiskLevel::Moderate,
         _ => RiskLevel::Safe,
     }
 }
-

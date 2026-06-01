@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Which AI provider to use
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +68,7 @@ pub struct ToolCallFunction {
 /// A chat message for the AI API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub role: String,   // "system" | "user" | "assistant" | "tool"
+    pub role: String, // "system" | "user" | "assistant" | "tool"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,19 +81,43 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: "system".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: "user".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: "assistant".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
 
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: "tool".into(), content: Some(content.into()), tool_calls: None, tool_call_id: Some(call_id.into()), name: None }
+        Self {
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+            name: None,
+        }
     }
 }
 
@@ -133,7 +157,9 @@ impl AiRequest {
     }
 
     pub fn with_json_output(mut self) -> Self {
-        self.response_format = Some(ResponseFormat { format_type: "json_object".into() });
+        self.response_format = Some(ResponseFormat {
+            format_type: "json_object".into(),
+        });
         self
     }
 
@@ -277,7 +303,9 @@ impl AnthropicResponse {
                     }
                 }
                 "tool_use" => {
-                    if let (Some(id), Some(name), Some(input)) = (&block.id, &block.name, &block.input) {
+                    if let (Some(id), Some(name), Some(input)) =
+                        (&block.id, &block.name, &block.input)
+                    {
                         tool_calls.push(ToolCallResponse {
                             id: id.clone(),
                             call_type: "function".into(),
@@ -297,7 +325,11 @@ impl AnthropicResponse {
                 message: AiMessage {
                     role: "assistant".into(),
                     content: text_content,
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
                 },
                 finish_reason: self.stop_reason,
             }],
@@ -312,7 +344,9 @@ impl AnthropicResponse {
 
 // ─── Agent Output Types ───────────────────────────────────────────────────────
 
-fn utc_now() -> DateTime<Utc> { Utc::now() }
+fn utc_now() -> DateTime<Utc> {
+    Utc::now()
+}
 
 /// Risk assessment for a new token/pool (used by sniper)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,7 +435,7 @@ pub struct MarketReport {
 pub struct DebateResult {
     pub bull_opinion: DebateOpinion,
     pub bear_opinion: DebateOpinion,
-    pub consensus_score: u8, // 0-100
+    pub consensus_score: u8,          // 0-100
     pub final_recommendation: String, // "execute" | "skip"
     pub summary: String,
 }

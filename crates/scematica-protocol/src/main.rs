@@ -1,16 +1,17 @@
 use anyhow::Result;
 use clap::Parser;
 use scematica_core::wallet::Wallet;
-use scematica_protocol::{
-    types::PaymentRequirements, Facilitator, ProtocolServer,
-};
+use scematica_protocol::{types::PaymentRequirements, Facilitator, ProtocolServer};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use std::{net::SocketAddr, sync::Arc};
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "scematica-protocol", about = "Scematica Protocol — x402 signal API server")]
+#[command(
+    name = "scematica-protocol",
+    about = "Scematica Protocol — x402 signal API server"
+)]
 struct Args {
     /// RPC endpoint
     #[arg(long, default_value = "https://api.mainnet-beta.solana.com")]
@@ -55,7 +56,10 @@ async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
     info!("╔══════════════════════════════════════╗");
-    info!("║   SCEMATICA PROTOCOL  v{}         ║", env!("CARGO_PKG_VERSION"));
+    info!(
+        "║   SCEMATICA PROTOCOL  v{}         ║",
+        env!("CARGO_PKG_VERSION")
+    );
     info!("║   Rust-native x402 for Solana        ║");
     info!("╚══════════════════════════════════════╝");
 
@@ -67,28 +71,22 @@ async fn main() -> Result<()> {
         CommitmentConfig::confirmed(),
     ));
 
-    let facilitator = Arc::new(Facilitator::new(
-        fee_payer,
-        rpc,
-        args.network.clone(),
-    ));
+    let facilitator = Arc::new(Facilitator::new(fee_payer, rpc, args.network.clone()));
 
     // WSOL (native SOL) payment requirement — callers pay per API call
     let wsol_mint = scematica_core::types::known_tokens::WSOL_MINT.to_string();
-    let requirements = vec![
-        PaymentRequirements {
-            scheme: "exact".into(),
-            network: args.network.clone(),
-            asset: wsol_mint,
-            amount: args.price_lamports,
-            pay_to: args.pay_to.clone(),
-            max_timeout_seconds: 300,
-            extra: serde_json::json!({
-                "description": "Scematica pool signal + trade intelligence API",
-                "price_sol": args.price_lamports as f64 / 1e9,
-            }),
-        },
-    ];
+    let requirements = vec![PaymentRequirements {
+        scheme: "exact".into(),
+        network: args.network.clone(),
+        asset: wsol_mint,
+        amount: args.price_lamports,
+        pay_to: args.pay_to.clone(),
+        max_timeout_seconds: 300,
+        extra: serde_json::json!({
+            "description": "Scematica pool signal + trade intelligence API",
+            "price_sol": args.price_lamports as f64 / 1e9,
+        }),
+    }];
 
     info!(
         "💳 Payment: {} lamports ({:.6} SOL) → {}",

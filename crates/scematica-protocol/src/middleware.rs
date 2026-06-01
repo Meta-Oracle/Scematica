@@ -39,7 +39,9 @@ pub async fn payment_middleware(
 
     if let Some(encoded) = payment_value {
         if let Some(payload) = decode_payment_payload(&encoded) {
-            if let Some(req_spec) = gate.requirements.iter()
+            if let Some(req_spec) = gate
+                .requirements
+                .iter()
                 .find(|r| r.network == payload.network && r.scheme == payload.scheme)
             {
                 let verify = gate.facilitator.verify(&payload, req_spec);
@@ -65,10 +67,9 @@ pub async fn payment_middleware(
                         }
                     });
 
-                    response.headers_mut().insert(
-                        PAYMENT_RESPONSE_HEADER,
-                        "payment-verified".parse().unwrap(),
-                    );
+                    response
+                        .headers_mut()
+                        .insert(PAYMENT_RESPONSE_HEADER, "payment-verified".parse().unwrap());
                     return Ok(response);
                 }
                 warn!(reason = ?verify.invalid_reason, "Payment verification failed");
@@ -88,10 +89,15 @@ pub async fn payment_middleware(
         },
         accepts: gate.requirements.clone(),
     };
-    Err((StatusCode::PAYMENT_REQUIRED, Json(serde_json::to_value(&body).unwrap_or_default())))
+    Err((
+        StatusCode::PAYMENT_REQUIRED,
+        Json(serde_json::to_value(&body).unwrap_or_default()),
+    ))
 }
 
 fn decode_payment_payload(encoded: &str) -> Option<PaymentPayload> {
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }

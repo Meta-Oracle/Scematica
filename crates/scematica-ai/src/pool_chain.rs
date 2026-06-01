@@ -11,10 +11,7 @@
 //   4. Any LLM error/timeout → return ChainVerdict::fallback() so the caller
 //      falls back to deterministic pool_scorer gating.
 
-use crate::{
-    client::AiClient,
-    types::AiProvider,
-};
+use crate::{client::AiClient, types::AiProvider};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -66,11 +63,13 @@ struct L2Analysis {
     thesis: String,
 }
 
-fn default_size_mult() -> f64 { 1.0 }
+fn default_size_mult() -> f64 {
+    1.0
+}
 
 #[derive(Debug, Deserialize)]
 struct L3Decision {
-    decision: String,  // "BUY" | "SKIP"
+    decision: String, // "BUY" | "SKIP"
     #[serde(default = "default_size_sol")]
     size_sol: f64,
     #[serde(default = "default_hold")]
@@ -79,9 +78,15 @@ struct L3Decision {
     stop_loss_pct: f64,
 }
 
-fn default_size_sol() -> f64 { 0.01 }
-fn default_hold() -> u32 { 20 }
-fn default_sl() -> f64 { 8.0 }
+fn default_size_sol() -> f64 {
+    0.01
+}
+fn default_hold() -> u32 {
+    20
+}
+fn default_sl() -> f64 {
+    8.0
+}
 
 // ── public output type ────────────────────────────────────────────────────────
 
@@ -109,16 +114,26 @@ pub struct ChainVerdict {
 impl ChainVerdict {
     pub fn skip(reason: impl Into<String>) -> Self {
         Self {
-            buy: false, size_sol: 0.0, max_hold_secs: 0, stop_loss_pct: 0.0,
-            l1_confidence: 0, l2_score: 0, reasoning: reason.into(), fallback: false,
+            buy: false,
+            size_sol: 0.0,
+            max_hold_secs: 0,
+            stop_loss_pct: 0.0,
+            l1_confidence: 0,
+            l2_score: 0,
+            reasoning: reason.into(),
+            fallback: false,
         }
     }
 
     /// Chain was unavailable — caller should use pool_scorer logic.
     pub fn fallback() -> Self {
         Self {
-            buy: true, size_sol: 0.0, max_hold_secs: 20, stop_loss_pct: 8.0,
-            l1_confidence: 0, l2_score: 0,
+            buy: true,
+            size_sol: 0.0,
+            max_hold_secs: 20,
+            stop_loss_pct: 8.0,
+            l1_confidence: 0,
+            l2_score: 0,
             reasoning: "chain-unavailable: falling back to pool_scorer".into(),
             fallback: true,
         }
@@ -150,19 +165,31 @@ impl PoolChainJudge {
 
         let l1 = match AiClient::new(AiProvider::Groq) {
             Ok(c) => c.with_model(l1_model),
-            Err(e) => { warn!(error=%e, "PoolChain L1 (Groq) unavailable"); return None; }
+            Err(e) => {
+                warn!(error=%e, "PoolChain L1 (Groq) unavailable");
+                return None;
+            }
         };
         let l2 = match AiClient::new(AiProvider::OpenRouter) {
             Ok(c) => c.with_model(l2_model),
-            Err(e) => { warn!(error=%e, "PoolChain L2 (OpenRouter) unavailable"); return None; }
+            Err(e) => {
+                warn!(error=%e, "PoolChain L2 (OpenRouter) unavailable");
+                return None;
+            }
         };
         let l3 = match AiClient::new(AiProvider::Cerebras) {
             Ok(c) => c.with_model(l3_model),
-            Err(e) => { warn!(error=%e, "PoolChain L3 (Cerebras) unavailable"); return None; }
+            Err(e) => {
+                warn!(error=%e, "PoolChain L3 (Cerebras) unavailable");
+                return None;
+            }
         };
 
         Some(Self {
-            l1, l2, l3, min_l2_score,
+            l1,
+            l2,
+            l3,
+            min_l2_score,
             l1_timeout: Duration::from_millis(l1_timeout_ms),
             l2l3_timeout: Duration::from_millis(l2l3_timeout_ms),
         })
@@ -198,18 +225,33 @@ impl PoolChainJudge {
         let l1_reason = l1.reason.clone();
         let (l2_res, l3_res) = tokio::join!(
             tokio::time::timeout(self.l2l3_timeout, self.run_l2(signals, &l1_reason)),
-            tokio::time::timeout(self.l2l3_timeout, self.run_l3(signals, &l1_reason, base_size_sol)),
+            tokio::time::timeout(
+                self.l2l3_timeout,
+                self.run_l3(signals, &l1_reason, base_size_sol)
+            ),
         );
 
         let l2 = match l2_res {
-            Err(_) => { warn!("PoolChain L2 timed out — fallback to scorer"); return ChainVerdict::fallback(); }
-            Ok(Err(e)) => { warn!(error=%e, "PoolChain L2 error — fallback to scorer"); return ChainVerdict::fallback(); }
+            Err(_) => {
+                warn!("PoolChain L2 timed out — fallback to scorer");
+                return ChainVerdict::fallback();
+            }
+            Ok(Err(e)) => {
+                warn!(error=%e, "PoolChain L2 error — fallback to scorer");
+                return ChainVerdict::fallback();
+            }
             Ok(Ok(r)) => r,
         };
 
         let l3 = match l3_res {
-            Err(_) => { warn!("PoolChain L3 timed out — fallback to scorer"); return ChainVerdict::fallback(); }
-            Ok(Err(e)) => { warn!(error=%e, "PoolChain L3 error — fallback to scorer"); return ChainVerdict::fallback(); }
+            Err(_) => {
+                warn!("PoolChain L3 timed out — fallback to scorer");
+                return ChainVerdict::fallback();
+            }
+            Ok(Err(e)) => {
+                warn!(error=%e, "PoolChain L3 error — fallback to scorer");
+                return ChainVerdict::fallback();
+            }
             Ok(Ok(r)) => r,
         };
 
@@ -222,9 +264,8 @@ impl PoolChainJudge {
             "PoolChain L2+L3"
         );
 
-        let consensus_buy = l2.buy
-            && l2.score >= self.min_l2_score
-            && l3.decision.to_uppercase() == "BUY";
+        let consensus_buy =
+            l2.buy && l2.score >= self.min_l2_score && l3.decision.to_uppercase() == "BUY";
 
         let final_size = if consensus_buy {
             (l3.size_sol * l2.size_mult.clamp(0.5, 2.5)).max(base_size_sol * 0.5)
@@ -295,7 +336,12 @@ impl PoolChainJudge {
         Ok(serde_json::from_str(&extract_json(&resp))?)
     }
 
-    async fn run_l3(&self, s: &PoolSignals, l1_reason: &str, base_size_sol: f64) -> Result<L3Decision> {
+    async fn run_l3(
+        &self,
+        s: &PoolSignals,
+        l1_reason: &str,
+        base_size_sol: f64,
+    ) -> Result<L3Decision> {
         let signals = serde_json::to_string(s)?;
         let win_rate = if s.recent_wins + s.recent_losses > 0 {
             s.recent_wins as f64 / (s.recent_wins + s.recent_losses) as f64

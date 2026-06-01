@@ -95,5 +95,75 @@ pub fn all_tools() -> Vec<Value> {
                 "parameters": { "type": "object", "properties": {}, "required": [] }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "x402_search",
+                "description": "Search a configured x402 API marketplace for paid or free APIs. Prefer verified endpoints with qualityScore >= 75.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Broad API search query, e.g. weather, token risk, prices" },
+                        "verified_only": { "type": "boolean", "description": "Only return verified marketplace entries" },
+                        "min_quality_score": { "type": "number", "description": "Minimum qualityScore threshold; default 75" },
+                        "limit": { "type": "integer", "description": "Maximum number of results; default 8" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "x402_check",
+                "description": "Preview x402 pricing for a URL without paying. Always run this before x402_fetch.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Endpoint URL to check" },
+                        "method": { "type": "string", "description": "HTTP method; defaults to GET" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "x402_fetch",
+                "description": "Call an x402 endpoint after price preview and user confirmation. Pays only within SCEMATICA_X402_MAX_USDC.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Endpoint URL to call" },
+                        "method": { "type": "string", "description": "HTTP method; defaults to GET" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "x402_pay",
+                "description": "Alias for x402_fetch. Use after x402_check and explicit user confirmation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Endpoint URL to call and pay" },
+                        "method": { "type": "string", "description": "HTTP method; defaults to GET" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "x402_wallet",
+                "description": "Show x402 wallet configuration, active networks, marketplace setup, and per-call spending limit.",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        }),
     ]
 }

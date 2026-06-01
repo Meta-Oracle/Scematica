@@ -19,7 +19,10 @@ impl ProtocolServer {
         requirements: Vec<PaymentRequirements>,
         addr: SocketAddr,
     ) -> Self {
-        let gate = Arc::new(PaymentGate { facilitator, requirements });
+        let gate = Arc::new(PaymentGate {
+            facilitator,
+            requirements,
+        });
         Self { gate, addr }
     }
 
@@ -28,20 +31,24 @@ impl ProtocolServer {
 
         // Paid routes — each requires a valid X-Payment header
         let paid = Router::new()
-            .route("/signals/pools",  get(pools_handler))
+            .route("/signals/pools", get(pools_handler))
             .route("/signals/trades", get(trades_handler))
-            .route("/stats/nn",       get(nn_stats_handler))
-            .route("/stats/metrics",  get(metrics_handler))
-            .layer(middleware::from_fn_with_state(gate.clone(), payment_middleware));
+            .route("/stats/nn", get(nn_stats_handler))
+            .route("/stats/metrics", get(metrics_handler))
+            .layer(middleware::from_fn_with_state(
+                gate.clone(),
+                payment_middleware,
+            ));
 
         // Free routes
         let accepts = gate.requirements.clone();
-        let free = Router::new()
-            .route("/health",    get(health_handler))
-            .route("/supported", get(move || {
+        let free = Router::new().route("/health", get(health_handler)).route(
+            "/supported",
+            get(move || {
                 let a = accepts.clone();
                 async move { Json(serde_json::json!({ "accepts": a })) }
-            }));
+            }),
+        );
 
         let app = Router::new().merge(paid).merge(free);
 

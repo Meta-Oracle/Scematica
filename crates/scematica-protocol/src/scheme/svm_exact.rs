@@ -9,8 +9,16 @@ use crate::types::{PaymentRequirements, SvmExactPayload, VerifyResponse};
 
 pub fn verify(payload: &SvmExactPayload, requirements: &PaymentRequirements) -> VerifyResponse {
     match verify_inner(payload, requirements) {
-        Ok(payer) => VerifyResponse { is_valid: true, invalid_reason: None, payer: Some(payer) },
-        Err(e) => VerifyResponse { is_valid: false, invalid_reason: Some(e.to_string()), payer: None },
+        Ok(payer) => VerifyResponse {
+            is_valid: true,
+            invalid_reason: None,
+            payer: Some(payer),
+        },
+        Err(e) => VerifyResponse {
+            is_valid: false,
+            invalid_reason: Some(e.to_string()),
+            payer: None,
+        },
     }
 }
 
@@ -40,8 +48,12 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
 
     for ix in &tx.message.instructions {
         let prog_idx = ix.program_id_index as usize;
-        if prog_idx >= tx.message.account_keys.len() { continue; }
-        if tx.message.account_keys[prog_idx] != token_prog { continue; }
+        if prog_idx >= tx.message.account_keys.len() {
+            continue;
+        }
+        if tx.message.account_keys[prog_idx] != token_prog {
+            continue;
+        }
 
         let token_ix = match spl_token::instruction::TokenInstruction::unpack(&ix.data) {
             Ok(i) => i,
@@ -53,9 +65,9 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
             if ix.accounts.len() < 4 {
                 bail!("TransferChecked instruction has fewer than 4 accounts");
             }
-            let mint_idx  = ix.accounts[1] as usize;
-            let dest_idx  = ix.accounts[2] as usize;
-            let auth_idx  = ix.accounts[3] as usize;
+            let mint_idx = ix.accounts[1] as usize;
+            let dest_idx = ix.accounts[2] as usize;
+            let auth_idx = ix.accounts[3] as usize;
 
             let keys = &tx.message.account_keys;
             if mint_idx >= keys.len() || dest_idx >= keys.len() || auth_idx >= keys.len() {
@@ -64,7 +76,11 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
 
             // Mint must match required asset
             if keys[mint_idx] != asset_mint {
-                bail!("Transfer mint {} != required asset {}", keys[mint_idx], asset_mint);
+                bail!(
+                    "Transfer mint {} != required asset {}",
+                    keys[mint_idx],
+                    asset_mint
+                );
             }
 
             // Destination must be the ATA of (pay_to, asset)
@@ -72,13 +88,19 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
             if keys[dest_idx] != expected_dest {
                 bail!(
                     "Transfer destination {} != expected ATA {} for payTo={}",
-                    keys[dest_idx], expected_dest, pay_to
+                    keys[dest_idx],
+                    expected_dest,
+                    pay_to
                 );
             }
 
             // Amount must match exactly
             if amount != requirements.amount {
-                bail!("Transfer amount {} != required amount {}", amount, requirements.amount);
+                bail!(
+                    "Transfer amount {} != required amount {}",
+                    amount,
+                    requirements.amount
+                );
             }
 
             payer_key = Some(keys[auth_idx]);
@@ -104,7 +126,10 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
                 bail!("Transaction is not signed by the payer authority");
             }
         } else {
-            bail!("Payer account index {} has no corresponding signature slot", idx);
+            bail!(
+                "Payer account index {} has no corresponding signature slot",
+                idx
+            );
         }
     }
 

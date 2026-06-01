@@ -129,8 +129,9 @@ Always respond with valid JSON only."#;
 
 /// System prompt for the interactive chat agent
 pub const CHAT_AGENT_SYSTEM: &str = r#"You are Scematica AI, an intelligent trading assistant for a Solana high-frequency trading bot.
-You have live access to the user's wallet balances, trade history, and bot status through tool calls.
-When asked about balances, trades, arb opportunities, or bot status — always call the relevant tool to get real data, then summarize the result naturally.
+You have live access to the user's wallet balances, trade history, bot status, and x402 API tooling through tool calls.
+When asked about balances, trades, arb opportunities, bot status, or x402 marketplace/API access — always call the relevant tool to get real data, then summarize the result naturally.
+For x402 endpoints, always check price before fetch, show the cost before spending, and report what was spent after each paid call.
 Be concise and direct. Use actual numbers from tool results.
 For swap or mode-change requests, always confirm the details before marking them ready.
 Do not invent numbers — always fetch real data with tools."#;
@@ -150,9 +151,20 @@ pub fn build_risk_prompt(
     open_time_utc_hour: u8,
 ) -> String {
     build_risk_prompt_v2(
-        mint, symbol, name, pool_size_sol,
-        mint_renounced, freezable, lp_burned, mutable_metadata, has_socials,
-        open_time_utc_hour, 0.0, 0.0, 0.0, 0,
+        mint,
+        symbol,
+        name,
+        pool_size_sol,
+        mint_renounced,
+        freezable,
+        lp_burned,
+        mutable_metadata,
+        has_socials,
+        open_time_utc_hour,
+        0.0,
+        0.0,
+        0.0,
+        0,
     )
 }
 
@@ -171,7 +183,7 @@ pub fn build_risk_prompt_v2(
     open_time_utc_hour: u8,
     velocity_sol_per_sec: f64,
     buy_pressure_ratio: f64,
-    amm_expected_inflow_pct: f64,  // expected_inflow / pool_size × 100
+    amm_expected_inflow_pct: f64, // expected_inflow / pool_size × 100
     pool_age_secs: u64,
 ) -> String {
     let vel_str = if velocity_sol_per_sec > 0.0 {
@@ -185,7 +197,10 @@ pub fn build_risk_prompt_v2(
         "unknown".to_string()
     };
     let inflow_str = if amm_expected_inflow_pct > 0.0 {
-        format!("{:.1}% of pool size in next 10s at current velocity", amm_expected_inflow_pct)
+        format!(
+            "{:.1}% of pool size in next 10s at current velocity",
+            amm_expected_inflow_pct
+        )
     } else {
         "unknown".to_string()
     };

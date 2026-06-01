@@ -2,9 +2,7 @@ use anyhow::Result;
 use base64::Engine;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
-    signature::Keypair,
-    transaction::Transaction,
+    commitment_config::CommitmentConfig, signature::Keypair, transaction::Transaction,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -25,16 +23,20 @@ pub struct Facilitator {
 }
 
 impl Facilitator {
-    pub fn new(
-        fee_payer: Arc<Keypair>,
-        rpc: Arc<RpcClient>,
-        network: impl Into<String>,
-    ) -> Self {
-        Self { fee_payer, rpc, network: network.into() }
+    pub fn new(fee_payer: Arc<Keypair>, rpc: Arc<RpcClient>, network: impl Into<String>) -> Self {
+        Self {
+            fee_payer,
+            rpc,
+            network: network.into(),
+        }
     }
 
     /// Verify without touching the chain — pure local validation.
-    pub fn verify(&self, payload: &PaymentPayload, requirements: &PaymentRequirements) -> VerifyResponse {
+    pub fn verify(
+        &self,
+        payload: &PaymentPayload,
+        requirements: &PaymentRequirements,
+    ) -> VerifyResponse {
         if payload.scheme != "exact" {
             return VerifyResponse {
                 is_valid: false,
@@ -101,7 +103,8 @@ impl Facilitator {
         let mut tx: Transaction = bincode::deserialize(&tx_bytes)?;
 
         // Refresh blockhash so the transaction lands
-        let (recent_blockhash, _) = self.rpc
+        let (recent_blockhash, _) = self
+            .rpc
             .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
             .await?;
         tx.message.recent_blockhash = recent_blockhash;

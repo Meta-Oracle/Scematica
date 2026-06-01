@@ -1,6 +1,6 @@
 use crate::types::{
-    AiProvider, AiRequest, AiResponse,
-    AnthropicBlock, AnthropicContent, AnthropicMessage, AnthropicRequest, AnthropicResponse, AnthropicTool,
+    AiProvider, AiRequest, AiResponse, AnthropicBlock, AnthropicContent, AnthropicMessage,
+    AnthropicRequest, AnthropicResponse, AnthropicTool,
 };
 use anyhow::{Context, Result};
 use std::time::Duration;
@@ -21,30 +21,37 @@ impl AiClient {
         dotenv::dotenv().ok();
 
         let api_key = match &provider {
-            AiProvider::Claude => std::env::var("ANTHROPIC_API_KEY")
-                .context("ANTHROPIC_API_KEY not set")?,
-            AiProvider::Groq => std::env::var("GROQ_API_KEY")
-                .context("GROQ_API_KEY not set")?,
-            AiProvider::Grok => std::env::var("XAI_API_KEY")
-                .context("XAI_API_KEY not set")?,
-            AiProvider::OpenRouter => std::env::var("OPENROUTER_API_KEY")
-                .context("OPENROUTER_API_KEY not set")?,
+            AiProvider::Claude => {
+                std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?
+            }
+            AiProvider::Groq => std::env::var("GROQ_API_KEY").context("GROQ_API_KEY not set")?,
+            AiProvider::Grok => std::env::var("XAI_API_KEY").context("XAI_API_KEY not set")?,
+            AiProvider::OpenRouter => {
+                std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY not set")?
+            }
             AiProvider::Ollama => String::new(),
-            AiProvider::Cerebras => std::env::var("CEREBRAS_API_KEY")
-                .context("CEREBRAS_API_KEY not set")?,
+            AiProvider::Cerebras => {
+                std::env::var("CEREBRAS_API_KEY").context("CEREBRAS_API_KEY not set")?
+            }
         };
 
-        let model = std::env::var("AI_MODEL")
-            .unwrap_or_else(|_| provider.default_model().to_string());
+        let model =
+            std::env::var("AI_MODEL").unwrap_or_else(|_| provider.default_model().to_string());
 
-        let base_url = std::env::var("AI_BASE_URL")
-            .unwrap_or_else(|_| provider.base_url().to_string());
+        let base_url =
+            std::env::var("AI_BASE_URL").unwrap_or_else(|_| provider.base_url().to_string());
 
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
 
-        Ok(Self { provider, model, http, api_key, base_url })
+        Ok(Self {
+            provider,
+            model,
+            http,
+            api_key,
+            base_url,
+        })
     }
 
     /// Auto-detect provider from environment. Priority: Claude > xAI > Groq > OpenRouter > Ollama
@@ -166,14 +173,18 @@ impl AiClient {
                                 blocks.push(AnthropicBlock {
                                     block_type: "text".into(),
                                     text: Some(text.clone()),
-                                    id: None, name: None, input: None,
-                                    tool_use_id: None, content: None,
+                                    id: None,
+                                    name: None,
+                                    input: None,
+                                    tool_use_id: None,
+                                    content: None,
                                 });
                             }
                         }
                         for tc in tool_calls {
-                            let input: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(serde_json::Value::Object(Default::default()));
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tc.function.arguments)
+                                    .unwrap_or(serde_json::Value::Object(Default::default()));
                             blocks.push(AnthropicBlock {
                                 block_type: "tool_use".into(),
                                 text: None,
@@ -191,7 +202,9 @@ impl AiClient {
                     } else {
                         messages.push(AnthropicMessage {
                             role: "assistant".into(),
-                            content: AnthropicContent::Text(msg.content.clone().unwrap_or_default()),
+                            content: AnthropicContent::Text(
+                                msg.content.clone().unwrap_or_default(),
+                            ),
                         });
                     }
                 }
@@ -207,14 +220,25 @@ impl AiClient {
 
         // Convert OpenAI tools schema to Anthropic format
         let tools: Option<Vec<AnthropicTool>> = request.tools.as_ref().and_then(|ts| {
-            let converted: Vec<AnthropicTool> = ts.iter().filter_map(|t| {
-                let func = t.get("function")?;
-                let name = func.get("name")?.as_str()?.to_string();
-                let description = func.get("description")?.as_str().unwrap_or("").to_string();
-                let input_schema = func.get("parameters")?.clone();
-                Some(AnthropicTool { name, description, input_schema })
-            }).collect();
-            if converted.is_empty() { None } else { Some(converted) }
+            let converted: Vec<AnthropicTool> = ts
+                .iter()
+                .filter_map(|t| {
+                    let func = t.get("function")?;
+                    let name = func.get("name")?.as_str()?.to_string();
+                    let description = func.get("description")?.as_str().unwrap_or("").to_string();
+                    let input_schema = func.get("parameters")?.clone();
+                    Some(AnthropicTool {
+                        name,
+                        description,
+                        input_schema,
+                    })
+                })
+                .collect();
+            if converted.is_empty() {
+                None
+            } else {
+                Some(converted)
+            }
         });
 
         let anthropic_req = AnthropicRequest {
@@ -226,7 +250,8 @@ impl AiClient {
             tools,
         };
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -242,7 +267,9 @@ impl AiClient {
             anyhow::bail!("Anthropic API error {}: {}", status, body);
         }
 
-        let anthropic_resp: AnthropicResponse = resp.json().await
+        let anthropic_resp: AnthropicResponse = resp
+            .json()
+            .await
             .context("Failed to parse Anthropic response")?;
 
         debug!(
@@ -261,10 +288,7 @@ impl AiClient {
 
         let request = AiRequest::new(
             &self.model,
-            vec![
-                ChatMessage::system(system),
-                ChatMessage::user(user),
-            ],
+            vec![ChatMessage::system(system), ChatMessage::user(user)],
         );
 
         let response = self.chat(request).await?;
@@ -287,10 +311,7 @@ impl AiClient {
 
         let mut request = AiRequest::new(
             &self.model,
-            vec![
-                ChatMessage::system(sys),
-                ChatMessage::user(usr),
-            ],
+            vec![ChatMessage::system(sys), ChatMessage::user(usr)],
         );
 
         if self.provider != AiProvider::Claude {
@@ -329,6 +350,11 @@ impl AiClient {
 
 impl std::fmt::Debug for AiClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AiClient({}, model={})", self.provider_name(), self.model)
+        write!(
+            f,
+            "AiClient({}, model={})",
+            self.provider_name(),
+            self.model
+        )
     }
 }

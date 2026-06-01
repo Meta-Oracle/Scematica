@@ -1,6 +1,6 @@
-use std::collections::VecDeque;
-use crate::types::ChatMessage;
 use crate::chat_types::ToolCall;
+use crate::types::ChatMessage;
+use std::collections::VecDeque;
 
 pub struct ConversationHistory {
     pub system_prompt: ChatMessage,

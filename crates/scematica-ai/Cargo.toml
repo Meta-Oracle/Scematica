@@ -8,6 +8,7 @@ description = "AI agent layer for Scematica — risk scoring, strategy tuning, a
 
 [dependencies]
 scematica-core = { path = "../scematica-core" }
+scematica-protocol = { path = "../scematica-protocol" }
 solana-sdk.workspace = true
 
 tokio.workspace = true

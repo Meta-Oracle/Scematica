@@ -4152,9 +4152,30 @@ dependencies = [
  "scematica-executor",
  "scematica-nn",
  "scematica-protocol",
+ "serde",
  "serde_json",
+ "solana-client",
  "solana-sdk",
  "tokio",
+]
+
+[[package]]
+name = "scemadex-relay"
+version = "1.11.0"
+dependencies = [
+ "anyhow",
+ "axum 0.6.20",
+ "clap 4.6.1",
+ "scemadex-integrations",
+ "scemadex-sdk",
+ "scematica-protocol",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4458,6 +4479,7 @@ dependencies = [
  "crossterm",
  "rand 0.8.6",
  "ratatui",
+ "scemadex-integrations",
  "scemadex-sdk",
  "tokio",
 ]

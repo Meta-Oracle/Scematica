@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Stdout};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -32,7 +33,8 @@ use scemadex_sdk::{
     Amount, BondEngine, BondOutcome, Conviction, EscrowBondEngine, ExperienceBatch, Fill,
     InferenceOffer, Intent, LocalPeerMarket, PeerMarket, Route, RouteLeg, Solution, Usdc, Venue,
 };
-use scemadex_sdk::{Address, Constraints, Objective, Side};
+use scemadex_sdk::{Address, Constraints, Objective, RoutePolicy, Side};
+use scemadex_integrations::jupiter::JupiterRoutePolicy;
 
 /// A demo token leg: display ticker + a valid base58 mint + decimals.
 struct Token {
@@ -68,10 +70,14 @@ struct App {
     fees_earned: f64,
     paused: bool,
     ticks: u64,
+    /// When set, steps use real Jupiter quotes instead of the synthetic feed.
+    live_policy: Option<Arc<JupiterRoutePolicy>>,
+    /// Last error/status line (e.g. a failed live quote).
+    notice: String,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(live_policy: Option<Arc<JupiterRoutePolicy>>) -> Self {
         Self {
             engine: EscrowBondEngine::with_defaults(),
             market: LocalPeerMarket::new(),
@@ -81,6 +87,8 @@ impl App {
             fees_earned: 0.0,
             paused: false,
             ticks: 0,
+            live_policy,
+            notice: String::new(),
         }
     }
 
@@ -88,8 +96,82 @@ impl App {
         Address::new(mint).expect("static demo mint is valid base58")
     }
 
-    /// Run one intent end-to-end through the real bond engine + mesh.
+    /// Dispatch to the live (real Jupiter) or synthetic pipeline.
     async fn step(&mut self) {
+        if let Some(policy) = self.live_policy.clone() {
+            self.step_live(policy).await;
+        } else {
+            self.step_sim().await;
+        }
+    }
+
+    /// Real pipeline: quote Jupiter for `expected_out` + conviction, bond, settle.
+    async fn step_live(&mut self, policy: Arc<JupiterRoutePolicy>) {
+        self.ticks += 1;
+        let i = self.rng.gen_range(0..TOKENS.len());
+        let mut j = self.rng.gen_range(0..TOKENS.len());
+        while j == i {
+            j = self.rng.gen_range(0..TOKENS.len());
+        }
+        let (tin, tout) = (&TOKENS[i], &TOKENS[j]);
+        let amount_ui = self.rng.gen_range(0.1_f64..2.0);
+        let amount_in = Amount::new((amount_ui * 10f64.powi(tin.dec as i32)) as u64, tin.dec);
+        let intent = Intent {
+            input_mint: Self::addr(tin.mint),
+            output_mint: Self::addr(tout.mint),
+            amount_in,
+            side: Side::Sell,
+            objective: Objective::Price,
+            constraints: Constraints { max_slippage_bps: 150, deadline_unix: 0, max_legs: Some(2) },
+        };
+
+        let solution = match policy.solve(&intent).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.notice = format!("live quote failed ({}→{}): {e}", tin.sym, tout.sym);
+                return;
+            }
+        };
+        self.notice.clear();
+
+        let bond = match self.engine.escrow(&solution).await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        // Dry fill: the quoted output (no on-chain submission in the dashboard).
+        let fill = Fill { amount_out: solution.route.expected_out, executed_unix: 0 };
+        let outcome = self
+            .engine
+            .settle(&bond, &fill)
+            .await
+            .unwrap_or(BondOutcome::Slashed);
+
+        let fee = self.engine.quote_fee(solution.conviction);
+        let _ = self
+            .market
+            .sell_inference(InferenceOffer {
+                solution: solution.clone(),
+                price: fee,
+                peer_id: "live".to_string(),
+            })
+            .await;
+        self.fees_earned += fee.as_usdc();
+
+        let pair = format!("{}→{}", tin.sym, tout.sym);
+        if self.log.len() == 12 {
+            self.log.pop_back();
+        }
+        self.log.push_front(LogEntry {
+            pair: pair.clone(),
+            conviction: solution.conviction.0,
+            bond_usdc: bond.amount.as_usdc(),
+            outcome,
+        });
+        self.last = Some((pair, solution, fill.amount_out.ui(), outcome));
+    }
+
+    /// Run one synthetic intent end-to-end through the real bond engine + mesh.
+    async fn step_sim(&mut self) {
         self.ticks += 1;
 
         // 1. Pick a random pair + size and build the intent.
@@ -215,15 +297,25 @@ impl App {
 }
 
 fn main() -> Result<()> {
+    let live = std::env::args().any(|a| a == "--live");
+    let live_policy = if live {
+        Some(Arc::new(JupiterRoutePolicy::new()))
+    } else {
+        None
+    };
     let rt = tokio::runtime::Runtime::new()?;
     let mut terminal = setup_terminal()?;
-    let res = run(&mut terminal, &rt);
+    let res = run(&mut terminal, &rt, live_policy);
     restore_terminal(&mut terminal)?;
     res
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, rt: &tokio::runtime::Runtime) -> Result<()> {
-    let mut app = App::new();
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    rt: &tokio::runtime::Runtime,
+    live_policy: Option<Arc<JupiterRoutePolicy>>,
+) -> Result<()> {
+    let mut app = App::new(live_policy);
     let tick = Duration::from_millis(850);
     let mut last_tick = Instant::now();
 
@@ -400,14 +492,26 @@ fn draw_mesh(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let state = if app.paused { "PAUSED" } else { "LIVE" };
+    let state = if app.paused { "PAUSED" } else { "RUNNING" };
     let color = if app.paused { Color::Yellow } else { Color::Green };
-    let p = Paragraph::new(Line::from(vec![
+    let mode = if app.live_policy.is_some() {
+        "LIVE·Jupiter"
+    } else {
+        "SIM"
+    };
+    let mut spans = vec![
         Span::styled(format!(" {state} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("· {mode} "), Style::default().fg(Color::Cyan)),
         Span::raw(format!("· tick {} ", app.ticks)),
         Span::styled("· [space] pause  [s] step  [q] quit", Style::default().fg(Color::DarkGray)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
+    ];
+    if !app.notice.is_empty() {
+        spans.push(Span::styled(
+            format!("  ⚠ {}", app.notice),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    let p = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
     f.render_widget(p, area);
 }
 

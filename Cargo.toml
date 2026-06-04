@@ -11,6 +11,7 @@ members = [
     "crates/scematica-protocol",
     "crates/scemadex-sdk",
     "crates/scemadex-integrations",
+    "crates/scemadex-relay",
     "crates/sdk-dashboard",
     "tools/key-converter",
     "tools/pool-seeder",

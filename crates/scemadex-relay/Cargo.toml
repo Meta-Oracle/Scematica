@@ -1,0 +1,27 @@
+[package]
+name = "scemadex-relay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ScemaDEX peer-mesh relay + x402-gated signal oracle."
+publish = false
+
+[[bin]]
+name = "scemadex-relay"
+path = "src/main.rs"
+
+[dependencies]
+scemadex-sdk = { path = "../scemadex-sdk" }
+scemadex-integrations = { path = "../scemadex-integrations" }
+scematica-protocol = { path = "../scematica-protocol" }
+axum = { version = "0.6", features = ["macros"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }

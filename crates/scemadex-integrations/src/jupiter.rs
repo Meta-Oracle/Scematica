@@ -10,13 +10,17 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use scematica_executor::jupiter::JupiterBuilder;
 use scematica_nn::{DQNAgent, TradeAction, TradeState};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::transaction::VersionedTransaction;
 
 use scemadex_sdk::{
     Amount, Conviction, Fill, Intent, Result, Route, RouteLeg, RoutePolicy, ScemaDexError,
@@ -227,6 +231,9 @@ pub struct JupiterVenueExecutor {
     /// Owner pubkey the swap transaction is built for.
     owner: Pubkey,
     slippage_bps: u16,
+    /// When present, `execute()` signs and submits on-chain instead of dry-quoting.
+    signer: Option<Arc<Keypair>>,
+    rpc: Option<Arc<RpcClient>>,
 }
 
 impl JupiterVenueExecutor {
@@ -235,8 +242,32 @@ impl JupiterVenueExecutor {
             jup: JupiterBuilder::new(),
             owner,
             slippage_bps: 150,
+            signer: None,
+            rpc: None,
         }
     }
+
+    /// Enable live submission: `execute()` will sign the Jupiter transaction with
+    /// `signer` and `send_and_confirm` it via `rpc`. The owner is set to the
+    /// signer's pubkey so the built transaction matches.
+    pub fn with_signer(mut self, signer: Arc<Keypair>, rpc: Arc<RpcClient>) -> Self {
+        self.owner = signer.pubkey();
+        self.signer = Some(signer);
+        self.rpc = Some(rpc);
+        self
+    }
+
+    pub fn with_slippage_bps(mut self, bps: u16) -> Self {
+        self.slippage_bps = bps;
+        self
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -267,8 +298,6 @@ impl VenueExecutor for JupiterVenueExecutor {
     }
 
     async fn execute(&self, route: &Route) -> Result<Fill> {
-        // Dry mode: re-quote and report the quoted output as the fill. Submitting
-        // on-chain requires a signer + RPC, which the caller wires separately.
         let leg = route
             .legs
             .first()
@@ -283,6 +312,30 @@ impl VenueExecutor for JupiterVenueExecutor {
             .map_err(|e| ScemaDexError::Venue(format!("jupiter quote: {e}")))?;
         let parsed =
             parse_jupiter_quote(&quote).map_err(|e| ScemaDexError::Venue(e.to_string()))?;
+
+        // Live mode: fetch the swap tx, re-sign it with our keypair, submit, confirm.
+        if let (Some(signer), Some(rpc)) = (&self.signer, &self.rpc) {
+            let tx_bytes = self
+                .jup
+                .get_swap_transaction(&quote, &self.owner)
+                .await
+                .map_err(|e| ScemaDexError::Venue(format!("jupiter swap: {e}")))?;
+            let unsigned = self
+                .jup
+                .deserialize_transaction(&tx_bytes)
+                .map_err(|e| ScemaDexError::Venue(format!("decode swap tx: {e}")))?;
+            let signed = VersionedTransaction::try_new(unsigned.message, &[signer.as_ref()])
+                .map_err(|e| ScemaDexError::Venue(format!("sign swap tx: {e}")))?;
+            rpc.send_and_confirm_transaction(&signed)
+                .await
+                .map_err(|e| ScemaDexError::Venue(format!("submit swap: {e}")))?;
+            return Ok(Fill {
+                amount_out: Amount::new(parsed.out_amount, 0),
+                executed_unix: unix_now(),
+            });
+        }
+
+        // Dry mode: report the quoted output as the fill (no submission).
         Ok(Fill {
             amount_out: Amount::new(parsed.out_amount, 0),
             executed_unix: 0,

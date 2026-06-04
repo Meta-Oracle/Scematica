@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 scemadex-sdk = { path = "../scemadex-sdk" }
+scemadex-integrations = { path = "../scemadex-integrations" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }

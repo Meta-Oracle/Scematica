@@ -13,7 +13,9 @@ scematica-protocol = { path = "../scematica-protocol" }
 scematica-executor = { path = "../scematica-executor" }
 scematica-nn = { path = "../scematica-nn" }
 solana-sdk = { workspace = true }
+solana-client = { workspace = true }
 async-trait = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 

@@ -3,12 +3,18 @@
 //! `publish = false`; it wires the published [`scemadex_sdk`] traits to the real
 //! x402 facilitator.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use scematica_protocol::{PaymentRequirements, X402_VERSION};
+use scematica_protocol::{
+    Facilitator, PaymentPayload, PaymentRequirements, SettlementResponse, X402_VERSION,
+};
 
 use scemadex_sdk::{
     Bond, BondEngine, BondLedger, BondOutcome, EscrowBondEngine, Fill, Result, Solution, Usdc,
 };
+
+pub mod jupiter;
 
 /// USDC mint on Solana mainnet — the unit of account for bonds and fees.
 const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -26,6 +32,7 @@ pub struct X402BondEngine {
     asset_mint: String,
     network: String,
     timeout_secs: u64,
+    facilitator: Option<Arc<Facilitator>>,
 }
 
 impl X402BondEngine {
@@ -37,12 +44,37 @@ impl X402BondEngine {
             asset_mint: USDC_MINT.to_string(),
             network: "solana-mainnet".to_string(),
             timeout_secs: 120,
+            facilitator: None,
         }
     }
 
     pub fn with_network(mut self, network: impl Into<String>) -> Self {
         self.network = network.into();
         self
+    }
+
+    /// Attach a live x402 [`Facilitator`] so bonds/fees settle on-chain.
+    pub fn with_facilitator(mut self, facilitator: Arc<Facilitator>) -> Self {
+        self.facilitator = Some(facilitator);
+        self
+    }
+
+    /// Settle a client-signed x402 payment for `amount` micro-USDC on-chain.
+    ///
+    /// Verifies and submits the payment transaction through the configured
+    /// [`Facilitator`] (the fee payer funds the network fee). Use this to move
+    /// the inference fee or a slashed bond between agent and caller.
+    pub async fn settle_payment(
+        &self,
+        payload: &PaymentPayload,
+        amount: Usdc,
+    ) -> anyhow::Result<SettlementResponse> {
+        let facilitator = self
+            .facilitator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no facilitator configured"))?;
+        let requirements = self.payment_requirements(amount);
+        Ok(facilitator.settle(payload, &requirements).await)
     }
 
     /// Build the x402 [`PaymentRequirements`] that settle a bond/fee of `amount`

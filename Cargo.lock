@@ -4146,10 +4146,15 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 name = "scemadex-integrations"
 version = "1.11.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "scemadex-sdk",
+ "scematica-executor",
+ "scematica-nn",
  "scematica-protocol",
  "serde_json",
+ "solana-sdk",
+ "tokio",
 ]
 
 [[package]]

@@ -58,8 +58,8 @@ impl ToolDispatcher {
     pub async fn dispatch(&self, call: ToolCall) -> Result<ToolResult> {
         match call {
             ToolCall::SwapToken { from, to, amount_sol, slippage_bps } => {
-                let from_mint = resolve_symbol(&from)?;
-                let to_mint = resolve_symbol(&to)?;
+                let from_mint = resolve_symbol(&from).await?;
+                let to_mint = resolve_symbol(&to).await?;
                 let slippage = slippage_bps.unwrap_or(100);
                 Ok(ToolResult::Success {
                     message: format!(
@@ -73,8 +73,8 @@ impl ToolDispatcher {
             }
 
             ToolCall::GetQuote { from, to, amount_sol } => {
-                let from_mint = resolve_symbol(&from)?;
-                let to_mint = resolve_symbol(&to)?;
+                let from_mint = resolve_symbol(&from).await?;
+                let to_mint = resolve_symbol(&to).await?;
                 Ok(ToolResult::Success {
                     message: format!(
                         "Quote: {:.4} {} → {}\nLive quotes require the arb engine (RPC connection).",

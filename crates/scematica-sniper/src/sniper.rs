@@ -539,7 +539,22 @@ impl Sniper {
     /// Evaluates recent trade history every `interval_secs` and updates live_params.
     pub async fn run_strategy_loop(self: Arc<Self>, interval_secs: u64) {
         let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
-        info!("Strategy agent loop started (interval: {}s)", interval_secs);
+        // Make the no-op case observable: without an AI key the loop ticks forever
+        // doing nothing, which looks identical to a crash from the outside (stale
+        // scematica-strategy.json). Say so explicitly at startup.
+        if self.ai.is_some() {
+            info!(
+                "Strategy agent loop started (interval: {}s) — AI configured, TP/SL will adapt",
+                interval_secs
+            );
+        } else {
+            warn!(
+                "Strategy agent loop started (interval: {}s) but AI is DISABLED (no API key) — \
+                 TP/SL/regime will NOT adapt and scematica-strategy.json will stay stale. \
+                 Set an AI API key to enable.",
+                interval_secs
+            );
+        }
         loop {
             ticker.tick().await;
 
@@ -2206,35 +2221,77 @@ impl Sniper {
                             );
                         }
                         TradeAction::SellPartial | TradeAction::SellAll => {
-                            info!(
-                                mint = %pool.base_mint,
-                                action = action.label(),
-                                epsilon,
-                                replay_size,
-                                train_steps,
-                                "DQ*: exit/bearish advice - skipping buy"
-                            );
-                            self.write_pool_decision(
-                                pool,
-                                "rejected",
-                                "dq_advice",
-                                format!("action={};confidence={:.4}", dq_action, dq_confidence),
-                                pool_size_sol,
-                                pool_age_secs_at_buy,
-                                velocity_sol_per_sec_at_buy,
-                                buy_pressure_ratio_at_buy,
-                                upfront_score,
-                                pool.pumpfun_score,
-                                inflow_rate_now_sol_per_sec,
-                                high_speed,
-                                false,
-                                0.0,
-                                0,
-                                self.config.min_pool_score,
-                                dq_action.as_str(),
-                                dq_confidence,
-                            );
-                            return Ok(());
+                            // Veto guard: only let a bearish signal *fully suppress* a buy when
+                            // it is meaningfully separated from the best buy alternative. The net
+                            // can be only partially converged (high avg_loss) when train_steps
+                            // first crosses the enforcement gate, and the validated edge is
+                            // PF≈6.5 — a marginal SellPartial that barely outranks BuyStandard/
+                            // BuyAggressive must not silently kill entries. A weak bearish lean
+                            // downgrades to size-down (0.5x) instead of a hard skip.
+                            //
+                            // Require: the bearish Q is genuinely positive AND exceeds the best
+                            // buy Q by ≥15% (relative), or the best buy Q is itself non-positive.
+                            const NN_VETO_REL_MARGIN: f64 = 0.15;
+                            let buy_q = q_vals
+                                .get(TradeAction::BuyStandard.index())
+                                .copied()
+                                .unwrap_or(f64::NEG_INFINITY)
+                                .max(
+                                    q_vals
+                                        .get(TradeAction::BuyAggressive.index())
+                                        .copied()
+                                        .unwrap_or(f64::NEG_INFINITY),
+                                );
+                            let sell_q = q_vals.get(action.index()).copied().unwrap_or(0.0);
+                            let strong_veto = sell_q > 0.0
+                                && (buy_q <= 0.0 || sell_q >= buy_q * (1.0 + NN_VETO_REL_MARGIN));
+
+                            if !strong_veto {
+                                effective_quote_amount_raw =
+                                    (effective_quote_amount_raw as f64 * 0.5) as u64;
+                                info!(
+                                    mint = %pool.base_mint,
+                                    action = action.label(),
+                                    sell_q,
+                                    buy_q,
+                                    epsilon,
+                                    replay_size,
+                                    train_steps,
+                                    "DQ*: weak bearish lean (sell_q within margin of buy_q) - sizing down 0.5x instead of skipping"
+                                );
+                            } else {
+                                info!(
+                                    mint = %pool.base_mint,
+                                    action = action.label(),
+                                    sell_q,
+                                    buy_q,
+                                    epsilon,
+                                    replay_size,
+                                    train_steps,
+                                    "DQ*: strong exit/bearish advice - skipping buy"
+                                );
+                                self.write_pool_decision(
+                                    pool,
+                                    "rejected",
+                                    "dq_advice",
+                                    format!("action={};confidence={:.4}", dq_action, dq_confidence),
+                                    pool_size_sol,
+                                    pool_age_secs_at_buy,
+                                    velocity_sol_per_sec_at_buy,
+                                    buy_pressure_ratio_at_buy,
+                                    upfront_score,
+                                    pool.pumpfun_score,
+                                    inflow_rate_now_sol_per_sec,
+                                    high_speed,
+                                    false,
+                                    0.0,
+                                    0,
+                                    self.config.min_pool_score,
+                                    dq_action.as_str(),
+                                    dq_confidence,
+                                );
+                                return Ok(());
+                            }
                         }
                     }
                 }

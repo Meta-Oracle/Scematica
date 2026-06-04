@@ -472,14 +472,16 @@ mod tests {
     #[test]
     fn test_dead_pool_detection() {
         let config = FibonacciRecoveryConfig::default();
+        let dead_pool_timeout_secs = config.dead_pool_timeout_secs;
         let system = FibonacciRecoverySystem::new(config);
 
         let entry_value = 10_000_000; // 0.01 SOL
         let entry_time = 1000;
         let momentum = FibonacciMomentum::new(entry_value, entry_time);
 
-        // Simulate dead pool: 4 seconds, no gain
-        let current_time = entry_time + 4;
+        // Simulate dead pool: past the dead_pool_timeout_secs threshold, no gain.
+        // Derived from config so this stays in sync if the timeout is retuned.
+        let current_time = entry_time + dead_pool_timeout_secs + 1;
         let current_value = entry_value; // No movement
         let pool_size = 15_000_000_000; // 15 SOL
 

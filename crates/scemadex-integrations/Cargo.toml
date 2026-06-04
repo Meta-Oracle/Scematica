@@ -1,0 +1,14 @@
+[package]
+name = "scemadex-integrations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bot-side ScemaDEX integrations (x402-settled bond engine) — not published; depends on proprietary Scematica crates."
+publish = false
+
+[dependencies]
+scemadex-sdk = { path = "../scemadex-sdk" }
+scematica-protocol = { path = "../scematica-protocol" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

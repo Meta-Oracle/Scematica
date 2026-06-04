@@ -1,0 +1,38 @@
+[package]
+name = "scemadex-sdk"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ScemaDEX — an agentic liquidity layer: intent-based, RL-routed, x402-metered swap execution with bonded (slashable) fills and a peer marketplace where agents trade inference and experience."
+keywords = ["solana", "dex", "defi", "x402"]
+categories = ["cryptography::cryptocurrencies"]
+readme = "README.md"
+documentation = "https://docs.rs/scemadex-sdk"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bs58 = { workspace = true }
+
+# Optional: the real Scematica Deep Q* agent as the RoutePolicy. Light, publishable
+# (no solana-sdk). Pinned by version so the crate can publish; path wins in-workspace.
+scematica-nn = { version = "1.11.0", path = "../scematica-nn", optional = true }
+# Optional: HTTP transport for the `ai` (LLM) and `net` (peer mesh) features.
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = []
+# Use the real Deep Q* agent as the routing policy; its value head supplies the
+# conviction that sizes Conviction-Routing bonds.
+scematica = ["dep:scematica-nn"]
+# Natural-language intent parsing + route/bond narration via an OpenAI-compatible
+# LLM endpoint.
+ai = ["dep:reqwest"]
+# Networked PeerMarket client (RemotePeerMarket) over an HTTP/JSON relay.
+net = ["dep:reqwest"]
+
+[dev-dependencies]
+tokio = { workspace = true }

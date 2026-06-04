@@ -1,0 +1,19 @@
+[package]
+name = "sdk-dashboard"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ScemaDEX SDK TUI — live intent → conviction-bonded routing → settlement, with a peer-market view."
+
+[[bin]]
+name = "sdk-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+scemadex-sdk = { path = "../scemadex-sdk" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }

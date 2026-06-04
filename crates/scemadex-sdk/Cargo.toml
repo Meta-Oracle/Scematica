@@ -9,6 +9,8 @@ keywords = ["solana", "dex", "defi", "x402"]
 categories = ["cryptography::cryptocurrencies"]
 readme = "README.md"
 documentation = "https://docs.rs/scemadex-sdk"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
 serde = { workspace = true }

@@ -8,6 +8,8 @@ description = "Pure-Rust Double/Dueling Deep Q* reinforcement-learning agent —
 keywords = ["rl", "dqn", "trading", "solana", "ai"]
 categories = ["algorithms", "science"]
 readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
 serde.workspace = true

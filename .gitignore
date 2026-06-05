@@ -61,6 +61,7 @@ web/.next/
 web/node_modules/
 web/.env.local
 web/out/
+*.tsbuildinfo
 
 # ── Session-artifact docs (Claude-generated per-session reports, not source truth) ──
 ANALYSIS_REPORT.md

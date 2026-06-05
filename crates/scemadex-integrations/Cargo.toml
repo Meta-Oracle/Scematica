@@ -19,5 +19,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
+[features]
+# Opt-in integration tests that hit the live Jupiter aggregator over the network.
+# Excluded from the default test run and from CI: enable explicitly with
+#   cargo test -p scemadex-integrations --features live-tests
+live-tests = []
+
 [dev-dependencies]
 tokio = { workspace = true }
+scemadex-sdk = { path = "../scemadex-sdk" }

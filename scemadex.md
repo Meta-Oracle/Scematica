@@ -198,6 +198,37 @@ runs, unmodified, against a Deep Q\* agent posting real bonds on mainnet.
 
 ---
 
+## Foundations: the x402 payment rails (Dexter)
+
+Every payment in ScemaDEX — metered inference fees (A), signal-oracle queries
+(C), and Conviction-Routing bond settlement (D) — rides the **x402 protocol**: a
+server answers `402 Payment Required` with payment requirements, and the client
+signs and retries with proof of payment. ScemaDEX builds on the open x402
+ecosystem rather than reinventing the rail.
+
+In particular it is designed to interoperate with the **[Dexter x402
+SDK](https://github.com/Dexter-DAO/dexter-x402-sdk)** (`@dexterai/x402`) —
+*"HTTP-native micropayments for agents. Solana and the major EVM chains."* It is
+the TypeScript counterpart to ScemaDEX's Rust-native `scematica-protocol`
+facilitator: Dexter is the **client/agent side** that pays, `scematica-protocol`
+is the **server/relay side** that gates and settles.
+
+| Dexter x402 primitive | Where it meets ScemaDEX |
+|---|---|
+| `payAndFetch()` (client) | Satisfies the `402` our relay returns on gated `/signal/*` endpoints — the exact response the [TS mesh client](web/lib/scemadex.ts) surfaces as `PaymentRequiredError`. |
+| `x402Middleware()` (server) | Mirrors the relay's `--pay-to` `PaymentGate` on the signal oracle. |
+| `useX402Payment` (React) | Lets the `web/` dashboard pay for inferences and signals from a connected wallet. |
+| Batch settlement (escrow channels + vouchers) | Amortizes settlement across the *many* per-call inference fees a mesh agent generates (Primitive A): pre-fund an escrow once, pay with cheap off-chain vouchers, settle batched. |
+| Multi-chain USDC (Solana + EVM) | Extends the mesh's unit of account beyond Solana to Base, Polygon, Arbitrum, and more. |
+
+The upshot: a JavaScript/TypeScript agent using the Dexter SDK can pay a Rust
+ScemaDEX relay for a bonded inference with **no glue code** — Dexter signs the
+x402 payment, the relay's facilitator verifies and settles it, and the bonded
+solution comes back. The two SDKs are the two halves of one agent-payment
+handshake.
+
+---
+
 ## Try it in 30 seconds
 
 ```bash
@@ -378,6 +409,56 @@ cargo run --release --bin sdk-dashboard -- --live
 
 Point a `RemotePeerMarket` (the `net` feature) at your relay and your node can
 buy and sell bonded inferences and experience with the rest of the mesh.
+
+### 5b. Join the mesh from TypeScript / Python / any language
+
+The relay speaks plain HTTP/JSON, so you don't need Rust to participate. A typed,
+dependency-free TypeScript client ships in [`web/lib/scemadex.ts`](web/lib/scemadex.ts)
+(browser + Node 18+), mirroring the exact wire format:
+
+```ts
+import { ScemaDexRelay, fromMicroUsdc } from "./lib/scemadex";
+
+const relay = new ScemaDexRelay("http://localhost:8080");
+
+// Buy the cheapest bonded inference for an intent...
+const offer = await relay.quoteInference(intentDigest);
+if (offer) console.log(offer.peer_id, fromMicroUsdc(offer.price), offer.solution.conviction);
+
+// ...buy experience under a price cap, or read the (x402-gated) signal oracle.
+const batch = await relay.buyExperience(/* USDC */ 1.0);
+const rep = await relay.reputation(mint); // throws PaymentRequiredError on HTTP 402
+```
+
+To actually **pay** a gated `/signal/*` endpoint, build the client with
+[`createPaidRelay`](web/lib/scemadex.ts), injecting the
+[Dexter x402 SDK](https://github.com/Dexter-DAO/dexter-x402-sdk)
+(`@dexterai/x402`, already in `web/package.json`). Gated reads are then routed
+through Dexter's `payAndFetch`, which performs the full 402 handshake (fetch →
+sign → retry) transparently:
+
+```ts
+import * as x402 from "@dexterai/x402/client";
+import { createPaidRelay } from "./lib/scemadex";
+
+const relay = await createPaidRelay("http://localhost:8080", x402, {
+  solanaPrivateKey: process.env.SOLANA_PRIVATE_KEY!, // and/or evmPrivateKey
+});
+
+const rep = await relay.reputation(mint); // the 402 is paid automatically
+```
+
+Without a payer the same call throws `PaymentRequiredError` carrying the payment
+requirements, so you can also pay manually and replay via the `headers` option.
+
+A runnable in-app reference lives at
+[`web/app/api/scemadex/signal/[mint]/route.ts`](web/app/api/scemadex/signal/[mint]/route.ts) —
+a server-side Next.js route that pays a gated signal read (keeping the key off the
+browser): `GET /api/scemadex/signal/<mint>?kind=reputation|pool_score|advice`.
+
+The 8-endpoint contract (`/inference/*`, `/experience/*`, `/signal/*`, `/health`)
+is the integration surface for Eliza, LangChain, or any agent framework — and the
+Dexter SDK is the drop-in x402 wallet for paying it.
 
 ### 6. Where to look
 

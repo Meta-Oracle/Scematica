@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── The published crate: cross-platform, no solana-sdk by default. This is the
+  #    always-green guardian for the examples + doctests shipped to crates.io. ──
+  sdk:
+    name: scemadex-sdk (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sdk
+
+      - name: Format check (scemadex-sdk)
+        run: cargo fmt -p scemadex-sdk -- --check
+
+      - name: Clippy (all features, deny warnings)
+        run: cargo clippy -p scemadex-sdk --all-features --all-targets -- -D warnings
+
+      - name: Tests + doctests (all features)
+        run: cargo test -p scemadex-sdk --all-features
+
+      - name: Build examples
+        run: cargo build -p scemadex-sdk --examples
+
+      - name: Run examples (offline, must exit 0)
+        run: |
+          for ex in quote conviction_bond peer_market intent_solving; do
+            echo "::group::example $ex"
+            cargo run -q -p scemadex-sdk --example "$ex"
+            echo "::endgroup::"
+          done
+
+  # ── docs.rs parity: build the docs the way docs.rs will (all features, the
+  #    docsrs cfg) so the #[doc(cfg(...))] feature badges can't silently break. ──
+  docs:
+    name: docs.rs build (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      - name: cargo doc (all features, --cfg docsrs)
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo doc -p scemadex-sdk --all-features --no-deps
+
+  # ── Full workspace on the primary dev platform (Windows). Some crates use
+  #    platform-specific code paths, so this is the source of truth for build. ──
+  workspace:
+    name: workspace (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: workspace
+
+      - name: Build workspace (dev profile)
+        run: cargo build --workspace
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+  # ── TypeScript relay client typechecks under strict mode. ──
+  web:
+    name: web / ts client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install deps
+        run: npm ci || npm install
+      - name: Typecheck
+        run: npx tsc --noEmit

@@ -10,6 +10,7 @@ members = [
     "crates/scematica-nn",
     "crates/scematica-protocol",
     "crates/scemadex-sdk",
+    "crates/scemadex-settle",
     "crates/scemadex-integrations",
     "crates/scemadex-relay",
     "crates/sdk-dashboard",

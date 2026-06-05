@@ -8,6 +8,9 @@ skip-lint = false
 [programs.mainnet]
 scematica_swap = "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc"
 
+[programs.devnet]
+scematica_swap = "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc"
+
 [programs.localnet]
 scematica_swap = "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc"
 

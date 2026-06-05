@@ -19,7 +19,9 @@ start-sdk-dashboard.bat   # ScemaDEX SDK dashboard, SIM mode (offline)
 
 Full bot mode (`start-dashboard.bat`) needs 250k SCEMA + an RPC endpoint in
 `.env`. See [QUICKSTART.md](QUICKSTART.md) for the full script reference and
-[scemadex.md](scemadex.md) for the ScemaDEX SDK.
+[scemadex.md](scemadex.md) for the ScemaDEX SDK — the agentic liquidity layer
+(intent solving, Conviction-Routing bonds, and an inference/experience mesh),
+with x402 payments over the [Dexter x402 SDK](https://github.com/Dexter-DAO/dexter-x402-sdk).
 
 ---
 

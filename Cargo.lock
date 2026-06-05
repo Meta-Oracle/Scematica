@@ -4193,6 +4193,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "scemadex-settle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "scemadex-sdk",
+ "solana-client",
+ "solana-sdk",
+ "spl-associated-token-account 3.0.4",
+ "spl-token",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "scematica-ai"
 version = "1.11.0"
 dependencies = [

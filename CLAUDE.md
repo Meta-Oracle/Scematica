@@ -19,6 +19,11 @@ cargo run --release --bin sniper             # Sniper standalone
 cargo run --release --bin arb                # Arb standalone
 cargo run --release --bin scematica-protocol -- --pay-to <wallet> --price-lamports 10000
 
+# ScemaDEX agentic-liquidity layer (separate from the bot)
+cargo run --release --bin sdk-dashboard           # SDK TUI over the bond pipeline (SIM)
+cargo run --release --bin sdk-dashboard -- --live # real Jupiter quotes through the bonds
+cargo run --release --bin scemadex-relay          # peer-mesh + signal-oracle HTTP server
+
 # Backtester (replays JSONL pool history through filter pipeline + TP/SL sim)
 cargo run --release --bin backtest -- --pools historical-pools.jsonl --tp 100 --sl 15
 
@@ -60,13 +65,26 @@ crates/
   scematica-ai/         LLM agents (Groq/xAI): Chat, Strategy, Risk, Debate, Report
   scematica-nn/         Pure-Rust Deep Q* (Double DQN) agent — no external ML deps
   scematica-dashboard/  Ratatui TUI (6 tabs). Bin: `dashboard`
-  scematica-protocol/   x402 HTTP 402 payment server. Bin: `scematica-protocol`
+  scematica-api/        HTTP API backing the web/ Next.js dashboard. Bin: `api`
+  scematica-protocol/   x402 HTTP 402 payment server (facilitator). Bin: `scematica-protocol`
+  scemadex-sdk/         Published agentic-liquidity SDK: intents, Conviction-Routing
+                        bonds, inference/experience mesh. No solana-sdk by default.
+  scemadex-settle/      Open devnet reference settler — moves devnet USDC on bond slash
+  scemadex-integrations/  Bot-side ScemaDEX wiring: x402 bond engine, Jupiter route
+                          policy, file signal source. publish = false
+  scemadex-relay/       Peer-mesh + signal-oracle HTTP server. Bin: `scemadex-relay`
+  sdk-dashboard/        ScemaDEX SDK TUI over the bond pipeline. Bin: `sdk-dashboard`
+  agent-playground/     ScemaDEX agent playground / experimentation
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Pre-seeds pool-cache.json from on-chain state
 programs/
-  scematica-swap/       Anchor on-chain program (NOT in cargo workspace)
+  scematica-swap/       Anchor on-chain program (NOT in cargo workspace).
+                        Devnet deploy: programs/scematica-swap/DEPLOY_DEVNET.md
 ```
+
+The ScemaDEX SDK family (`scemadex-*`, `sdk-dashboard`) is the agentic-liquidity
+layer; see `docs/scemadex.md`. The web dashboard lives in `web/` (Next.js).
 
 ## Architecture: File-Based IPC
 
@@ -105,10 +123,10 @@ Configuration uses `#[serde(default)]` on `SniperConfig` and `FilterConfig` — 
 
 Pure-Rust Double DQN, no ML framework dependency. Lives inside the sniper process.
 
-- **Net:** MLP `STATE_DIM(18) → 128 → 64 → ACTION_DIM(5)`, He init, ReLU, linear output
-- **State** (18 features, normalised to [0,1]): defined in `state.rs` — pool age, liquidity, price change, volume, buy/sell ratio, LP burned, mint renounced, PnL %, position age, daily PnL, streaks, balance, regime, volatility, spread, time-of-day, open positions
-- **Actions** (`action.rs`): `Hold`, `Buy`, `BuyAgg`, `SellPartial`, `SellAll`
-- **Training**: epsilon-greedy (1.0 → 0.05, decay 0.9995), target net hard-copy every 200 steps, replay buffer 10k, batch 64
+- **Net:** Dueling Double-DQN `STATE_DIM(24) → 128 → 64 → {V(s), A(s,a)}`, He init, ReLU; `Q(s,a) = V(s) + A(s,a) − mean(A)`. (Standard MLP path retained for old checkpoints.)
+- **State** (24 features, normalised to [0,1]): defined in `state.rs` — pool age, liquidity, price change, volume, buy/sell ratio, LP burned, mint renounced, PnL %, position age, daily PnL, streaks, balance, regime, volatility, spread, time-of-day, open positions, **peak PnL, pool score, deployer rug rate, volume velocity, price velocity, price acceleration**
+- **Actions** (`action.rs`): `Hold`, `BuyStandard`, `BuyAggressive`, `SellPartial`, `SellAll`
+- **Training**: Double DQN (online selects, target evaluates), **prioritized replay** (sum-tree, α=0.6, β 0.4→1.0), **n-step returns** (n=5); epsilon-greedy (1.0 → 0.05, decay 0.9995), target net hard-copy every 200 steps, replay buffer 10k, batch 64. Full reference: `docs/DQ_STAR_AGENT.md`
 - **Active buy-gating** (`sniper.rs`, `advise()` block): once `ready_to_advise()` is true the agent sizes entries (`BuyAggressive`→1.5x, `Hold`→0.5x) and can veto a buy on `SellPartial`/`SellAll`. `ready_to_advise = train_steps >= 10_000 && last_q_values has signal`. The veto only *fully suppresses* a buy when the bearish Q exceeds the best buy Q by ≥15% (`NN_VETO_REL_MARGIN`); a weaker lean downgrades to 0.5x sizing so a partially-converged net can't silently kill the PF≈6.5 edge.
 - **Regime branching**: separate `(online, target)` net pairs per regime engaged when `epsilon < 0.3` and a known regime (`bull`/`bear`/`sideways`/`panic`) is set.
 - **Tournament**: 3 variants (conservative/balanced/aggressive) run in parallel; highest `total_reward` is promoted every 1000 steps.

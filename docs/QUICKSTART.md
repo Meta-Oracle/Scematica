@@ -69,7 +69,7 @@ cargo run --release --bin sniper
 cargo run --release --bin arb
 ```
 
-## v1.6.0 Key Features Configured
+## Key Features
 
 ### Exit Gate System
 - **Guaranteed ≥0.05 SOL exits**: All momentum exits gated behind 500% TP

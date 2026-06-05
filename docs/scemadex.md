@@ -6,7 +6,7 @@
 > learned experience with one another — all settled in stablecoins over the x402
 > payment rails.
 
-Crate: [`scemadex-sdk`](crates/scemadex-sdk) · `v0.1.1` · published on crates.io.
+Crate: [`scemadex-sdk`](../crates/scemadex-sdk) · `v0.1.1` · published on crates.io.
 Every claim below is backed by a runnable example (offline, no keypair/RPC):
 `cargo run -p scemadex-sdk --example <name>`.
 
@@ -215,7 +215,7 @@ is the **server/relay side** that gates and settles.
 
 | Dexter x402 primitive | Where it meets ScemaDEX |
 |---|---|
-| `payAndFetch()` (client) | Satisfies the `402` our relay returns on gated `/signal/*` endpoints — the exact response the [TS mesh client](web/lib/scemadex.ts) surfaces as `PaymentRequiredError`. |
+| `payAndFetch()` (client) | Satisfies the `402` our relay returns on gated `/signal/*` endpoints — the exact response the [TS mesh client](../web/lib/scemadex.ts) surfaces as `PaymentRequiredError`. |
 | `x402Middleware()` (server) | Mirrors the relay's `--pay-to` `PaymentGate` on the signal oracle. |
 | `useX402Payment` (React) | Lets the `web/` dashboard pay for inferences and signals from a connected wallet. |
 | Batch settlement (escrow channels + vouchers) | Amortizes settlement across the *many* per-call inference fees a mesh agent generates (Primitive A): pre-fund an escrow once, pay with cheap off-chain vouchers, settle batched. |
@@ -413,7 +413,7 @@ buy and sell bonded inferences and experience with the rest of the mesh.
 ### 5b. Join the mesh from TypeScript / Python / any language
 
 The relay speaks plain HTTP/JSON, so you don't need Rust to participate. A typed,
-dependency-free TypeScript client ships in [`web/lib/scemadex.ts`](web/lib/scemadex.ts)
+dependency-free TypeScript client ships in [`web/lib/scemadex.ts`](../web/lib/scemadex.ts)
 (browser + Node 18+), mirroring the exact wire format:
 
 ```ts
@@ -431,7 +431,7 @@ const rep = await relay.reputation(mint); // throws PaymentRequiredError on HTTP
 ```
 
 To actually **pay** a gated `/signal/*` endpoint, build the client with
-[`createPaidRelay`](web/lib/scemadex.ts), injecting the
+[`createPaidRelay`](../web/lib/scemadex.ts), injecting the
 [Dexter x402 SDK](https://github.com/Dexter-DAO/dexter-x402-sdk)
 (`@dexterai/x402`, already in `web/package.json`). Gated reads are then routed
 through Dexter's `payAndFetch`, which performs the full 402 handshake (fetch →
@@ -452,7 +452,7 @@ Without a payer the same call throws `PaymentRequiredError` carrying the payment
 requirements, so you can also pay manually and replay via the `headers` option.
 
 A runnable in-app reference lives at
-[`web/app/api/scemadex/signal/[mint]/route.ts`](web/app/api/scemadex/signal/[mint]/route.ts) —
+[`web/app/api/scemadex/signal/[mint]/route.ts`](../web/app/api/scemadex/signal/[mint]/route.ts) —
 a server-side Next.js route that pays a gated signal read (keeping the key off the
 browser): `GET /api/scemadex/signal/<mint>?kind=reputation|pool_score|advice`.
 
@@ -464,10 +464,13 @@ Dexter SDK is the drop-in x402 wallet for paying it.
 
 - **API docs:** [docs.rs/scemadex-sdk](https://docs.rs/scemadex-sdk) (built with
   all features — the `scematica` / `ai` / `net` modules render with badges).
-- **Source & examples:** [`crates/scemadex-sdk`](crates/scemadex-sdk).
-- **Changelog:** [`crates/scemadex-sdk/CHANGELOG.md`](crates/scemadex-sdk/CHANGELOG.md).
-- **Integrations & relay:** [`crates/scemadex-integrations`](crates/scemadex-integrations),
-  [`crates/scemadex-relay`](crates/scemadex-relay).
+- **Source & examples:** [`crates/scemadex-sdk`](../crates/scemadex-sdk).
+- **Changelog:** [`crates/scemadex-sdk/CHANGELOG.md`](../crates/scemadex-sdk/CHANGELOG.md).
+- **Integrations & relay:** [`crates/scemadex-integrations`](../crates/scemadex-integrations),
+  [`crates/scemadex-relay`](../crates/scemadex-relay).
+- **Devnet settlement:** [`crates/scemadex-settle`](../crates/scemadex-settle) — the
+  open reference settler that moves real devnet USDC when a bond is slashed.
+- **Settlement boundary decision:** [scemadex-bond-settlement-decision.md](scemadex-bond-settlement-decision.md).
 
 ### Compatibility notes
 

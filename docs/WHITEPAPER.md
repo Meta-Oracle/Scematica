@@ -1,6 +1,6 @@
 # SCEMATICA: Autonomous AI Trading Infrastructure for Solana
 
-### Technical Whitepaper — v1.4.0
+### Technical Whitepaper — workspace v1.11.0 · verified against source 2026-06-05
 
 **Contract Address:** `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`  
 **Token:** $SCEMA (Token-2022, Solana Mainnet)  
@@ -126,7 +126,13 @@ The DQ* reinforcement learning agent (`scematica-nn`) is implemented from scratc
 | `scematica-ai` | LLM agents (Groq/xAI): Chat, Strategy, Risk, Debate, Report |
 | `scematica-nn` | Pure-Rust Dueling Deep Q* agent — no external ML dependencies |
 | `scematica-dashboard` | Ratatui TUI — 6 tabs, real-time metrics, config, AI chat |
-| `scematica-protocol` | Rust-native x402 HTTP/402 payment protocol server |
+| `scematica-api` | HTTP API backing the `web/` Next.js dashboard |
+| `scematica-protocol` | Rust-native x402 HTTP/402 payment protocol server (facilitator) |
+| `scemadex-sdk` | Published agentic-liquidity SDK: intents, Conviction-Routing bonds, inference/experience mesh (no `solana-sdk` by default) |
+| `scemadex-settle` | Open devnet reference settler — moves devnet USDC on bond slash |
+| `scemadex-integrations` | Bot-side ScemaDEX wiring: x402 bond engine, Jupiter route policy, file signal source (`publish = false`) |
+| `scemadex-relay` | Peer-mesh + signal-oracle HTTP server (`scemadex-relay` bin) |
+| `sdk-dashboard` | ScemaDEX SDK TUI over the bond pipeline (`sdk-dashboard` bin) |
 
 ---
 
@@ -504,13 +510,13 @@ moon_chase = (p < 0.25)           (auto moon-chase in first quarter)
 
 ### 11.5 Progress vs Multiplier Comparison
 
-| Progress | Growth | Builder | SuperBuilder |
+| Progress | Growth `1+p^0.8` | Builder `1.5+2p^0.65` | SuperBuilder `2+6p^0.35` |
 |----------|--------|---------|--------------|
 | 0% | 1.00× | 1.50× | 2.00× |
-| 10% | 1.21× | 1.88× | 3.04× |
-| 25% | 1.44× | 2.13× | 3.89× |
-| 50% | 1.66× | 2.52× | 5.04× |
-| 75% | 1.84× | 2.88× | 6.07× |
+| 10% | 1.16× | 1.95× | 4.68× |
+| 25% | 1.33× | 2.31× | 5.69× |
+| 50% | 1.57× | 2.77× | 6.71× |
+| 75% | 1.79× | 3.16× | 7.43× |
 | 100% | 2.00× | 3.50× | 8.00× |
 
 ---
@@ -602,7 +608,7 @@ Arbitrage transactions are bundled into a single atomic transaction where possib
 
 ### 14.1 Overview
 
-The DQ* agent (`scematica-nn`) is a pure-Rust Dueling Double DQN trained on live execution data from `scematica-trades.jsonl`. It currently operates in observer mode — training on real trades and publishing recommendations — with planned integration as a buy gate when `ε < 0.3`.
+The DQ* agent (`scematica-nn`) is a pure-Rust Dueling Double DQN trained on live execution data from `scematica-trades.jsonl`. It **actively gates entries** in the sniper once `train_steps ≥ 10,000` — sizing up on `BuyAggressive`, shading down on a mild bearish lean, and vetoing on a strong one (§14.7 / `DQ_STAR_AGENT.md` §16). The same agent also supplies conviction to the ScemaDEX bond layer (§16.4).
 
 ### 14.2 Network Architecture
 
@@ -669,28 +675,28 @@ Linear(64 → 1)          Linear(64 → 5)
 
 ### 14.5 Reward Function
 
-The reward is superlinear in positive PnL to teach the agent to value large wins disproportionately:
+The reward (`DQNAgent::shape_reward`, full treatment in `DQ_STAR_AGENT.md` §5) is
+**superlinear in profit and zoned in loss**; `hold_steps` is position age in
+**minutes** and the observer loop divides the result by 100:
 
 ```
-R = pnl × (1 + log₂(1 + pnl/25))    if pnl > 0
-R = pnl                               if pnl ≤ 0
+pnl ≥ 0  :  R = pnl × (1 + log₂(1 + pnl/25))  +  timing_bonus
+-5 ≤ pnl < 0   :  pnl × 1.0      -30 ≤ pnl < -5 :  pnl × 1.8
+-60 ≤ pnl < -30:  pnl × 2.5      pnl < -60      :  pnl × 1.5 − 15 (fast) | × 2.5 − 70 (held)
 ```
 
-A timing bonus rewards fast profitable exits:
+The **timing bonus** is discrete: **+75** (< 1 min) / +30 (≤ 3 min) / +10 (≤ 10 min) /
+`−min((hold−10)×2, 40)` beyond — rewarding fast capital recycling.
 
-```
-timing_bonus = +0.5 × (1 - position_age_secs / 3600)   if pnl > 0 AND age < 3600s
-```
+**Profit reward at key PnL levels (pre-bonus):**
 
-**Reward at key PnL levels:**
-
-| PnL | Multiplier | Effective reward |
+| PnL | Multiplier `1+log₂(1+pnl/25)` | Base reward |
 |-----|-----------|-----------------|
 | 25% | 2.00× | 50 |
 | 50% | 2.58× | 129 |
-| 100%| 3.00× | 300 |
-| 200%| 3.58× | 716 |
-| 500%| 4.32× | 2,158 |
+| 100%| 3.32× | 332 |
+| 200%| 4.17× | 834 |
+| 500%| 5.39× | 2,696 |
 
 ### 14.6 Training Algorithm
 
@@ -717,17 +723,28 @@ w_i = (1 / (N × P(i)))^β / max_j w_j    (β: 0.4 → 1.0)
 
 ### 14.7 Tournament Evolution
 
-Three hyperparameter variants run in parallel. Every 1000 steps, the highest-reward variant becomes the primary agent and all variants are re-initialized from the winner with ±20% hyperparameter perturbation:
+Three `DQNAgent` variants run in parallel on the same stream. Every 1000 steps
+(`eval_freq`) the highest-`total_reward` variant becomes primary; "balanced"
+starts as primary. Promotion only switches which variant acts — it does **not**
+re-initialise weights. (A separate `evolve_tournament_variants` routine optionally
+hill-climbs the per-variant hyperparameters: keep the winner's triple, mutate the
+others by lr ×U(0.8,1.2), ε_decay ±0.0005, γ ±0.005.)
 
 | Variant | Learning Rate | ε Decay | γ |
 |---------|--------------|---------|---|
-| Conservative | 0.0008 | 0.9990 | 0.98 |
-| Balanced | 0.0010 | 0.9995 | 0.99 |
-| Aggressive | 0.0012 | 0.9998 | 0.995 |
+| conservative | 0.0005 | 0.9999 | 0.95 |
+| balanced (default primary) | 0.0010 | 0.9995 | 0.99 |
+| aggressive | 0.0020 | 0.9990 | 0.95 |
 
 ### 14.8 Adversarial Injection
 
-Synthetic rug-pull, pump-and-dump, and honeypot scenarios are injected every 50 training steps. This ensures the replay buffer always contains adversarial examples even during calm market periods, accelerating the agent's safety learning by an estimated 10–20× vs. waiting for real rugs.
+When `auto_inject_adversarial` is enabled, synthetic rug-pull, pump-and-dump, and
+honeypot scenarios are injected every **100** training steps (2 per call). The
+pump-and-dump case is a *positive* `SellAll` example (peak exit, reward ≈ +4.03);
+the rug-pull (held-through `Hold`, ≈ −2.95) and honeypot (`SellAll`, ≈ −2.45) are
+negative. This keeps adversarial examples resident in the replay buffer during
+calm periods, accelerating safety learning. The always-on counterpart is action
+rebalancing (one `Hold` / one `SellPartial` every 50 steps).
 
 ---
 
@@ -811,6 +828,45 @@ The protocol enables monetization of Scematica's computed signals:
 - Aggregated pool radar data
 
 Third-party bots and tools can pay micropayments in SOL to access these signals without needing to run the full Scematica stack.
+
+### 16.4 ScemaDEX — The Agentic Liquidity Layer
+
+Building on the x402 rail, the `scemadex-*` crates generalise the bot from a
+self-contained trader into an **agentic liquidity layer** in which the *routing
+intelligence itself* is a metered, accountable, tradeable product. The published
+[`scemadex-sdk`](https://crates.io/crates/scemadex-sdk) defines a lean trait
+surface (`RoutePolicy`, `BondEngine`, `VenueExecutor`, `SignalSource`,
+`PeerMarket`) with no `solana-sdk` dependency by default, plus reference
+implementations; see [`scemadex.md`](scemadex.md) for the full treatment.
+
+Four composing primitives:
+
+- **A · Metered inference routing.** Every quote is produced by a learning policy
+  and is individually billable per call over x402 — the *quality of the decision*
+  is the SKU.
+- **B · Intent solving.** Callers express *what* they want
+  (`Objective::{Price, Speed, Stealth}`), not a path; the policy decides
+  venue / split / timing (including MEV-resistant `Stealth` execution).
+- **C · Signal & reputation oracle.** Reputation, pool scores, and advice are
+  monetised read endpoints — the same signals §16.3 sells, exposed through the
+  SDK and served by `scemadex-relay`.
+- **D · Conviction Routing** *(the defining primitive)*. The policy escrows a
+  **slashable performance bond** against its own promise, sized by its conviction.
+  Meet the guarantee → reclaim the bond and collect the fee; miss it → the bond
+  settles to the caller. `EscrowBondEngine` ships the open settlement state
+  machine; `scemadex-settle` performs the real **devnet** USDC transfer on slash;
+  the production mainnet x402 facilitator (`scemadex-integrations::X402BondEngine`)
+  is the closed companion.
+
+Composed across nodes, these yield a **`PeerMarket` mesh** where agents sell
+bonded inferences and trade learned RL experience with one another — an economy of
+machine intelligence settled in stablecoins. The same Deep Q\* agent that gates
+the bot's entries (§14) supplies the conviction that prices these bonds, via
+`scemadex-integrations::JupiterRoutePolicy::with_agent`. Non-Rust agents join over
+HTTP: the [Dexter x402 SDK](https://github.com/Dexter-DAO/dexter-x402-sdk)
+(`@dexterai/x402`) is the TypeScript client counterpart to `scematica-protocol`'s
+Rust facilitator, so a JS/TS agent can pay a Rust ScemaDEX relay for a bonded
+inference with no glue code.
 
 ---
 
@@ -975,10 +1031,21 @@ SCEMA uses the Token-2022 program rather than the legacy SPL Token program. All 
 
 ## 22. Roadmap
 
-### v1.5.0 — Planned
+### Shipped since the v1.4.0 baseline
 
-- **DQ* buy gate activation**: Promote the DQ* agent from observer mode to active buy gating when `ε < 0.3`. The agent's `BuyStandard` / `BuyAggressive` / `Hold` recommendations will gate the sniper's buy decision, with override available via dashboard.
-- **On-chain Anchor program**: Deploy `scematica-swap` for atomic multi-hop swaps, eliminating the two-transaction WSOL wrapping overhead and reducing buy latency by ~50ms.
+- **DQ\* buy gate — live.** The agent gates real entries once `train_steps ≥ 10,000`
+  (a step-count gate, not `ε < 0.3`): `BuyAggressive` → 1.5× sizing, a strong
+  bearish lean vetoes the buy (`NN_VETO_REL_MARGIN = 0.15`), weaker leans downgrade
+  to 0.5×. See §14 / `DQ_STAR_AGENT.md` §16.
+- **ScemaDEX agentic-liquidity layer.** Intents, Conviction-Routing bonds, the
+  inference/experience `PeerMarket` mesh, and x402 interop with the Dexter SDK
+  (§16.4) — realising much of the v2.0 "agent marketplace" vision early. The
+  `scematica-swap` Anchor program has a prebuilt artifact and a devnet deploy path
+  (`programs/scematica-swap/DEPLOY_DEVNET.md`).
+
+### v1.5.0+ — Planned
+
+- **On-chain Anchor program (mainnet)**: Deploy `scematica-swap` for atomic multi-hop swaps, eliminating the two-transaction WSOL wrapping overhead and reducing buy latency by ~50ms.
 - **USD display**: Live CoinGecko SOL/USD price feed integrated into all dashboard panels — header, metrics, Sell Mode and Dump Mode banners.
 - **Multi-wallet support**: Pool funds across multiple wallets to exceed per-wallet position limits without manual management.
 

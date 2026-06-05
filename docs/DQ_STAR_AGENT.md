@@ -1,7 +1,11 @@
 # Scematica DQ* Agent — Technical Reference
 
-> Version 1.1.0 | Last updated: 2026-05-18  
+> Crate: `scematica-nn` 1.11.0 · Agent architecture generation: **v1.1.0** (dueling / PER / n-step) · Last verified against source: 2026-06-05  
 > Full technical documentation of the Deep Q* reinforcement learning agent in `crates/scematica-nn`.
+>
+> Note on versions: the crate ships at the workspace version (1.11.0); the
+> "v1.x" labels in this document refer to the **agent architecture generation**
+> (see §18), a separate lineage from the package version.
 
 ---
 
@@ -22,7 +26,7 @@
 13. [Tournament Evolution](#13-tournament-evolution)
 14. [Adversarial Injection](#14-adversarial-injection)
 15. [Action Rebalancing](#15-action-rebalancing)
-16. [Observer Mode and Buy Gating](#16-observer-mode-and-buy-gating)
+16. [Buy Gating & ScemaDEX Integration](#16-buy-gating--scemadex-integration)
 17. [Persistence — Checkpoint Format](#17-persistence--checkpoint-format)
 18. [Version History](#18-version-history)
 
@@ -157,47 +161,68 @@ The `BuyAggressive` action corresponds conceptually to SuperBuilder-mode entry �
 
 ## 5. Reward Function
 
-The reward is computed at position close time and injected as the terminal reward for the episode:
+The reward is computed at position close time by `DQNAgent::shape_reward(pnl_pct, hold_steps)`,
+where `pnl_pct` is the realized P/L **in percent** and `hold_steps` is position
+age **in minutes** (the call site passes `age_secs / 60`). The observer loop
+divides the result by 100 before pushing to the replay buffer, so the stored
+reward scale is roughly `[-3, +4]` for typical trades.
+
+The function is piecewise — superlinear in profit, zoned in loss:
 
 ```
-R = pnl × (1 + log₂(1 + pnl/25))    if pnl > 0
-R = pnl                               if pnl ≤ 0
+pnl ≥ 0  :  R = pnl × (1 + log₂(1 + pnl/25))  +  timing_bonus
+-5 ≤ pnl < 0   :  R = pnl × 1.0     (noise — don't overfit)
+-30 ≤ pnl < -5 :  R = pnl × 1.8     (avoidable dip-holding)
+-60 ≤ pnl < -30:  R = pnl × 2.5     (failure to cut losses)
+pnl < -60      :  R = pnl × 1.5 - 15   if hold_steps == 0  (mercy: unavoidable rug)
+                  R = pnl × 2.5 - 70   otherwise           (held through a dump)
 ```
-
-Where `pnl` is the realized profit/loss in percent.
 
 ### 5.1 Superlinear Positive Reward
 
-The `(1 + log₂(1 + pnl/25))` multiplier makes rewards superlinear in positive PnL:
+The `(1 + log₂(1 + pnl/25))` multiplier makes the profit reward superlinear:
 
-| PnL | Multiplier | Effective reward |
+| PnL | Multiplier `1+log₂(1+pnl/25)` | Base reward (pre-bonus) |
 |-----|-----------|-----------------|
 | 0%  | 1.00×     | 0 |
 | 25% | 2.00×     | 50 |
 | 50% | 2.58×     | 129 |
-| 100%| 3.00×     | 300 |
-| 200%| 3.58×     | 716 |
-| 500%| 4.32×     | 2,158 |
+| 100%| 3.32×     | 332 |
+| 200%| 4.17×     | 834 |
+| 500%| 5.39×     | 2,696 |
 
 This teaches the agent that holding a 500% winner is worth far more than closing 10 separate 50% winners — it should be reluctant to exit runners early.
 
-### 5.2 Timing Bonus
+### 5.2 Timing Bonus (profit only)
 
-An additional reward is given for fast profitable exits:
+For profitable exits a **discrete** timing bonus is added to the base reward,
+keyed on `hold_steps` (minutes):
 
-```
-timing_bonus = +0.5 × (1 - position_age_secs / 3600)   if pnl > 0 AND position_age_secs < 3600
-```
+| Hold time | Bonus |
+|-----------|-------|
+| `hold_steps == 0` (< 1 min) | **+75** (maximum-efficiency fast snipe) |
+| ≤ 3 min | +30 (quick clean exit) |
+| ≤ 10 min | +10 (acceptable hold) |
+| > 10 min | `−min((hold−10) × 2, 40)` (capital-lock cost, capped at −40) |
 
-Range: 0 to +0.5 (maximum for instant exit, zero for 1-hour holds). This discourages the agent from holding losers indefinitely hoping for recovery.
+This rewards fast capital recycling and penalises sitting on a position past ten
+minutes.
 
-### 5.3 Loss Penalty
+### 5.3 Loss Zones
 
-Losses are penalized linearly (no multiplier). This asymmetry is intentional — large gains are rewarded disproportionately but large losses are not penalized disproportionately, avoiding excessive loss aversion that would make the agent too conservative.
+Losses are **multiplied** by an escalating factor by severity (see the piecewise
+definition above): tiny losses (≥ −5%) are treated as noise (×1.0) so they don't
+drown the profit signal; moderate-to-heavy losses are penalised progressively
+(×1.8, ×2.5) to push the agent to cut early. Below −60% (rug territory) a fast
+exit (`hold_steps == 0`) receives mercy (×1.5 − 15) because the loss was
+unavoidable, while holding through the dump incurs full punishment (×2.5 − 70).
 
 ### 5.4 Adversarial Scenario Rewards (Section 14)
 
-Synthetic rug-pull and pump-and-dump scenarios inject extreme negative rewards (-100) into the replay buffer. This teaches the agent to associate states like `lp_burned=false, mint_renounced=false, volume_velocity < 0` with catastrophic outcomes even before the bot has seen enough real rugs.
+Synthetic scenarios are injected at rewards **already on the divided-by-100
+scale** so they don't contradict real-trade magnitudes: rug-pull held-through ≈
+**−2.95**, fast pump-and-dump peak exit ≈ **+4.03**, honeypot capital-lock ≈
+**−2.45**. See §14 for the exact states and actions.
 
 ---
 
@@ -409,7 +434,7 @@ With `ε_decay = 0.9995`:
 | 200   | 0.905 |
 | 500   | 0.779 |
 | 1000  | 0.607 |
-| 1386  | 0.500 (ready_to_advise threshold) |
+| 1386  | 0.500 |
 | 2000  | 0.368 |
 | 2996  | 0.300 (regime branching threshold) |
 | 5000  | 0.082 |
@@ -417,7 +442,7 @@ With `ε_decay = 0.9995`:
 
 ### 10.3 Readiness Thresholds
 
-- **`ready_to_advise`**: ε < 0.5 AND replay_size ≥ batch_size (64). The agent is sufficiently trained to be referenced by the dashboard and future buy-gate integration.
+- **`ready_to_advise`**: `train_steps ≥ 10,000` AND `last_q_values` contains at least one finite, non-zero value. This is **step-count based, not ε-based** — at 10k train steps the agent has seen ~2,000 trades, enough for a stable policy before it gates real entries. (Earlier thresholds left pessimistic early weights vetoing every buy.)
 - **Regime branching activation**: ε < 0.3. At this point the agent has converged enough that separate regime-specific nets produce meaningfully different policies.
 
 ---
@@ -460,146 +485,192 @@ A single Q-network must implicitly learn all four policies and switch between th
 
 ### 12.3 Architecture
 
-Each regime net pair is a full `(QNetwork, QNetwork)` dueling network. They are initialised as copies of the global online net when regime branching activates, so they start from a good initialization rather than random.
+Each regime net pair is a **standard (non-dueling)** `(QNetwork, QNetwork)` MLP of shape `[24 → 128 → 64 → 5]` — note this differs from the global network, which is dueling. The pair is created **lazily** the first time a regime is engaged (in `notify_regime_shift_labeled`, or in `train_step` when the active regime has no pair yet), He-initialised from scratch — **not** copied from the global net — with the target seeded from its own freshly-initialised online net. Each `train_step` also trains the active regime's online net on a smaller re-sampled batch (≤ 32 transitions), and its target is hard-synced on the same 200-step cadence as the global target.
+
+When a regime shift is signalled, `notify_regime_shift_labeled` also **spikes ε** by +0.25 (capped at 0.40) so the agent re-explores under the new regime rather than applying a stale policy.
 
 ---
 
 ## 13. Tournament Evolution
 
-Three variant agents run in parallel, each with slightly mutated hyperparameters. Every 1000 steps the winner (highest `total_reward`) is promoted as the primary agent.
+The agent supports two related but **distinct** mechanisms: a parallel
+**tournament** (`AgentTournament`) that promotes the best of three live variants,
+and an optional **hyperparameter hill-climb** (`DQNAgent::evolve_tournament_variants`).
 
-### 13.1 Variant Configuration
+### 13.1 The Tournament (`AgentTournament`)
 
-| Variant | lr | ε_decay | γ | Style |
-|---------|----|---------|----|-------|
-| Conservative | 0.0008 | 0.9990 | 0.98 | Slower learning, higher discount |
-| Balanced | 0.001 | 0.9995 | 0.99 | Baseline |
-| Aggressive | 0.0012 | 0.9998 | 0.995 | Faster learning, less epsilon decay |
+Three `DQNAgent` variants train in parallel on the same transition stream
+(`observe_all` / `train_all`). Every `eval_freq = 1000` steps the variant with the
+highest `total_reward` is promoted to primary; "balanced" starts as primary.
 
-### 13.2 Mutation on Promotion
+| Variant | ε_decay | lr | γ | Style |
+|---------|---------|----|----|-------|
+| conservative | 0.9999 | 0.0005 | 0.95 | Slowest ε-decay, smallest steps |
+| balanced (default primary) | 0.9995 | 0.0010 | 0.99 | Baseline, longest horizon |
+| aggressive | 0.9990 | 0.0020 | 0.95 | Fastest ε-decay and learning |
 
-After a winner is promoted, all three variants are re-initialised from the winner's weights with ±20% perturbation to hyperparameters:
+Promotion only changes which variant's action is used — it does **not** reset or
+mutate any weights.
+
+### 13.2 Hyperparameter Hill-Climb (`evolve_tournament_variants`)
+
+A separate, optional routine evolves the per-variant hyperparameter triples
+`(ε_decay, lr, γ)` held on the agent: the winner's triple is kept and the others
+are replaced with mutations of it —
 
 ```
-new_lr = winner_lr × Uniform(0.8, 1.2)
-new_ε_decay = winner_ε_decay ± 0.005
-new_γ = winner_γ ± 0.005
+new_lr      = winner_lr × Uniform(0.8, 1.2)              clamp [1e-4, 5e-3]
+new_ε_decay = winner_ε_decay + Uniform(-0.0005, 0.0005)  clamp [0.998, 0.9999]
+new_γ       = winner_γ + Uniform(-0.005, 0.005)          clamp [0.95, 0.999]
 ```
 
-This is a simplified evolutionary strategy (ES) — gradient-free optimization of hyperparameters using population-based selection.
+This mutates **hyperparameters only** (never weights) — a gradient-free,
+population-based search across the hyperparameter landscape.
 
 ### 13.3 Checkpoint
 
-The tournament state is saved to `scematica-nn-tournament.json` every 1000 steps, including per-variant rewards and the current primary variant index.
+`AgentTournament` serialises to `scematica-nn-tournament.json` (primary index,
+per-variant `total_reward`, per-variant ε). On load it rebuilds three fresh
+agents and restores only `primary_idx` / `eval_freq`, since the variant
+hyperparameters are fixed at construction.
 
 ---
 
 ## 14. Adversarial Injection
 
-To train the agent on scenarios it may not see frequently (rugs, honeypots, pump-and-dumps), synthetic transitions are injected into the replay buffer every 50 training steps.
+When `auto_inject_adversarial` is enabled, `train_step` injects synthetic
+transitions into the replay buffer every **100 training steps** (2 scenarios per
+call, cycling through the three below). Rewards are pre-scaled to the
+divided-by-100 reward scale so they match real-trade magnitudes. All three are
+**terminal** (`done = true`).
 
-### 14.1 Rug-Pull Scenario
-
-```
-State: { lp_burned: false, mint_renounced: false, buy_sell_ratio: 3.0,
-         volume_velocity: -0.8, price_change_pct: 0.5 }
-Action: BuyStandard
-Reward: -100  (catastrophic loss)
-Done: true
-```
-
-Teaches the agent: high buy pressure on a non-burned LP that then has collapsing volume → rug. `BuyStandard` in this state should have a very negative Q-value.
-
-### 14.2 Pump-and-Dump Scenario
+### 14.1 Rug-Pull — held through
 
 ```
-State: { price_change_pct: 2.0, price_velocity: 0.9, price_acceleration: -0.7,
-         lp_burned: false, pool_age_secs: 300 }
-Action: BuyAggressive  (bought top of pump)
-Reward: -80
-Done: true
+State: briefly pumped pool, lp_burned=false, mint_renounced=false,
+       deployer_rug_rate=0.80  →  next: price −99%, pnl −95%
+Action: Hold          Reward: ≈ −2.95
 ```
 
-Teaches the agent: strong price move with accelerating upward velocity that then decelerates → entering near the top of a pump. `BuyAggressive` at high `price_change_pct` with negative `price_acceleration` should be penalized.
+Teaches: holding through a collapsing, non-burned pool is heavily punished. The
+penalising signal attaches to **Hold** in this state, not to a buy.
 
-### 14.3 Honeypot Scenario
+### 14.2 Pump-and-Dump — peak exit (a *positive* example)
 
 ```
-State: { lp_burned: true, mint_renounced: false, buy_sell_ratio: 5.0,
-         current_pnl_pct: 0.8, position_age_secs: 600 }
-Action: SellPartial  (could not sell — honeypot)
-Reward: -100
-Done: true
+State: fast rise, high peak_pnl_pct, volume_velocity & price_velocity > 0,
+       low deployer_rug_rate  →  next: price crashes, but position already
+       closed at peak (current_pnl=0)
+Action: SellAll       Reward: ≈ +4.03
 ```
 
-Teaches the agent: even with LP burned, a honeypot contract can block sells. High buy/sell ratio (because nobody can sell) with no mint authority renounced is a red flag — `Hold` is wrong here, `SellAll` at first opportunity is correct.
+Teaches: selling everything into a vertical pump *before* the dump is the
+highest-reward exit. This scenario **rewards** `SellAll`, the opposite of the
+penalty the prior revision of this doc described.
+
+### 14.3 Honeypot — capital locked
+
+```
+State: absurd buy_sell_ratio (no sells clear), mint_renounced=false,
+       position stuck 10–60 min, volume_velocity < 0, deployer_rug_rate=0.90
+       →  next: pnl −100%
+Action: SellAll       Reward: ≈ −2.45
+```
+
+Teaches: the salvage `SellAll` still costs, so the agent should learn to avoid
+entering honeypot-shaped states in the first place.
 
 ### 14.4 Why Adversarial Injection?
 
-Rug-pulls are rare (1–5% of pools in normal market conditions). At 1 trade per minute and 5% rug rate, the agent might see only ~70 rugs in a day. Without injection, the agent trains for thousands of steps before learning to avoid them. Injection ensures the replay buffer always contains diverse adversarial examples, dramatically accelerating safety learning.
+Rug-pulls and honeypots are rare (1–5% of pools). Without injection the agent
+trains for thousands of steps before encountering enough of them to learn
+avoidance. Periodic injection keeps diverse adversarial examples resident in the
+PER buffer, accelerating safety learning. Injection is gated behind the
+`auto_inject_adversarial` flag; the always-on counterpart is action rebalancing
+(§15).
 
 ---
 
 ## 15. Action Rebalancing
 
-The action distribution in the replay buffer is heavily skewed toward `Hold` — most timesteps during a trade do nothing. Without correction, the agent would overfit to `Hold`.
+Every **real** trade ends in a sell, so the replay buffer skews heavily toward
+`SellAll` — without correction the agent collapses to a single-action policy. To
+keep `Hold` and `SellPartial` represented, `train_step` injects balanced
+synthetic transitions every **50 training steps** (always on — distinct from the
+`auto_inject_adversarial`-gated injection in §14). Each call adds exactly two
+transitions:
 
-Every 50 training steps, synthetic `Hold` and `SellPartial` transitions are rebalanced:
+- **One `Hold`** on a stable, LP-burned + mint-renounced, gently-rising pool —
+  reward **+0.15** (a small *positive*: correctly holding a healthy pumping pool).
+- **One `SellPartial`** at a moderate profit — reward
+  `shape_reward(pnl × 100, 0) / 100`, the same shaped reward a real partial exit
+  at that PnL would earn.
 
-```
-for each rebalancing step:
-    inject 5 synthetic Hold transitions (small negative reward: -0.01)
-    inject 3 synthetic SellPartial transitions at current pnl levels
-```
-
-The `Hold` penalty of -0.01 per step teaches the agent that doing nothing is mildly costly — it should eventually act, not hold indefinitely.
-
-The `SellPartial` injections at a range of PnL levels help the agent learn the partial exit policy from varied starting points, not just from real trades (which tend to cluster around the actual TP/SL thresholds).
+This ensures the patient-hold and partial-exit policies are learned from varied
+starting points, not just from the `SellAll`-dominated real trade stream.
 
 ---
 
-## 16. Observer Mode and Buy Gating
+## 16. Buy Gating & ScemaDEX Integration
 
-### 16.1 Current Status
+The agent is **no longer observer-only**. The `scematica-nn` crate exposes
+`advise(state) → (action, q_values)` (greedy, never explores) and
+`ready_to_advise()`; the sniper (`crates/scematica-sniper/src/sniper.rs`) consults
+them in its live buy gate.
 
-The agent currently operates in **observer mode**: it trains on real trade data from `scematica-trades.jsonl` but does not yet gate buy decisions in the sniper.
+### 16.1 How the sniper uses the agent
 
-The agent publishes its state to `scematica-nn-stats.json` every 5 seconds:
+Once `ready_to_advise()` is true (§10.3), each candidate pool is scored by
+`advise()` and the result **sizes or vetoes** the entry:
+
+- `BuyAggressive` → size **1.5×** the configured entry.
+- Mild bearish lean → size **0.5×** (cautious, not blocked).
+- A **strong** bearish lean → **veto** the buy entirely.
+
+### 16.2 The veto margin (`NN_VETO_REL_MARGIN = 0.15`)
+
+A buy is *fully* suppressed only when the best sell-side Q exceeds the best
+buy-side Q by ≥ 15%:
+
+```rust
+let strong_veto = sell_q > 0.0
+    && (buy_q <= 0.0 || sell_q >= buy_q * (1.0 + 0.15));
+```
+
+A weaker bearish lean does **not** kill the entry — it downgrades sizing to 0.5×.
+This deliberately prevents a partially-converged net from silently suppressing
+the proven rule-based edge (PF ≈ 6.5): the agent can *shade* entry size long
+before it is trusted to block trades outright.
+
+### 16.3 Stats published to the dashboard
+
+`stats()` returns an `AgentStats` snapshot, written to `scematica-nn-stats.json`
+(atomic temp-then-rename) for the dashboard NN panel:
 
 ```json
 {
-  "epsilon": 0.342,
-  "steps": 8432,
+  "step_count": 84320,
+  "train_steps": 12050,
+  "epsilon": 0.087,
   "replay_size": 10000,
   "total_reward": 1847.3,
+  "avg_loss": 0.0042,
+  "target_updates": 60,
   "ready_to_advise": true,
-  "recommended_action": "BUY",
-  "regime": "bull"
+  "last_action": "BUY_AGG",
+  "last_q_values": [0.12, 0.41, 0.55, -0.03, 0.08]
 }
 ```
 
-### 16.2 Ready-to-Advise Condition
+### 16.4 The agent as a ScemaDEX route policy
 
-```
-ready_to_advise = ε < 0.5 AND replay_size ≥ 64
-```
-
-When `ready_to_advise = true`, the agent is considered sufficiently trained to provide meaningful recommendations. The dashboard displays this status in the NN Stats panel.
-
-### 16.3 Planned Buy Gate Integration
-
-When the agent is promoted to active mode (future version), the sniper's buy gate will consult the agent:
-
-```
-if ready_to_advise AND agent.recommend(state) == BuyStandard:
-    proceed with standard buy
-elif ready_to_advise AND agent.recommend(state) == BuyAggressive:
-    proceed with 2× size buy
-elif ready_to_advise AND agent.recommend(state) == Hold:
-    skip this pool
-```
-
-The gate only activates when `ε < 0.3` (regime branching threshold) to ensure the agent has meaningfully converged before it can block real trades.
+Beyond the sniper, the same `DQNAgent` is consumed by the ScemaDEX SDK layer.
+`scemadex-integrations::jupiter::JupiterRoutePolicy::with_agent(DQNAgent)` uses
+`advise()` to set the **conviction** that sizes a Conviction-Routing bond
+(discounted by the Jupiter quote's price impact), and `observe_outcome()` closes
+the reinforcement loop from the realised fill vs. the bonded promise. The agent
+that gates the bot's entries can thus also price the SDK's bonded inferences —
+see [`scemadex.md`](scemadex.md).
 
 ---
 
@@ -607,30 +678,46 @@ The gate only activates when `ε < 0.3` (regime branching threshold) to ensure t
 
 ### 17.1 Agent Checkpoint (`scematica-nn-agent.json`)
 
-Saved every 10 minutes and on clean shutdown. Contains:
+Saved every 10 minutes and on clean shutdown (atomic temp-then-rename). The
+`Checkpoint` struct contains:
 
 ```json
 {
-  "online": { /* QNetwork: layers, value_head, advantage_head */ },
-  "target": { /* QNetwork */ },
-  "epsilon": 0.342,
-  "steps": 8432,
+  "online_net":  { /* QNetwork: layers, value_head, advantage_head */ },
+  "target_net":  { /* QNetwork */ },
+  "epsilon": 0.087,
+  "step_count": 84320,
+  "train_steps": 12050,
   "total_reward": 1847.3,
-  "regime_nets": { /* optional, per regime */ }
+  "target_updates": 60,
+  "regime_nets": { /* per-regime (online, target) pairs */ },
+  "active_regime": "bull",
+  "state_dim": 24,
+  "action_dim": 5
 }
 ```
 
+`state_dim` / `action_dim` are recorded so that on load, a checkpoint whose
+dimensions no longer match the current `STATE_DIM`/`ACTION_DIM` is **silently
+discarded** (a fresh agent is returned) rather than crashing on mismatched weight
+shapes — see §17.4.
+
 ### 17.2 Stats File (`scematica-nn-stats.json`)
 
-Written every 5 seconds (atomic rename):
+The `AgentStats` snapshot (see §16.3 for the full field set):
 
 ```json
 {
-  "epsilon": 0.342,
-  "steps": 8432,
+  "step_count": 84320,
+  "train_steps": 12050,
+  "epsilon": 0.087,
   "replay_size": 10000,
   "total_reward": 1847.3,
-  "ready_to_advise": true
+  "avg_loss": 0.0042,
+  "target_updates": 60,
+  "ready_to_advise": true,
+  "last_action": "BUY_AGG",
+  "last_q_values": [0.12, 0.41, 0.55, -0.03, 0.08]
 }
 ```
 
@@ -651,10 +738,17 @@ Written every 1000 steps:
 
 ### 17.4 Checkpoint Compatibility
 
-The `QNetwork` struct uses `#[serde(default)]` on `value_head` and `advantage_head`. This means:
-- Old checkpoints (standard DQN without dueling heads) load cleanly — heads default to `None`
-- New checkpoints (dueling) load correctly with the head weights
-- Mixed loads work: an old checkpoint can be loaded, the dueling fields will be randomly initialised on the next `new_dueling()` call
+Two independent mechanisms keep old checkpoints from crashing the loader:
+
+- **Serde defaults on the dueling heads.** `QNetwork.value_head` /
+  `advantage_head` are `#[serde(default)]`, so a pre-dueling checkpoint (heads
+  absent) deserialises with both `None` and runs the standard (non-dueling)
+  forward path.
+- **Dimension guard.** `Checkpoint` records `state_dim` / `action_dim`. On load,
+  if either differs from the current `STATE_DIM` (24) / `ACTION_DIM` (5) — e.g. a
+  checkpoint from the 18-feature v1.0.0 era — the checkpoint is discarded and a
+  fresh agent is returned, rather than panicking on mismatched weight matrices.
+  (A missing `state_dim` / `action_dim` field defaults to the legacy `18` / `5`.)
 
 ---
 
@@ -672,11 +766,23 @@ The `QNetwork` struct uses `#[serde(default)]` on `value_head` and `advantage_he
 - **Double DQN**: Decoupled action selection / evaluation
 - **N-step returns**: n=5, accumulated in a transition deque
 - **Prioritized Experience Replay**: Sum-tree, α=0.6, β: 0.4→1.0
-- **Regime branching**: Separate nets per regime, activates at ε < 0.3
+- **Regime branching**: Separate (standard) nets per regime, activates at ε < 0.3
 - **Tournament evolution**: 3-variant hyperparameter search
 - **Adversarial injection**: Rug-pull, pump-and-dump, honeypot scenarios
 - **Action rebalancing**: Synthetic Hold/SellPartial every 50 steps
 - **Checkpoint compatibility**: Old checkpoints load without dueling heads (graceful degradation)
+
+### Doc revision — 2026-06-05 (verified against source)
+This document was re-checked line-by-line against `crates/scematica-nn` and
+corrected where it had drifted from the code: the **reward function** (discrete
+timing bonus, multiplied loss zones, rug mercy — §5), the **adversarial
+scenarios** (correct actions/rewards; pump-and-dump is a *positive* SellAll
+example — §14), **action rebalancing** (one Hold +0.15 / one SellPartial; the real
+skew is toward SellAll — §15), the **`ready_to_advise`** condition (`train_steps ≥
+10,000`, not ε-based — §10.3/§16), **regime nets** (standard, not dueling — §12.3),
+the **tournament configs** (§13), and the now-**live buy gate** with its veto
+margin and ScemaDEX route-policy reuse (§16). No code was changed; only the
+documentation was brought into agreement with it.
 
 ---
 

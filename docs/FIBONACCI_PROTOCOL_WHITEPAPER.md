@@ -1,7 +1,12 @@
 # Fibonacci Protocol: Whitepaper
 ## A Mathematical Framework for Predictive Solana AMM Entry & Exit
 
-**Version 1.6.0 · Scematica Labs**
+**Version 1.6.0 · Scematica Labs · parameters verified against source 2026-06-05**
+
+> Parameter defaults below are from `FibonacciRecoveryConfig` and the
+> `fibonacci_momentum` / `fibonacci_pool_scorer` modules. The empirical
+> calibration figures (win-rate tables, expectancy) are historical analysis, not
+> code constants.
 
 ---
 
@@ -82,7 +87,7 @@ Let V = S / T (SOL per second of pool age).
 
 ```
 velocity_score =
-    1.00  if  V ≥ φ² ≈ 2.618 SOL/s   (exceptional: crowd stampede)
+    1.00  if  V ≥ 2φ ≈ 3.236 SOL/s   (exceptional: crowd stampede)
     0.80  if  V ≥ φ  ≈ 1.618 SOL/s   (strong: confirmed momentum)
     0.50  if  V ≥ 1.0       SOL/s    (moderate: buyers present)
     0.20  if  V < 1.0        SOL/s   (weak: limited interest)
@@ -119,32 +124,33 @@ S = 0.35 × size_score
 
 ### 3.1 Entry Threshold
 
-The current entry threshold is **S ≥ 0.55** (moderate-confidence pools accepted). Below 0.55, the pool is rejected as a dead-pool candidate.
-
-Score interpretation:
+The default entry threshold is **S ≥ 0.50** (`min_entry_score` in
+`FibonacciRecoveryConfig`; exceptional pools below it can still pass via the
+velocity bypass). Below threshold the pool is rejected as a dead-pool candidate.
+Position size is then set by `fibonacci_position_multiplier(score)`:
 
 | Score range | Classification | Action |
 |---|---|---|
 | 0.90 – 1.00 | Exceptional: perfect golden ratio pattern | Enter, 2.0× position |
 | 0.75 – 0.89 | Strong: runner characteristics confirmed | Enter, 1.618× position |
-| 0.55 – 0.74 | Moderate: acceptable entry pattern | Enter, 1.0× position |
-| 0.25 – 0.54 | Weak: likely dead pool | Reject |
-| 0.00 – 0.24 | Dead pool: no Fibonacci structure | Reject |
+| 0.50 – 0.74 | Moderate: acceptable entry pattern | Enter, 1.0× position |
+| 0.25 – 0.49 | Weak | Reject (gate), 0.75× if forced |
+| 0.00 – 0.24 | Dead pool: no Fibonacci structure | Reject, 0.5× if forced |
 
 ### 3.2 Fast-Lane Runner Detection
 
-A pool that simultaneously satisfies all four criteria at the strongest level is classified as a **Fibonacci Runner** and receives priority execution:
+During position monitoring, `FibonacciMomentum::update` emits a **RunnerDetected**
+signal when the pool is still young and its velocity is accelerating super-golden:
 
 ```
-is_fibonacci_runner = (
-    8 ≤ S ≤ 21 SOL          AND    // Golden size band
-    T ≤ 5 s                  AND    // Within F₅ window
-    V ≥ φ² ≈ 2.618 SOL/s    AND    // Exceptional velocity
-    R ≥ φ    ≈ 1.618               // Golden ratio buy pressure
-)
+RunnerDetected  ⇔  age_secs ≤ 13  AND  velocity_ratio ≥ 1.2·φ ≈ 1.94
 ```
 
-Fibonacci Runners bypass normal scheduling and execute at the first available slot.
+where `velocity_ratio` is the shortest Fibonacci window's SOL/s divided by the
+longest window's (≈ φ marks sustained Fibonacci momentum; ≥ 1.2φ marks
+acceleration). At *detection* time the entry gate instead uses the composite
+score (§3.1); the 4-signal "all criteria at strongest level" is the conceptual
+ideal, not a single coded predicate.
 
 ---
 
@@ -160,7 +166,10 @@ Position size scales with score confidence using Fibonacci multipliers:
 | ≥ 0.25 | 0.750× | Weak: reduced exposure |
 | < 0.25 | 0.500× | Minimal: risk capital only |
 
-On consecutive winning trades, position size escalates using Fibonacci progression. After N consecutive wins, the multiplier is `F(N+1)/F(N)` applied to the base size, converging toward φ as N grows.
+On consecutive winning trades, `calculate_position_multiplier` escalates size by
+the **raw Fibonacci number** for the streak length — 1, 1, 2, 3, 5, 8, 13 —
+capped at **21× (F₉)** to bound leverage. (It applies the Fibonacci value itself,
+not the consecutive ratio `F(N+1)/F(N)`.)
 
 ---
 
@@ -178,7 +187,7 @@ The system escalates the target when velocity is still strong at a TP level (ins
 
 ### 5.1 Dead-Pool Exit
 
-If a position does not reach +5% within **3 seconds** of entry, it is classified as a dead pool and sold immediately. This implements the Fibonacci rule: F₄ = 3 seconds is the shortest timeframe in which genuine momentum manifests.
+If a position does not reach **+2%** within **5 seconds** of entry, it is classified as a dead pool and sold immediately (`dead_pool_min_gain_pct = 2.0`, `dead_pool_timeout_secs = 5`). These were loosened from an earlier 3 s / 5 % after live data showed 3 s cut slow-building winners and the 5 % floor sat above the AMM spread.
 
 ### 5.2 Golden Retracement Exit
 
@@ -213,8 +222,8 @@ score = 100 / (1 + exp(−28 × (P_posterior − 0.09)))
 ```
 
 The combined evaluation gate requires:
-- Fibonacci score ≥ 0.55, AND
-- Bayesian score ≥ 45 (on a 0–100 scale)
+- Fibonacci score ≥ 0.50 (`min_entry_score`), AND
+- Bayesian score ≥ the configured pool-score floor (0–100 scale)
 
 DexScreener boost bypasses both gates. High-speed mode bypasses both gates (speed over precision).
 
@@ -239,14 +248,14 @@ The primary contribution of the Fibonacci Protocol is **loss reduction**: by rej
 
 | Parameter | Value | Tunable? |
 |---|---|---|
-| `min_entry_score` | 0.55 | Yes (FibonacciRecoveryConfig) |
-| `dead_pool_timeout_secs` | 3 | Yes |
-| `dead_pool_min_gain_pct` | 5.0% | Yes |
+| `min_entry_score` | 0.50 | Yes (FibonacciRecoveryConfig) |
+| `dead_pool_timeout_secs` | 5 | Yes |
+| `dead_pool_min_gain_pct` | 2.0% | Yes |
 | TP₁ | 61.8% (sell 30%) | Yes |
 | TP₂ | 161.8% (sell 40%) | Yes |
 | TP₃ | 261.8% (sell 30%) | Yes |
-| Runner velocity threshold | φ² = 2.618 SOL/s | Derived |
-| Runner age threshold | 5 s (F₅) | Derived |
+| Velocity score: exceptional | 2φ ≈ 3.236 SOL/s | Derived |
+| RunnerDetected velocity ratio | ≥ 1.2φ ≈ 1.94, age ≤ 13 s | Derived |
 | Golden retracement | 61.8% of peak | Derived |
 | DexScreener cache TTL | 300 s | Yes |
 

@@ -4,7 +4,9 @@
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
-> **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+> **New to coding?** See [BEGINNER_GUIDE.md](docs/BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
+>
+> 📚 **All documentation lives in [`docs/`](docs/README.md)** — getting started, the ScemaDEX SDK, trading strategy, the Fibonacci protocol, and the whitepaper.
 
 ## Quick Start (Windows, one-click)
 
@@ -18,8 +20,8 @@ start-sdk-dashboard.bat   # ScemaDEX SDK dashboard, SIM mode (offline)
 ```
 
 Full bot mode (`start-dashboard.bat`) needs 250k SCEMA + an RPC endpoint in
-`.env`. See [QUICKSTART.md](QUICKSTART.md) for the full script reference and
-[scemadex.md](scemadex.md) for the ScemaDEX SDK — the agentic liquidity layer
+`.env`. See [QUICKSTART.md](docs/QUICKSTART.md) for the full script reference and
+[scemadex.md](docs/scemadex.md) for the ScemaDEX SDK — the agentic liquidity layer
 (intent solving, Conviction-Routing bonds, and an inference/experience mesh),
 with x402 payments over the [Dexter x402 SDK](https://github.com/Dexter-DAO/dexter-x402-sdk).
 
@@ -264,7 +266,7 @@ Three filter thresholds were tightened too aggressively in previous versions, ca
 
 ### Fibonacci Protocol Whitepaper
 
-See [FIBONACCI_PROTOCOL_WHITEPAPER.md](FIBONACCI_PROTOCOL_WHITEPAPER.md) for the full mathematical specification of the scoring model, entry gate, position sizing ladder, exit strategy, and live data calibration.
+See [FIBONACCI_PROTOCOL_WHITEPAPER.md](docs/FIBONACCI_PROTOCOL_WHITEPAPER.md) for the full mathematical specification of the scoring model, entry gate, position sizing ladder, exit strategy, and live data calibration.
 
 ---
 
@@ -272,7 +274,7 @@ See [FIBONACCI_PROTOCOL_WHITEPAPER.md](FIBONACCI_PROTOCOL_WHITEPAPER.md) for the
 
 ### Fibonacci Protocol — Entry/Exit Framework
 
-A new mathematical entry/exit framework built on the golden ratio (φ ≈ 1.618) and Fibonacci sequence applied to AMM pool dynamics. See the full spec in [FIBONACCI_PROTOCOL_WHITEPAPER.md](FIBONACCI_PROTOCOL_WHITEPAPER.md).
+A new mathematical entry/exit framework built on the golden ratio (φ ≈ 1.618) and Fibonacci sequence applied to AMM pool dynamics. See the full spec in [FIBONACCI_PROTOCOL_WHITEPAPER.md](docs/FIBONACCI_PROTOCOL_WHITEPAPER.md).
 
 **New modules:**
 - `fibonacci_momentum.rs` — per-position momentum tracker with Fibonacci TP levels, golden retracement, and velocity-collapse detection

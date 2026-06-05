@@ -1,7 +1,11 @@
 # Scematica — Equations, Strategies, and Algorithm Reference
 
-> Version 1.4.0 | Last updated: 2026-05-18  
+> Strategy generation 1.4.0 · Crate: workspace 1.11.0 · Verified against source 2026-06-05  
 > Internal technical reference for all trading equations, parameter evolution, and strategy rationale.
+>
+> Parameter values in this document are the **`config.rs` defaults** (verified in
+> `crates/scematica-core/src/config.rs`). Live trading reads `config.toml`, which
+> overrides many of them — see the note at the top of §10.
 
 ---
 
@@ -59,24 +63,35 @@ Where:
 - `R` = average win / average loss ratio
 - `f*` = fraction of bankroll to bet
 
-**Scematica fractional Kelly:** The raw Kelly fraction is multiplied by 0.25 (quarter-Kelly) to account for model uncertainty and avoid overbetting on streaky data:
+(The code writes the equivalent asymmetric form `f* = (p·b − q) / b`, with
+`b = avg_win / avg_loss`, `p` = win rate, `q = 1 − p`.)
+
+**Scematica fractional Kelly.** `KellySizer::compute_multiplier` does **not**
+compute an absolute fraction of the wallet — it turns the quarter-Kelly fraction
+into a **position-size multiplier** applied to the base quote amount:
 
 ```
-fraction = f* × kelly_fraction_multiplier  (default: 0.25)
-size_sol  = wallet_sol × fraction
-size_sol  = size_sol.clamp(min_bet_sol, max_bet_sol)
+adjusted   = f* × kelly_fraction          (default fraction: 0.25 — quarter-Kelly)
+multiplier = (1.0 + adjusted).clamp(0.25, 3.0)
+size       = base_quote_amount × multiplier
 ```
 
-The result feeds `amount_multiplier` when Kelly mode is active. Kelly dynamically reduces bet size during losing streaks and increases it during winning streaks, smoothing bankroll growth.
+A zero edge → **1.0×** (base size); a positive edge scales up toward **3.0×**; a
+negative edge scales down toward **0.25×**. A **warm-up guard** returns 0.5× until
+`kelly_min_trades` samples exist (default 10), and 1.0× when there are no losses
+or no wins to form the win/loss ratio. The multiplier feeds `amount_multiplier`
+when Kelly mode is active, de-risking losing streaks and pressing winning ones.
 
 ### 2.3 Builder Mode Sizing (Section 8 for full derivation)
 
 When a builder mode is active, the position multiplier is computed from wallet progress toward the target and overrides Kelly:
 
 ```
-progress = (current_sol - start_sol) / (target_sol - start_sol)
-progress = progress.clamp(0.0, 1.0)
+progress = (wallet_sol / target_sol).clamp(0.0, 1.0)
 ```
+
+Progress is the wallet's **fraction of the target** — there is no `start_sol`
+baseline subtraction in the code.
 
 ---
 
@@ -302,11 +317,12 @@ Builder modes replace the static `amount_multiplier` with a dynamic function of 
 ### 8.1 Progress Variable
 
 ```
-progress = (wallet_sol - start_sol) / (target_sol - start_sol)
-progress = progress.clamp(0.0, 1.0)
+progress = (wallet_sol / target_sol).clamp(0.0, 1.0)
 ```
 
-`wallet_sol` is approximated as: `(session_start_lamports + daily_pnl_lamports).max(0) / 1e9`
+`wallet_sol` is `approx_wallet_sol()` (session-start balance + daily PnL).
+Progress is the wallet's fraction of the target — **no `start_sol` subtraction**
+(verified `main.rs:766`).
 
 ### 8.2 Growth Mode (target: 0.2 SOL)
 
@@ -357,13 +373,13 @@ moon_chase = (progress < 0.25)    // enabled in first quarter
 
 ### 8.5 Builder Mode Progress vs Multiplier Reference
 
-| Progress | Growth | Builder | SuperBuilder |
+| Progress | Growth `1+p^0.8` | Builder `1.5+2p^0.65` | SuperBuilder `2+6p^0.35` |
 |----------|--------|---------|--------------|
 | 0%       | 1.00×  | 1.50×   | 2.00× |
-| 10%      | 1.21×  | 1.88×   | 3.04× |
-| 25%      | 1.44×  | 2.13×   | 3.89× |
-| 50%      | 1.66×  | 2.52×   | 5.04× |
-| 75%      | 1.84×  | 2.88×   | 6.07× |
+| 10%      | 1.16×  | 1.95×   | 4.68× |
+| 25%      | 1.33×  | 2.31×   | 5.69× |
+| 50%      | 1.57×  | 2.77×   | 6.71× |
+| 75%      | 1.79×  | 3.16×   | 7.43× |
 | 100%     | 2.00×  | 3.50×   | 8.00× |
 
 ### 8.6 Design Rationale: Why Sub-Linear Exponents?
@@ -437,6 +453,15 @@ Cleans expired entries on each check (retain: elapsed < 300s). Prevents the bot 
 ---
 
 ## 10. Parameter Evolution History
+
+> **Defaults vs. live config.** The values below (and throughout this document)
+> are the **`config.rs` defaults**. The shipped `config.toml` overrides several of
+> them with more aggressive tuning — verified 2026-06-05 it runs a **12-round**
+> escalation ladder (vs. the default 7), a **15.0** pullback base (vs. 8.0), and
+> **disables tiered partial TP** (`partial_tp_pct = 0`) in favour of a single full
+> exit gated at `take_profit_pct`. The per-rate-mode presets (Bearish → Bullish)
+> additionally set their own escalation/TP values. The *formulas* in §4–§8 are
+> unchanged; only these scalar parameters differ between defaults and live config.
 
 ### 10.1 Timeline
 
@@ -529,21 +554,22 @@ Concretely: the v1.4.0 velocity decay threshold change was motivated by observin
 
 ### 12.2 Reward Function and Strategy Alignment
 
-The agent's reward function (full formula in `DQ_STAR_AGENT.md`, Section 5) is:
+The agent's reward function (full piecewise definition in `DQ_STAR_AGENT.md` §5)
+is superlinear in profit and zoned in loss. The profit term is:
 
 ```
-R = pnl × (1 + log₂(1 + pnl/25))
+R_profit = pnl × (1 + log₂(1 + pnl/25))  +  timing_bonus
 ```
 
-This superlinear reward means the agent is trained to value large gains disproportionately over small ones — exactly aligned with the human intuition that a 500% gain is more than 10× more valuable than a 50% gain (it's 10× the raw return but also 10× rarer and harder to capture).
+This superlinear shape trains the agent to value large gains disproportionately over small ones — aligned with the intuition that a 500% gain is far more than 10× as valuable as a 50% gain (rarer and harder to capture). Losses, by contrast, are **multiplied** by escalating factors (×1.0 noise / ×1.8 / ×2.5 by severity, with extra flat penalties in rug territory) so the agent learns to cut early.
 
-The timing bonus `+0.5 × (1 - position_age_secs / 3600)` rewards the agent for exiting quickly once profit is realized — consistent with the observation that most new-pool price action happens within the first 30 minutes.
+The **timing bonus** is *discrete*, keyed on hold time in **minutes**: **+75** for a sub-1-minute exit, +30 (≤ 3 min), +10 (≤ 10 min), then a capital-lock penalty beyond 10 minutes (down to −40). It rewards fast capital recycling — consistent with most new-pool price action happening in the first minutes.
 
 ### 12.3 Builder Mode and Agent Compatibility
 
 Builder modes modify `live_params.amount_multiplier`, `take_profit_pct`, and `stop_loss_pct` at runtime. The DQ* agent's `TradeState` includes `sol_balance_sol` and `daily_pnl_sol`, allowing it to infer the current builder mode progress and adapt its action selection accordingly without explicit mode injection.
 
-When the agent achieves `ready_to_advise` (ε < 0.5, replay_size ≥ batch_size), its `BuyStandard` vs `BuyAggressive` distinction maps directly onto the builder mode framework: `BuyAggressive` corresponds to SuperBuilder-style large-position entry, while `BuyStandard` matches Growth/Builder-mode conservative entry.
+When the agent reaches `ready_to_advise` (**`train_steps ≥ 10,000`** — a step-count gate, not an ε threshold), its `BuyStandard` vs `BuyAggressive` distinction maps onto the builder framework: `BuyAggressive` → SuperBuilder-style large-position entry (and **1.5× sizing** in the live buy gate), while `BuyStandard` / `Hold` → Growth/Builder-mode conservative entry (a strong bearish lean vetoes the buy; see `DQ_STAR_AGENT.md` §16).
 
 ---
 

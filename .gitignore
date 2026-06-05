@@ -19,6 +19,9 @@ programs/*/target/
 scematica-*.json
 scematica-*.jsonl
 pool-cache.json
+# Agent-playground runtime state (regenerated each run)
+playground.json
+agent-playground/playground.json
 
 # ── Operational config (may contain live addresses / paths) ───────────────────
 snipe-list.txt
@@ -73,6 +76,7 @@ READY_TO_DEPLOY.md
 SETUP_SUMMARY.md
 SPIKE_ROOT_CAUSE.md
 LIVE_DATA_REPORT.md
+scematica_analysis.md
 
 # ── Backup / alternate config files (not source of truth) ─────────────────────
 config-*.toml

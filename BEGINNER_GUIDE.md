@@ -18,6 +18,40 @@ Before spending any time on setup, make sure you have:
 
 ---
 
+## Fast Path — One-Click Scripts (Recommended)
+
+Scematica ships Windows batch scripts that automate everything after the
+toolchain is installed. **You only need to do the manual install for Rust, Git,
+and Build Tools (Steps 1–3); the scripts handle the rest.**
+
+Once Rust + Git are installed and you've downloaded the code (Step 4),
+double-click these in order from the project folder:
+
+| Order | Double-click | What it does |
+|-------|--------------|--------------|
+| 1️⃣ | **`init.bat`** | One-time setup: checks your toolchain, adds the `rustfmt`/`clippy` tools, downloads every dependency, and creates a `.env` template for you to fill in. |
+| 2️⃣ | **`build.bat`** | Compiles all the programs (5–10 minutes the first time). |
+| 3️⃣ | **`verify-setup.bat`** | Confirms everything is ready before you go live. |
+| 4️⃣ | **`start-dashboard-demo.bat`** | Launches the bot dashboard in **demo mode** — no tokens or RPC needed. Try this first! |
+
+Then, when you're ready for the real thing:
+
+| Double-click | What it does |
+|--------------|--------------|
+| **`start-dashboard.bat`** | Full bot mode (needs 250,000 SCEMA + an RPC endpoint in `.env`). |
+| **`start-sdk-dashboard.bat`** | The ScemaDEX SDK dashboard (SIM mode by default — fully offline). |
+| **`start-relay.bat`** | Runs the ScemaDEX peer-mesh + signal relay. |
+
+> **Tip:** After running `init.bat`, open the `.env` file it created and paste in
+> your RPC endpoint and wallet path before using full mode. Demo and SIM modes
+> need nothing.
+
+If a script reports something missing, the detailed manual steps below explain
+exactly how to install it. **New users: do Steps 1–4, then use the scripts
+above.**
+
+---
+
 ## Step 1 — Install Rust
 
 Rust is the programming language Scematica is written in. You need it to build the project.
@@ -212,6 +246,10 @@ HELIUS_API_KEY=your_helius_api_key_here
 ## Step 9 — Build the Project
 
 This compiles the Scematica code into programs your computer can run. **This takes 10-30 minutes the first time.** Your computer will work hard — this is normal.
+
+> **Shortcut:** instead of the commands below, you can just double-click
+> **`init.bat`** (one-time dependency setup) and then **`build.bat`**. They run
+> exactly these steps for you. The manual version is below if you prefer it.
 
 1. In PowerShell, make sure you're in the scematica folder:
 ```powershell

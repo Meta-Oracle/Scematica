@@ -1,13 +1,24 @@
-# Scematica v1.6.0 - Quick Start Guide
+# Scematica v1.11.0 - Quick Start Guide
 
-## Your Setup Status ✓
+## One-Click Setup (Windows)
 
-- **Wallet**: `C:\Users\deads\.config\solana\id.json` ✓
-- **RPC**: Helius (configured in .env) ✓
-- **Config**: Updated to v1.6.0 standards ✓
-- **AI Keys**: Groq, OpenRouter, Anthropic, Cerebras ✓
+On a fresh checkout, run these in order — each is a double-clickable `.bat`:
+
+```bash
+init.bat                  # 0. One-time: toolchain check + fetch deps + scaffold .env
+build.bat                 # 1. Compile all binaries (~5-10 min first run)
+verify-setup.bat          # 2. Confirm prerequisites
+start-dashboard-demo.bat  # 3. Try it with no tokens/RPC needed
+```
 
 ## Quick Launch Scripts
+
+### 0. Initialize (First Time Only)
+```bash
+init.bat
+```
+Verifies the Rust toolchain, adds `rustfmt`/`clippy`, fetches all workspace
+dependencies, and writes a `.env` template. Run once per fresh checkout.
 
 ### 1. Verify Setup
 ```bash
@@ -21,13 +32,22 @@ build.bat
 ```
 Compiles all binaries (~5-10 min first run).
 
-### 3. Launch Dashboard
+### 3. Launch the Bot Dashboard
 ```bash
 # Demo mode (no tokens/RPC needed)
 start-dashboard-demo.bat
 
 # Full mode (requires 250,000+ SCEMA tokens)
 start-dashboard.bat
+```
+
+### 4. Launch the ScemaDEX SDK
+```bash
+# SDK dashboard — SIM mode by default (offline), add --live for real Jupiter quotes
+start-sdk-dashboard.bat
+
+# Peer-mesh + signal relay (inference/experience marketplace)
+start-relay.bat
 ```
 
 ## Manual Commands
@@ -166,13 +186,14 @@ Once comfortable, move to **Balanced mode** (`4` key):
 
 ## Next Steps
 
-1. Run `verify-setup.bat` to confirm everything is ready
+1. Run `init.bat` once to set up the toolchain and dependencies
 2. Run `build.bat` to compile binaries (first time only)
-3. Test with `start-dashboard-demo.bat` (no tokens needed)
-4. Acquire 250,000+ SCEMA tokens
-5. Launch full mode with `start-dashboard.bat`
-6. Start with Safe mode (`3` key) and small positions
-7. Monitor trades in the Trades tab
-8. Adjust settings in config.toml as needed
+3. Run `verify-setup.bat` to confirm everything is ready
+4. Test with `start-dashboard-demo.bat` (no tokens needed)
+5. Acquire 250,000+ SCEMA tokens
+6. Launch full mode with `start-dashboard.bat`
+7. Start with Safe mode (`3` key) and small positions
+8. Monitor trades in the Trades tab
+9. Adjust settings in config.toml as needed
 
 Good luck! 🚀

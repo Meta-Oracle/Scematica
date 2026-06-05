@@ -6,6 +6,21 @@ Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitr
 
 > **New to coding?** See [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
 
+## Quick Start (Windows, one-click)
+
+After installing Rust + Git, double-click these from the project folder in order:
+
+```text
+init.bat                  # one-time: toolchain check + fetch all deps + scaffold .env
+build.bat                 # compile every binary (5-10 min first run)
+start-dashboard-demo.bat  # bot dashboard, demo mode (no tokens/RPC)
+start-sdk-dashboard.bat   # ScemaDEX SDK dashboard, SIM mode (offline)
+```
+
+Full bot mode (`start-dashboard.bat`) needs 250k SCEMA + an RPC endpoint in
+`.env`. See [QUICKSTART.md](QUICKSTART.md) for the full script reference and
+[scemadex.md](scemadex.md) for the ScemaDEX SDK.
+
 ---
 
 ## What's New in v1.11.0

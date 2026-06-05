@@ -1,6 +1,6 @@
 [package]
 name = "scemadex-sdk"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -38,3 +38,9 @@ net = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+# Build docs.rs with every feature so the `scematica` / `ai` / `net` modules (the
+# "injected power" story) render, with feature badges via #[doc(cfg(...))].
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

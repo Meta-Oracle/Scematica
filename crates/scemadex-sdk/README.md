@@ -46,7 +46,24 @@ trait surface — `RoutePolicy`, `BondEngine`, `VenueExecutor`, `SignalSource`,
 | `net` | `RemotePeerMarket` — networked mesh client | `reqwest` |
 
 The x402-settled bond engine lives in a separate, unpublished companion crate
-because it depends on a proprietary protocol stack.
+because it depends on a proprietary protocol stack. The conviction-weighted
+settlement *state machine*, however, ships in the open as `EscrowBondEngine` —
+only the on-chain USDC transfer is gated.
+
+## Runnable examples
+
+All run offline — no keypair, RPC, or `solana-sdk`:
+
+```bash
+cargo run -p scemadex-sdk --example quote            # A+B: intent -> bonded solution -> execute
+cargo run -p scemadex-sdk --example conviction_bond  # D+C: honored vs. slashed bonds + honor-rate ledger
+cargo run -p scemadex-sdk --example peer_market      # the mesh: trade bonded inferences & experience
+cargo run -p scemadex-sdk --example intent_solving   # B: same trade under Price/Speed/Stealth
+```
+
+`reference_client()` wires a *zero* bond (`NoBondEngine`) for the bare
+intent/route surface; use **`conviction_client()`** to exercise real
+Conviction Routing (conviction-sized, slashable bonds with a ledger) end-to-end.
 
 ## License
 

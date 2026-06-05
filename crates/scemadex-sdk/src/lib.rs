@@ -49,6 +49,7 @@
 //! let _ = bond;
 //! # Ok(()) }
 //! ```
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod bond;
 pub mod client;
@@ -65,16 +66,19 @@ pub mod venue;
 /// compiled with the `scematica` feature; the default published crate carries no
 /// such dependency.
 #[cfg(feature = "scematica")]
+#[cfg_attr(docsrs, doc(cfg(feature = "scematica")))]
 pub mod integration;
 
 /// Natural-language intent parsing + route/bond narration via an LLM. Requires
 /// the `ai` feature.
 #[cfg(feature = "ai")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ai")))]
 pub mod ai;
 
 /// Networked [`PeerMarket`] client over an HTTP/JSON relay. Requires the `net`
 /// feature.
 #[cfg(feature = "net")]
+#[cfg_attr(docsrs, doc(cfg(feature = "net")))]
 pub mod net;
 
 pub use bond::{
@@ -92,8 +96,42 @@ pub use venue::{SimVenueExecutor, SwapInstructions, VenueExecutor};
 
 /// Build a [`ScemaDex`] wired with the lean reference implementations. Useful for
 /// examples, tests, and consumers who haven't enabled the `scematica` feature.
+///
+/// Note the bond engine here is [`NoBondEngine`], which escrows a *zero* bond —
+/// it exercises the intent/route surface but does **not** demonstrate Conviction
+/// Routing (Primitive D). For the conviction-weighted, ledger-tracking bond
+/// engine, use [`conviction_client`].
 pub fn reference_client() -> ScemaDex<ReferenceRoutePolicy, NoBondEngine, SimVenueExecutor> {
     ScemaDex::new(ReferenceRoutePolicy, NoBondEngine, SimVenueExecutor)
+}
+
+/// Build a [`ScemaDex`] whose bond engine is the conviction-weighted
+/// [`EscrowBondEngine`] — the lean reference wiring that actually exercises
+/// **Conviction Routing** (Primitive D) end-to-end, offline.
+///
+/// Unlike [`reference_client`], each [`ScemaDex::quote`] here escrows a real,
+/// conviction-sized bond with a guaranteed-minimum-output haircut, and
+/// [`ScemaDex::execute`] settles it (honored or slashed) into the engine's
+/// [`BondLedger`]. The only thing missing versus the `scematica` feature is the
+/// on-chain x402 USDC transfer; the settlement state machine is identical.
+///
+/// ```
+/// use scemadex_sdk::{conviction_client, demo_intent, BondOutcome};
+/// # async fn run() -> scemadex_sdk::Result<()> {
+/// let dex = conviction_client();
+/// let (solution, bond) = dex.quote(&demo_intent()).await?;
+/// assert!(bond.amount.0 > 0, "conviction-weighted bond is escrowed");
+/// assert!(bond.min_out_raw <= solution.route.expected_out.raw);
+/// let (_fill, outcome) = dex.execute(&demo_intent()).await?;
+/// assert_eq!(outcome, BondOutcome::Honored);
+/// # Ok(()) }
+/// ```
+pub fn conviction_client() -> ScemaDex<ReferenceRoutePolicy, EscrowBondEngine, SimVenueExecutor> {
+    ScemaDex::new(
+        ReferenceRoutePolicy,
+        EscrowBondEngine::with_defaults(),
+        SimVenueExecutor,
+    )
 }
 
 /// A canonical WSOL → USDC demo intent used by docs and tests.

@@ -1,9 +1,10 @@
 @echo off
-REM Scematica v1.6.0 Setup Verification
-REM Checks all prerequisites before running
+REM Scematica v1.11.0 Setup Verification
+REM Checks all prerequisites before running.
+REM Run init.bat first to install/fetch anything this reports as missing.
 
 echo ========================================
-echo Scematica v1.6.0 Setup Verification
+echo Scematica v1.11.0 Setup Verification
 echo ========================================
 echo.
 
@@ -72,7 +73,12 @@ echo [6/6] Checking compiled binaries...
 if exist "target\release\dashboard.exe" (
     echo   [OK] dashboard.exe is built
 ) else (
-    echo   [INFO] Binaries not built yet - run build.bat first
+    echo   [INFO] Bot binaries not built yet - run build.bat
+)
+if exist "target\release\sdk-dashboard.exe" (
+    echo   [OK] sdk-dashboard.exe is built
+) else (
+    echo   [INFO] ScemaDEX SDK binaries not built yet - run build.bat
 )
 echo.
 
@@ -81,10 +87,12 @@ echo Setup verification complete!
 echo ========================================
 echo.
 echo Next steps:
-echo   1. Run build.bat to compile binaries (first time only)
-echo   2. Run start-dashboard-demo.bat to test in demo mode
-echo   3. Ensure you have 250,000+ SCEMA tokens in your wallet
-echo   4. Run start-dashboard.bat for full mode
+echo   1. Run init.bat once on a fresh checkout (toolchain + dependencies)
+echo   2. Run build.bat to compile binaries
+echo   3. Run start-dashboard-demo.bat to test in demo mode
+echo   4. Run start-sdk-dashboard.bat for the ScemaDEX SDK TUI (SIM mode)
+echo   5. Ensure you have 250,000+ SCEMA tokens in your wallet
+echo   6. Run start-dashboard.bat for full bot mode
 echo.
 
 :end

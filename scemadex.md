@@ -211,6 +211,194 @@ cargo run --release --bin sdk-dashboard              # live TUI over the bond pi
 
 ---
 
+## For Investors
+
+**The thesis in one line:** routing intelligence is becoming the scarce,
+defensible layer of on-chain trading — and ScemaDEX is the first SDK that turns
+that intelligence into a *metered, accountable, tradeable* asset.
+
+### Why now
+
+Aggregators commoditized *liquidity access*; the margin has collapsed to zero.
+The remaining edge is **decision quality** — knowing *which* route, *when*, and
+*how stealthily* to execute. ScemaDEX is built so that edge is the product:
+priced per call, backed by collateral, and improvable by trading experience.
+That is a different business than a swap widget.
+
+### Revenue surfaces (already modeled in the crate)
+
+| Surface | Mechanism | Code |
+|---------|-----------|------|
+| **Per-call inference fees** | Every quote is individually billable, priced by conviction | `EscrowBondEngine::quote_fee` |
+| **Bond fees / spread** | Honored bonds return + fee; the agent keeps the upside it can deliver | `bond::settle` |
+| **Signal endpoints** | Reputation / pool-score / advice sold per query, x402-gated | `oracle::SignalSource`, `scemadex-relay` |
+| **Experience market take** | Mesh fees on agents buying/selling learned RL transitions | `mesh::PeerMarket` |
+| **Token gate** | Access to the live bot/agent stack gated behind a 250k `$SCEMA` balance | `scematica-core` gate |
+
+These are not roadmap items — each maps to a shipped type and a runnable example.
+
+### Defensibility (the moats)
+
+- **A trained edge, not a prompt.** The Deep Q\* policy is the product of many
+  iterations of live market tuning (validated profit factor ≈ 6.5 on the bot
+  slice). A competitor can fork the traits; they cannot fork the weights or the
+  experience that produced them.
+- **Accountability as a network effect.** Reputation derives from *real bond
+  settlements* — un-fakeable history that compounds. The longer an agent runs
+  honestly, the more its inferences are worth, and the harder it is to displace.
+- **Proprietary settlement rails.** The open SDK defines the trait surface and
+  the settlement *logic*; the on-chain x402 facilitator that moves real USDC is
+  a closed companion stack. Adopters build *on* ScemaDEX, not *around* it.
+- **Compounding data flywheel.** Agents that sell experience seed the mesh;
+  agents that buy it converge faster — and the most-traded experience is the
+  most valuable, concentrating flow toward the best nodes.
+
+### Traction & status
+
+- `scemadex-sdk v0.1.1` **published on crates.io** — the trait surface, reference
+  implementations, four runnable examples, and docs.rs documentation are live.
+- The agentic layer is **wired end-to-end**: live Jupiter quotes flow through the
+  conviction/route/bond pipeline; `scemadex-relay` serves the mesh + signal
+  endpoints over HTTP; the `sdk-dashboard` TUI drives it in SIM and `--live`.
+- **Honest risk markers:** live on-chain signing/settlement paths are the newest
+  code and excluded from the automated test suite; the open crate simulates
+  settlement, with real USDC movement gated behind the proprietary stack. This is
+  early-stage infrastructure, deliberately shipped lean.
+
+### The ask / the shape of the opportunity
+
+The wedge is a **margin business on machine intelligence**: take rate on metered
+inferences, bond spreads, signal subscriptions, and experience-market fees — with
+a token (`$SCEMA`) gating access to the highest-value live stack. The
+defensibility is the trained policy plus the accountability flywheel, neither of
+which a fork inherits.
+
+---
+
+## For Developers — Adoption Guide
+
+ScemaDEX is a **trait-first SDK**: integrate against the lean core in minutes,
+then inject power (a real agent, an LLM, a networked mesh) by flipping feature
+flags — *without changing caller code*.
+
+### 1. Install
+
+```toml
+[dependencies]
+scemadex-sdk = "0.1.1"
+tokio = { version = "1", features = ["full"] }
+```
+
+```bash
+cargo add scemadex-sdk
+```
+
+### 2. Your first bonded quote (offline, no keypair/RPC)
+
+```rust
+use scemadex_sdk::{conviction_client, demo_intent, BondOutcome};
+
+#[tokio::main]
+async fn main() -> scemadex_sdk::Result<()> {
+    let dex = conviction_client();                          // reference policy + real bond engine
+    let (solution, bond) = dex.quote(&demo_intent()).await?;
+    println!("conviction {:.2}, bond {} µUSDC", solution.conviction.0, bond.amount.0);
+
+    let (fill, outcome) = dex.execute(&demo_intent()).await?;
+    assert_eq!(outcome, BondOutcome::Honored);
+    println!("filled ~{}, bond {:?}", fill.amount_out.ui(), outcome);
+    Ok(())
+}
+```
+
+`reference_client()` gives you a *zero* bond (intent/route surface only);
+`conviction_client()` exercises real Conviction Routing end-to-end. Start with
+the four examples — they are the fastest way in:
+
+```bash
+cargo run -p scemadex-sdk --example quote
+cargo run -p scemadex-sdk --example conviction_bond
+cargo run -p scemadex-sdk --example peer_market
+cargo run -p scemadex-sdk --example intent_solving
+```
+
+### 3. The five traits you can implement
+
+The whole SDK is composable around these. Implement one to plug in your own
+brain, venue, collateral, signals, or marketplace — `ScemaDex<P, B, V>` is
+generic over them, so mix and match freely.
+
+| Trait | Implement it to… | Reference impl |
+|-------|------------------|----------------|
+| `RoutePolicy` | supply your own routing brain (`solve(intent) -> Solution`) | `ReferenceRoutePolicy`, `integration::DqRoutePolicy` (`scematica`) |
+| `BondEngine` | define how bonds are sized & settled | `NoBondEngine`, `EscrowBondEngine` |
+| `VenueExecutor` | build/submit swaps on your venue | `SimVenueExecutor`, Jupiter (`scematica`) |
+| `SignalSource` | serve reputation / pool-score / advice | `FileSignalSource` (`scemadex-integrations`) |
+| `PeerMarket` | back the inference/experience mesh | `LocalPeerMarket`, `RemotePeerMarket` (`net`) |
+
+```rust
+use async_trait::async_trait;
+use scemadex_sdk::{Intent, RoutePolicy, Solution, ScemaDex, NoBondEngine, SimVenueExecutor};
+
+struct MyAlpha;
+
+#[async_trait]
+impl RoutePolicy for MyAlpha {
+    async fn solve(&self, intent: &Intent) -> scemadex_sdk::Result<Solution> {
+        // your edge here
+        unimplemented!()
+    }
+}
+
+let dex = ScemaDex::new(MyAlpha, NoBondEngine, SimVenueExecutor);
+```
+
+### 4. Feature flags — inject power, keep the call site
+
+| Feature | Adds | Pulls |
+|---------|------|-------|
+| *(default)* | Traits + reference impls, `ScemaDex` facade | serde, async-trait, bs58 |
+| `scematica` | the real Deep Q\* agent as `RoutePolicy` | [`scematica-nn`](https://crates.io/crates/scematica-nn) |
+| `ai` | natural-language → `Intent` + trade narration | `reqwest` |
+| `net` | `RemotePeerMarket` networked mesh client | `reqwest` |
+
+```bash
+cargo add scemadex-sdk --features scematica,ai,net
+```
+
+### 5. Run a node on the mesh
+
+```bash
+# Serve the inference/experience mesh + signal oracle (optionally x402-gated)
+cargo run --release --bin scemadex-relay
+
+# Drive real Jupiter quotes through the bond pipeline in a TUI
+cargo run --release --bin sdk-dashboard -- --live
+```
+
+Point a `RemotePeerMarket` (the `net` feature) at your relay and your node can
+buy and sell bonded inferences and experience with the rest of the mesh.
+
+### 6. Where to look
+
+- **API docs:** [docs.rs/scemadex-sdk](https://docs.rs/scemadex-sdk) (built with
+  all features — the `scematica` / `ai` / `net` modules render with badges).
+- **Source & examples:** [`crates/scemadex-sdk`](crates/scemadex-sdk).
+- **Changelog:** [`crates/scemadex-sdk/CHANGELOG.md`](crates/scemadex-sdk/CHANGELOG.md).
+- **Integrations & relay:** [`crates/scemadex-integrations`](crates/scemadex-integrations),
+  [`crates/scemadex-relay`](crates/scemadex-relay).
+
+### Compatibility notes
+
+- Async runtime is **Tokio**; every trait method is `async` + `Send + Sync`.
+- The default crate has **no `solana-sdk` dependency** — it builds anywhere and
+  fast. Solana types only appear when you enable `scematica`.
+- MSRV tracks the workspace (`edition = 2021`). The bot workspace pins
+  `solana-sdk 1.18.x` / `reqwest 0.11` for transitive `zeroize` reasons; if you
+  enable `scematica`, inherit those pins (see the root `Cargo.toml` comments).
+
+---
+
 *All feature behavior described here is exercised by the crate's tests and
 examples. The Conviction Routing settlement logic is real and open; only the
 on-chain x402 USDC transfer is gated behind the proprietary `scematica` stack.

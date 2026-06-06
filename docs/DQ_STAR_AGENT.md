@@ -672,6 +672,13 @@ the reinforcement loop from the realised fill vs. the bonded promise. The agent
 that gates the bot's entries can thus also price the SDK's bonded inferences —
 see [`scemadex.md`](scemadex.md).
 
+Runnable: `cargo run -p scemadex-integrations --example agent_conviction` loads
+the bot's checkpoint (`SCEMATICA_NN_CHECKPOINT`, default `scematica-nn-agent.json`),
+prices a bond against a **real Jupiter quote** with the agent's conviction, and
+closes the loop. The live `sdk-dashboard --live` loads the same checkpoint via
+`with_agent_from_checkpoint`, so the running TUI prices bonds with the trained
+weights when a checkpoint is present.
+
 ---
 
 ## 17. Persistence — Checkpoint Format

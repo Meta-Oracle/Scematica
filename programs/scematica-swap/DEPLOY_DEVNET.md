@@ -81,7 +81,20 @@ anchor build && anchor deploy --provider.cluster devnet
 
 ## After deploy
 
-Note the live devnet program ID and hand it to the client/tests. The
-`scemadex-settle` reference settler (USDC bond movement) is independent of this
-program and runs against devnet directly — see
+Note the live devnet program ID and hand it to the client/tests.
+
+The `scemadex-settle` settling node (USDC bond movement) is independent of this
+program and runs against devnet directly. Once you have a funded agent keypair, a
+devnet SPL "USDC" mint, and a beneficiary token account, **one command settles a
+slashed bond on-chain and prints the explorer link**:
+
+```bash
+cargo run -p scemadex-settle --example devnet_settlement -- \
+  --keypair agent.json \
+  --usdc-mint <DEVNET_MINT> \
+  --beneficiary <CALLER_USDC_TOKEN_ACCOUNT>
+# add --mode honor to run the no-transfer (guarantee-met) path
+```
+
+The node header documents the one-time `solana` / `spl-token` setup. See
 `crates/scemadex-settle/examples/devnet_settlement.rs`.

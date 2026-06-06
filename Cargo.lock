@@ -4198,6 +4198,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap 4.6.1",
  "scemadex-sdk",
  "solana-client",
  "solana-sdk",

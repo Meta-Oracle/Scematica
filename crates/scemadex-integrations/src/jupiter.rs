@@ -97,6 +97,17 @@ impl JupiterRoutePolicy {
         self
     }
 
+    /// Attach the bot's trained agent from a checkpoint (e.g. the sniper's
+    /// `scematica-nn-agent.json`). Falls back to quote-only conviction if the
+    /// checkpoint is missing or unreadable. Lets consumers wire the trained
+    /// policy without depending on `scematica-nn` directly.
+    pub fn with_agent_from_checkpoint(self, path: &str) -> Self {
+        match DQNAgent::load(path) {
+            Ok(agent) => self.with_agent(agent),
+            Err(_) => self,
+        }
+    }
+
     fn state_for(intent: &Intent, price_impact: f64) -> TradeState {
         TradeState {
             initial_liquidity_sol: intent.amount_in.ui(),

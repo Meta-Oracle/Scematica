@@ -299,7 +299,14 @@ impl App {
 fn main() -> Result<()> {
     let live = std::env::args().any(|a| a == "--live");
     let live_policy = if live {
-        Some(Arc::new(JupiterRoutePolicy::new()))
+        // Price bonds with the bot's trained Deep Q* agent when a checkpoint is
+        // available (set SCEMATICA_NN_CHECKPOINT, default scematica-nn-agent.json);
+        // otherwise conviction falls back to quote price-impact only.
+        let ckpt = std::env::var("SCEMATICA_NN_CHECKPOINT")
+            .unwrap_or_else(|_| "scematica-nn-agent.json".to_string());
+        Some(Arc::new(
+            JupiterRoutePolicy::new().with_agent_from_checkpoint(&ckpt),
+        ))
     } else {
         None
     };

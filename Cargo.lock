@@ -4154,8 +4154,10 @@ dependencies = [
  "scematica-protocol",
  "serde",
  "serde_json",
+ "solana-account-decoder",
  "solana-client",
  "solana-sdk",
+ "solana-transaction-status",
  "tokio",
 ]
 
@@ -4180,7 +4182,7 @@ dependencies = [
 
 [[package]]
 name = "scemadex-sdk"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "bs58 0.5.1",

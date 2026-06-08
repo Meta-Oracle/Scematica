@@ -14,6 +14,7 @@ scematica-executor = { path = "../scematica-executor" }
 scematica-nn = { path = "../scematica-nn" }
 solana-sdk = { workspace = true }
 solana-client = { workspace = true }
+solana-transaction-status = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,3 +29,4 @@ live-tests = []
 [dev-dependencies]
 tokio = { workspace = true }
 scemadex-sdk = { path = "../scemadex-sdk" }
+solana-account-decoder = { workspace = true }

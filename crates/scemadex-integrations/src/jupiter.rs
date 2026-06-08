@@ -18,9 +18,13 @@ use async_trait::async_trait;
 use scematica_executor::jupiter::JupiterBuilder;
 use scematica_nn::{DQNAgent, TradeAction, TradeState};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_config::RpcTransactionConfig;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::{Keypair, Signature, Signer};
 use solana_sdk::transaction::VersionedTransaction;
+use solana_transaction_status::option_serializer::OptionSerializer;
+use solana_transaction_status::{UiTransactionEncoding, UiTransactionTokenBalance};
 
 use scemadex_sdk::{
     Amount, Conviction, Fill, Intent, Result, Route, RouteLeg, RoutePolicy, ScemaDexError,
@@ -60,6 +64,60 @@ pub fn parse_jupiter_quote(v: &serde_json::Value) -> anyhow::Result<ParsedQuote>
         price_impact_pct,
         labels,
     })
+}
+
+fn owner_matches(field: &OptionSerializer<String>, owner: &str) -> bool {
+    matches!(field, OptionSerializer::Some(o) if o == owner)
+}
+
+/// Realized output amount received by `owner` for `out_mint`, computed from a
+/// transaction's pre/post SPL-token balances (the mint's base units).
+///
+/// Returns the positive post−pre delta on the owner's `out_mint` account, or
+/// `None` when the balances don't contain a post entry for that owner+mint
+/// (e.g. the output is native SOL that Jupiter unwrapped, so no token balance
+/// survives — callers fall back to the quoted amount). The pre entry is treated
+/// as zero when absent, since the output ATA is often created during the swap.
+/// Pure + offline.
+pub fn realized_out_from_balances(
+    pre: &[UiTransactionTokenBalance],
+    post: &[UiTransactionTokenBalance],
+    owner: &str,
+    out_mint: &str,
+) -> Option<u64> {
+    let amount_of = |bals: &[UiTransactionTokenBalance]| -> Option<u64> {
+        bals.iter()
+            .find(|b| b.mint == out_mint && owner_matches(&b.owner, owner))
+            .and_then(|b| b.ui_token_amount.amount.parse::<u64>().ok())
+    };
+    let post_amt = amount_of(post)?;
+    let pre_amt = amount_of(pre).unwrap_or(0);
+    Some(post_amt.saturating_sub(pre_amt))
+}
+
+/// Fetch a confirmed transaction and extract the realized output amount for
+/// `owner`/`out_mint` from its token-balance meta. Best-effort: any RPC error,
+/// missing meta, or unparseable balance yields `None` so the caller can fall
+/// back to the quoted amount.
+async fn fetch_realized_out(
+    rpc: &RpcClient,
+    sig: &Signature,
+    owner: &str,
+    out_mint: &str,
+) -> Option<u64> {
+    let cfg = RpcTransactionConfig {
+        encoding: Some(UiTransactionEncoding::JsonParsed),
+        commitment: Some(CommitmentConfig::confirmed()),
+        max_supported_transaction_version: Some(0),
+    };
+    let tx = rpc.get_transaction_with_config(sig, cfg).await.ok()?;
+    let meta = tx.transaction.meta?;
+    let (OptionSerializer::Some(pre), OptionSerializer::Some(post)) =
+        (meta.pre_token_balances, meta.post_token_balances)
+    else {
+        return None;
+    };
+    realized_out_from_balances(&pre, &post, owner, out_mint)
 }
 
 /// Map a Jupiter venue label to the SDK [`Venue`].
@@ -234,9 +292,11 @@ impl RoutePolicy for JupiterRoutePolicy {
     }
 }
 
-/// A [`VenueExecutor`] that builds real Jupiter swap transactions and, in dry
-/// mode, returns a freshly-quoted fill. Live submission requires a signer + RPC
-/// wired at the application boundary (see `scematica-protocol`'s submit path).
+/// A [`VenueExecutor`] that builds real Jupiter swap transactions. In dry mode
+/// it returns a freshly-quoted fill; in live mode (signer + RPC wired via
+/// [`JupiterVenueExecutor::with_signer`]) it submits the swap and reports the
+/// **realized** output parsed from the confirmed transaction's token-balance
+/// meta, falling back to the quoted amount only if the tx can't be read.
 pub struct JupiterVenueExecutor {
     jup: JupiterBuilder,
     /// Owner pubkey the swap transaction is built for.
@@ -337,11 +397,18 @@ impl VenueExecutor for JupiterVenueExecutor {
                 .map_err(|e| ScemaDexError::Venue(format!("decode swap tx: {e}")))?;
             let signed = VersionedTransaction::try_new(unsigned.message, &[signer.as_ref()])
                 .map_err(|e| ScemaDexError::Venue(format!("sign swap tx: {e}")))?;
-            rpc.send_and_confirm_transaction(&signed)
+            let sig = rpc
+                .send_and_confirm_transaction(&signed)
                 .await
                 .map_err(|e| ScemaDexError::Venue(format!("submit swap: {e}")))?;
+            // Prefer the realized fill parsed from the confirmed tx's token-balance
+            // meta; fall back to the quoted amount if the tx can't be read.
+            let owner = self.owner.to_string();
+            let realized =
+                fetch_realized_out(rpc, &sig, &owner, leg.output_mint.as_str()).await;
+            let amount_out = realized.unwrap_or(parsed.out_amount);
             return Ok(Fill {
-                amount_out: Amount::new(parsed.out_amount, 0),
+                amount_out: Amount::new(amount_out, 0),
                 executed_unix: unix_now(),
             });
         }
@@ -386,6 +453,56 @@ mod tests {
         assert!(matches!(venue_from_label(Some("Meteora DLMM")), Venue::Meteora));
         assert!(matches!(venue_from_label(Some("Lifinity")), Venue::Custom));
         assert!(matches!(venue_from_label(None), Venue::Jupiter));
+    }
+
+    fn bal(mint: &str, owner: &str, amount: &str) -> UiTransactionTokenBalance {
+        use solana_account_decoder::parse_token::UiTokenAmount;
+        UiTransactionTokenBalance {
+            account_index: 0,
+            mint: mint.to_string(),
+            ui_token_amount: UiTokenAmount {
+                ui_amount: None,
+                decimals: 0,
+                amount: amount.to_string(),
+                ui_amount_string: amount.to_string(),
+            },
+            owner: OptionSerializer::Some(owner.to_string()),
+            program_id: OptionSerializer::None,
+        }
+    }
+
+    #[test]
+    fn realized_out_takes_owner_mint_delta() {
+        let owner = "OwnerPubkey1111111111111111111111111111111";
+        let out = "OutMint11111111111111111111111111111111111";
+        // ATA created during the swap: no pre entry, post = 5000.
+        let pre = vec![bal("OtherMint", owner, "42")];
+        let post = vec![bal(out, owner, "5000"), bal("OtherMint", owner, "42")];
+        assert_eq!(
+            realized_out_from_balances(&pre, &post, owner, out),
+            Some(5000)
+        );
+    }
+
+    #[test]
+    fn realized_out_subtracts_existing_balance() {
+        let owner = "OwnerPubkey1111111111111111111111111111111";
+        let out = "OutMint11111111111111111111111111111111111";
+        let pre = vec![bal(out, owner, "1000")];
+        let post = vec![bal(out, owner, "3500")];
+        assert_eq!(
+            realized_out_from_balances(&pre, &post, owner, out),
+            Some(2500)
+        );
+    }
+
+    #[test]
+    fn realized_out_none_when_owner_absent() {
+        let owner = "OwnerPubkey1111111111111111111111111111111";
+        let out = "OutMint11111111111111111111111111111111111";
+        // Output unwrapped to native SOL → no surviving token balance for owner.
+        let post = vec![bal(out, "SomeoneElse", "5000")];
+        assert_eq!(realized_out_from_balances(&[], &post, owner, out), None);
     }
 
     #[tokio::test]

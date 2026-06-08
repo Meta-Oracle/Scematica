@@ -38,6 +38,7 @@ solana-sdk = "1.18.26"
 solana-client = "1.18.26"
 solana-program = "1.18.26"
 solana-account-decoder = "1.18.26"
+solana-transaction-status = "1.18.26"
 # anchor-lang is in workspace for reference but excluded programs use it; no crate imports it
 anchor-lang = "0.30.1"
 anchor-spl = "0.30.1"

@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/).
 ## [0.1.2] - 2026-06-08
 
 ### Added
+- **`scemadex` CLI** — `cargo install scemadex-sdk` now installs a `scemadex`
+  binary: a ratatui live viewer that drives the lean core's bond engine + peer
+  market through the full `intent → solve → conviction bond → settle` pipeline,
+  fully offline (no RPC, keypair, or `solana-sdk`). Shipped behind a default
+  `cli` feature; library-only consumers opt out with `default-features = false`
+  to keep the lean trait surface with no TUI dependencies.
 - `conviction_client()` — a reference wiring backed by `EscrowBondEngine`, so the
   defining **Conviction Routing** primitive (D) is exercised end-to-end out of
   the box. The previous `reference_client()` uses `NoBondEngine` (a zero bond)

@@ -16,6 +16,24 @@ let _ = bond;
 # Ok(()) }
 ```
 
+## Live viewer
+
+Install the crate and run the bundled `scemadex` viewer — a terminal dashboard
+that drives the whole pipeline (`intent → solve → conviction bond → settle →
+peer market`) live, fully offline:
+
+```bash
+cargo install scemadex-sdk
+scemadex            # space = pause/resume · s = step · q = quit
+```
+
+The viewer ships behind a default `cli` feature. Depending on the crate as a
+**library** and want only the lean trait surface? Opt out of the TUI stack:
+
+```toml
+scemadex-sdk = { version = "0.1", default-features = false }
+```
+
 ## The four composing primitives
 
 | | Primitive | Where |

@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "agent-playground"
-version = "1.11.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4184,8 +4184,12 @@ dependencies = [
 name = "scemadex-sdk"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bs58 0.5.1",
+ "crossterm",
+ "rand 0.8.6",
+ "ratatui",
  "reqwest",
  "scematica-nn",
  "serde",

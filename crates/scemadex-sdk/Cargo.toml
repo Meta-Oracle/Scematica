@@ -12,6 +12,13 @@ documentation = "https://docs.rs/scemadex-sdk"
 repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
+[[bin]]
+name = "scemadex"
+path = "src/bin/scemadex.rs"
+# Only built when the `cli` feature (a default) is on, so library-only consumers
+# that opt out with `default-features = false` never compile the TUI stack.
+required-features = ["cli"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,8 +32,21 @@ scematica-nn = { version = "1.11.0", path = "../scematica-nn", optional = true }
 # Optional: HTTP transport for the `ai` (LLM) and `net` (peer mesh) features.
 reqwest = { workspace = true, optional = true }
 
+# Optional: the `scemadex` live-viewer binary (the `cli` feature). A self-contained
+# ratatui TUI driving the lean core's bond engine + peer market — no solana-sdk.
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+
 [features]
-default = []
+# `cli` is on by default so `cargo install scemadex-sdk` yields a runnable
+# `scemadex` viewer out of the box. Library embedders who want the lean trait
+# surface only should depend with `default-features = false`.
+default = ["cli"]
+# The `scemadex` terminal live-viewer binary (ratatui TUI over the lean core).
+cli = ["dep:ratatui", "dep:crossterm", "dep:tokio", "dep:rand", "dep:anyhow"]
 # Use the real Deep Q* agent as the routing policy; its value head supplies the
 # conviction that sizes Conviction-Routing bonds.
 scematica = ["dep:scematica-nn"]

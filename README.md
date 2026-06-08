@@ -91,7 +91,7 @@ SDK and playground are pre-1.0.
 | `scematica-executor` | 1.11.0 | — | library |
 | `scematica-core` | 1.11.0 | — | library |
 | `scematica-nn` | 1.12.0 | `scema-ddqn` | bin + lib |
-| `scemadex-sdk` | 0.1.3 | `scemadex` | bin + lib |
+| `scemadex-sdk` | 0.1.4 | `scemadex` | bin + lib |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 Pin a version with `cargo install <crate> --version <x.y.z>`, or depend on a

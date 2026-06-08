@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount};
 
-declare_id!("7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc");
+declare_id!("962WQuEMgXYtJBVaDFMaQzTrJ1PWW1F5V6CVDBJrNCwf");
 
 /// Scematica on-chain swap program.
 ///

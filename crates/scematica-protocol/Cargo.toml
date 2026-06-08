@@ -5,13 +5,18 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Scematica Protocol: Rust-native x402 HTTP 402 payment standard for Solana"
+keywords = ["solana", "x402", "payments", "http", "web3"]
+categories = ["cryptography::cryptocurrencies", "web-programming::http-server"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [[bin]]
 name = "protocol"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { path = "../scematica-core" }
+scematica-core = { version = "1.11.0", path = "../scematica-core" }
 
 # Solana
 solana-sdk.workspace = true

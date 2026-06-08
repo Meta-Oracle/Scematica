@@ -4451,6 +4451,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "scematica-suite"
+version = "1.11.0"
+dependencies = [
+ "scemadex-sdk",
+ "scematica-ai",
+ "scematica-core",
+ "scematica-dashboard",
+ "scematica-executor",
+ "scematica-nn",
+ "scematica-protocol",
+ "scematica-sniper",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -156,9 +156,32 @@ fn find_binary(name: &str) -> anyhow::Result<PathBuf> {
         }
     }
 
+    // Installed case (`cargo install scematica-sniper`): the sibling binary lives
+    // next to this dashboard executable (e.g. ~/.cargo/bin) or elsewhere on PATH.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(path) = exe.parent().map(|d| d.join(&bin)) {
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+    if let Some(path) = find_on_path(&bin) {
+        return Ok(path);
+    }
+
     anyhow::bail!(
-        "Cannot find '{}' binary. Build it first:\n  cargo build --bin {}",
+        "Cannot find '{}' binary. Install it (`cargo install scematica-sniper`), \
+         build it (`cargo build --bin {}`), or set SCEMATICA_{}_BIN.",
         bin,
-        name
+        name,
+        name.to_uppercase()
     )
+}
+
+/// Resolve `bin` against the directories on `PATH`.
+fn find_on_path(bin: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(bin))
+        .find(|p| p.is_file())
 }

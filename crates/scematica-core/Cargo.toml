@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Core types, traits, and shared utilities for Scematica"
+description = "Core types, traits, and shared utilities for Scematica — config, RPC, wallet, metrics, token helpers."
+keywords = ["solana", "trading", "defi", "rpc", "wallet"]
+categories = ["cryptography::cryptocurrencies"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
 solana-sdk.workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "scematica-suite"
+version = "1.11.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica meta-crate — re-exports the full Solana sniper + cross-DEX arb + AI + Deep Q* + x402 + ScemaDEX stack, and ships a `scematica` launcher that dispatches to the component binaries."
+keywords = ["solana", "trading", "bot", "defi", "suite"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+
+[[bin]]
+name = "scematica"
+path = "src/bin/scematica.rs"
+
+[dependencies]
+# The whole stack, re-exported as a single dependency. Heavy crates keep their
+# lean defaults (no TUI binaries) since the suite only needs their libraries.
+scematica-core = { version = "1.11.0", path = "../scematica-core" }
+scematica-executor = { version = "1.11.0", path = "../scematica-executor" }
+scematica-protocol = { version = "1.11.0", path = "../scematica-protocol" }
+scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
+scematica-nn = { version = "1.12.0", path = "../scematica-nn", default-features = false }
+scematica-sniper = { version = "1.11.0", path = "../scematica-sniper" }
+scematica-dashboard = { version = "1.11.0", path = "../scematica-dashboard" }
+scemadex-sdk = { version = "0.1.3", path = "../scemadex-sdk", default-features = false }

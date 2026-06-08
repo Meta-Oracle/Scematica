@@ -4,15 +4,20 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Terminal dashboard for Scematica bot monitoring"
+description = "Terminal (ratatui) dashboard for the Scematica trading bot — live metrics, trades, NN, and an AI chat agent."
+keywords = ["solana", "trading", "tui", "dashboard", "bot"]
+categories = ["command-line-utilities", "visualization"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [[bin]]
 name = "dashboard"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { path = "../scematica-core" }
-scematica-ai = { path = "../scematica-ai" }
+scematica-core = { version = "1.11.0", path = "../scematica-core" }
+scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
 
 tokio.workspace = true
 serde.workspace = true

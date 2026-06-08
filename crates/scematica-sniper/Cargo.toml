@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "New pool sniper engine for Scematica"
+description = "New-pool sniper engine for Scematica — Raydium AMM V4 listener, filter pipeline, executor, risk breakers."
+keywords = ["solana", "trading", "sniper", "defi", "bot"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [[bin]]
 name = "sniper"
@@ -15,10 +20,10 @@ name = "backtest"
 path = "src/bin/backtest.rs"
 
 [dependencies]
-scematica-core = { path = "../scematica-core" }
-scematica-ai = { path = "../scematica-ai" }
-scematica-executor = { path = "../scematica-executor" }
-scematica-nn = { path = "../scematica-nn", default-features = false }
+scematica-core = { version = "1.11.0", path = "../scematica-core" }
+scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
+scematica-executor = { version = "1.11.0", path = "../scematica-executor" }
+scematica-nn = { version = "1.12.0", path = "../scematica-nn", default-features = false }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

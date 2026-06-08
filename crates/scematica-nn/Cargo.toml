@@ -1,6 +1,6 @@
 [package]
 name = "scematica-nn"
-version.workspace = true
+version = "1.12.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -11,6 +11,13 @@ readme = "README.md"
 repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
+[[bin]]
+name = "scema-ddqn"
+path = "src/bin/scema-ddqn.rs"
+# Only built with the `cli` feature (a default), so library consumers that opt
+# out via `default-features = false` never compile the TUI stack.
+required-features = ["cli"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -18,3 +25,16 @@ tracing.workspace = true
 chrono.workspace = true
 rand.workspace = true
 anyhow.workspace = true
+
+# Optional: the `scema-ddqn` live-viewer binary (the `cli` feature). A ratatui
+# TUI that trains the Double/Dueling DQN on a toy task and visualises learning.
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+
+[features]
+# `cli` is on by default so `cargo install scematica-nn` yields a runnable
+# `scema-ddqn` viewer. Library embedders who want only the agent should depend
+# with `default-features = false` to skip the TUI dependencies.
+default = ["cli"]
+# The `scema-ddqn` terminal live-viewer binary (ratatui TUI training demo).
+cli = ["dep:ratatui", "dep:crossterm"]

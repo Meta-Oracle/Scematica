@@ -28,6 +28,25 @@ let (action, q_values) = agent.advise(&state);
 println!("chose {} — Q={:?}", action.label(), q_values);
 ```
 
+## Live viewer
+
+Install the crate and run the bundled `scema-ddqn` viewer — a terminal dashboard
+that **trains the agent on a synthetic task in real time** so you can watch it
+learn: epsilon annealing, falling loss, separating Q-values, the chosen-action
+distribution, and a policy-accuracy curve climbing toward the optimal policy.
+
+```bash
+cargo install scematica-nn
+scema-ddqn          # space = pause · s = step · +/- = speed · q = quit
+```
+
+The viewer ships behind a default `cli` feature. Depending on the crate as a
+**library** and want just the agent? Skip the TUI stack:
+
+```toml
+scematica-nn = { version = "1.12", default-features = false }
+```
+
 ## Core types
 
 | Type | Purpose |

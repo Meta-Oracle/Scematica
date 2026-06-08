@@ -4370,11 +4370,13 @@ dependencies = [
 
 [[package]]
 name = "scematica-nn"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "crossterm",
  "rand 0.8.6",
+ "ratatui",
  "serde",
  "serde_json",
  "tracing",

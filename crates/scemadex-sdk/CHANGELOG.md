@@ -4,6 +4,14 @@ All notable changes to `scemadex-sdk` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this crate adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-06-08
+
+### Changed
+- The optional `scematica` feature now depends on `scematica-nn` with
+  `default-features = false`, so enabling it no longer pulls `scematica-nn`'s
+  `cli` feature (and its `ratatui`/`crossterm` TUI stack) into your build. Only
+  the Deep Q\* agent library is compiled.
+
 ## [0.1.3] - 2026-06-08
 
 ### Added

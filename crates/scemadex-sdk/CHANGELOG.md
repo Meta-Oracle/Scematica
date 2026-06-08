@@ -4,7 +4,7 @@ All notable changes to `scemadex-sdk` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this crate adheres
 to [Semantic Versioning](https://semver.org/).
 
-## [0.1.1] - 2026-06-05
+## [0.1.2] - 2026-06-08
 
 ### Added
 - `conviction_client()` — a reference wiring backed by `EscrowBondEngine`, so the

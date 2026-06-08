@@ -18,6 +18,45 @@ Before spending any time on setup, make sure you have:
 
 ---
 
+## Easiest Path — Install from crates.io (No Download, No Build)
+
+If you just want to **see the apps run**, you don't need to download the code or
+build anything. Once Rust is installed (Step 1 below), open a terminal and run
+one line. Every command here works with **no wallet, no RPC, and no tokens**:
+
+```bash
+# The bot dashboard, with demo data
+cargo install scematica-dashboard
+dashboard --demo
+
+# Watch the Deep Q* AI agent learn, live
+cargo install scematica-nn
+scema-ddqn
+
+# The ScemaDEX agentic-liquidity viewer (offline)
+cargo install scemadex-sdk
+scemadex
+```
+
+The first `cargo install` of each takes a few minutes (it compiles once, then
+the command stays installed). Press **`q`** to quit any viewer.
+
+**Want everything behind one command?** Install the suite launcher:
+
+```bash
+cargo install scematica-suite
+scematica help                 # lists every command
+scematica dashboard --demo     # run the dashboard
+scematica ddqn                 # run the DQ* training viewer
+scematica scemadex             # run the ScemaDEX viewer
+```
+
+To run the **live trading bot** (not demo), you still need 250k SCEMA, an RPC
+key, and a funded wallet — keep reading for that full setup. For just trying
+things out, the commands above are all you need.
+
+---
+
 ## Fast Path — One-Click Scripts (Recommended)
 
 Scematica ships Windows batch scripts that automate everything after the

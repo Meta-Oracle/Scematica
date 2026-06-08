@@ -27,6 +27,79 @@ with x402 payments over the [Dexter x402 SDK](https://github.com/Dexter-DAO/dext
 
 ---
 
+## Install from crates.io
+
+Every component is published to [crates.io](https://crates.io) and installs a
+ready-to-run command — no clone or local build required.
+
+### One line: the whole stack
+
+```bash
+cargo install scematica-suite      # installs the `scematica` launcher
+scematica help                     # list every subcommand
+scematica dashboard --demo         # try the dashboard with zero setup
+```
+
+`scematica-suite` is the umbrella crate. As a **library** it re-exports every
+component — `scematica_suite::{core, executor, protocol, ai, nn, sniper, dashboard, scemadex}` —
+so one dependency pulls the whole stack. As a **launcher** its `scematica` binary
+dispatches to the component binaries (found next to itself or on `PATH`). Install
+the launcher plus every runnable in one shot:
+
+```bash
+cargo install scematica-suite scematica-dashboard scematica-sniper \
+              scematica-protocol scematica-nn scemadex-sdk
+```
+
+Then all of these work (via the launcher or directly):
+
+| Command | Crate | What it runs |
+|---|---|---|
+| `scematica dashboard` · `dashboard` | `scematica-dashboard` | Bot monitoring TUI (`--demo` = no setup) |
+| `scematica sniper` · `sniper` | `scematica-sniper` | New-pool sniper engine |
+| `scematica backtest` · `backtest` | `scematica-sniper` | Backtester over pool history |
+| `scematica protocol` · `protocol` | `scematica-protocol` | x402 payment facilitator server |
+| `scematica ddqn` · `scema-ddqn` | `scematica-nn` | Deep Q\* agent live **training viewer** |
+| `scematica scemadex` · `scemadex` | `scemadex-sdk` | ScemaDEX agentic-liquidity **live viewer** |
+| `playground` | `scema-agent-playground` | Multi-LLM agent arena |
+
+### Easiest ways to run (no keypair, RPC, or tokens)
+
+```bash
+cargo install scematica-dashboard     && dashboard --demo   # bot dashboard with demo data
+cargo install scematica-nn            && scema-ddqn         # watch the DQ* agent learn live
+cargo install scemadex-sdk            && scemadex           # ScemaDEX bond pipeline (offline)
+cargo install scema-agent-playground  && playground --demo  # LLM agents debate (needs local Ollama)
+```
+
+Live trading — `sniper`, or `dashboard` without `--demo` — needs a 250k SCEMA
+balance, an RPC endpoint, and a funded keypair (see [Configuration](#configuration)).
+The installed `dashboard` automatically finds an installed `sniper` on `PATH`.
+
+### Versioning
+
+The crates version independently; the bot stack shares major **1.x**, while the
+SDK and playground are pre-1.0.
+
+| Crate | Version | Installs | Kind |
+|---|---|---|---|
+| `scematica-suite` | 1.11.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.11.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.11.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-protocol` | 1.11.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.11.0 | — | library |
+| `scematica-executor` | 1.11.0 | — | library |
+| `scematica-core` | 1.11.0 | — | library |
+| `scematica-nn` | 1.12.0 | `scema-ddqn` | bin + lib |
+| `scemadex-sdk` | 0.1.3 | `scemadex` | bin + lib |
+| `scema-agent-playground` | 0.1.0 | `playground` | bin |
+
+Pin a version with `cargo install <crate> --version <x.y.z>`, or depend on a
+library with `<crate> = "<x.y>"`. Library embedders who want a lean build
+(no TUI deps) use `default-features = false` on `scematica-nn` / `scemadex-sdk`.
+
+---
+
 ## What's New in v1.11.0
 
 ### Intelligence Data Pipeline
@@ -718,18 +791,21 @@ Super-linear profit scaling: `R = pnl × (1 + log₂(1 + pnl/25))` — bigger wi
 
 ## Architecture
 
-Scematica is a Rust workspace with 8 active crates:
+Scematica is a Rust workspace. The published crates and the binaries they install:
 
 | Crate | Binary | Purpose |
 |---|---|---|
+| `scematica-suite` | `scematica` | Umbrella lib (re-exports all) + launcher dispatching to every command |
 | `scematica-core` | — | Shared config, RPC, wallet, metrics, types |
-| `scematica-sniper` | `sniper` | Raydium pool sniping with filter pipeline and sell mechanics |
+| `scematica-sniper` | `sniper`, `backtest` | Raydium pool sniping with filter pipeline and sell mechanics |
 | `scematica-arb` | `arb` | Cross-DEX arbitrage graph search (Raydium / Orca / Meteora) |
 | `scematica-executor` | — | Multi-DEX swap execution layer, Jupiter integration |
 | `scematica-ai` | — | LLM agents: Risk, Arb, Debate, Strategy, Report, Chat |
-| `scematica-nn` | — | Dueling Deep Q* reinforcement learning agent |
+| `scematica-nn` | `scema-ddqn` | Dueling Deep Q* RL agent + live training viewer |
 | `scematica-dashboard` | `dashboard` | Ratatui TUI: monitor, control, AI chat |
-| `scematica-protocol` | `scematica-protocol` | Rust-native x402 HTTP payment protocol for Solana |
+| `scematica-protocol` | `protocol` | Rust-native x402 HTTP payment protocol for Solana |
+| `scemadex-sdk` | `scemadex` | Agentic-liquidity SDK + live viewer (intents, bonds, mesh) |
+| `scema-agent-playground` | `playground` | Multi-LLM agent-to-agent arena |
 
 Tools:
 - `tools/key-converter` — Convert keypair formats

@@ -35,27 +35,6 @@ struct PoolJson {
 
 // ─── Raydium ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct RaydiumPoolsResponse {
-    data: RaydiumPoolsData,
-}
-
-#[derive(Debug, Deserialize)]
-struct RaydiumPoolsData {
-    data: Vec<RaydiumPool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RaydiumPool {
-    id: String,
-    base_mint: String,
-    quote_mint: String,
-    lp_vault: String,
-    #[serde(default)]
-    tvl: f64,
-}
-
 async fn fetch_raydium(client: &reqwest::Client, limit: usize, min_liquidity: f64) -> Result<Vec<PoolJson>> {
     // Raydium V3 pools API — returns AMM V4 pools sorted by liquidity
     let url = format!(

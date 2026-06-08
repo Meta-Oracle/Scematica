@@ -231,6 +231,19 @@ handshake.
 
 ## Try it in 30 seconds
 
+Straight from crates.io — no clone, no build:
+
+```bash
+cargo install scemadex-sdk     # installs the `scemadex` live viewer
+scemadex                       # watch the bond pipeline run (offline; q to quit)
+
+# …or via the unified launcher (one install for the whole stack):
+cargo install scematica-suite
+scematica scemadex
+```
+
+From a workspace checkout, the examples and SIM dashboard:
+
 ```bash
 cargo run -p scemadex-sdk --example quote            # A+B: intent -> bonded solution -> execute
 cargo run -p scemadex-sdk --example conviction_bond  # D+C: honored vs. slashed bonds + honor-rate ledger
@@ -316,13 +329,18 @@ flags — *without changing caller code*.
 
 ```toml
 [dependencies]
-scemadex-sdk = "0.1.1"
+scemadex-sdk = "0.1.4"
 tokio = { version = "1", features = ["full"] }
 ```
 
 ```bash
 cargo add scemadex-sdk
 ```
+
+> Just want to **see it run**? `cargo install scemadex-sdk` then `scemadex`
+> launches the live viewer with no code. The whole Scematica stack is also
+> available behind one launcher: `cargo install scematica-suite` → `scematica
+> scemadex` (see the [root README](../README.md#install-from-cratesio)).
 
 ### 2. Your first bonded quote (offline, no keypair/RPC)
 

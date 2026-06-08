@@ -12,6 +12,14 @@ Scematica is a Rust Solana sniper + cross-DEX arbitrage bot with a ratatui TUI d
 # Build all binaries (release, ~5-10 min cold)
 cargo build --release
 
+# Published crates (crates.io) — install + run without a checkout. The umbrella
+# `scematica-suite` installs a `scematica` launcher that dispatches to the
+# component binaries (dashboard/sniper/backtest/protocol/ddqn/scemadex).
+cargo install scematica-suite              # → `scematica` launcher (+ umbrella lib)
+scematica dashboard --demo                 # run any component via the launcher
+cargo install scematica-nn && scema-ddqn   # DQ* live training viewer
+cargo install scemadex-sdk && scemadex     # ScemaDEX live viewer
+
 # Run primary binaries
 cargo run --release --bin dashboard          # TUI entry point
 cargo run --release --bin dashboard -- --demo  # No keypair/RPC required
@@ -74,7 +82,10 @@ crates/
                           policy, file signal source. publish = false
   scemadex-relay/       Peer-mesh + signal-oracle HTTP server. Bin: `scemadex-relay`
   sdk-dashboard/        ScemaDEX SDK TUI over the bond pipeline. Bin: `sdk-dashboard`
+  scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
+                        launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
+                        (published as `scema-agent-playground`). Bin: `playground`
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Pre-seeds pool-cache.json from on-chain state

@@ -1,5 +1,32 @@
 # Scematica v1.11.0 - Quick Start Guide
 
+## Install from crates.io (No Build — Fastest)
+
+The quickest way to run anything: no clone, no `build.bat`. After installing
+[Rust](https://rustup.rs), one command gets the unified `scematica` launcher:
+
+```bash
+cargo install scematica-suite        # installs the `scematica` launcher
+scematica help                       # list every command
+scematica dashboard --demo           # bot dashboard, no tokens/RPC
+scematica ddqn                       # Deep Q* training viewer
+scematica scemadex                   # ScemaDEX agentic-liquidity viewer
+```
+
+Install the launcher **and** every runnable at once so each `scematica <command>`
+works:
+
+```bash
+cargo install scematica-suite scematica-dashboard scematica-sniper \
+              scematica-protocol scematica-nn scemadex-sdk
+```
+
+Commands: `scematica dashboard | sniper | backtest | protocol | ddqn | scemadex`.
+See the [README "Install from crates.io"](../README.md#install-from-cratesio)
+section for the full command table and per-crate versions.
+
+---
+
 ## One-Click Setup (Windows)
 
 On a fresh checkout, run these in order — each is a double-clickable `.bat`:

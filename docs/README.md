@@ -8,10 +8,15 @@ This folder holds the long-form docs. Some technical references carry their own
 those as point-in-time references, not always current to the latest release.
 
 ## Getting started
-- [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) — zero-to-running on Windows, with the
-  one-click `init.bat` → `build.bat` → `start-*.bat` flow.
-- [QUICKSTART.md](QUICKSTART.md) — script reference, dashboard navigation, rate
-  modes, and troubleshooting.
+- **Install from crates.io (fastest)** — `cargo install scematica-suite` then
+  `scematica help`. The `scematica` launcher runs every app (`dashboard`,
+  `sniper`, `protocol`, `ddqn`, `scemadex`) with no clone or build. Full command
+  table + per-crate versions in the [root README](../README.md#install-from-cratesio).
+- [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) — zero-to-running on Windows: the
+  crates.io easy path, then the one-click `init.bat` → `build.bat` →
+  `start-*.bat` flow.
+- [QUICKSTART.md](QUICKSTART.md) — crates.io install, script reference, dashboard
+  navigation, rate modes, and troubleshooting.
 
 ## ScemaDEX SDK (agentic liquidity layer)
 - [scemadex.md](scemadex.md) — the published `scemadex-sdk`: intent solving,

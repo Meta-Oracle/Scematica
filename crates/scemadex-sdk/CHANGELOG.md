@@ -4,7 +4,7 @@ All notable changes to `scemadex-sdk` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this crate adheres
 to [Semantic Versioning](https://semver.org/).
 
-## [0.1.2] - 2026-06-08
+## [0.1.3] - 2026-06-08
 
 ### Added
 - **`scemadex` CLI** — `cargo install scemadex-sdk` now installs a `scemadex`
@@ -13,6 +13,10 @@ to [Semantic Versioning](https://semver.org/).
   fully offline (no RPC, keypair, or `solana-sdk`). Shipped behind a default
   `cli` feature; library-only consumers opt out with `default-features = false`
   to keep the lean trait surface with no TUI dependencies.
+
+## [0.1.2] - 2026-06-08
+
+### Added
 - `conviction_client()` — a reference wiring backed by `EscrowBondEngine`, so the
   defining **Conviction Routing** primitive (D) is exercised end-to-end out of
   the box. The previous `reference_client()` uses `NoBondEngine` (a zero bond)

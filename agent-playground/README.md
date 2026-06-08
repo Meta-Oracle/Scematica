@@ -1,4 +1,4 @@
-# agent-playground
+# scema-agent-playground
 
 **A terminal arena where multiple LLM agents talk to each other.** Give each
 agent a persona and a backend, set a topic, and watch them converse, debate, and
@@ -12,7 +12,7 @@ conversation, so a local `phi3` can argue with a hosted model in real time.
 ## Install
 
 ```bash
-cargo install agent-playground
+cargo install scema-agent-playground
 ```
 
 This installs a `playground` binary.

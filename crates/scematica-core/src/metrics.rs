@@ -381,8 +381,19 @@ impl BotMetrics {
         self.trades_attempted.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a confirmed *entry* (buy). Counts toward the attempt→confirm funnel.
+    /// PnL realised on the matching exit must be recorded separately via
+    /// [`record_pnl`](Self::record_pnl) so the confirm counter only ever counts
+    /// entries (otherwise `trades_confirmed` could exceed `trades_attempted`).
     pub fn record_trade_confirmed(&self, pnl_lamports: i64) {
         self.trades_confirmed.fetch_add(1, Ordering::Relaxed);
+        self.total_pnl_lamports
+            .fetch_add(pnl_lamports, Ordering::Relaxed);
+    }
+
+    /// Accumulate realised PnL without touching any trade counter. Used by exit
+    /// (sell) completion and arb settlement, which are not entry attempts.
+    pub fn record_pnl(&self, pnl_lamports: i64) {
         self.total_pnl_lamports
             .fetch_add(pnl_lamports, Ordering::Relaxed);
     }

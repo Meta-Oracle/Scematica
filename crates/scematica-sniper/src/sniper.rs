@@ -5165,13 +5165,15 @@ impl SellMonitor {
             }
         }
 
-        // Daily PnL accumulator + total PnL metrics (was always 0 due to sell_with_retry
-        // calling record_trade_confirmed(0); now the real pnl_lamports flows through here).
+        // Daily PnL accumulator + total PnL metrics. This is an *exit*, not an entry,
+        // so it only accumulates PnL via record_pnl — it must NOT bump trades_confirmed
+        // (the entry funnel is counted at buy-confirm time). Bumping it here is what made
+        // trades_confirmed exceed trades_attempted.
         {
             let mut daily = self.daily_pnl_lamports.lock();
             *daily += pnl_lamports;
         }
-        self.metrics.record_trade_confirmed(pnl_lamports);
+        self.metrics.record_pnl(pnl_lamports);
 
         // Consecutive loss / win tracking. Cooldown trigger removed by operator
         // decision — we keep the loss counter for the streak display + ledger, but
@@ -5360,7 +5362,8 @@ impl SellMonitor {
             .await
             .map_err(|_| anyhow::anyhow!("sell semaphore closed"))?;
 
-        self.metrics.record_trade_attempt();
+        // NOTE: no record_trade_attempt() here — a sell is an exit, not an entry.
+        // The attempt/confirm funnel counts buy entries only.
         let wallet_pubkey = self.wallet.pubkey();
         let quote_ata = get_ata(&wallet_pubkey, &self.quote_mint);
 
@@ -5501,20 +5504,15 @@ impl SellMonitor {
                 Ok(result) if result.confirmed => {
                     tracing::info!(mint = %pool.base_mint, sig = ?result.signature, "Sell confirmed");
 
-                    // Fetch actual received amount from quote ATA for accurate pnl.
-                    // quote_ata was recreated before the swap (idempotent) and holds the
-                    // swap output. Falls back to estimated_out if the RPC call fails.
-                    let actual_received: u64 =
-                        if let Ok(qb) = self.rpc.get_token_account_balance(&quote_ata).await {
-                            let observed = qb.amount.parse::<u64>().unwrap_or(estimated_out);
-                            if observed == 0 && estimated_out > 0 {
-                                estimated_out
-                            } else {
-                                observed
-                            }
-                        } else {
-                            estimated_out
-                        };
+                    // Realized output basis = estimated_out, the per-swap AMM output
+                    // computed from live reserves at sell time (constant-product incl. the
+                    // 0.25% fee). We deliberately do NOT read the quote ATA balance here:
+                    // the sell tx closes the WSOL ATA in the *same* transaction (see the
+                    // close_account ix above), so the account no longer exists. An up-to-date
+                    // node returns Err; a *lagging* node returns the gross pre-close balance
+                    // (rent + residual WSOL + proceeds) which over-states receipts and was the
+                    // root cause of the intermittent ~2× / "99%" phantom-gain pnl glitch.
+                    let actual_received: u64 = estimated_out;
                     let pnl_raw = actual_received as i64 - self.entry_amount_raw as i64;
                     let pnl_pct = if self.entry_amount_raw > 0 {
                         pnl_raw as f64 / self.entry_amount_raw as f64 * 100.0

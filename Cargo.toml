@@ -22,7 +22,6 @@ members = [
 # The on-chain program uses Anchor and must be built separately with `anchor build`
 exclude = [
     "programs/scematica-swap",
-    "programs/scematica_swap",
 ]
 resolver = "2"
 

@@ -136,7 +136,7 @@ impl ArbExecutor {
         );
 
         self.metrics.record_arb_found();
-        self.metrics.record_trade_attempt();
+        // Arb is tracked by arb_found/arb_executed, not the sniper entry funnel.
 
         let ixs = self.build_arb_instructions(path).await?;
 
@@ -152,7 +152,7 @@ impl ArbExecutor {
                 if self.rpc.confirm_transaction(&sig, 10).await? {
                     info!("Arb confirmed: {}", sig);
                     self.metrics.record_arb_executed();
-                    self.metrics.record_trade_confirmed(path.profit as i64);
+                    self.metrics.record_pnl(path.profit as i64);
 
                     // Emit trade event so the dashboard picks it up in real time
                     let dex_label = path.pool_path

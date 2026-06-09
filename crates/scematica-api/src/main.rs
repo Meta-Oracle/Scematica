@@ -548,6 +548,10 @@ async fn api_health() -> &'static str {
     "ok"
 }
 
+async fn mpp32_verify() -> &'static str {
+    "91b4180f56eefd9df342cd03cbe223ec27a0866aa860fb7d87c4e70b411e1296"
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -577,6 +581,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/nn-advice", get(nn_advice_handler))
         .route("/api/intelligence", get(intelligence_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/mpp32-verify", get(mpp32_verify))
         .route("/api/controls", get(controls_get_handler))
         .route("/api/controls/sell-mode", post(sell_mode_handler))
         .route("/api/controls/dump-mode", post(dump_mode_handler))

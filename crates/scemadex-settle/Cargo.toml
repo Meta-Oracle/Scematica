@@ -11,7 +11,7 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
-scemadex-sdk = { version = "0.1", path = "../scemadex-sdk" }
+scemadex-sdk = { version = "0.2", path = "../scemadex-sdk" }
 solana-sdk = { workspace = true }
 solana-client = { workspace = true }
 spl-token = { workspace = true }

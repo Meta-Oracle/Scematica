@@ -4,6 +4,35 @@ All notable changes to `scemadex-sdk` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this crate adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-06-09
+
+### Added — the adversarial layer (Primitives E–H)
+
+Four new composable primitives, each offline-runnable with inline tests and an
+example, extending the bond/mesh economy into a fully adversarial, self-policing
+market for machine intelligence:
+
+- **E · `counter` — the Counter-Market** (`CounterMarket`): adversarial
+  conviction staking. Any agent can stake against an open bond; honored bonds
+  pay forfeited stakes to the agent as a premium, slashed bonds pay challengers
+  their stake plus a pro-rata share of the collateral. Exposes
+  `market_conviction` (implied by stake) and `doubt_spread` (self-conviction
+  minus market conviction) — a new policy feature. Example: `counter_market`.
+- **F · `scar` — the Scar Market** (`certify_scar`, `ScarMarket`,
+  `LocalScarMarket`): slash-certified failure trajectories as verified negative
+  training data. Scars are only mintable from a `Slashed` settlement with
+  non-zero collateral; buyers select maximum certified collateral per
+  micro-USDC. Example: `scar_market`.
+- **G · `lineage` — experience royalties** (`LineageLedger`): records which
+  purchased `ExperienceBatch` trained which policy (`ExperienceBatch::digest()`
+  is new) and streams a royalty slice of downstream fees pro-rata back to the
+  sellers — training data as a yield-bearing asset. Self-sold batches earn
+  nothing; value is conserved per split. Example: `experience_royalties`.
+- **H · `teach` — bonded machine teaching** (`TeachingEngine`, `Teacher`,
+  `ReferenceTeacher`): per-query metered distillation where the teacher bonds
+  its tuition against the student's measured eval improvement; missed promises
+  slash the bond as a tuition refund. Example: `bonded_teaching`.
+
 ## [0.1.4] - 2026-06-08
 
 ### Changed

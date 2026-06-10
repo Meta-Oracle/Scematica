@@ -30,6 +30,24 @@ pub struct ExperienceBatch {
     pub payload: Vec<u8>,
 }
 
+impl ExperienceBatch {
+    /// Stable content digest identifying this batch in training lineage
+    /// ([`crate::lineage`]) and royalty attribution.
+    ///
+    /// FNV-1a over the canonical JSON encoding, mirroring
+    /// [`crate::intent::Intent::digest`] so the lean core needs no crypto-hash
+    /// dependency; on-chain settlement can swap in a stronger hash.
+    pub fn digest(&self) -> String {
+        let s = serde_json::to_string(self).unwrap_or_default();
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in s.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+}
+
 /// The headline primitive: a mesh where autonomous agents **trade intelligence**.
 ///
 /// Each node can sell its bonded inferences and its learned experience, and buy

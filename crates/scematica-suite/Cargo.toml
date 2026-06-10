@@ -25,4 +25,4 @@ scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
 scematica-nn = { version = "1.12.0", path = "../scematica-nn", default-features = false }
 scematica-sniper = { version = "1.11.0", path = "../scematica-sniper" }
 scematica-dashboard = { version = "1.11.0", path = "../scematica-dashboard" }
-scemadex-sdk = { version = "0.1.3", path = "../scemadex-sdk", default-features = false }
+scemadex-sdk = { version = "0.2.0", path = "../scemadex-sdk", default-features = false }

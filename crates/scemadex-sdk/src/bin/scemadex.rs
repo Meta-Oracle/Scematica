@@ -158,7 +158,7 @@ impl App {
             })
             .await;
         self.fees_earned += fee.as_usdc();
-        if self.ticks % 3 == 0 {
+        if self.ticks.is_multiple_of(3) {
             let _ = self
                 .market
                 .sell_experience(ExperienceBatch {
@@ -170,7 +170,7 @@ impl App {
                 .await;
         }
         // Occasionally a buyer consumes the cheapest matching offer.
-        if self.ticks % 4 == 0 {
+        if self.ticks.is_multiple_of(4) {
             let _ = self.market.buy_inference(&intent).await;
         }
 
@@ -223,7 +223,7 @@ impl App {
 
 fn main() -> Result<()> {
     // Minimal arg handling — no clap dependency.
-    for arg in std::env::args().skip(1) {
+    if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_help();

@@ -6,7 +6,7 @@
 > learned experience with one another — all settled in stablecoins over the x402
 > payment rails.
 
-Crate: [`scemadex-sdk`](../crates/scemadex-sdk) · `v0.1.1` · published on crates.io.
+Crate: [`scemadex-sdk`](../crates/scemadex-sdk) · `v0.2.0` · published on crates.io.
 Every claim below is backed by a runnable example (offline, no keypair/RPC):
 `cargo run -p scemadex-sdk --example <name>`.
 
@@ -31,6 +31,10 @@ DeFi SDK today. The five features below are what fall out of it.
 | **C** | Reputation oracle sourced from *bond settlement history* | `oracle`, `BondLedger` | `conviction_bond` |
 | **D** | **Conviction Routing** — slashable bonds on a black-box inference | `bond` | `conviction_bond` |
 | **★** | A **PeerMarket**: agents trade bonded inferences *and learned experience* | `mesh` | `peer_market` |
+| **E** | **The Counter-Market** — stake *against* any open bond; inferences get a market price | `counter` | `counter_market` |
+| **F** | **The Scar Market** — slash-certified failure trajectories as verified negative data | `scar` | `scar_market` |
+| **G** | **Experience royalties** — training data that pays dividends up its lineage | `lineage` | `experience_royalties` |
+| **H** | **Bonded teaching** — metered distillation with a money-back improvement bond | `teach` | `bonded_teaching` |
 
 ---
 
@@ -173,6 +177,78 @@ a single-node demo and a gossiping mesh are the same code.
 
 ---
 
+## E–H · The adversarial layer (v0.2.0)
+
+The four primitives above make intelligence *accountable*. The next four make
+the economy around it **adversarial and self-improving** — each one a market
+mechanism with no shipped precedent, each runnable offline.
+
+### E · The Counter-Market — adversarial conviction staking
+
+Conviction Routing is unilateral: the agent self-assesses, bonds, and the
+caller waits. The counter-market adds the missing half: **any agent can stake
+against an open bond** (`CounterMarket`). Honored → challengers forfeit their
+stakes to the agent, a premium for being doubted and right. Slashed →
+challengers reclaim their stakes plus a pro-rata share of the bond.
+
+Prediction markets price *events*; this prices **individual machine
+inferences**. Self-reported conviction meets a market-implied one
+(`market_conviction`), and their gap — the **doubt spread** — is a brand-new
+signal an agent can feed straight into its state vector: it learns from how
+much the mesh disbelieves it. Auditing becomes a profitable activity, so the
+mesh polices itself with no governance process.
+
+```text
+$ cargo run -p scemadex-sdk --example counter_market
+listed bond 2500000 micro-USDC at self-conviction 0.50
+challenged with 2000000 micro-USDC total stake
+market conviction 0.56  (self 0.50)  -> doubt spread -0.06
+bond Honored -> agent premium 2000000 micro-USDC from forfeited stakes
+bond Slashed -> challenger payouts: skeptic-alpha 1625000, skeptic-beta 4875000
+```
+
+### F · The Scar Market — slash-certified failure data
+
+Everyone selling "alpha" sells successes, because failure is free to fabricate
+and therefore worthless. A slashed bond changes that: it is the only
+**un-fakeable proof a decision cost real collateral.** `certify_scar` mints a
+`ScarRecord` from a slash — and *only* from a slash (honored outcomes and
+zero-collateral bonds are refused) — carrying the trajectory that produced the
+loss. Buyers select maximum certified collateral per micro-USDC: provable pain
+per dollar, for training veto heads and avoid-policies on verified negative
+examples. Pairs with E: challenges generate slashes, slashes generate scar
+inventory.
+
+### G · Experience royalties — training data that pays dividends
+
+The PeerMarket's experience trade is one-shot: pay, train, done. The
+`LineageLedger` makes experience a **yield-bearing asset**: every
+`ExperienceBatch` has a content digest, training on one records provenance, and
+when the student's policy later earns inference fees a royalty slice streams
+back up the lineage, pro-rata by contributed transitions (self-sold batches
+earn nothing; every split conserves value).
+
+The incentive flip is the point: a seller's best strategy is no longer dumping
+junk transitions for a quick fee — **a successful student is an annuity**, so
+only your best experience is worth listing. "Data dividends" have been a paper
+concept for years; this is the first loop where provenance, micropayments, and
+measurable downstream earnings coexist.
+
+### H · Bonded machine teaching — distillation with a money-back guarantee
+
+Experience batches are *recordings*. Teaching sells **answers to the student's
+actual weaknesses**: the student streams its highest-uncertainty states, the
+teacher answers each with an action + conviction, metered per query
+(`TeachingEngine`). The new part is accountability — the session opens with the
+student's measured baseline and the teacher's promised gain, and the teacher
+**bonds against the student's re-measured improvement**. Promise met → teacher
+keeps tuition and reclaims the bond. Promise missed → the bond slashes,
+refunding tuition. Teaching outcomes accrue into the same honored/slashed
+ledger shape the reputation oracle sells, so *being a good teacher* is itself
+a marketable, bonded reputation.
+
+---
+
 ## The architectural novelty: lean core, injected power
 
 The published crate carries **zero `solana-sdk` or bot dependency by default.**
@@ -245,10 +321,14 @@ scematica scemadex
 From a workspace checkout, the examples and SIM dashboard:
 
 ```bash
-cargo run -p scemadex-sdk --example quote            # A+B: intent -> bonded solution -> execute
-cargo run -p scemadex-sdk --example conviction_bond  # D+C: honored vs. slashed bonds + honor-rate ledger
-cargo run -p scemadex-sdk --example peer_market      # the mesh: trade bonded inferences & experience
-cargo run -p scemadex-sdk --example intent_solving   # B: same trade under Price/Speed/Stealth
+cargo run -p scemadex-sdk --example quote                 # A+B: intent -> bonded solution -> execute
+cargo run -p scemadex-sdk --example conviction_bond       # D+C: honored vs. slashed bonds + honor-rate ledger
+cargo run -p scemadex-sdk --example peer_market           # the mesh: trade bonded inferences & experience
+cargo run -p scemadex-sdk --example intent_solving        # B: same trade under Price/Speed/Stealth
+cargo run -p scemadex-sdk --example counter_market        # E: stake against a bond; doubt spread + payouts
+cargo run -p scemadex-sdk --example scar_market           # F: certify a slash, sell the failure trajectory
+cargo run -p scemadex-sdk --example experience_royalties  # G: lineage-tracked royalties on downstream fees
+cargo run -p scemadex-sdk --example bonded_teaching       # H: metered distillation, improvement-bonded
 
 cargo run --release --bin sdk-dashboard              # live TUI over the bond pipeline (SIM default; --live for Jupiter)
 ```
@@ -277,6 +357,10 @@ That is a different business than a swap widget.
 | **Bond fees / spread** | Honored bonds return + fee; the agent keeps the upside it can deliver | `bond::settle` |
 | **Signal endpoints** | Reputation / pool-score / advice sold per query, x402-gated | `oracle::SignalSource`, `scemadex-relay` |
 | **Experience market take** | Mesh fees on agents buying/selling learned RL transitions | `mesh::PeerMarket` |
+| **Counter-market premiums** | Forfeited challenger stakes on honored bonds; spread on challenged inference flow | `counter::CounterMarket` |
+| **Scar sales** | Slash-certified failure trajectories sold as verified negative training data | `scar::ScarMarket` |
+| **Experience royalties** | A slice of every downstream fee streams up the training lineage | `lineage::LineageLedger` |
+| **Teaching tuition** | Per-query distillation fees, bonded on measured student improvement | `teach::TeachingEngine` |
 | **Token gate** | Access to the live bot/agent stack gated behind a 250k `$SCEMA` balance | `scematica-core` gate |
 
 These are not roadmap items — each maps to a shipped type and a runnable example.
@@ -329,7 +413,7 @@ flags — *without changing caller code*.
 
 ```toml
 [dependencies]
-scemadex-sdk = "0.1.4"
+scemadex-sdk = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 ```
 

@@ -30,6 +30,24 @@
 //! intelligence, not a swap widget. An agent earns USDC selling what it knows
 //! and spends USDC to learn faster.
 //!
+//! ## The adversarial layer: four primitives with no precedent
+//!
+//! - **E · The Counter-Market.** Any agent can stake *against* an open bond
+//!   ([`counter::CounterMarket`]) — the first market that prices individual
+//!   machine inferences. The gap between self-conviction and market-implied
+//!   conviction (the *doubt spread*) is a brand-new policy feature.
+//! - **F · The Scar Market.** Slashed bonds are the only un-fakeable proof a
+//!   decision cost real collateral; [`scar::certify_scar`] turns the trajectory
+//!   behind a slash into sellable, verified negative training data.
+//! - **G · Experience royalties.** [`lineage::LineageLedger`] records which
+//!   purchased experience trained which policy, and streams a royalty slice of
+//!   every downstream fee back to the sellers — training data as a
+//!   yield-bearing asset.
+//! - **H · Bonded teaching.** A teacher answers a student's most uncertain
+//!   states per metered query, bonding its tuition against the student's
+//!   *measured* improvement ([`teach::TeachingEngine`]) — distillation with a
+//!   money-back guarantee.
+//!
 //! ## Architecture: lean core, injected power
 //!
 //! The published crate carries **no `solana-sdk` or bot dependency**. It defines
@@ -53,13 +71,17 @@
 
 pub mod bond;
 pub mod client;
+pub mod counter;
 pub mod error;
 pub mod intent;
+pub mod lineage;
 pub mod mesh;
 pub mod oracle;
 pub mod policy;
 pub mod primitives;
 pub mod route;
+pub mod scar;
+pub mod teach;
 pub mod venue;
 
 /// Concrete wiring of the SDK traits to the real Scematica Deep Q* agent. Only
@@ -85,13 +107,19 @@ pub use bond::{
     Bond, BondConfig, BondEngine, BondLedger, BondOutcome, EscrowBondEngine, NoBondEngine,
 };
 pub use client::ScemaDex;
+pub use counter::{Challenge, ChallengeSettlement, CounterMarket, CounterStats};
 pub use error::{Result, ScemaDexError};
 pub use intent::{Constraints, Intent, Objective, Side};
+pub use lineage::{LineageEntry, LineageLedger, RoyaltySplit};
 pub use mesh::{ExperienceBatch, InferenceOffer, LocalPeerMarket, PeerMarket};
 pub use oracle::{Advice, PoolScore, Reputation, SignalSource};
 pub use policy::{Conviction, ReferenceRoutePolicy, RoutePolicy, Solution};
 pub use primitives::{Address, Amount, Usdc};
 pub use route::{Fill, Route, RouteLeg, Venue};
+pub use scar::{certify_scar, LocalScarMarket, ScarMarket, ScarRecord};
+pub use teach::{
+    ReferenceTeacher, TeachAnswer, TeachReceipt, TeachTerms, Teacher, TeachingEngine,
+};
 pub use venue::{SimVenueExecutor, SwapInstructions, VenueExecutor};
 
 /// Build a [`ScemaDex`] wired with the lean reference implementations. Useful for

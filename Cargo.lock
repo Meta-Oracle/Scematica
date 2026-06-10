@@ -4452,7 +4452,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-suite"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "scemadex-sdk",
  "scematica-ai",

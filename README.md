@@ -83,15 +83,16 @@ SDK and playground are pre-1.0.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.11.0 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.11.0 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.11.0 | `sniper`, `backtest` | bin + lib |
-| `scematica-protocol` | 1.11.0 | `protocol` | bin + lib |
-| `scematica-ai` | 1.11.0 | — | library |
-| `scematica-executor` | 1.11.0 | — | library |
-| `scematica-core` | 1.11.0 | — | library |
+| `scematica-suite` | 1.11.1 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.11.1 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.11.1 | `sniper`, `backtest` | bin + lib |
+| `scematica-protocol` | 1.11.1 | `protocol` | bin + lib |
+| `scematica-ai` | 1.11.1 | — | library |
+| `scematica-executor` | 1.11.1 | — | library |
+| `scematica-core` | 1.11.1 | — | library |
 | `scematica-nn` | 1.12.0 | `scema-ddqn` | bin + lib |
-| `scemadex-sdk` | 0.1.4 | `scemadex` | bin + lib |
+| `scemadex-sdk` | 0.2.0 | `scemadex` | bin + lib |
+| `scemadex-settle` | 0.1.0 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 Pin a version with `cargo install <crate> --version <x.y.z>`, or depend on a

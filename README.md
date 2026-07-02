@@ -84,15 +84,15 @@ SDK and playground are pre-1.0.
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
 | `scematica-suite` | 1.11.2 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.11.2 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.11.2 | `sniper`, `backtest` | bin + lib |
+| `scematica-dashboard` | 1.11.3 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.11.3 | `sniper`, `backtest` | bin + lib |
 | `scematica-protocol` | 1.11.2 | `protocol` | bin + lib |
 | `scematica-ai` | 1.11.2 | — | library |
 | `scematica-executor` | 1.11.2 | — | library |
 | `scematica-core` | 1.11.2 | — | library |
-| `scematica-nn` | 1.13.0 | `scema-ddqn` | bin + lib |
+| `scematica-nn` | 1.13.1 | `scema-ddqn` | bin + lib |
 | `scemadex-sdk` | 0.2.1 | `scemadex` | bin + lib (incl. zkML-verified bonds) |
-| `scemadex-mcp` | 0.1.0 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
+| `scemadex-mcp` | 0.1.1 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
 | `scemadex-settle` | 0.1.0 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 

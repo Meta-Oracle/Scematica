@@ -2635,7 +2635,7 @@ dependencies = [
 
 [[package]]
 name = "key-converter"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "bip39",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "pool-seeder"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "clap 4.6.1",
@@ -4144,7 +4144,7 @@ dependencies = [
 
 [[package]]
 name = "scemadex-integrations"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4163,7 +4163,7 @@ dependencies = [
 
 [[package]]
 name = "scemadex-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap 4.6.1",
@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "scemadex-relay"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "axum 0.6.20",
@@ -4233,7 +4233,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-ai"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-api"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -4268,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-arb"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4303,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-core"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4338,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-dashboard"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "bs58 0.5.1",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-executor"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4387,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-nn"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4401,7 +4401,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-protocol"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "axum 0.6.20",
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "scematica-sniper"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4528,7 +4528,7 @@ dependencies = [
 
 [[package]]
 name = "sdk-dashboard"
-version = "1.11.2"
+version = "1.11.3"
 dependencies = [
  "anyhow",
  "crossterm",

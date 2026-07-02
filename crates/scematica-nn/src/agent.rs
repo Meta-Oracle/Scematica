@@ -34,6 +34,16 @@ pub struct AgentStats {
     /// Risk sensitivity for CVaR action selection (1.0 = risk-neutral mean).
     #[serde(default = "default_risk_alpha")]
     pub risk_alpha: f64,
+    /// Last world-model losses (0.0 when no world model is attached).
+    #[serde(default)]
+    pub wm_recon: f64,
+    #[serde(default)]
+    pub wm_dyn: f64,
+    #[serde(default)]
+    pub wm_reward: f64,
+    /// Cumulative Dyna-imagined transitions injected into replay.
+    #[serde(default)]
+    pub dreamed: u64,
 }
 
 /// Explanation of why the agent chose an action, for Feature 3.
@@ -142,6 +152,10 @@ pub struct DQNAgent {
     /// When `Some`, a learned world model is trained alongside the policy and can
     /// generate imagined transitions into the replay buffer (Dyna planning).
     pub world_model: Option<WorldModel>,
+    /// Last world-model component losses (telemetry only; not persisted).
+    pub last_world_model_loss: Option<WorldModelLoss>,
+    /// Cumulative synthetic transitions injected by Dyna imagination (telemetry).
+    pub dreamed_transitions: u64,
 }
 
 impl DQNAgent {
@@ -190,6 +204,8 @@ impl DQNAgent {
             dist_target: None,
             risk_alpha: 1.0,
             world_model: None,
+            last_world_model_loss: None,
+            dreamed_transitions: 0,
         }
     }
 
@@ -270,11 +286,13 @@ impl DQNAgent {
         if n == 0.0 {
             return None;
         }
-        Some(WorldModelLoss {
+        let avg = WorldModelLoss {
             reconstruction: acc.reconstruction / n,
             dynamics: acc.dynamics / n,
             reward: acc.reward / n,
-        })
+        };
+        self.last_world_model_loss = Some(avg);
+        Some(avg)
     }
 
     /// Dyna planning: from `rollouts` real start states (sampled from replay),
@@ -330,6 +348,7 @@ impl DQNAgent {
                 injected += 1;
             }
         }
+        self.dreamed_transitions += injected as u64;
         injected
     }
 
@@ -1323,6 +1342,10 @@ impl DQNAgent {
             distributional: self.is_distributional(),
             world_model: self.has_world_model(),
             risk_alpha: self.risk_alpha,
+            wm_recon: self.last_world_model_loss.map(|l| l.reconstruction).unwrap_or(0.0),
+            wm_dyn: self.last_world_model_loss.map(|l| l.dynamics).unwrap_or(0.0),
+            wm_reward: self.last_world_model_loss.map(|l| l.reward).unwrap_or(0.0),
+            dreamed: self.dreamed_transitions,
         }
     }
 

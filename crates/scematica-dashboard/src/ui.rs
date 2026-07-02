@@ -860,6 +860,21 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         let target_updates = v["target_updates"].as_u64().unwrap_or(0);
         let ready = v["ready_to_advise"].as_bool().unwrap_or(false);
         let last_act = v["last_action"].as_str().unwrap_or("-").to_string();
+        // v1.13 modes (absent in older stats files → sensible defaults).
+        let distributional = v["distributional"].as_bool().unwrap_or(false);
+        let world_model = v["world_model"].as_bool().unwrap_or(false);
+        let risk_alpha = v["risk_alpha"].as_f64().unwrap_or(1.0);
+        let mode = {
+            let mut parts: Vec<String> =
+                vec![if distributional { "QR-DQN".into() } else { "scalar".into() }];
+            if world_model {
+                parts.push("WM".into());
+            }
+            if distributional && risk_alpha < 1.0 {
+                parts.push(format!("CVaR{risk_alpha:.2}"));
+            }
+            parts.join(" · ")
+        };
         let q_vals: Vec<f64> = if let Some(arr) = v["last_q_values"].as_array() {
             arr.iter().filter_map(|x| x.as_f64()).collect()
         } else {
@@ -903,6 +918,10 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                     .style(Style::default().fg(status_col).add_modifier(Modifier::BOLD)),
             ]),
             Row::new(vec![
+                Cell::from("Mode").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(mode).style(Style::default().fg(Color::Magenta)),
+            ]),
+            Row::new(vec![
                 Cell::from("Steps / Train").style(Style::default().fg(Color::DarkGray)),
                 Cell::from(format!("{} / {}", steps, train_steps)),
             ]),
@@ -927,6 +946,21 @@ fn render_nn_stats(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
                 Cell::from(last_act),
             ]),
         ];
+        // World-model telemetry row, only when a world model is attached.
+        let mut rows = rows;
+        if world_model {
+            let wm_recon = v["wm_recon"].as_f64().unwrap_or(0.0);
+            let wm_dyn = v["wm_dyn"].as_f64().unwrap_or(0.0);
+            let wm_reward = v["wm_reward"].as_f64().unwrap_or(0.0);
+            let dreamed = v["dreamed"].as_u64().unwrap_or(0);
+            rows.push(Row::new(vec![
+                Cell::from("WM r/d/rw · dreams").style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!(
+                    "{wm_recon:.3}/{wm_dyn:.3}/{wm_reward:.3} · {dreamed}"
+                ))
+                .style(Style::default().fg(Color::Blue)),
+            ]));
+        }
         let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(0)]).block(block);
         f.render_widget(table, stats_area);
 

@@ -158,6 +158,41 @@ impl QuantileNetwork {
             .unwrap_or(0)
     }
 
+    /// Conditional Value-at-Risk of one action's return distribution at level
+    /// `alpha` ∈ (0, 1]: the mean of the worst `alpha`-fraction of outcomes.
+    /// `alpha = 1.0` recovers the plain mean (risk-neutral); smaller `alpha` is
+    /// more risk-averse (weights the fat left tail rugs create). Robust to
+    /// non-monotone quantiles: it sorts the predicted quantiles ascending.
+    pub fn cvar_from_row(row: &[f64], alpha: f64) -> f64 {
+        let n = row.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let alpha = alpha.clamp(1e-6, 1.0);
+        let k = ((alpha * n as f64).ceil() as usize).clamp(1, n);
+        let mut sorted = row.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted[..k].iter().sum::<f64>() / k as f64
+    }
+
+    /// Per-action CVaR at level `alpha` (risk-sensitive analogue of `q_values`).
+    pub fn cvar_values(&self, input: &[f64], alpha: f64) -> Vec<f64> {
+        self.forward_dist(input)
+            .iter()
+            .map(|row| Self::cvar_from_row(row, alpha))
+            .collect()
+    }
+
+    /// Argmax action by CVaR at level `alpha` — the risk-averse policy.
+    pub fn best_action_cvar(&self, input: &[f64], alpha: f64) -> usize {
+        let c = self.cvar_values(input, alpha);
+        c.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
     /// One quantile-Huber gradient step for a single transition.
     ///
     /// Trains only the quantiles of `action` against `target_quantiles` (the
@@ -395,6 +430,26 @@ mod tests {
         // Mean should sit between the two modes.
         let mean = row.iter().sum::<f64>() / N_QUANTILES as f64;
         assert!(mean > 2.0 && mean < 8.0, "mean {mean} not between modes");
+    }
+
+    #[test]
+    fn cvar_is_lower_tail_and_matches_mean_at_alpha_one() {
+        // For a known row, CVaR at α=1 is the mean; a small α is well below it.
+        let row = vec![-10.0, -2.0, 0.0, 1.0, 3.0, 5.0];
+        let mean = row.iter().sum::<f64>() / row.len() as f64;
+        assert!((QuantileNetwork::cvar_from_row(&row, 1.0) - mean).abs() < 1e-9);
+        // α=0.3 → ceil(0.3·6)=2 → worst-2 = {-10,-2}, mean = -6.
+        let tail = QuantileNetwork::cvar_from_row(&row, 0.3);
+        assert!(tail < mean, "tail {tail} should be below mean {mean}");
+        assert!((tail - (-6.0)).abs() < 1e-9, "worst-2 mean should be -6, got {tail}");
+        // Unsorted input must give the same result (robust to non-monotone quantiles).
+        let shuffled = vec![3.0, -10.0, 5.0, 0.0, 1.0, -2.0];
+        assert!(
+            (QuantileNetwork::cvar_from_row(&shuffled, 0.3)
+                - QuantileNetwork::cvar_from_row(&row, 0.3))
+            .abs()
+                < 1e-9
+        );
     }
 
     #[test]

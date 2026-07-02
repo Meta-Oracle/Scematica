@@ -31,6 +31,9 @@ pub struct AgentStats {
     /// True when a Dreamer-style latent world model is attached (v1.12 upgrade).
     #[serde(default)]
     pub world_model: bool,
+    /// Risk sensitivity for CVaR action selection (1.0 = risk-neutral mean).
+    #[serde(default = "default_risk_alpha")]
+    pub risk_alpha: f64,
 }
 
 /// Explanation of why the agent chose an action, for Feature 3.
@@ -75,6 +78,13 @@ struct Checkpoint {
     /// Latent world model. Absent in legacy checkpoints (serde-default → None).
     #[serde(default)]
     world_model: Option<WorldModel>,
+    /// Risk sensitivity for CVaR selection; legacy checkpoints default to 1.0.
+    #[serde(default = "default_risk_alpha")]
+    risk_alpha: f64,
+}
+
+fn default_risk_alpha() -> f64 {
+    1.0
 }
 
 /// Double Deep Q* agent.
@@ -124,6 +134,10 @@ pub struct DQNAgent {
     /// classic scalar Double-DQN path (so old checkpoints load unchanged).
     pub dist_online: Option<QuantileNetwork>,
     pub dist_target: Option<QuantileNetwork>,
+    /// Risk sensitivity for action selection (distributional mode only).
+    /// `1.0` = risk-neutral (mean-of-quantiles); `< 1.0` = CVaR at that level
+    /// (mean of the worst `alpha`-fraction of outcomes → avoids rug-shaped tails).
+    pub risk_alpha: f64,
     // ── Latent world model (Dreamer-style planning) ──────────────────────────
     /// When `Some`, a learned world model is trained alongside the policy and can
     /// generate imagined transitions into the replay buffer (Dyna planning).
@@ -174,8 +188,21 @@ impl DQNAgent {
             ],
             dist_online: None,
             dist_target: None,
+            risk_alpha: 1.0,
             world_model: None,
         }
+    }
+
+    /// Set the risk sensitivity for distributional action selection. `1.0` is
+    /// risk-neutral (mean); values in `(0, 1)` select by CVaR at that level.
+    /// No effect in scalar mode.
+    pub fn set_risk_alpha(&mut self, alpha: f64) {
+        self.risk_alpha = alpha.clamp(1e-3, 1.0);
+    }
+
+    /// True if risk-sensitive (CVaR) selection is active.
+    pub fn is_risk_sensitive(&self) -> bool {
+        self.is_distributional() && self.risk_alpha < 1.0
     }
 
     /// Distributional (QR-DQN) agent with default hyper-parameters.
@@ -350,6 +377,7 @@ impl DQNAgent {
     /// Greedy action index for a raw state vector, using whichever net is active.
     fn best_action_for_vec(&self, sv: &[f64]) -> usize {
         let q = match &self.dist_online {
+            Some(dist) if self.risk_alpha < 1.0 => dist.cvar_values(sv, self.risk_alpha),
             Some(dist) => dist.q_values(sv),
             None => self.online_net.forward(sv),
         };
@@ -369,10 +397,15 @@ impl DQNAgent {
     pub fn select_action(&mut self, state: &TradeState) -> TradeAction {
         let sv = state.to_vec();
 
-        // Distributional mode: greedy by mean-of-quantiles, ε-greedy exploration.
-        // (Regime-branching is a scalar-mode feature; skipped here.)
+        // Distributional mode: greedy by mean-of-quantiles (or CVaR when
+        // risk-sensitive), ε-greedy exploration. (Regime-branching is a
+        // scalar-mode feature; skipped here.)
         if let Some(dist) = &self.dist_online {
-            let q = dist.q_values(&sv);
+            let q = if self.risk_alpha < 1.0 {
+                dist.cvar_values(&sv, self.risk_alpha)
+            } else {
+                dist.q_values(&sv)
+            };
             self.last_q_values = q.clone();
             let action = if rand::thread_rng().gen::<f64>() < self.epsilon {
                 TradeAction::from_index(rand::thread_rng().gen_range(0..ACTION_DIM))
@@ -421,6 +454,7 @@ impl DQNAgent {
     /// Best greedy action without exploring (for advice mode, no epsilon).
     pub fn greedy_action(&self, state: &TradeState) -> (TradeAction, Vec<f64>) {
         let q = match &self.dist_online {
+            Some(dist) if self.risk_alpha < 1.0 => dist.cvar_values(&state.to_vec(), self.risk_alpha),
             Some(dist) => dist.q_values(&state.to_vec()),
             None => self.online_net.forward(&state.to_vec()),
         };
@@ -1198,6 +1232,7 @@ impl DQNAgent {
             dist_online: self.dist_online.clone(),
             dist_target: self.dist_target.clone(),
             world_model: self.world_model.clone(),
+            risk_alpha: self.risk_alpha,
         };
         let tmp = format!("{}.tmp", path);
         std::fs::write(&tmp, serde_json::to_string(&ckpt).unwrap())?;
@@ -1262,6 +1297,7 @@ impl DQNAgent {
                 info!("NN world-model checkpoint shape mismatch — dropping world model");
             }
         }
+        agent.risk_alpha = ckpt.risk_alpha;
         Ok(agent)
     }
 
@@ -1286,6 +1322,7 @@ impl DQNAgent {
             last_q_values: self.last_q_values.clone(),
             distributional: self.is_distributional(),
             world_model: self.has_world_model(),
+            risk_alpha: self.risk_alpha,
         }
     }
 
@@ -1420,6 +1457,38 @@ mod tests {
         let injected = agent.imagine_into_replay(4, 3);
         assert!(injected > 0, "imagination should inject transitions");
         assert!(agent.stats().replay_size >= before, "replay should grow (or stay at cap)");
+    }
+
+    #[test]
+    fn risk_alpha_switches_selection_and_persists() {
+        let mut agent = DQNAgent::new_distributional();
+        assert!(!agent.is_risk_sensitive());
+        agent.set_risk_alpha(0.25);
+        assert!(agent.is_risk_sensitive());
+        assert_eq!(agent.stats().risk_alpha, 0.25);
+        // Selection still returns a valid action under CVaR.
+        let (a, q) = agent.advise(&sample_state());
+        assert!((0..ACTION_DIM).contains(&a.index()));
+        assert_eq!(q.len(), ACTION_DIM);
+        // Clamped to (0,1]; scalar agents ignore it.
+        agent.set_risk_alpha(5.0);
+        assert!(agent.risk_alpha <= 1.0);
+        let mut scalar = DQNAgent::new();
+        scalar.set_risk_alpha(0.1);
+        assert!(!scalar.is_risk_sensitive(), "scalar mode ignores risk_alpha");
+    }
+
+    #[test]
+    fn risk_alpha_survives_checkpoint_roundtrip() {
+        let mut agent = DQNAgent::new_distributional();
+        agent.set_risk_alpha(0.3);
+        let mut path = std::env::temp_dir();
+        path.push("scematica-nn-cvar-roundtrip-test.json");
+        let path = path.to_str().unwrap().to_string();
+        agent.save(&path).expect("save");
+        let loaded = DQNAgent::load(&path).expect("load");
+        assert!((loaded.risk_alpha - 0.3).abs() < 1e-9);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

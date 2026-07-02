@@ -844,6 +844,19 @@ target equals the scalar Double-DQN target, so PER priorities
 and *keeps the fat left tail* that rugs create, rather than averaging it away.
 This is the substrate for future risk-sensitive action selection (e.g. CVaR).
 
+**Risk-sensitive selection (CVaR).** Because the full distribution is available,
+actions can be chosen by **CVaR** — the mean of the worst `alpha`-fraction of
+outcomes — instead of the mean (`QuantileNetwork::cvar_values`, `DQNAgent::
+set_risk_alpha`, env `SCEMATICA_NN_CVAR_ALPHA`). `alpha = 1.0` is risk-neutral;
+smaller `alpha` structurally avoids the fat left tail that rugs create. In the
+adversarial-sim A/B (`examples/ab_benchmark.rs`), CVaR at 0.25 is a strong
+downside guard — it beats both the scalar and the mean-based distributional agent
+on overall reward by refusing to buy rug/honeypot pools — while a mean-based
+policy captures more upside but bleeds it back on the tail archetypes. Treat CVaR
+as a capital-preservation dial, and **measure on your data before flipping it
+live**: at modest training budgets the distributional machinery is not yet a
+proven PnL improvement, only a proven loss-avoider.
+
 **Enabling** — off by default. A fresh agent starts distributional when
 `SCEMATICA_NN_DISTRIBUTIONAL=1`. Distributional mode cannot be retrofitted onto
 an existing scalar checkpoint (weight shapes differ); scalar checkpoints continue

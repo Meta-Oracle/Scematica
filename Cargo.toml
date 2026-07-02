@@ -13,6 +13,7 @@ members = [
     "crates/scemadex-settle",
     "crates/scemadex-integrations",
     "crates/scemadex-relay",
+    "crates/scemadex-mcp",
     "crates/sdk-dashboard",
     "crates/scematica-suite",
     "tools/key-converter",

@@ -29,6 +29,8 @@
 16. [Buy Gating & ScemaDEX Integration](#16-buy-gating--scemadex-integration)
 17. [Persistence — Checkpoint Format](#17-persistence--checkpoint-format)
 18. [Version History](#18-version-history)
+19. [Distributional RL — QR-DQN (opt-in)](#19-distributional-rl--qr-dqn-opt-in)
+20. [World Model — Dreamer-style Planning (opt-in)](#20-world-model--dreamer-style-planning-opt-in)
 
 ---
 
@@ -46,6 +48,8 @@ The DQ* agent (`crates/scematica-nn`) is a pure-Rust reinforcement learning syst
 | Regime adaptation | Per-regime separate (online, target) net pairs |
 | Hyperparameter search | 3-variant tournament evolution |
 | Adversarial robustness | Synthetic rug-pull / pump-and-dump / honeypot injection |
+| Return modelling *(v1.2, opt-in)* | QR-DQN distributional returns (51 quantiles/action) — see §19 |
+| Planning *(v1.2, opt-in)* | Dreamer-style latent world model + Dyna imagination — see §20 |
 
 **No external ML dependencies.** The entire forward pass, backpropagation, and optimizer are implemented from scratch in safe Rust. This eliminates version compatibility issues and allows deterministic builds across Rust toolchain versions.
 
@@ -794,3 +798,108 @@ documentation was brought into agreement with it.
 ---
 
 *This document should be updated whenever the network architecture, state space, action space, reward function, or training algorithm is modified. Version alongside `crates/scematica-nn/Cargo.toml`.*
+
+---
+
+## 19. Distributional RL — QR-DQN (opt-in)
+
+Source: `crates/scematica-nn/src/distributional.rs`.
+
+The classic path predicts a single scalar `Q(s,a)` — the *expected* return. A
+distributional agent instead predicts the **entire return distribution**
+`Z(s,a)`, represented as `N_QUANTILES = 51` learned quantiles per action. This
+is the quantile-regression parameterisation (QR-DQN; Dabney et al. 2017), chosen
+over categorical C51 because it needs no fixed value support and no categorical
+projection — which keeps the from-scratch f64 backprop tractable.
+
+**Architecture** — the dueling decomposition, generalised per quantile:
+
+```
+trunk (ReLU, [STATE_DIM, 128, 64]) ─┬─► value head V:  → N_QUANTILES
+                                    └─► advantage head A: → ACTION_DIM · N_QUANTILES
+Z(s,a)_i = V_i + A(a)_i − mean_b A(b)_i          (i indexes the quantile)
+Q(s,a)   = (1/N) Σ_i Z(s,a)_i                    (mean-of-quantiles = drop-in Q)
+```
+
+Because `q_values()` returns the mean of quantiles, **every existing consumer**
+(`advise`, `greedy_action`, the sniper's Q-value buy gate, the decision
+explainer) works unchanged.
+
+**Loss** — quantile Huber loss over all (predicted-quantile *i*, target-sample
+*j*) pairs, with quantile midpoints `τ_i = (i + 0.5)/N`:
+
+```
+u        = T_j − θ_i
+huber(u) = ½u²            if |u| ≤ κ   else   κ(|u| − ½κ)        (κ = 1)
+ρ_ij     = |τ_i − 1{u<0}| · huber(u) / κ
+```
+
+**Bellman target** (Double DQN, per quantile): the online net selects the greedy
+next action `a*` by mean-of-quantiles, the target net supplies its distribution,
+and `T_j = r + γ · Z_target(s', a*)_j` (or `r` on terminal). The mean of this
+target equals the scalar Double-DQN target, so PER priorities
+(`|mean(target) − Q(s,a)|`) stay comparable across modes.
+
+**Why it matters** — modelling the full distribution is more sample-efficient
+and *keeps the fat left tail* that rugs create, rather than averaging it away.
+This is the substrate for future risk-sensitive action selection (e.g. CVaR).
+
+**Enabling** — off by default. A fresh agent starts distributional when
+`SCEMATICA_NN_DISTRIBUTIONAL=1`. Distributional mode cannot be retrofitted onto
+an existing scalar checkpoint (weight shapes differ); scalar checkpoints continue
+to load and run scalar. Distributional checkpoints round-trip via `#[serde(default)]`
+`dist_online`/`dist_target` fields and are shape-guarded on load.
+
+Regime branching (§12) is a scalar-mode feature and is not run in distributional
+mode.
+
+---
+
+## 20. World Model — Dreamer-style Planning (opt-in)
+
+Source: `crates/scematica-nn/src/world_model.rs`.
+
+A latent world model learns the *dynamics of the market itself* so the agent can
+train on **imagined** trajectories in addition to real ones. Live trades are
+scarce and expensive; a learned model lets the agent dream many plausible
+roll-outs per real step (Dyna-style planning) — the lever that compounds the
+edge without risking more live capital.
+
+**Components** (compact modular design à la Ha & Schmidhuber / Dreamer, adapted
+to pure-Rust f64):
+
+```
+encoder  : state(24)          → latent z(16)          (compress observation)
+decoder  : latent z(16)       → reconstructed state   (ground the latent)
+dynamics : [z(16), onehot(a)] → next latent ẑ'        (imagine forward)
+reward   : [z(16), onehot(a)] → r̂                     (imagine payoff)
+```
+
+**Training** is modular with stop-gradients: encoder+decoder train jointly as an
+autoencoder (`‖decode(encode(s)) − s‖²`, gradient flows dec→enc); dynamics and
+reward train on *detached* latents (`‖dynamics(z,a) − z'‖²`, `‖reward(z,a) − r‖²`).
+Every backward pass is a simple chain — no cross-module autodiff graph.
+
+**Imagination** (`imagine`) rolls dynamics + reward forward from a real start
+state, decoding each latent back to a 24-dim state vector. Produced transitions
+live in the *same* space as the replay buffer, so `imagine_into_replay(rollouts,
+horizon)` folds them straight in as synthetic experience (Dyna). Actions are
+chosen greedily off the imagined state with a 20% exploration chance.
+`prediction_error(s,a,s')` gives a one-step latent error usable as an
+intrinsic-curiosity signal or a gate on trusting rollouts.
+
+**Live loop** — when attached, the sniper spawns a task (`main.rs`) that every
+15 s runs a few `train_world_model_step()` calls and one
+`imagine_into_replay(8, 4)` (up to 32 dreamed transitions per tick).
+
+**Enabling** — off by default; set `SCEMATICA_NN_WORLD_MODEL=1`. Unlike the
+distributional policy, the world model is orthogonal to the policy weights and
+can be attached to **any** agent, including a loaded scalar checkpoint. It
+round-trips via a `#[serde(default)]` `world_model` field, shape-guarded on load.
+
+**Env flags summary**
+
+| Variable | Effect |
+|---|---|
+| `SCEMATICA_NN_DISTRIBUTIONAL=1` | Fresh agents use QR-DQN distributional returns |
+| `SCEMATICA_NN_WORLD_MODEL=1` | Attach the latent world model + Dyna imagination |

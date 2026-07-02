@@ -1,8 +1,10 @@
 use crate::{
     action::{TradeAction, ACTION_DIM},
+    distributional::{QuantileNetwork, N_QUANTILES},
     network::QNetwork,
-    replay::{PrioritizedReplayBuffer, Transition},
+    replay::{PrioritizedBatch, PrioritizedReplayBuffer, Transition},
     state::{TradeState, STATE_DIM},
+    world_model::{WorldModel, WorldModelLoss},
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,12 @@ pub struct AgentStats {
     pub ready_to_advise: bool,
     pub last_action: Option<String>,
     pub last_q_values: Vec<f64>,
+    /// True when the agent runs QR-DQN distributional returns (v1.12 upgrade).
+    #[serde(default)]
+    pub distributional: bool,
+    /// True when a Dreamer-style latent world model is attached (v1.12 upgrade).
+    #[serde(default)]
+    pub world_model: bool,
 }
 
 /// Explanation of why the agent chose an action, for Feature 3.
@@ -58,6 +66,15 @@ struct Checkpoint {
     state_dim: usize,
     #[serde(default)]
     action_dim: usize,
+    /// Distributional (QR-DQN) net pair. Absent in legacy scalar checkpoints
+    /// (serde-default → None), which load straight into scalar mode.
+    #[serde(default)]
+    dist_online: Option<QuantileNetwork>,
+    #[serde(default)]
+    dist_target: Option<QuantileNetwork>,
+    /// Latent world model. Absent in legacy checkpoints (serde-default → None).
+    #[serde(default)]
+    world_model: Option<WorldModel>,
 }
 
 /// Double Deep Q* agent.
@@ -100,6 +117,17 @@ pub struct DQNAgent {
     n_step: usize,
     /// Tournament hyperparams stored per variant for evolutionary mutation.
     pub tournament_hyperparams: Vec<(f64, f64, f64)>, // (epsilon_decay, lr, gamma)
+    // ── Distributional RL (QR-DQN) ───────────────────────────────────────────
+    /// When `Some`, the agent runs in **distributional mode**: action selection,
+    /// advice, and training all use these quantile-regression nets, and the
+    /// scalar `online_net`/`target_net` above are left untouched. `None` = the
+    /// classic scalar Double-DQN path (so old checkpoints load unchanged).
+    pub dist_online: Option<QuantileNetwork>,
+    pub dist_target: Option<QuantileNetwork>,
+    // ── Latent world model (Dreamer-style planning) ──────────────────────────
+    /// When `Some`, a learned world model is trained alongside the policy and can
+    /// generate imagined transitions into the replay buffer (Dyna planning).
+    pub world_model: Option<WorldModel>,
 }
 
 impl DQNAgent {
@@ -144,7 +172,192 @@ impl DQNAgent {
                 (0.9995, 1e-3, 0.990), // balanced
                 (0.9990, 2e-3, 0.980), // aggressive
             ],
+            dist_online: None,
+            dist_target: None,
+            world_model: None,
         }
+    }
+
+    /// Distributional (QR-DQN) agent with default hyper-parameters.
+    ///
+    /// Predicts the full return distribution (51 quantiles per action) instead of
+    /// a scalar mean. `Q(s,a)` is recovered as the mean of quantiles, so every
+    /// existing consumer (`advise`, `greedy_action`, the sniper's Q-value gate)
+    /// works unchanged — but training is more sample-efficient and the agent
+    /// learns the fat left tail that rugs create rather than averaging it away.
+    pub fn new_distributional() -> Self {
+        Self::with_hyperparams_distributional(0.9995, 1e-3, 0.99)
+    }
+
+    /// Distributional variant of [`Self::with_hyperparams`]. Builds a dueling
+    /// QR-DQN online/target pair; the scalar nets remain allocated for struct and
+    /// checkpoint validity but are unused while distributional mode is active.
+    pub fn with_hyperparams_distributional(epsilon_decay: f64, lr: f64, gamma: f64) -> Self {
+        let mut agent = Self::with_hyperparams(epsilon_decay, lr, gamma);
+        let online = QuantileNetwork::default_for(STATE_DIM);
+        let mut target = QuantileNetwork::default_for(STATE_DIM);
+        target.copy_from(&online);
+        agent.dist_online = Some(online);
+        agent.dist_target = Some(target);
+        agent
+    }
+
+    /// True if the agent is operating in distributional (QR-DQN) mode.
+    pub fn is_distributional(&self) -> bool {
+        self.dist_online.is_some()
+    }
+
+    // ── World model (Dreamer-style planning) ─────────────────────────────────
+
+    /// Attach a fresh latent world model so the agent can learn market dynamics
+    /// and train on imagined roll-outs. Idempotent-ish: replaces any existing model.
+    pub fn enable_world_model(&mut self) {
+        self.world_model = Some(WorldModel::new(STATE_DIM, ACTION_DIM));
+    }
+
+    pub fn has_world_model(&self) -> bool {
+        self.world_model.is_some()
+    }
+
+    /// Train the world model on one prioritized batch of real transitions.
+    /// Returns the averaged component losses, or `None` if no model is attached
+    /// or the replay buffer is too small.
+    pub fn train_world_model_step(&mut self) -> Option<WorldModelLoss> {
+        if self.world_model.is_none() || self.replay.len() < self.batch_size {
+            return None;
+        }
+        let batch = self.replay.sample(self.batch_size);
+        let wm = self.world_model.as_mut().unwrap();
+        let mut acc = WorldModelLoss::default();
+        let mut n = 0.0;
+        for t in &batch.transitions {
+            if t.state.is_empty() || t.next_state.is_empty() {
+                continue;
+            }
+            let l = wm.train(&t.state, t.action, t.reward, &t.next_state, self.lr);
+            acc.reconstruction += l.reconstruction;
+            acc.dynamics += l.dynamics;
+            acc.reward += l.reward;
+            n += 1.0;
+        }
+        if n == 0.0 {
+            return None;
+        }
+        Some(WorldModelLoss {
+            reconstruction: acc.reconstruction / n,
+            dynamics: acc.dynamics / n,
+            reward: acc.reward / n,
+        })
+    }
+
+    /// Dyna planning: from `rollouts` real start states (sampled from replay),
+    /// imagine `horizon`-step trajectories with the world model and push the
+    /// resulting synthetic transitions into the replay buffer. Actions are
+    /// chosen greedily from the current policy at each imagined state (with a
+    /// small chance of a random action so imagination explores). Returns the
+    /// number of synthetic transitions injected.
+    ///
+    /// No-op (returns 0) if there is no world model or the buffer is too small.
+    pub fn imagine_into_replay(&mut self, rollouts: usize, horizon: usize) -> usize {
+        if self.world_model.is_none() || self.replay.len() < self.batch_size || horizon == 0 {
+            return 0;
+        }
+        // Collect real start states first (immutable borrow of replay).
+        let starts: Vec<Vec<f64>> = {
+            let batch = self.replay.sample(rollouts.max(1));
+            batch
+                .transitions
+                .into_iter()
+                .map(|t| t.state)
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+
+        let mut injected = 0;
+        for start in starts {
+            // Plan an action sequence greedily off the imagined states.
+            let wm = self.world_model.as_ref().unwrap();
+            let mut cur = start.clone();
+            let mut actions = Vec::with_capacity(horizon);
+            for _ in 0..horizon {
+                let explore = rand::thread_rng().gen::<f64>() < 0.2;
+                let a = if explore {
+                    rand::thread_rng().gen_range(0..ACTION_DIM)
+                } else {
+                    self.best_action_for_vec(&cur)
+                };
+                actions.push(a);
+                // Advance the imagined state so the next action is state-appropriate.
+                cur = wm.imagine(&cur, &[a])[0].next_state.clone();
+            }
+
+            let steps = self.world_model.as_ref().unwrap().imagine(&start, &actions);
+            for (i, st) in steps.iter().enumerate() {
+                self.replay.push(Transition {
+                    state: st.state.clone(),
+                    action: st.action,
+                    reward: st.reward,
+                    next_state: st.next_state.clone(),
+                    done: i == steps.len() - 1,
+                });
+                injected += 1;
+            }
+        }
+        injected
+    }
+
+    /// Pre-train the agent offline against the adversarial pool simulator,
+    /// hardening it against rugs / honeypots / pump-dumps *before* it risks live
+    /// capital. Runs `episodes` full pool lifecycles, learning from every step;
+    /// if a world model is attached it is trained on the same synthetic
+    /// experience. Returns the mean per-episode reward (a coarse fitness signal).
+    ///
+    /// See [`crate::adversarial_sim`]. Drive the simulator's [`ScarProfile`] from
+    /// live Scar-Market statistics to track the current rug meta.
+    pub fn pretrain_on_simulator(
+        &mut self,
+        sim: &mut crate::adversarial_sim::AdversarialPoolSim,
+        episodes: usize,
+    ) -> f64 {
+        let mut total = 0.0;
+        for _ in 0..episodes {
+            let mut state = sim.reset();
+            let mut episode_reward = 0.0;
+            loop {
+                let action = self.select_action(&state);
+                let step = sim.step(action);
+                self.observe(state.clone(), action, step.reward, step.state.clone(), step.done);
+                episode_reward += step.reward;
+                // Learn online from the growing replay buffer.
+                self.train_step();
+                if self.has_world_model() {
+                    self.train_world_model_step();
+                }
+                state = step.state;
+                if step.done {
+                    break;
+                }
+            }
+            total += episode_reward;
+        }
+        if episodes == 0 {
+            0.0
+        } else {
+            total / episodes as f64
+        }
+    }
+
+    /// Greedy action index for a raw state vector, using whichever net is active.
+    fn best_action_for_vec(&self, sv: &[f64]) -> usize {
+        let q = match &self.dist_online {
+            Some(dist) => dist.q_values(sv),
+            None => self.online_net.forward(sv),
+        };
+        q.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0)
     }
 
     // ── Decision ────────────────────────────────────────────────────────────
@@ -155,6 +368,26 @@ impl DQNAgent {
     /// global network.
     pub fn select_action(&mut self, state: &TradeState) -> TradeAction {
         let sv = state.to_vec();
+
+        // Distributional mode: greedy by mean-of-quantiles, ε-greedy exploration.
+        // (Regime-branching is a scalar-mode feature; skipped here.)
+        if let Some(dist) = &self.dist_online {
+            let q = dist.q_values(&sv);
+            self.last_q_values = q.clone();
+            let action = if rand::thread_rng().gen::<f64>() < self.epsilon {
+                TradeAction::from_index(rand::thread_rng().gen_range(0..ACTION_DIM))
+            } else {
+                let best = q
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                TradeAction::from_index(best)
+            };
+            self.last_action = Some(action);
+            return action;
+        }
 
         // Feature 1: use regime-specific net when confident enough
         let use_regime_net = self.epsilon < 0.3
@@ -187,7 +420,10 @@ impl DQNAgent {
 
     /// Best greedy action without exploring (for advice mode, no epsilon).
     pub fn greedy_action(&self, state: &TradeState) -> (TradeAction, Vec<f64>) {
-        let q = self.online_net.forward(&state.to_vec());
+        let q = match &self.dist_online {
+            Some(dist) => dist.q_values(&state.to_vec()),
+            None => self.online_net.forward(&state.to_vec()),
+        };
         let best = q
             .iter()
             .enumerate()
@@ -303,6 +539,12 @@ impl DQNAgent {
         }
 
         let batch = self.replay.sample(self.batch_size);
+
+        // Distributional (QR-DQN) path: entirely separate net + loss.
+        if self.dist_online.is_some() {
+            return self.train_batch_distributional(batch);
+        }
+
         let mut total_loss = 0.0;
         let mut td_errors = Vec::with_capacity(batch.transitions.len());
 
@@ -420,6 +662,76 @@ impl DQNAgent {
         }
 
         debug!("train_step loss={:.6} ε={:.4}", avg_loss, self.epsilon);
+        Some(avg_loss)
+    }
+
+    /// Distributional (QR-DQN) training over a prioritized batch.
+    ///
+    /// Double-DQN target construction, per-quantile: the **online** net selects
+    /// the greedy next action `a*` (by mean-of-quantiles), the **target** net
+    /// supplies its return distribution `Z_target(s', a*)`, and the Bellman
+    /// target distribution is `T_j = r + γ · Z_target(s', a*)_j` (or `r` repeated
+    /// on terminal). The mean of that target equals the scalar Double-DQN target,
+    /// so priority TD-errors stay comparable across modes. Regime branching is
+    /// intentionally not run in distributional mode.
+    fn train_batch_distributional(&mut self, batch: PrioritizedBatch) -> Option<f64> {
+        let n = N_QUANTILES;
+        let mut total_loss = 0.0;
+        let mut td_errors = Vec::with_capacity(batch.transitions.len());
+
+        for (t, &is_weight) in batch.transitions.iter().zip(batch.weights.iter()) {
+            if t.state.is_empty() {
+                td_errors.push(0.0);
+                continue;
+            }
+
+            // Bellman target distribution (Double DQN action selection).
+            let target_dist: Vec<f64> = if t.done {
+                vec![t.reward; n]
+            } else {
+                let best_next = self.dist_online.as_ref().unwrap().best_action(&t.next_state);
+                let next_dist = self.dist_target.as_ref().unwrap().forward_dist(&t.next_state);
+                next_dist[best_next]
+                    .iter()
+                    .map(|z| t.reward + self.gamma * z)
+                    .collect()
+            };
+
+            // Priority signal: |mean(target) − Q(s,a)| (matches scalar TD error).
+            let cur_q = self.dist_online.as_ref().unwrap().q_value(&t.state, t.action);
+            let mean_target = target_dist.iter().sum::<f64>() / n as f64;
+            td_errors.push((mean_target - cur_q).abs());
+
+            total_loss += self.dist_online.as_mut().unwrap().train_quantile(
+                &t.state,
+                t.action,
+                &target_dist,
+                self.lr,
+                is_weight,
+            );
+        }
+
+        self.replay.update_priorities(&batch.indices, &td_errors);
+
+        let avg_loss = total_loss / self.batch_size as f64;
+        self.recent_losses.push(avg_loss);
+        if self.recent_losses.len() > 200 {
+            self.recent_losses.remove(0);
+        }
+        self.train_steps += 1;
+
+        // Periodic hard-copy online → target.
+        if self.step_count > 0 && self.step_count % self.target_update_freq == 0 {
+            let online = self.dist_online.as_ref().unwrap().clone();
+            self.dist_target.as_mut().unwrap().copy_from(&online);
+            self.target_updates += 1;
+            info!(
+                "🧠 NN (QR-DQN) target network updated (step={}, updates={}, ε={:.4})",
+                self.step_count, self.target_updates, self.epsilon
+            );
+        }
+
+        debug!("dist train_step loss={:.6} ε={:.4}", avg_loss, self.epsilon);
         Some(avg_loss)
     }
 
@@ -783,7 +1095,10 @@ impl DQNAgent {
     /// a human-readable explanation of the chosen action.
     pub fn explain_decision(&self, state: &TradeState) -> TradeDecisionExplanation {
         let sv = state.to_vec();
-        let q_raw = self.online_net.forward(&sv);
+        let q_raw = match &self.dist_online {
+            Some(dist) => dist.q_values(&sv),
+            None => self.online_net.forward(&sv),
+        };
 
         // Pair each Q-value with its action label
         let action_labels = [
@@ -880,6 +1195,9 @@ impl DQNAgent {
             active_regime: self.active_regime.clone(),
             state_dim: STATE_DIM,
             action_dim: ACTION_DIM,
+            dist_online: self.dist_online.clone(),
+            dist_target: self.dist_target.clone(),
+            world_model: self.world_model.clone(),
         };
         let tmp = format!("{}.tmp", path);
         std::fs::write(&tmp, serde_json::to_string(&ckpt).unwrap())?;
@@ -920,6 +1238,30 @@ impl DQNAgent {
         agent.target_updates = ckpt.target_updates;
         agent.regime_nets = ckpt.regime_nets;
         agent.active_regime = ckpt.active_regime;
+
+        // Distributional nets: restore only if the quantile/action shape matches
+        // the current build; otherwise drop to scalar mode rather than run a
+        // mis-shaped net (mirrors the state_dim/action_dim reset above).
+        let shapes_ok = |q: &QuantileNetwork| {
+            q.n_quantiles == N_QUANTILES && q.action_dim == ACTION_DIM
+        };
+        if let (Some(on), Some(tg)) = (ckpt.dist_online, ckpt.dist_target) {
+            if shapes_ok(&on) && shapes_ok(&tg) {
+                agent.dist_online = Some(on);
+                agent.dist_target = Some(tg);
+            } else {
+                info!("NN distributional checkpoint shape mismatch — falling back to scalar mode");
+            }
+        }
+
+        // World model: restore only if its state/action dims match this build.
+        if let Some(wm) = ckpt.world_model {
+            if wm.state_dim == STATE_DIM && wm.action_dim == ACTION_DIM {
+                agent.world_model = Some(wm);
+            } else {
+                info!("NN world-model checkpoint shape mismatch — dropping world model");
+            }
+        }
         Ok(agent)
     }
 
@@ -942,6 +1284,8 @@ impl DQNAgent {
             ready_to_advise: self.ready_to_advise(),
             last_action: self.last_action.map(|a| a.label().to_string()),
             last_q_values: self.last_q_values.clone(),
+            distributional: self.is_distributional(),
+            world_model: self.has_world_model(),
         }
     }
 
@@ -961,5 +1305,150 @@ impl DQNAgent {
 impl Default for DQNAgent {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_state() -> TradeState {
+        TradeState {
+            pool_age_secs: 120.0,
+            initial_liquidity_sol: 8.0,
+            price_change_pct: 0.4,
+            volume_5min_sol: 20.0,
+            buy_sell_ratio: 2.5,
+            current_pnl_pct: 0.2,
+            sol_balance_sol: 3.0,
+            ..Default::default()
+        }
+    }
+
+    /// Fill the replay buffer past batch_size (64) via the normal observe path.
+    fn warm_replay(agent: &mut DQNAgent) {
+        for _ in 0..100 {
+            let s = sample_state();
+            let a = agent.select_action(&s);
+            let r = DQNAgent::shape_reward(20.0, 0) / 100.0;
+            agent.observe(s.clone(), a, r, s, false);
+        }
+        // Force a terminal to flush the n-step buffer's tail.
+        let s = sample_state();
+        agent.observe(s.clone(), TradeAction::SellAll, -0.5, s, true);
+    }
+
+    #[test]
+    fn distributional_mode_flag_and_defaults() {
+        let scalar = DQNAgent::new();
+        assert!(!scalar.is_distributional());
+        let dist = DQNAgent::new_distributional();
+        assert!(dist.is_distributional());
+        assert_eq!(dist.dist_online.as_ref().unwrap().n_quantiles, N_QUANTILES);
+        assert_eq!(dist.dist_online.as_ref().unwrap().action_dim, ACTION_DIM);
+    }
+
+    #[test]
+    fn distributional_advise_returns_full_q_vector() {
+        let mut agent = DQNAgent::new_distributional();
+        let (action, q) = agent.advise(&sample_state());
+        assert_eq!(q.len(), ACTION_DIM);
+        assert!((0..ACTION_DIM).contains(&action.index()));
+        // last_q_values mirrors the returned vector.
+        assert_eq!(agent.stats().last_q_values.len(), ACTION_DIM);
+    }
+
+    #[test]
+    fn distributional_train_step_runs_and_updates_targets() {
+        let mut agent = DQNAgent::new_distributional();
+        // Below batch_size → None.
+        assert!(agent.train_step().is_none());
+        warm_replay(&mut agent);
+        let loss = agent.train_step();
+        assert!(loss.is_some(), "train_step should produce a loss once buffer is warm");
+        assert!(loss.unwrap().is_finite());
+        assert!(agent.stats().train_steps >= 1);
+    }
+
+    #[test]
+    fn distributional_checkpoint_roundtrip_preserves_mode() {
+        let mut agent = DQNAgent::new_distributional();
+        warm_replay(&mut agent);
+        for _ in 0..5 {
+            agent.train_step();
+        }
+        let q_before = agent.greedy_action(&sample_state()).1;
+
+        let mut path = std::env::temp_dir();
+        path.push("scematica-nn-dist-roundtrip-test.json");
+        let path = path.to_str().unwrap().to_string();
+        agent.save(&path).expect("save");
+
+        let loaded = DQNAgent::load(&path).expect("load");
+        assert!(loaded.is_distributional(), "loaded agent must stay distributional");
+        let q_after = loaded.greedy_action(&sample_state()).1;
+        assert_eq!(q_before.len(), q_after.len());
+        for (a, b) in q_before.iter().zip(&q_after) {
+            assert!((a - b).abs() < 1e-9, "q mismatch after roundtrip: {a} vs {b}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scalar_mode_still_trains() {
+        // Regression: the classic scalar path is untouched by the dist branch.
+        let mut agent = DQNAgent::new();
+        warm_replay(&mut agent);
+        let loss = agent.train_step();
+        assert!(loss.is_some());
+        assert!(!agent.is_distributional());
+    }
+
+    #[test]
+    fn world_model_trains_and_dreams_into_replay() {
+        let mut agent = DQNAgent::new_distributional();
+        agent.enable_world_model();
+        assert!(agent.has_world_model());
+        warm_replay(&mut agent);
+
+        // World-model training produces finite component losses.
+        let wl = agent.train_world_model_step().expect("wm should train once warm");
+        assert!(wl.reconstruction.is_finite() && wl.dynamics.is_finite() && wl.reward.is_finite());
+
+        // Dyna imagination injects synthetic transitions into the replay buffer.
+        let before = agent.stats().replay_size;
+        let injected = agent.imagine_into_replay(4, 3);
+        assert!(injected > 0, "imagination should inject transitions");
+        assert!(agent.stats().replay_size >= before, "replay should grow (or stay at cap)");
+    }
+
+    #[test]
+    fn pretrain_on_simulator_runs_and_learns() {
+        use crate::adversarial_sim::{AdversarialPoolSim, ScarProfile};
+        let mut agent = DQNAgent::new_distributional();
+        agent.enable_world_model();
+        let mut sim = AdversarialPoolSim::new(ScarProfile::default());
+        let before = agent.stats().step_count;
+        let avg = agent.pretrain_on_simulator(&mut sim, 20);
+        assert!(avg.is_finite());
+        assert!(agent.stats().step_count > before, "pretraining should step the agent");
+    }
+
+    #[test]
+    fn world_model_survives_checkpoint_roundtrip() {
+        let mut agent = DQNAgent::new_distributional();
+        agent.enable_world_model();
+        warm_replay(&mut agent);
+        for _ in 0..3 {
+            agent.train_world_model_step();
+        }
+        let mut path = std::env::temp_dir();
+        path.push("scematica-nn-wm-roundtrip-test.json");
+        let path = path.to_str().unwrap().to_string();
+        agent.save(&path).expect("save");
+        let loaded = DQNAgent::load(&path).expect("load");
+        assert!(loaded.has_world_model(), "world model must persist across save/load");
+        assert!(loaded.is_distributional());
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -25,6 +25,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 bs58 = { workspace = true }
+# SHA-256 for the zkML-verified bond commitments (Merkle model commitment +
+# inference attestation). Pure-Rust, no solana-sdk / zeroize conflicts.
+sha2 = { workspace = true }
 
 # Optional: the real Scematica Deep Q* agent as the RoutePolicy. Light, publishable
 # (no solana-sdk). Pinned by version so the crate can publish; path wins in-workspace.

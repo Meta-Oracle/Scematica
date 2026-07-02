@@ -83,6 +83,7 @@ pub mod route;
 pub mod scar;
 pub mod teach;
 pub mod venue;
+pub mod zkbond;
 
 /// Concrete wiring of the SDK traits to the real Scematica Deep Q* agent. Only
 /// compiled with the `scematica` feature; the default published crate carries no
@@ -121,6 +122,10 @@ pub use teach::{
     ReferenceTeacher, TeachAnswer, TeachReceipt, TeachTerms, Teacher, TeachingEngine,
 };
 pub use venue::{SimVenueExecutor, SwapInstructions, VenueExecutor};
+pub use zkbond::{
+    CommittableModel, InferenceAttestation, InferenceProofSystem, ModelCommitment,
+    ReexecutionProofSystem, VerifiedBond,
+};
 
 /// Build a [`ScemaDex`] wired with the lean reference implementations. Useful for
 /// examples, tests, and consumers who haven't enabled the `scematica` feature.

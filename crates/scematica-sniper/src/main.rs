@@ -366,18 +366,51 @@ async fn main() -> Result<()> {
     ensure_artifact_file(TX_TELEMETRY_FILE);
 
     let nn_agent_path = artifact_path_string(NN_AGENT_FILE);
+    // Opt-in upgrades (v1.12): QR-DQN distributional returns + a Dreamer-style
+    // latent world model for Dyna imagination. Both default OFF so existing
+    // deployments and their scalar checkpoints are untouched. The distributional
+    // policy can only be applied to a *fresh* agent (weights are shape-different);
+    // the world model can be attached to any agent, including a loaded scalar one.
+    let want_distributional = std::env::var("SCEMATICA_NN_DISTRIBUTIONAL")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    let want_world_model = std::env::var("SCEMATICA_NN_WORLD_MODEL")
+        .map(|v| v != "0")
+        .unwrap_or(false);
     let nn_agent: Arc<Mutex<DQNAgent>> =
         Arc::new(Mutex::new(match DQNAgent::load(&nn_agent_path) {
-            Ok(a) => {
-                info!("NN agent loaded from checkpoint");
+            Ok(mut a) => {
+                info!(
+                    "NN agent loaded from checkpoint (distributional={}, world_model={})",
+                    a.is_distributional(),
+                    a.has_world_model()
+                );
+                if want_world_model && !a.has_world_model() {
+                    a.enable_world_model();
+                    info!("🧠 World model attached to loaded agent");
+                }
                 a
             }
             Err(_) => {
-                info!(
-                    "NN agent initialised fresh (STATE_DIM={}, ACTIONS=5)",
-                    scematica_nn::STATE_DIM
-                );
-                DQNAgent::new()
+                let mut a = if want_distributional {
+                    info!(
+                        "NN agent initialised fresh — QR-DQN distributional (STATE_DIM={}, ACTIONS=5, quantiles={})",
+                        scematica_nn::STATE_DIM,
+                        scematica_nn::N_QUANTILES
+                    );
+                    DQNAgent::new_distributional()
+                } else {
+                    info!(
+                        "NN agent initialised fresh (scalar Double-DQN, STATE_DIM={}, ACTIONS=5)",
+                        scematica_nn::STATE_DIM
+                    );
+                    DQNAgent::new()
+                };
+                if want_world_model {
+                    a.enable_world_model();
+                    info!("🧠 World model enabled");
+                }
+                a
             }
         }));
 
@@ -1242,6 +1275,42 @@ async fn main() -> Result<()> {
                         match ag.save(&artifact_path_string(NN_AGENT_FILE)) {
                             Ok(_) => info!("🧠 NN agent checkpoint saved"),
                             Err(e) => tracing::warn!("NN checkpoint save failed: {}", e),
+                        }
+                    }
+                }
+            });
+        }
+
+        // World-model task: when a Dreamer-style world model is attached, train it
+        // on real transitions and periodically "dream" imagined trajectories into
+        // the replay buffer (Dyna planning). This amortises scarce live trades into
+        // many synthetic training samples. No-op when no world model is present.
+        {
+            let agent = Arc::clone(&nn_agent);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    if let Ok(mut ag) = agent.lock() {
+                        if !ag.has_world_model() {
+                            continue;
+                        }
+                        // A few model-learning steps per tick.
+                        let mut last = None;
+                        for _ in 0..4 {
+                            last = ag.train_world_model_step();
+                            if last.is_none() {
+                                break;
+                            }
+                        }
+                        // Then dream: 8 rollouts × 4-step horizon → up to 32 synthetic
+                        // transitions folded back into replay for the policy learner.
+                        let injected = ag.imagine_into_replay(8, 4);
+                        if let Some(l) = last {
+                            debug!(
+                                "🌙 world-model: recon={:.4} dyn={:.4} rew={:.4} dreamed={}",
+                                l.reconstruction, l.dynamics, l.reward, injected
+                            );
                         }
                     }
                 }

@@ -91,7 +91,8 @@ SDK and playground are pre-1.0.
 | `scematica-executor` | 1.11.1 | — | library |
 | `scematica-core` | 1.11.1 | — | library |
 | `scematica-nn` | 1.12.0 | `scema-ddqn` | bin + lib |
-| `scemadex-sdk` | 0.2.0 | `scemadex` | bin + lib |
+| `scemadex-sdk` | 0.2.0 | `scemadex` | bin + lib (incl. zkML-verified bonds) |
+| `scemadex-mcp` | 0.1.0 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
 | `scemadex-settle` | 0.1.0 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 

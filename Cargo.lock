@@ -4162,6 +4162,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "scemadex-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.6.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "scemadex-relay"
 version = "1.11.1"
 dependencies = [
@@ -4194,6 +4208,7 @@ dependencies = [
  "scematica-nn",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
 ]

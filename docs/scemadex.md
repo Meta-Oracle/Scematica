@@ -249,6 +249,52 @@ a marketable, bonded reputation.
 
 ---
 
+## I · zkML-verified bonds — trustless inference provenance
+
+A conviction bond makes a *paid black-box inference* trustworthy by giving the
+agent slashable skin in the game — but it still trusts the agent's word that the
+quote came from the model it claims. Primitive I removes that last assumption.
+
+The Scematica Deep Q* net is pure-Rust and **deterministic**, which is exactly
+what makes verifiable inference tractable without a heavyweight proving stack:
+
+1. **Commit** — the model is committed to as a SHA-256 **Merkle root over its
+   quantised parameters** (`ModelCommitment`), binding weights *and* architecture.
+2. **Attest** — each inference publishes an `InferenceAttestation` binding
+   `model_root · hash(input) · output` (`zkbond.rs`).
+3. **Verify** — any challenger holding the model + input **re-executes** the
+   forward pass and checks the binding. A mismatch is a *fraud proof*; the bond
+   slashes regardless of the realised fill (`VerifiedBond::settle_verified`).
+
+This is *optimistic* verification — trustless-by-refutation, the same shape as an
+optimistic rollup — and it composes with the whole adversarial layer: a
+provably-false inference is slashable, and the Scar Market (F) can certify it.
+The `InferenceProofSystem` trait is the seam to drop in a **succinct** zk backend
+(risc0 / SP1 / halo2) later without changing the bond API;
+`ReexecutionProofSystem` is the reference implementation shipping today. Behind
+the `scematica` feature, the real `QNetwork` / `QuantileNetwork` implement
+`CommittableModel` directly.
+
+**Positioning:** *"the only market where an AI's mistakes are cryptographically
+proven, priced, and used to train its successor."*
+
+### Bonus: MCP access + adversarial hardening
+
+Two adjacent pieces ship alongside the SDK:
+
+- **`scemadex-mcp`** — a Model Context Protocol server that exposes the rail
+  (reputation / pool-score / advice, bonded inference quotes, experience
+  purchase) as tools any LLM agent can call, monetized over x402. It bridges
+  MCP/stdio → a running `scemadex-relay`; a `402` is handed back as the payment
+  requirements, making "buy this intelligence" a first-class agent action.
+- **Adversarial pool simulator** (`scematica-nn::adversarial_sim`) — a
+  generative digital-twin that synthesizes rug / honeypot / pump-dump pool
+  lifecycles from Scar-Market statistics (`ScarProfile`), as a gym-style
+  environment. `DQNAgent::pretrain_on_simulator` hardens the agent against
+  verified failure modes *before* it risks live capital.
+
+---
+
 ## The architectural novelty: lean core, injected power
 
 The published crate carries **zero `solana-sdk` or bot dependency by default.**

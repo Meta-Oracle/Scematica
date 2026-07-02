@@ -71,7 +71,10 @@ crates/
   scematica-arb/        Cross-DEX arb graph search (Raydium/Orca/Meteora). Bin: `arb`
   scematica-executor/   Multi-DEX swap instruction builders + Jupiter integration
   scematica-ai/         LLM agents (Groq/xAI): Chat, Strategy, Risk, Debate, Report
-  scematica-nn/         Pure-Rust Deep Q* (Double DQN) agent — no external ML deps
+  scematica-nn/         Pure-Rust Deep Q* (Double DQN) agent — no external ML deps.
+                        Opt-in: QR-DQN distributional returns (distributional.rs),
+                        Dreamer-style latent world model (world_model.rs), and an
+                        adversarial pool simulator gym (adversarial_sim.rs).
   scematica-dashboard/  Ratatui TUI (6 tabs). Bin: `dashboard`
   scematica-api/        HTTP API backing the web/ Next.js dashboard. Bin: `api`
   scematica-protocol/   x402 HTTP 402 payment server (facilitator). Bin: `scematica-protocol`
@@ -81,6 +84,8 @@ crates/
   scemadex-integrations/  Bot-side ScemaDEX wiring: x402 bond engine, Jupiter route
                           policy, file signal source. publish = false
   scemadex-relay/       Peer-mesh + signal-oracle HTTP server. Bin: `scemadex-relay`
+  scemadex-mcp/         MCP (Model Context Protocol) server bridging LLM agents to
+                        the ScemaDEX rail over the relay. Bin: `scemadex-mcp`
   sdk-dashboard/        ScemaDEX SDK TUI over the bond pipeline. Bin: `sdk-dashboard`
   scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
                         launcher dispatching to the component binaries. Bin: `scematica`

@@ -916,3 +916,22 @@ round-trips via a `#[serde(default)]` `world_model` field, shape-guarded on load
 |---|---|
 | `SCEMATICA_NN_DISTRIBUTIONAL=1` | Fresh agents use QR-DQN distributional returns |
 | `SCEMATICA_NN_WORLD_MODEL=1` | Attach the latent world model + Dyna imagination |
+| `SCEMATICA_NN_CVAR_ALPHA=0.25` | Risk-sensitive CVaR action selection at this α (distributional only) |
+| `SCEMATICA_NN_PRETRAIN_EPISODES=500` | Pre-train on the adversarial simulator at boot before going live |
+
+### Closing the flywheel — scar-driven pre-training
+
+`SCEMATICA_NN_PRETRAIN_EPISODES=N` makes the sniper run `N` adversarial-simulator
+episodes at boot (`DQNAgent::pretrain_on_simulator`), hardening a fresh agent
+against rug/honeypot/pump-dump scenarios *before* it risks live capital. The
+simulator's `ScarProfile` is loaded from `scematica-scar-profile.json` when
+present — that file is how live **Scar-Market** statistics feed the agent: the
+bot writes it via `scemadex_integrations::scar_profile::write_scar_profile`,
+which derives the failure *rate* (from the bond honored/slashed ledger) and
+*severity* (from mean slashed collateral) from real verified failures. Absent the
+file, a sensible default distribution is used. This is the loop: **the market's
+un-fakeable failures shape what the next agent learns to avoid.**
+
+> Note: `doubt_spread`/market-conviction as *live per-pool* NN state features is
+> deliberately deferred until there's a live per-pool doubt source to populate
+> them — adding always-zero features would only reset checkpoints for no signal.

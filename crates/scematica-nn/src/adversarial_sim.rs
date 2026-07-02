@@ -108,6 +108,22 @@ impl ScarProfile {
         }
     }
 
+    /// Load a persisted profile (e.g. one derived from live Scar-Market stats),
+    /// or `None` if absent/corrupt. Pairs with [`Self::save`] for the file-IPC
+    /// pattern the bot uses everywhere else.
+    pub fn load(path: &str) -> Option<Self> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    /// Atomically persist this profile (tmp + rename).
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let tmp = format!("{path}.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default())?;
+        std::fs::rename(&tmp, path)
+    }
+
     fn sample_archetype(&self, rng: &mut impl Rng) -> PoolArchetype {
         let r: f64 = rng.gen();
         let mut acc = self.rug_rate;
@@ -413,6 +429,20 @@ mod tests {
         let sum = p.rug_rate + p.honeypot_rate + p.pump_dump_rate + p.slow_bleed_rate;
         assert!(sum <= 1.0 + 1e-9);
         assert!((p.rug_rate - 0.35).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scar_profile_save_load_roundtrip() {
+        let p = ScarProfile::from_observations(40, 12, 25, 8, 15, 200.0, 0.7, 0.9, 0.08);
+        let mut path = std::env::temp_dir();
+        path.push("scematica-nn-scarprofile-test.json");
+        let path = path.to_str().unwrap().to_string();
+        p.save(&path).expect("save");
+        let loaded = ScarProfile::load(&path).expect("load");
+        assert!((loaded.rug_rate - p.rug_rate).abs() < 1e-9);
+        assert!((loaded.mean_peak_before_rug_pct - p.mean_peak_before_rug_pct).abs() < 1e-9);
+        assert!(ScarProfile::load("/no/such/scarprofile/path.json").is_none());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

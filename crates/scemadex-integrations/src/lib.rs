@@ -15,6 +15,7 @@ use scemadex_sdk::{
 };
 
 pub mod jupiter;
+pub mod scar_profile;
 pub mod signal;
 
 /// USDC mint on Solana mainnet — the unit of account for bonds and fees.

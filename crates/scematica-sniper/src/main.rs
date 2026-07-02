@@ -414,6 +414,38 @@ async fn main() -> Result<()> {
             }
         }));
 
+    // Optional: harden a fresh agent against rug / honeypot / pump-dump scenarios
+    // in the adversarial simulator *before* it risks live capital (env
+    // SCEMATICA_NN_PRETRAIN_EPISODES). The simulator's ScarProfile is loaded from
+    // scematica-scar-profile.json when present — that file is how live Scar-Market
+    // statistics feed the agent's pre-training (see scemadex-integrations) — else
+    // a sensible default distribution is used. This closes the flywheel: the
+    // market's verified failures shape what the agent learns to avoid.
+    if let Ok(episodes) = std::env::var("SCEMATICA_NN_PRETRAIN_EPISODES")
+        .unwrap_or_default()
+        .parse::<usize>()
+    {
+        if episodes > 0 {
+            let profile = scematica_nn::ScarProfile::load(&artifact_path_string(
+                "scematica-scar-profile.json",
+            ))
+            .unwrap_or_default();
+            let mut sim = scematica_nn::AdversarialPoolSim::new(profile);
+            if let Ok(mut ag) = nn_agent.lock() {
+                info!(
+                    "🧠 Pre-training NN on adversarial simulator ({} episodes)…",
+                    episodes
+                );
+                let avg = ag.pretrain_on_simulator(&mut sim, episodes);
+                info!(
+                    "🧠 Pre-training complete — mean episode reward {:.3} (ε now {:.3})",
+                    avg,
+                    ag.epsilon
+                );
+            }
+        }
+    }
+
     // Create sniper
     let sniper = Arc::new(Sniper::new(
         config.sniper.clone(),

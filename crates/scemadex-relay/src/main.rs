@@ -17,6 +17,7 @@
 //! ```
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
@@ -61,6 +62,10 @@ struct Cli {
     /// Price per signal call, in USDC.
     #[arg(long, default_value_t = 0.001)]
     price_usdc: f64,
+    /// Persist mesh offers/experience to this directory so the order books
+    /// survive a relay restart (in-process by default).
+    #[arg(long)]
+    persist_dir: Option<String>,
 }
 
 #[derive(Clone)]
@@ -68,6 +73,30 @@ struct AppState {
     offers: Arc<Mutex<Vec<InferenceOffer>>>,
     experience: Arc<Mutex<Vec<ExperienceBatch>>>,
     signal: Arc<FileSignalSource>,
+    /// When set, the order books are mirrored to disk after every mutation and
+    /// reloaded on startup — so a restart doesn't drop the mesh.
+    offers_path: Option<PathBuf>,
+    experience_path: Option<PathBuf>,
+}
+
+/// Load a persisted order book, or an empty one if absent/unset/corrupt.
+fn load_vec<T: for<'de> serde::Deserialize<'de>>(path: &Option<PathBuf>) -> Vec<T> {
+    let Some(p) = path else { return Vec::new() };
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Atomically mirror an order book to disk (tmp + rename). No-op when unset.
+fn persist_vec<T: serde::Serialize>(path: &Option<PathBuf>, v: &[T]) {
+    let Some(p) = path else { return };
+    if let Ok(s) = serde_json::to_string(v) {
+        let tmp = p.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, p);
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -85,10 +114,32 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let cli = Cli::parse();
 
+    let (offers_path, experience_path) = match &cli.persist_dir {
+        Some(dir) => {
+            let _ = std::fs::create_dir_all(dir);
+            (
+                Some(PathBuf::from(dir).join("mesh-offers.json")),
+                Some(PathBuf::from(dir).join("mesh-experience.json")),
+            )
+        }
+        None => (None, None),
+    };
+    let offers = load_vec::<InferenceOffer>(&offers_path);
+    let experience = load_vec::<ExperienceBatch>(&experience_path);
+    if cli.persist_dir.is_some() {
+        tracing::info!(
+            "mesh persistence enabled at {} ({} offers, {} experience batches restored)",
+            cli.persist_dir.as_deref().unwrap_or("."),
+            offers.len(),
+            experience.len()
+        );
+    }
     let state = AppState {
-        offers: Arc::new(Mutex::new(Vec::new())),
-        experience: Arc::new(Mutex::new(Vec::new())),
+        offers: Arc::new(Mutex::new(offers)),
+        experience: Arc::new(Mutex::new(experience)),
         signal: Arc::new(FileSignalSource::new(&cli.signal_dir)),
+        offers_path,
+        experience_path,
     };
 
     let mut signal_routes = Router::new()
@@ -150,6 +201,7 @@ fn build_gate(cli: &Cli) -> Result<Option<PaymentGate>> {
 async fn post_offer(State(s): State<AppState>, Json(offer): Json<InferenceOffer>) -> StatusCode {
     if let Ok(mut offers) = s.offers.lock() {
         offers.push(offer);
+        persist_vec(&s.offers_path, offers.as_slice());
         StatusCode::NO_CONTENT
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
@@ -168,7 +220,11 @@ async fn post_quote(
         .min_by_key(|(_, o)| o.price.0)
         .map(|(i, _)| i);
     match idx {
-        Some(i) => Ok(Json(offers.remove(i))),
+        Some(i) => {
+            let offer = offers.remove(i);
+            persist_vec(&s.offers_path, offers.as_slice());
+            Ok(Json(offer))
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -179,6 +235,7 @@ async fn post_exp_offer(
 ) -> StatusCode {
     if let Ok(mut exp) = s.experience.lock() {
         exp.push(batch);
+        persist_vec(&s.experience_path, exp.as_slice());
         StatusCode::NO_CONTENT
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
@@ -197,7 +254,11 @@ async fn post_exp_buy(
         .min_by_key(|(_, b)| b.price.0)
         .map(|(i, _)| i);
     match idx {
-        Some(i) => Ok(Json(exp.remove(i))),
+        Some(i) => {
+            let batch = exp.remove(i);
+            persist_vec(&s.experience_path, exp.as_slice());
+            Ok(Json(batch))
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }

@@ -32,6 +32,12 @@ struct Cli {
     /// `SCEMADEX_RELAY_URL` env var, then `http://localhost:8080`.
     #[arg(long)]
     relay_url: Option<String>,
+
+    /// (feature `pay`) Keypair file used to auto-settle x402 402 responses so
+    /// paid signals/inference are purchased transparently for the agent.
+    #[cfg(feature = "pay")]
+    #[arg(long)]
+    keypair: Option<String>,
 }
 
 /// Resolve the relay URL: CLI flag > `SCEMADEX_RELAY_URL` env > default.
@@ -49,8 +55,18 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let relay_url = resolve_relay_url(cli.relay_url);
-    let relay = RelayClient::new(relay_url);
+    let relay_url = resolve_relay_url(cli.relay_url.clone());
+    #[allow(unused_mut)]
+    let mut relay = RelayClient::new(relay_url);
+
+    // Optional x402 auto-pay: load the payer keypair when built with `pay`.
+    #[cfg(feature = "pay")]
+    if let Some(kp_path) = &cli.keypair {
+        let kp = solana_sdk::signature::read_keypair_file(kp_path)
+            .map_err(|e| anyhow::anyhow!("read keypair {kp_path}: {e}"))?;
+        relay = relay.with_payer(std::sync::Arc::new(kp));
+        tracing::info!("x402 auto-pay enabled (payer loaded from {kp_path})");
+    }
 
     // Best-effort startup probe (non-fatal): the relay may come up after us.
     match relay.health().await {

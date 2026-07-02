@@ -15,6 +15,13 @@ categories = ["command-line-utilities", "api-bindings"]
 name = "scemadex-mcp"
 path = "src/main.rs"
 
+[features]
+default = []
+# `pay`: let the server auto-settle x402 402s (holds a keypair, signs the SPL
+# payment, retries with X-Payment). Off by default keeps the lean, publishable
+# build free of solana-sdk — "lean core, injected power".
+pay = ["dep:scematica-protocol", "dep:solana-sdk"]
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -24,3 +31,8 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Optional x402 auto-pay (feature `pay`). Pulls the pinned solana-sdk — only when
+# explicitly enabled, so the default install stays lean.
+scematica-protocol = { version = "1.11.2", path = "../scematica-protocol", optional = true }
+solana-sdk = { workspace = true, optional = true }

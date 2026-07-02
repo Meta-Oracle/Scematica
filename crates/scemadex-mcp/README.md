@@ -50,4 +50,19 @@ Example client config entry:
 Transport is newline-delimited JSON-RPC 2.0 on stdio (MCP `2024-11-05`). All
 logging goes to stderr; stdout carries only protocol messages.
 
+## Auto-pay (optional `pay` feature)
+
+By default a paid (`402`) signal is surfaced to the agent as x402 payment
+requirements — the agent decides whether to pay. Build with the `pay` feature to
+have the server **settle the payment itself** (sign the SPL transfer, retry with
+the `X-Payment` header) so purchases are transparent:
+
+```bash
+cargo install scemadex-mcp --features pay
+scemadex-mcp --relay-url http://localhost:8080 --keypair ./payer.json
+```
+
+The default build stays lean (no `solana-sdk`); `pay` pulls it in only when you
+ask for it — "lean core, injected power".
+
 Part of the [Scematica](https://github.com/meta-oracle/scematica) suite. MIT.

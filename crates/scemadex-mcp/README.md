@@ -1,5 +1,8 @@
 # scemadex-mcp
 
+<!-- MCP Registry ownership marker — must match `name` in server.json. -->
+mcp-name: io.github.meta-oracle/scemadex-mcp
+
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that
 exposes the **ScemaDEX** agentic-liquidity rail to any MCP-capable LLM agent
 (Claude Desktop, Claude Code, the Agent SDK, and others).

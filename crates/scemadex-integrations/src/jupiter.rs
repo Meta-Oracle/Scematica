@@ -222,7 +222,9 @@ impl JupiterRoutePolicy {
             .lock()
             .ok()
             .and_then(|mut p| p.remove(&intent.digest()));
-        let Some((state, action)) = decision else { return };
+        let Some((state, action)) = decision else {
+            return;
+        };
 
         let ratio = fill_out_raw as f64 / expected_out_raw.max(1) as f64;
         let mut reward = (ratio - 1.0) * 100.0;
@@ -404,8 +406,7 @@ impl VenueExecutor for JupiterVenueExecutor {
             // Prefer the realized fill parsed from the confirmed tx's token-balance
             // meta; fall back to the quoted amount if the tx can't be read.
             let owner = self.owner.to_string();
-            let realized =
-                fetch_realized_out(rpc, &sig, &owner, leg.output_mint.as_str()).await;
+            let realized = fetch_realized_out(rpc, &sig, &owner, leg.output_mint.as_str()).await;
             let amount_out = realized.unwrap_or(parsed.out_amount);
             return Ok(Fill {
                 amount_out: Amount::new(amount_out, 0),
@@ -449,8 +450,14 @@ mod tests {
     #[test]
     fn maps_venue_labels() {
         assert!(matches!(venue_from_label(Some("Raydium")), Venue::Raydium));
-        assert!(matches!(venue_from_label(Some("Orca (Whirlpool)")), Venue::Orca));
-        assert!(matches!(venue_from_label(Some("Meteora DLMM")), Venue::Meteora));
+        assert!(matches!(
+            venue_from_label(Some("Orca (Whirlpool)")),
+            Venue::Orca
+        ));
+        assert!(matches!(
+            venue_from_label(Some("Meteora DLMM")),
+            Venue::Meteora
+        ));
         assert!(matches!(venue_from_label(Some("Lifinity")), Venue::Custom));
         assert!(matches!(venue_from_label(None), Venue::Jupiter));
     }

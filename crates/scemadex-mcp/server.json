@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.meta-oracle/scemadex-mcp",
+  "title": "ScemaDEX — Solana pool intelligence",
+  "description": "Live Solana pool intelligence — reputation, scores, Deep Q* advice — as paid MCP tools (x402).",
+  "version": "0.1.1",
+  "websiteUrl": "https://github.com/meta-oracle/scematica/blob/main/crates/scemadex-mcp/README.md",
+  "repository": {
+    "url": "https://github.com/meta-oracle/scematica",
+    "source": "github",
+    "subfolder": "crates/scemadex-mcp"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "registryBaseUrl": "https://crates.io",
+      "identifier": "scemadex-mcp",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SCEMADEX_RELAY_URL",
+          "description": "Base URL of the scemadex-relay this bridge proxies to. Point it at your public relay (e.g. https://relay.example.fly.dev). Defaults to http://localhost:8080.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "http://localhost:8080"
+        }
+      ]
+    }
+  ]
+}

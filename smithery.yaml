@@ -1,0 +1,39 @@
+# Smithery configuration for the scemadex-mcp server.
+# https://smithery.ai/docs/build/project-config/smithery.yaml
+#
+# This describes the LOCAL (stdio) MCP server that bridges an LLM agent to a
+# running scemadex-relay. The `scemadex-mcp` binary must be on PATH — install it
+# with `cargo install scemadex-mcp` (add `--features pay` for x402 auto-settle).
+#
+# Note: this is a Rust binary in a Cargo workspace, not an npm/pip package, so
+# Smithery's hosted sandbox cannot build it for you — this config is for the
+# local/self-hosted stdio deployment. The canonical listing is the MCP Registry
+# manifest at crates/scemadex-mcp/server.json.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required: []
+    properties:
+      relayUrl:
+        type: string
+        default: "http://localhost:8080"
+        description: >-
+          Base URL of the scemadex-relay to proxy to. Point at your public relay,
+          e.g. https://relay.example.fly.dev
+      keypairPath:
+        type: string
+        description: >-
+          Optional path to a fee-payer keypair JSON. When set (and the binary was
+          built with `--features pay`), the server auto-settles x402 402s instead
+          of handing payment requirements back to the agent.
+  commandFunction:
+    |-
+    config => ({
+      command: 'scemadex-mcp',
+      args: ['--relay-url', config.relayUrl || 'http://localhost:8080']
+        .concat(config.keypairPath ? ['--keypair', config.keypairPath] : []),
+      env: {}
+    })
+  exampleConfig:
+    relayUrl: "https://relay.example.fly.dev"

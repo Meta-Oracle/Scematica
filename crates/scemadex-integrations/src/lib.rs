@@ -15,6 +15,7 @@ use scemadex_sdk::{
 };
 
 pub mod jupiter;
+pub mod pool_scores;
 pub mod scar_profile;
 pub mod signal;
 

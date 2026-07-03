@@ -12,6 +12,9 @@ release/
 *.json.key
 # Never commit wallet or program keypairs from target/deploy
 programs/*/target/
+# Live bot config — contains your RPC api-key and keypair path. Use
+# config.example.toml as the tracked template; keep your real config.toml local.
+/config.toml
 
 # ── Runtime IPC and state files (written/rewritten on every session) ──────────
 # These are file-based IPC between sniper and dashboard processes.

@@ -42,23 +42,35 @@ async fn main() -> anyhow::Result<()> {
     // 3. Real Jupiter quote → solution whose conviction is the agent's.
     let solution = policy.solve(&intent).await?;
     println!("\n── solution (real Jupiter quote, agent conviction) ──");
-    println!("conviction : {:.3}   (from the DQ* value head)", solution.conviction.0);
+    println!(
+        "conviction : {:.3}   (from the DQ* value head)",
+        solution.conviction.0
+    );
     println!("rationale  : {}", solution.rationale);
-    println!("expected   : {} base units out", solution.route.expected_out.raw);
+    println!(
+        "expected   : {} base units out",
+        solution.route.expected_out.raw
+    );
 
     // 4. The bond — and the inference fee — are sized by that conviction.
     let engine = EscrowBondEngine::with_defaults();
     let bond = engine.escrow(&solution).await?;
     println!("\n── bond (conviction-weighted) ──");
     println!("bond       : {} µUSDC escrowed", bond.amount.0);
-    println!("fee        : {} µUSDC (priced by conviction)", engine.quote_fee(solution.conviction).0);
+    println!(
+        "fee        : {} µUSDC (priced by conviction)",
+        engine.quote_fee(solution.conviction).0
+    );
     println!("guarantee  : ≥ {} base units out", bond.min_out_raw);
 
     // 5. Close the reinforcement loop: realized fill vs. the bonded promise.
     //    A Jupiter fill at the quoted amount honors the bond; observe_outcome
     //    rewards the agent (or penalises it on a slash) from the realized result.
     let fill_out = solution.route.expected_out.raw;
-    let fill = Fill { amount_out: Amount::new(fill_out, 0), executed_unix: 0 };
+    let fill = Fill {
+        amount_out: Amount::new(fill_out, 0),
+        executed_unix: 0,
+    };
     let outcome = engine.settle(&bond, &fill).await?;
     policy.observe_outcome(
         &intent,

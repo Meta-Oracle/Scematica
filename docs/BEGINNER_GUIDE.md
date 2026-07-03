@@ -151,8 +151,8 @@ Rust needs Windows build tools to compile code. This is a one-time setup.
 
 ```powershell
 cd "$env:USERPROFILE\Documents"
-git clone https://github.com/Deadsg/scematica.git
-cd scematica
+git clone https://github.com/Meta-Oracle/Scematica.git
+cd Scematica
 ```
 
 You should now see the project files. Type `ls` and press Enter — you should see folders like `crates`, `tools`, and files like `Cargo.toml`.
@@ -706,7 +706,7 @@ Then open **http://localhost:3000** in your browser.
 
 ## Getting Help
 
-- **GitHub Issues:** https://github.com/Deadsg/scematica/issues
+- **GitHub Issues:** https://github.com/Meta-Oracle/Scematica/issues
 - **README.md:** Full technical documentation in the project root
 
 For questions, open a GitHub issue with:

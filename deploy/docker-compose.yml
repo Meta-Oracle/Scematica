@@ -1,0 +1,45 @@
+# Local / self-hosted ScemaDEX relay.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# By default the relay serves signals OPEN (free) and runs the mesh. To turn on
+# x402 pay-per-call, set the env vars below (see deploy/README.md) and the
+# `command` picks them up.
+#
+# The relay reads the bot's signal artifacts (reputation / pool-score / advice)
+# from ./ — run this alongside a live sniper, or point SIGNAL_DIR at a directory
+# where those JSON files land.
+services:
+  relay:
+    build:
+      context: ..                      # repo root — the relay needs the whole workspace
+      dockerfile: deploy/relay.Dockerfile
+    image: scemadex-relay:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - "${SIGNAL_DIR:-..}:/signals"   # where the bot writes its artifacts + mesh persistence
+      - "${KEYPAIR_PATH:-/dev/null}:/payer.json:ro"
+    command:
+      - "--port"
+      - "8080"
+      - "--signal-dir"
+      - "/signals"
+      - "--persist-dir"
+      - "/signals/mesh"
+      # Uncomment the block below (and set PAY_TO / RPC_URL) to enable x402 gating:
+      # - "--pay-to"
+      # - "${PAY_TO}"
+      # - "--keypair"
+      # - "/payer.json"
+      # - "--rpc-url"
+      # - "${RPC_URL}"
+      # - "--price-usdc"
+      # - "${PRICE_USDC:-0.001}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

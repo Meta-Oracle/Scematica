@@ -116,3 +116,80 @@ impl Facilitator {
         Ok(sig.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::build_payment_payload;
+    use crate::types::PaymentRequirements;
+    use solana_sdk::signer::Signer;
+
+    const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    /// A facilitator whose RPC is never contacted — `verify` is pure local
+    /// validation, so `RpcClient::new` (which does not connect) is enough.
+    fn offline_facilitator() -> Facilitator {
+        Facilitator::new(
+            Arc::new(Keypair::new()),
+            Arc::new(RpcClient::new("http://127.0.0.1:1".to_string())),
+            "solana-mainnet",
+        )
+    }
+
+    fn reqs(pay_to: &str) -> PaymentRequirements {
+        PaymentRequirements {
+            scheme: "exact".into(),
+            network: "solana-mainnet".into(),
+            asset: USDC.into(),
+            amount: 1_000,
+            pay_to: pay_to.into(),
+            max_timeout_seconds: 120,
+            extra: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_scheme_before_touching_chain() {
+        let f = offline_facilitator();
+        let payer = Keypair::new();
+        let pay_to = Keypair::new().pubkey().to_string();
+        let mut payload = build_payment_payload(&payer, &reqs(&pay_to), 6).unwrap();
+        payload.scheme = "erc3009".into(); // a non-SVM scheme
+
+        let resp = f.verify(&payload, &reqs(&pay_to));
+        assert!(!resp.is_valid);
+        assert!(resp.invalid_reason.unwrap().contains("scheme"));
+    }
+
+    #[test]
+    fn rejects_network_mismatch() {
+        let f = offline_facilitator();
+        let payer = Keypair::new();
+        let pay_to = Keypair::new().pubkey().to_string();
+        let mut payload = build_payment_payload(&payer, &reqs(&pay_to), 6).unwrap();
+        payload.network = "solana-devnet".into(); // requirements demand mainnet
+
+        let resp = f.verify(&payload, &reqs(&pay_to));
+        assert!(!resp.is_valid);
+        assert!(resp
+            .invalid_reason
+            .unwrap()
+            .to_lowercase()
+            .contains("network"));
+    }
+
+    #[test]
+    fn accepts_a_well_formed_matching_payment() {
+        let f = offline_facilitator();
+        let payer = Keypair::new();
+        let pay_to = Keypair::new().pubkey().to_string();
+        let payload = build_payment_payload(&payer, &reqs(&pay_to), 6).unwrap();
+
+        let resp = f.verify(&payload, &reqs(&pay_to));
+        assert!(resp.is_valid, "reason: {:?}", resp.invalid_reason);
+        assert_eq!(
+            resp.payer.as_deref(),
+            Some(payer.pubkey().to_string().as_str())
+        );
+    }
+}

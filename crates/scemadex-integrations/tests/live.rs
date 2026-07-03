@@ -33,7 +33,10 @@ async fn jupiter_quote_yields_real_solution() {
         solution.route.expected_out.raw > 0,
         "expected_out must be a real, positive quote"
     );
-    assert!(solution.route.splits_valid(), "splits must sum to 10_000 bps");
+    assert!(
+        solution.route.splits_valid(),
+        "splits must sum to 10_000 bps"
+    );
     assert!(
         (0.0..=1.0).contains(&solution.conviction.0),
         "conviction must be normalized"
@@ -65,7 +68,10 @@ async fn dry_execute_reports_quoted_fill_without_submitting() {
         .await
         .expect("dry execute should re-quote and return a fill");
 
-    assert!(fill.amount_out.raw > 0, "dry fill must carry a quoted amount");
+    assert!(
+        fill.amount_out.raw > 0,
+        "dry fill must carry a quoted amount"
+    );
     assert_eq!(
         fill.executed_unix, 0,
         "dry mode must not stamp an execution time (no submission)"

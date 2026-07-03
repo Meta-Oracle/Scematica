@@ -10,6 +10,12 @@ use serde::de::DeserializeOwned;
 
 use scemadex_sdk::{Address, Advice, PoolScore, Reputation, Result, ScemaDexError, SignalSource};
 
+use crate::pool_scores::{PoolScoreFile, POOL_SCORES_FILE};
+
+/// Score returned for a mint the bot has never scored. Neutral midpoint of the
+/// 0–100 scale — "unknown", not "bad".
+const NEUTRAL_POOL_SCORE: f64 = 50.0;
+
 #[derive(serde::Deserialize)]
 struct RepFile {
     #[serde(default)]
@@ -40,6 +46,7 @@ pub struct FileSignalSource {
     dir: PathBuf,
     reputation_file: String,
     advice_file: String,
+    pool_scores_file: String,
 }
 
 impl FileSignalSource {
@@ -49,6 +56,7 @@ impl FileSignalSource {
             dir: dir.into(),
             reputation_file: "scematica-deployer-reputation.json".to_string(),
             advice_file: "scematica-nn-advice.json".to_string(),
+            pool_scores_file: POOL_SCORES_FILE.to_string(),
         }
     }
 
@@ -57,6 +65,12 @@ impl FileSignalSource {
         let s = std::fs::read_to_string(&path)
             .map_err(|e| ScemaDexError::Oracle(format!("read {}: {e}", path.display())))?;
         serde_json::from_str(&s).map_err(|e| ScemaDexError::Oracle(format!("parse {name}: {e}")))
+    }
+
+    /// Read the seeded pool-score map, or an empty map if the file is absent —
+    /// so a relay with no seed data degrades to neutral scores rather than error.
+    fn pool_scores(&self) -> PoolScoreFile {
+        self.read(&self.pool_scores_file).unwrap_or_default()
     }
 }
 
@@ -77,10 +91,17 @@ impl SignalSource for FileSignalSource {
         })
     }
 
-    async fn pool_score(&self, _pool: &Address) -> Result<PoolScore> {
-        // The lean artifact feed has no per-pool score file; return a neutral
-        // baseline. A live pool-scorer feed can replace this implementation.
-        Ok(PoolScore { score: 50.0 })
+    async fn pool_score(&self, pool: &Address) -> Result<PoolScore> {
+        // Served from the seeded `scematica-pool-scores.json` (distilled from the
+        // sniper's own decision log by `pool_scores::seed_pool_scores`). A mint
+        // the bot never scored — or a relay with no seed file — reads neutral.
+        let scores = self.pool_scores();
+        let score = scores
+            .records
+            .get(pool.as_str())
+            .map(|r| r.score)
+            .unwrap_or(NEUTRAL_POOL_SCORE);
+        Ok(PoolScore { score })
     }
 
     async fn advice(&self, _token: &Address) -> Result<Advice> {
@@ -127,5 +148,38 @@ mod tests {
         let rep2 = src.reputation(&other).await.unwrap();
         assert_eq!(rep2.samples, 0);
         assert!((rep2.score - 0.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn serves_seeded_pool_score_and_neutral_for_unknown() {
+        let dir = std::env::temp_dir().join(format!("scemadex-ps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let known = "So11111111111111111111111111111111111111112";
+        std::fs::write(
+            dir.join(POOL_SCORES_FILE),
+            format!(r#"{{"records":{{"{known}":{{"score":83.5,"samples":4}}}}}}"#),
+        )
+        .unwrap();
+
+        let src = FileSignalSource::new(&dir);
+
+        // Seeded mint → its real score.
+        let addr = Address::new(known).unwrap();
+        assert!((src.pool_score(&addr).await.unwrap().score - 83.5).abs() < 1e-9);
+
+        // Unknown mint → neutral baseline, not an error.
+        let unknown = Address::new("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        assert!((src.pool_score(&unknown).await.unwrap().score - NEUTRAL_POOL_SCORE).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn pool_score_is_neutral_when_no_seed_file() {
+        // A relay with no seed data must degrade to neutral, not fail.
+        let dir = std::env::temp_dir().join(format!("scemadex-ps-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = FileSignalSource::new(&dir);
+        let addr = Address::new("So11111111111111111111111111111111111111112").unwrap();
+        assert!((src.pool_score(&addr).await.unwrap().score - NEUTRAL_POOL_SCORE).abs() < 1e-9);
     }
 }

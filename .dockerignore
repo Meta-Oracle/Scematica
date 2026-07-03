@@ -1,0 +1,27 @@
+# Keep the Docker build context small and fast. The relay build only needs the
+# Rust workspace source; everything below is regenerated, huge, or irrelevant.
+target/
+**/target/
+web/node_modules/
+web/.next/
+web/out/
+.git/
+.github/
+.claude/
+.kiro/
+.vscode/
+.idea/
+programs/*/target/
+
+# Never ship secrets or local runtime state into an image layer
+config.toml
+.env
+.env.*
+*.log
+scematica-*.json
+scematica-*.jsonl
+pool-cache.json
+*.lock
+!Cargo.lock
+payer.json
+*.json.key

@@ -1,0 +1,45 @@
+# Fly.io deployment for a PUBLIC scemadex-relay.
+#
+#   fly launch --no-deploy --copy-config --dockerfile deploy/relay.Dockerfile
+#   fly volume create relay_data --size 1        # persistent mesh + signals
+#   fly deploy
+#
+# App name is a placeholder — change `app` before first deploy (must be globally unique).
+app = "scemadex-relay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/relay.Dockerfile"
+
+# The relay stores mesh order-books + signal artifacts under /signals. Mounting a
+# volume there means a restart doesn't drop the network state.
+[mounts]
+  source = "relay_data"
+  destination = "/signals"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false        # a public relay should stay warm for discovery
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "3s"
+    grace_period = "10s"
+    method = "get"
+    path = "/health"
+
+# To run x402-gated instead of open, deploy with the payment flags via
+# `[processes]` override or set them as the machine's CMD. Keep the fee-payer key
+# in a Fly secret + mounted file, never baked into the image.

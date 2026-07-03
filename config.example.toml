@@ -1,0 +1,288 @@
+# ============================================================
+# Scematica Bot Configuration — EXAMPLE TEMPLATE
+# ============================================================
+# Copy this file to `config.toml` and fill in the placeholders:
+#
+#   copy config.example.toml config.toml     (Windows / PowerShell)
+#   cp   config.example.toml config.toml     (macOS / Linux)
+#
+# Then edit the [rpc] and [wallet] sections below with your own values.
+# NEVER commit your real config.toml — it contains your RPC key and points
+# at your keypair. `config.toml` is git-ignored for this reason.
+# ============================================================
+
+[rpc]
+# Get a free/paid key at https://helius.dev (or any Solana RPC provider).
+# Replace YOUR_HELIUS_API_KEY with your actual key in BOTH lines.
+endpoint = "https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY"
+ws_endpoint = "wss://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY"
+commitment = "confirmed"
+
+[wallet]
+# Absolute path to your Solana keypair JSON. Examples:
+#   Windows: "C:\\Users\\you\\.config\\solana\\id.json"
+#   Linux/macOS: "/home/you/.config/solana/id.json"
+# WSL UNC paths are also supported, e.g. "\\\\wsl$\\Ubuntu\\home\\you\\id.json"
+keypair_path = "C:\\Users\\you\\.config\\solana\\id.json"
+
+# ============================================================
+# Sniper Configuration
+# ============================================================
+[sniper]
+enabled = true
+quote_mint = "WSOL"       # WSOL or USDC
+quote_amount = 0.01       # Base amount per snipe (in SOL) — scaled by rate mode multiplier
+buy_delay_ms = 0
+max_buy_retries = 3
+max_sell_retries = 3
+auto_sell = true
+auto_sell_delay_ms = 0
+take_profit_pct = 175.0   # Baseline TP; momentum escalator rides from here
+stop_loss_pct = 10.0
+buy_slippage_pct = 1.0
+sell_slippage_pct = 5.0
+price_check_interval_ms = 250
+price_check_duration_ms = 1800000 # 30 min monitor window
+one_token_at_a_time = true
+use_snipe_list = false
+snipe_list_path = "snipe-list.txt"
+max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
+trailing_stop_loss_pct = 25.0
+partial_tp_pct = 0.0
+partial_tp_trigger = 0.0
+
+# ── Exit Gate ───────────────────────────────────────────────
+momentum_min_peak_pct = 200.0
+velocity_decay_min_pnl_pct = 100.0
+volume_exhaustion_pct = 0.0
+whale_exit_vault_drop_pct = 0.0
+flash_crash_pct = 0.0
+profit_lock_checks = 0
+
+# ── Momentum Escalation ─────────────────────────────────────
+momentum_hold = true
+momentum_max_escalations = 12
+momentum_escalation_factor = 1.8
+momentum_escalation_threshold_pct = 5.0
+momentum_pullback_exit_pct = 15.0
+adaptive_pullback = false
+max_concurrent_positions = 1
+cooldown_after_losses = 0
+cooldown_minutes = 20
+daily_loss_limit_sol = 0.05
+max_drawdown_pct = 20.0
+blacklist_path = "blacklist.txt"
+
+# ── Pool Quality Gate ───────────────────────────────────────
+min_pool_score = 92
+require_moonshot_confirmation = false
+moonshot_min_score = 92.0
+moonshot_min_inflow_sol_per_sec = 0.5
+moonshot_min_growth_pct = 1.0
+moonshot_min_growth_sol = 0.01
+moonshot_min_pumpfun_score = 90.0
+moonshot_min_historical_velocity_sol_per_sec = 2.618
+elite_pool_mode = false
+elite_min_score = 92.0
+elite_min_signal_count = 2
+elite_min_pool_size_sol = 20.0
+elite_max_pool_size_sol = 150.0
+elite_max_age_secs = 30
+elite_min_inflow_sol_per_sec = 0.5
+elite_min_pumpfun_score = 90.0
+elite_min_historical_velocity_sol_per_sec = 2.618
+elite_min_buy_pressure_ratio = 0.0001
+elite_require_live_or_pregrad = true
+
+# ── Kelly Position Sizing ───────────────────────────────────
+kelly_sizing = false
+kelly_fraction = 0.25
+kelly_lookback = 20
+kelly_min_trades = 10
+
+# ── Session Heat Cooldown ───────────────────────────────────
+session_heat_losses = 3
+session_heat_window_secs = 1800
+session_heat_cooldown_mins = 15
+
+# ── Pump.fun Trending Monitor ───────────────────────────────
+pumpfun_trending_enabled = true
+pumpfun_trending_score = 80.0
+pumpfun_min_curve_pct = 75.0
+pumpfun_window_secs = 120
+pumpfun_max_migration_age_secs = 90
+pumpfun_min_recent_buys = 5
+pumpfun_min_net_buy_sol = 0.75
+pumpfun_max_last_buy_age_secs = 12
+
+# ── Time-of-Day Controls ────────────────────────────────────
+time_of_day_weighting = true
+blocked_hours_utc = [1, 5, 9, 18, 21]
+weekend_mode = "Bearish"
+weekday_mode = "Balanced"
+
+# ── Buy Improvements ────────────────────────────────────────
+min_sol_reserve = 0.02
+confirmation_window_ms = 200
+pool_quality_sizing = true
+check_interval_acceleration = true
+
+# ── Builder & SuperBuilder Modes ────────────────────────────
+profit_first_mode = true
+profit_first_floor_pct = 25.0
+wallet_target_sol = 0.15
+
+# ── Risk Breakers ───────────────────────────────────────────
+ath_drawdown_pct = 20.0
+grief_loss_window_secs = 300
+grief_loss_limit_sol = 0.03
+
+# ── Multi-RPC Failover ──────────────────────────────────────
+extra_rpc_endpoints = []            # Add backup RPC URLs here
+
+tiered_partial_tp = false
+
+no_pump_timeout_secs = 15
+no_pump_min_gain_pct = 8.0
+peak_stagnation_secs = 300
+peak_stagnation_min_pnl_pct = 175.0
+
+min_dump_hold_secs = 90
+copy_wallets = []              # Wallet addresses to copy-trade
+
+[sniper.filters]
+check_interval_ms = 1000
+check_duration_ms = 12000
+consecutive_matches = 1
+check_mint_renounced = true
+check_freezable = true
+check_burned = true
+check_mutable = true
+check_socials = false
+filter_cache_ttl_secs = 30
+min_pool_size = 20.0
+max_pool_size = 150.0
+check_name = true
+check_volume = true
+min_volume_txns = 1
+check_liquidity_depth = true
+max_price_impact_pct = 6.0
+check_holder_concentration = false
+max_top10_holder_pct = 99.0
+check_liquidity_momentum = false
+check_cross_pool_correlation = true
+max_deployer_rugs_24h = 2
+check_deployer_wallet_age = false
+deployer_min_age_hours = 24
+
+# ============================================================
+# Rate Modes: 7 Trading Profiles
+# Switch live on the dashboard with keys [1]–[7].
+# ============================================================
+[[sniper.rate_modes]]
+name = "Micro"
+order = 1
+quote_amount = 0.001
+wallet_pct = 0.3
+take_profit_pct = 50.0
+stop_loss_pct = 8.0
+momentum_max_escalations = 3
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Bearish"
+order = 2
+quote_amount = 0.003
+wallet_pct = 0.5
+take_profit_pct = 75.0
+stop_loss_pct = 10.0
+momentum_max_escalations = 6
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Safe"
+order = 3
+quote_amount = 0.005
+wallet_pct = 0.8
+take_profit_pct = 100.0
+stop_loss_pct = 12.0
+momentum_max_escalations = 8
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Balanced"
+order = 4
+quote_amount = 0.01
+wallet_pct = 1.5
+take_profit_pct = 175.0
+stop_loss_pct = 12.0
+momentum_max_escalations = 12
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Aggressive"
+order = 5
+quote_amount = 0.02
+wallet_pct = 3.0
+take_profit_pct = 300.0
+stop_loss_pct = 15.0
+momentum_max_escalations = 12
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Degen"
+order = 6
+quote_amount = 0.04
+wallet_pct = 6.0
+take_profit_pct = 450.0
+stop_loss_pct = 25.0
+momentum_max_escalations = 12
+enabled = true
+
+[[sniper.rate_modes]]
+name = "Moon"
+order = 7
+quote_amount = 0.1
+wallet_pct = 12.0
+take_profit_pct = 100000.0
+stop_loss_pct = 60.0
+momentum_max_escalations = 12
+enabled = true
+
+# Active rate mode (one of the names above). Dashboard hotkeys [1–7] override live.
+active_mode_name = "Safe"
+
+# ============================================================
+# Arbitrage Configuration
+# ============================================================
+[arb]
+enabled = true
+start_mint = "WSOL"
+start_amount = 0.005
+min_profit_lamports = 10000
+max_hops = 3
+dexes = ["Raydium", "Orca", "Meteora"]
+pool_dir = "pools"
+amount_levels = 4
+
+# ============================================================
+# Execution Configuration
+# ============================================================
+[execution]
+executor = "default"      # default | jito
+custom_fee_sol = 0.001
+compute_unit_limit = 400000
+compute_unit_price = 500000
+compute_unit_price_hard_cap = 2000000
+loaded_accounts_data_size_limit = 12500000
+skip_preflight = true
+jito_url = "https://mainnet.block-engine.jito.wtf"
+
+# ============================================================
+# Alert / Notification Configuration
+# ============================================================
+[alerts]
+telegram_bot_token = ""        # Set to enable Telegram alerts
+telegram_chat_id = ""
+discord_webhook_url = ""       # Set to enable Discord alerts
+desktop_notifications = true   # Windows toast notifications on buy/sell

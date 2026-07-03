@@ -18,8 +18,8 @@
 //! overall **failure rate** and **severity** from real data and keep the relative
 //! archetype mix as a prior — scaling, not inventing, the distribution.
 
-use scematica_nn::ScarProfile;
 use scemadex_sdk::{BondLedger, ScarRecord};
+use scematica_nn::ScarProfile;
 
 /// Reference slashed collateral (micro-USDC) that maps to "typical" severity.
 /// Scars far above this push the simulated peak-before-rug and volatility up.
@@ -43,8 +43,7 @@ pub fn scar_profile_from_market(ledger: &BondLedger, scars: &[ScarRecord]) -> Sc
     }
 
     let observed_fail = (ledger.slashed as f64 / ledger.total() as f64).clamp(0.0, 0.98);
-    let base_fail =
-        base.rug_rate + base.honeypot_rate + base.pump_dump_rate + base.slow_bleed_rate;
+    let base_fail = base.rug_rate + base.honeypot_rate + base.pump_dump_rate + base.slow_bleed_rate;
     // Scale factor to retarget the total failure rate onto the observed one,
     // keeping the archetype proportions from the prior.
     let scale = if base_fail > 1e-9 {
@@ -57,8 +56,11 @@ pub fn scar_profile_from_market(ledger: &BondLedger, scars: &[ScarRecord]) -> Sc
     let severity = if scars.is_empty() {
         1.0
     } else {
-        let mean_collateral: f64 =
-            scars.iter().map(|s| s.slashed_collateral.0 as f64).sum::<f64>() / scars.len() as f64;
+        let mean_collateral: f64 = scars
+            .iter()
+            .map(|s| s.slashed_collateral.0 as f64)
+            .sum::<f64>()
+            / scars.len() as f64;
         (mean_collateral / REFERENCE_COLLATERAL).clamp(0.5, 2.5)
     };
 
@@ -116,17 +118,26 @@ mod tests {
     fn higher_slash_rate_raises_failure_rates() {
         // 8 slashed of 10 → observed fail 0.8; the profile's archetype rates are
         // rescaled so their total tracks 0.8 while preserving their proportions.
-        let ledger = BondLedger { honored: 2, slashed: 8 };
+        let ledger = BondLedger {
+            honored: 2,
+            slashed: 8,
+        };
         let p = scar_profile_from_market(&ledger, &[scar(5_000_000)]);
         let total = p.rug_rate + p.honeypot_rate + p.pump_dump_rate + p.slow_bleed_rate;
-        assert!((total - 0.8).abs() < 0.02, "total failure rate should track observed 0.8, got {total}");
+        assert!(
+            (total - 0.8).abs() < 0.02,
+            "total failure rate should track observed 0.8, got {total}"
+        );
         // Proportions preserved: rug is still the largest failure mode.
         assert!(p.rug_rate >= p.honeypot_rate);
     }
 
     #[test]
     fn severe_scars_deepen_peaks_and_vol() {
-        let ledger = BondLedger { honored: 5, slashed: 5 };
+        let ledger = BondLedger {
+            honored: 5,
+            slashed: 5,
+        };
         let mild = scar_profile_from_market(&ledger, &[scar(2_500_000)]);
         let harsh = scar_profile_from_market(&ledger, &[scar(12_500_000)]);
         assert!(harsh.mean_peak_before_rug_pct > mild.mean_peak_before_rug_pct);

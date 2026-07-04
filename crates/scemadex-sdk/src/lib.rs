@@ -81,6 +81,7 @@ pub mod mesh;
 pub mod oracle;
 pub mod policy;
 pub mod primitives;
+pub mod promise;
 pub mod route;
 pub mod scar;
 pub mod settlement;
@@ -121,6 +122,7 @@ pub use mesh::{ExperienceBatch, InferenceOffer, LocalPeerMarket, PeerMarket};
 pub use oracle::{Advice, PoolScore, Reputation, SignalSource};
 pub use policy::{Conviction, ReferenceRoutePolicy, RoutePolicy, Solution};
 pub use primitives::{Address, Amount, Usdc};
+pub use promise::{Measurement, Outcome, Promise};
 pub use route::{Fill, Route, RouteLeg, Venue};
 pub use scar::{certify_scar, LocalScarMarket, ScarMarket, ScarRecord};
 pub use settlement::{

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, ScemaDexError};
 use crate::policy::{Conviction, Solution};
 use crate::primitives::Usdc;
+use crate::promise::{Outcome, Promise};
 use crate::route::Fill;
 
 /// A performance bond escrowed by the policy against its own promise.
@@ -25,6 +26,15 @@ pub struct Bond {
     pub min_out_raw: u64,
     /// Latest unix second by which the fill must land (`0` = unbounded in scaffold).
     pub deadline_unix: u64,
+}
+
+impl Bond {
+    /// The guarantee this bond encodes, as a domain-agnostic [`Promise`]. A swap
+    /// bond promises a minimum output; this is the bridge that lets the swap path
+    /// settle through the same [`Outcome`] seam as any other domain.
+    pub fn promise(&self) -> Promise {
+        Promise::MinOutput(self.min_out_raw)
+    }
 }
 
 /// The result of settling a bond against a realized fill.
@@ -65,11 +75,8 @@ impl BondEngine for NoBondEngine {
     }
 
     async fn settle(&self, bond: &Bond, fill: &Fill) -> Result<BondOutcome> {
-        Ok(if fill.amount_out.raw >= bond.min_out_raw {
-            BondOutcome::Honored
-        } else {
-            BondOutcome::Slashed
-        })
+        // The swap fill judges the bond's promise — the generic seam, specialized.
+        Ok(fill.evaluate(&bond.promise()))
     }
 }
 
@@ -188,11 +195,7 @@ impl BondEngine for EscrowBondEngine {
             .lock()
             .map_err(|_| ScemaDexError::Bond("escrow lock poisoned".into()))?
             .remove(&bond.intent_digest);
-        let outcome = if fill.amount_out.raw >= bond.min_out_raw {
-            BondOutcome::Honored
-        } else {
-            BondOutcome::Slashed
-        };
+        let outcome = fill.evaluate(&bond.promise());
         let mut ledger = self
             .ledger
             .lock()

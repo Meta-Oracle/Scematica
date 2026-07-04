@@ -71,8 +71,10 @@
 
 pub mod bond;
 pub mod client;
+pub mod coordinator;
 pub mod counter;
 pub mod error;
+pub mod insurance;
 pub mod intent;
 pub mod lineage;
 pub mod mesh;
@@ -81,6 +83,7 @@ pub mod policy;
 pub mod primitives;
 pub mod route;
 pub mod scar;
+pub mod settlement;
 pub mod teach;
 pub mod venue;
 pub mod zkbond;
@@ -108,8 +111,10 @@ pub use bond::{
     Bond, BondConfig, BondEngine, BondLedger, BondOutcome, EscrowBondEngine, NoBondEngine,
 };
 pub use client::ScemaDex;
+pub use coordinator::{DisputeCoordinator, SettlementReport};
 pub use counter::{Challenge, ChallengeSettlement, CounterMarket, CounterStats};
 pub use error::{Result, ScemaDexError};
+pub use insurance::{InsurancePool, InsuranceTerms, Payout, Policy, PremiumConfig};
 pub use intent::{Constraints, Intent, Objective, Side};
 pub use lineage::{LineageEntry, LineageLedger, RoyaltySplit};
 pub use mesh::{ExperienceBatch, InferenceOffer, LocalPeerMarket, PeerMarket};
@@ -118,6 +123,10 @@ pub use policy::{Conviction, ReferenceRoutePolicy, RoutePolicy, Solution};
 pub use primitives::{Address, Amount, Usdc};
 pub use route::{Fill, Route, RouteLeg, Venue};
 pub use scar::{certify_scar, LocalScarMarket, ScarMarket, ScarRecord};
+pub use settlement::{
+    BondState, Clock, FinalizeReason, ManualClock, SettlementConfig, SettlementMachine,
+    SlashDistribution, SlashRouting, SystemClock,
+};
 pub use teach::{
     ReferenceTeacher, TeachAnswer, TeachReceipt, TeachTerms, Teacher, TeachingEngine,
 };

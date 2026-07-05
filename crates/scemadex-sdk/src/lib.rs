@@ -74,6 +74,7 @@ pub mod client;
 pub mod coordinator;
 pub mod counter;
 pub mod error;
+pub mod forecast;
 pub mod insurance;
 pub mod intent;
 pub mod lineage;
@@ -87,6 +88,7 @@ pub mod scar;
 pub mod settlement;
 pub mod teach;
 pub mod venue;
+pub mod zkbackend;
 pub mod zkbond;
 
 /// Concrete wiring of the SDK traits to the real Scematica Deep Q* agent. Only
@@ -115,6 +117,7 @@ pub use client::ScemaDex;
 pub use coordinator::{DisputeCoordinator, SettlementReport};
 pub use counter::{Challenge, ChallengeSettlement, CounterMarket, CounterStats};
 pub use error::{Result, ScemaDexError};
+pub use forecast::ForecastVenue;
 pub use insurance::{InsurancePool, InsuranceTerms, Payout, Policy, PremiumConfig};
 pub use intent::{Constraints, Intent, Objective, Side};
 pub use lineage::{LineageEntry, LineageLedger, RoyaltySplit};
@@ -133,6 +136,10 @@ pub use teach::{
     ReferenceTeacher, TeachAnswer, TeachReceipt, TeachTerms, Teacher, TeachingEngine,
 };
 pub use venue::{SimVenueExecutor, SwapInstructions, VenueExecutor};
+pub use zkbackend::{
+    prove as prove_inference, DenseLayer, LayerShape, OpenedCell, SpotCheckConfig, SpotCheckProof,
+    TracedMlp,
+};
 pub use zkbond::{
     CommittableModel, InferenceAttestation, InferenceProofSystem, ModelCommitment,
     ReexecutionProofSystem, VerifiedBond,

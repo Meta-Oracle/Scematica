@@ -173,6 +173,21 @@ impl<C: Clock> DisputeCoordinator<C> {
         self.report(digest, outcome)
     }
 
+    /// Finalize a `Provisional` (or `Disputed`) bond deterministically from an
+    /// authoritative external signal — a ground-truth oracle read, or a verified
+    /// zkML / re-execution proof (Primitive I). Collapses the dispute window with
+    /// reason [`FinalizeReason::ProofVerified`], settles the counter-market against
+    /// `outcome`, and reports.
+    ///
+    /// This is the seam a **forecast** resolves through (ground truth is the oracle)
+    /// and the seam a **succinct proof** resolves through (the proof is the oracle) —
+    /// either can flip a provisional honor to `Slashed` without waiting out the
+    /// window, which is exactly how a real zk backend shrinks `W` toward zero.
+    pub fn resolve_via_oracle(&self, digest: &str, outcome: BondOutcome) -> Result<SettlementReport> {
+        let outcome = self.machine.resolve_with_proof(digest, outcome)?;
+        self.report(digest, outcome)
+    }
+
     /// Finalize every matured, undisputed bond and report each. Disputed bonds are
     /// left for [`resolve`](Self::resolve).
     pub fn sweep(&self) -> Result<Vec<SettlementReport>> {

@@ -10,6 +10,10 @@ release/
 .env.local
 .env.*.local
 *.json.key
+# npm auth tokens — never commit a repo-local .npmrc containing _authToken.
+# The real token lives in the global user config (~/.npmrc), outside the repo.
+.npmrc
+**/.npmrc
 # Never commit wallet or program keypairs from target/deploy
 programs/*/target/
 # Live bot config — contains your RPC api-key and keypair path. Use

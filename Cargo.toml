@@ -20,9 +20,10 @@ members = [
     "tools/pool-seeder",
     "agent-playground",
 ]
-# The on-chain program uses Anchor and must be built separately with `anchor build`
+# The on-chain programs use Anchor and must be built separately with `anchor build`
 exclude = [
     "programs/scematica-swap",
+    "programs/scemadex-escrow",
 ]
 resolver = "2"
 

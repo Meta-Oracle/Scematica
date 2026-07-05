@@ -1,6 +1,15 @@
 # ScemaDEX Settlement v2 — the Optimistic Conviction-Settlement State Machine
 
-**Status:** design (no code yet) · **Author:** design pass 2026-07-04 · **Scope:** `scemadex-sdk` core + downstream crates
+**Status:** ✅ implemented (all 7 steps) · **Author:** design pass 2026-07-04, built 2026-07-05 · **Scope:** `scemadex-sdk` core + downstream crates
+
+> **Build status (2026-07-05).** All seven sequencing steps below are shipped:
+> 1–3 & 5 (`settlement.rs`, `coordinator.rs`, `promise.rs`, `insurance.rs`), plus
+> **4** the full `forecast.rs` `ForecastVenue` executor (+ `examples/forecast_bond.rs`),
+> **6** the `programs/scemadex-escrow` Anchor program and the
+> `scemadex_settle::OptimisticUsdcSettler` four-way on-chain settler, and
+> **7** the transparent succinct `zkbackend.rs` spot-check proof system
+> (+ `examples/zk_settlement.rs`, resolving a bond via `resolve_via_oracle`).
+> `scemadex-sdk`: 80 unit tests + 2 doctests; `scemadex-settle`: 5 tests; clippy clean.
 
 ## Why this document exists
 

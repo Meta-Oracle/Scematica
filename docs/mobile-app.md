@@ -79,11 +79,18 @@ cd android; .\gradlew.bat assembleDebug
 #   → android/app/build/outputs/apk/debug/app-debug.apk
 
 # Release APK/AAB (see signing below):
-.\gradlew.bat assembleRelease   # app-release.apk (dApp Store + direct download)
-.\gradlew.bat bundleRelease     # app-release.aab (if you also list on Play)
+.\gradlew.bat assembleRelease   # → scematica.apk (dApp Store + direct download)
+.\gradlew.bat bundleRelease     # → .aab (if you also list on Play)
 ```
 
-`npm run mobile:apk` chains export → sync → `assembleRelease`.
+`npm run mobile:apk` chains export → sync → `assembleRelease`. The release output is
+named **`scematica.apk`** (via the `applicationVariants` rename in `app/build.gradle`) and
+lands at `web/android/app/build/outputs/apk/release/scematica.apk`.
+
+> A signed `scematica.apk` (v1+v2 schemes, verified) has already been built in this repo
+> and copied to the project root and `web/public/scematica.apk`. The release keystore is
+> `web/android/scematica-release.jks` with creds in `web/android/keystore.properties`
+> (both git-ignored) — **back up the keystore; losing it means you can't ship updates.**
 
 ## Signing (release)
 
@@ -117,20 +124,28 @@ adapter so on Android it routes through MWA.
 ## Distribution
 
 ### A. Direct `.apk` download (ship today)
-Host `app-release.apk` on the site (`web/public/` or a release asset) with a QR + install
-note ("enable install from unknown sources"). Zero gatekeeping, instant. No auto-update —
-bump `versionCode` and re-host for updates.
+`scematica.apk` is already at the project root and `web/public/scematica.apk` (served at
+`/scematica.apk`). Because it's git-ignored, host it as a **GitHub Release asset** (the
+canonical, versioned home) and/or un-ignore `web/public/scematica.apk` to serve it from
+the dashboard. Add a QR + "enable install from unknown sources" note. No auto-update —
+bump `versionCode` in `app/build.gradle` and re-host for each update.
 
 ### B. Solana dApp Store (the adoption channel)
 Crypto-native, **no auto-trading/financial policy restriction** (unlike Google Play), and
-it reaches exactly the Solana-trader audience.
+it reaches exactly the Solana-trader audience. A starter config is scaffolded at
+`web/android/dapp-store/config.yaml` (app metadata + descriptions pre-filled; `address`
+fields are filled by the CLI; drop store assets in `dapp-store/media/`).
 1. `npm i -g @solana-mobile/dapp-store-cli`
-2. Prepare `config.yaml` (name, icon, screenshots, the signed APK, an Android package
-   `io.scematica.app`).
-3. `dapp-store create publisher` / `create app` / `create release` (mints publisher +
-   app + release NFTs on mainnet from a publisher keypair — needs a little SOL).
-4. `dapp-store publish submit` → review.
+2. `npx dapp-store init` to refresh the schema, then merge the scaffold's values.
+3. `dapp-store create publisher -k <publisher-keypair> -u <rpc>` then `create app` then
+   `create release` (mints publisher/app/release NFTs on mainnet from a publisher keypair
+   — needs a little SOL; writes the `address` fields back into `config.yaml`).
+4. `dapp-store publish submit -k <keypair> -u <rpc> --requestor-is-authorized ...` → review.
    Full flow: <https://docs.solanamobile.com/dapp-publishing/intro>.
+
+**What still needs you:** a funded publisher keypair (a little mainnet SOL), a 512×512
+app icon + phone screenshots in `dapp-store/media/`, and running the four commands above.
+Everything else — signed APK, package id, metadata — is done.
 
 ### C. Google Play (optional, monitor-only)
 Play's financial-services/crypto policy will likely reject an auto-trading remote. If you

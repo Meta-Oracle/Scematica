@@ -165,34 +165,34 @@ browser, only encoded into the QR). The app parses that string (paste today; in-
 scan is a small follow-up with `@capacitor/barcode-scanner`). Pairing is stored in
 `localStorage` and every panel re-fetches against the paired instance.
 
-## Push notifications (wired — needs Firebase to activate)
+## Push notifications (opt-in — NOT in the default build)
 
-Both halves ship:
+> ⚠️ **Why it's opt-in:** `@capacitor/push-notifications` pulls in Firebase Messaging,
+> whose `FirebaseInitProvider` runs at process startup and requires a valid
+> `google-services.json` / `google_app_id`. Bundling it **without** that config makes the
+> app **crash instantly on launch**. So the default build ships **without** the plugin
+> (crash-free); `web/lib/push.ts` is a no-op stub. Turn push on deliberately, per operator.
 
-- **Client** (`web/lib/push.ts`, called from `MobileGate` after pairing) — on native it
-  requests permission, registers via `@capacitor/push-notifications`, and POSTs the FCM
-  token to the paired instance (`/api/push/register`, token-gated). No-op on web.
-- **Server** (`scematica-api`) — stores device tokens in `scematica-push-tokens.json`; a
-  background task tails `scematica-trades.jsonl` and pushes on each new trade
-  (`POST /api/push/test` sends a test). Both are **no-ops until `FCM_SERVER_KEY` is set**.
+The **server half already ships** and is inert until configured: `scematica-api` exposes
+`POST /api/push/register` + `/api/push/test` (token-gated), stores device tokens in
+`scematica-push-tokens.json`, and a background task tails `scematica-trades.jsonl` to push
+on each new trade — all **no-ops until `FCM_SERVICE_ACCOUNT` (or legacy `FCM_SERVER_KEY`)
+is set**. It sends via **FCM HTTP v1** (RS256 JWT → cached OAuth2 token →
+`/v1/projects/<id>/messages:send`).
 
-The **Gradle side is already wired** — the Capacitor android project conditionally
-applies `com.google.gms.google-services` when `google-services.json` is present
-(`android/app/build.gradle`), and the classpath ships in `android/build.gradle`. The
-server sends via **FCM HTTP v1** (modern, service-account based — not the deprecated
-legacy key). Activation:
-1. Create a Firebase project, add an Android app (`io.scematica.app`), download
-   `google-services.json` → `web/android/app/` (git-ignored). Rebuild the APK.
-2. Create a **service account** (Firebase console → Project settings → Service accounts
-   → *Generate new private key*), put the JSON on the box, and point the API at it:
-   `FCM_SERVICE_ACCOUNT=C:\path\to\service-account.json`. Restart `scematica-api`.
-3. Pair a device, then verify:
+To enable push end-to-end:
+1. `cd web && npm i @capacitor/push-notifications`.
+2. Create a Firebase project, add an Android app (`io.scematica.app`), download
+   `google-services.json` → `web/android/app/` (git-ignored). The Capacitor android
+   project already conditionally applies `com.google.gms.google-services` when that file
+   is present, so no Gradle edits are needed.
+3. Restore the real `initPush()` body in `web/lib/push.ts` (the implementation is kept in
+   the file's header comment).
+4. Create a **service account** (Firebase console → Project settings → Service accounts →
+   *Generate new private key*), put the JSON on the box, and point the API at it:
+   `FCM_SERVICE_ACCOUNT=C:\path\to\service-account.json`; restart `scematica-api`.
+5. `npm run mobile:apk`, reinstall, pair a device, then verify:
    `curl -H "Authorization: Bearer $TOKEN" -X POST <base>/api/push/test`.
-
-`scematica-api` mints and caches an OAuth2 access token from the service account (RS256
-JWT → `oauth2.googleapis.com/token`) and sends one v1 message per registered device. The
-legacy server key (`FCM_SERVER_KEY`) is still honored as a fallback but is deprecated —
-prefer `FCM_SERVICE_ACCOUNT`.
 
 ## Caveats
 

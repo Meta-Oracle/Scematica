@@ -137,26 +137,19 @@ its next check.
 
 ---
 
-## Step 6 — Turn on notifications (optional, advanced)
+## Step 6 — Turn on notifications (optional, advanced — not in the default app)
 
-You can get a phone notification on every new trade — even with the app closed. This one
-takes a bit of setup because it uses Google Firebase:
+The standard app **does not** include push notifications — on purpose. (Notifications need
+Google Firebase, and bundling them without a Firebase account makes the app crash on
+launch, so we leave them out to keep the app rock‑solid.)
 
-1. Create a free **Firebase** project, add an Android app with package `io.scematica.app`,
-   and download the `google-services.json` file into `web/android/app/`, then rebuild the
-   app (`npm run mobile:apk`).
-2. In Firebase, create a **service account key** (Project settings → Service accounts →
-   Generate new private key) and save the JSON on your computer.
-3. Start the API pointing at it:
-
-   ```powershell
-   $env:SCEMATICA_API_TOKEN  = "your-password"
-   $env:FCM_SERVICE_ACCOUNT  = "C:\path\to\service-account.json"
-   cargo run --release --bin api
-   ```
-
-Open the app once while paired — it will ask permission to send notifications. After that,
-new trades ping your phone. (Full details in [mobile-app.md](mobile-app.md).)
+If you want a phone alert on every new trade — even with the app closed — it's a developer
+step that requires your own free Firebase project and **rebuilding the app**. The full
+recipe is in [mobile-app.md → "Push notifications"](mobile-app.md). In short: create a
+Firebase project + a service account, add `google-services.json`, re‑install the
+`@capacitor/push-notifications` plugin, restore the push code, set `FCM_SERVICE_ACCOUNT`
+on the API, and rebuild. Most people can happily skip this — just keep the app open when
+you want to watch.
 
 ---
 

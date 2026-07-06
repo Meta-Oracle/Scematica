@@ -27,7 +27,6 @@
     "@capacitor/core": "^6.1.2",
     "@capacitor/android": "^6.1.2",
     "@capacitor/preferences": "^6.0.2",
-    "@capacitor/push-notifications": "^6.0.2",
     "qrcode.react": "^4.1.0"
   },
   "devDependencies": {

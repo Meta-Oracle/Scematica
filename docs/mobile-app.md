@@ -157,16 +157,22 @@ Both halves ship:
   background task tails `scematica-trades.jsonl` and pushes on each new trade
   (`POST /api/push/test` sends a test). Both are **no-ops until `FCM_SERVER_KEY` is set**.
 
-To activate:
+The **Gradle side is already wired** — the Capacitor android project conditionally
+applies `com.google.gms.google-services` when `google-services.json` is present
+(`android/app/build.gradle`), and the classpath ships in `android/build.gradle`. So
+activation is just:
 1. Create a Firebase project, add an Android app (`io.scematica.app`), download
-   `google-services.json` → `web/android/app/`.
-2. Get the **Cloud Messaging server key** and set `FCM_SERVER_KEY` on the instance
-   running `scematica-api`.
-3. Restart the API; pair a device; `curl -H "Authorization: Bearer $TOKEN" -X POST
-   <base>/api/push/test` to verify.
+   `google-services.json` → `web/android/app/` (git-ignored). Rebuild the APK.
+2. Set the messaging credential and restart `scematica-api`; pair a device;
+   `curl -H "Authorization: Bearer $TOKEN" -X POST <base>/api/push/test` to verify.
 
-(Legacy FCM HTTP is used for simplicity — migrate to HTTP v1 / a service account when you
-scale beyond a personal fleet.)
+> **Server-send caveat (be honest):** `scematica-api` currently sends via the **legacy
+> FCM HTTP** API (`FCM_SERVER_KEY`). Google turned that endpoint down in mid-2024, so a
+> **new** Firebase project has no legacy server key — the client half (device
+> registration) works, but the server won't deliver until you swap `fcm_send()` to **FCM
+> HTTP v1** (a service-account JSON → OAuth2 access token → `POST
+> /v1/projects/<id>/messages:send`). That's a self-contained change in `main.rs`; it's
+> the one remaining piece to make push end-to-end on a fresh project.
 
 ## Caveats
 

@@ -5,6 +5,10 @@ full remote: live metrics, pools, trades, PnL, NN status, logs **and** control (
 mode, dump, rate mode, high-speed, moon-chase, builder mode). Distributed on the
 **Solana dApp Store** and as a **direct-download `.apk`**.
 
+> **Just want to run the app, not build it?** See the plain-English
+> [Mobile Beginner's Guide](mobile-beginners-guide.md) — install, pair, and use, with no
+> coding. This page is the developer build/ship runbook.
+
 ## The one hard rule
 
 The sniper does **not** run inside the `.apk`. It is `solana-sdk` + a persistent Helius

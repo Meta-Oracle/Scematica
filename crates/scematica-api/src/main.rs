@@ -634,17 +634,31 @@ fn add_push_token(token: &str) -> usize {
     tokens.len()
 }
 
-/// Send one notification to every registered device. Returns false (no-op) when
-/// `FCM_SERVER_KEY` is unset or there are no devices.
+/// True when push delivery is configured — a service account (HTTP v1) or a legacy key.
+fn fcm_configured() -> bool {
+    std::env::var("FCM_SERVICE_ACCOUNT").map(|s| !s.is_empty()).unwrap_or(false)
+        || std::env::var("FCM_SERVER_KEY").map(|s| !s.is_empty()).unwrap_or(false)
+}
+
+/// Send one notification to every registered device. Prefers **FCM HTTP v1** (service
+/// account at `FCM_SERVICE_ACCOUNT`); falls back to the **legacy** server key
+/// (`FCM_SERVER_KEY`, deprecated). No-op when neither is set or no devices registered.
 async fn fcm_send(title: &str, body: &str, data: Value) -> bool {
-    let key = match std::env::var("FCM_SERVER_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => return false,
-    };
     let tokens = push_tokens();
     if tokens.is_empty() {
         return false;
     }
+    if let Some(sa) = load_service_account() {
+        return fcm_send_v1(&sa, &tokens, title, body, &data).await;
+    }
+    fcm_send_legacy(&tokens, title, body, &data).await
+}
+
+async fn fcm_send_legacy(tokens: &[String], title: &str, body: &str, data: &Value) -> bool {
+    let key = match std::env::var("FCM_SERVER_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => return false,
+    };
     let payload = json!({
         "registration_ids": tokens,
         "notification": { "title": title, "body": body },
@@ -660,10 +674,138 @@ async fn fcm_send(title: &str, body: &str, data: Value) -> bool {
     {
         Ok(r) => r.status().is_success(),
         Err(e) => {
-            tracing::warn!("fcm send failed: {e}");
+            tracing::warn!("fcm legacy send failed: {e}");
             false
         }
     }
+}
+
+// ── FCM HTTP v1: service account → OAuth2 access token → per-token send ──────────
+
+struct ServiceAccount {
+    client_email: String,
+    private_key: String,
+    project_id: String,
+    token_uri: String,
+}
+
+fn load_service_account() -> Option<ServiceAccount> {
+    let path = std::env::var("FCM_SERVICE_ACCOUNT").ok().filter(|p| !p.is_empty())?;
+    let v: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    Some(ServiceAccount {
+        client_email: v.get("client_email")?.as_str()?.to_string(),
+        private_key: v.get("private_key")?.as_str()?.to_string(),
+        project_id: v.get("project_id")?.as_str()?.to_string(),
+        token_uri: v
+            .get("token_uri")
+            .and_then(|s| s.as_str())
+            .unwrap_or("https://oauth2.googleapis.com/token")
+            .to_string(),
+    })
+}
+
+#[derive(Serialize)]
+struct JwtClaims<'a> {
+    iss: &'a str,
+    scope: &'a str,
+    aud: &'a str,
+    iat: u64,
+    exp: u64,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Cached `(access_token, expiry_unix)`. FCM access tokens live ~1h; refresh early.
+static FCM_TOKEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, u64)>>> =
+    std::sync::OnceLock::new();
+
+async fn fcm_access_token(sa: &ServiceAccount) -> Option<String> {
+    let cache = FCM_TOKEN.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(g) = cache.lock() {
+        if let Some((tok, exp)) = g.as_ref() {
+            if now_secs() + 60 < *exp {
+                return Some(tok.clone());
+            }
+        }
+    }
+    let now = now_secs();
+    let claims = JwtClaims {
+        iss: &sa.client_email,
+        scope: "https://www.googleapis.com/auth/firebase.messaging",
+        aud: &sa.token_uri,
+        iat: now,
+        exp: now + 3600,
+    };
+    let key = match jsonwebtoken::EncodingKey::from_rsa_pem(sa.private_key.as_bytes()) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("fcm: bad service-account private_key: {e}");
+            return None;
+        }
+    };
+    let jwt = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &key,
+    )
+    .ok()?;
+    let resp: Value = reqwest::Client::new()
+        .post(&sa.token_uri)
+        .form(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+            ("assertion", jwt.as_str()),
+        ])
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let token = resp.get("access_token")?.as_str()?.to_string();
+    if let Ok(mut g) = cache.lock() {
+        *g = Some((token.clone(), now + 3300));
+    }
+    Some(token)
+}
+
+async fn fcm_send_v1(
+    sa: &ServiceAccount,
+    tokens: &[String],
+    title: &str,
+    body: &str,
+    data: &Value,
+) -> bool {
+    let access = match fcm_access_token(sa).await {
+        Some(t) => t,
+        None => return false,
+    };
+    let url = format!(
+        "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+        sa.project_id
+    );
+    let client = reqwest::Client::new();
+    let mut any = false;
+    // v1 sends one message per token; `data` must be a string→string map.
+    for dev in tokens {
+        let msg = json!({
+            "message": {
+                "token": dev,
+                "notification": { "title": title, "body": body },
+                "data": data,
+            }
+        });
+        match client.post(&url).bearer_auth(&access).json(&msg).send().await {
+            Ok(r) if r.status().is_success() => any = true,
+            Ok(r) => tracing::debug!("fcm v1 non-2xx for a device: {}", r.status()),
+            Err(e) => tracing::warn!("fcm v1 send failed: {e}"),
+        }
+    }
+    any
 }
 
 fn summarize_trade(v: &Value) -> String {
@@ -705,8 +847,8 @@ fn read_range(path: &Path, start: u64, end: u64) -> String {
 /// current end so a restart doesn't replay history. No-op without `FCM_SERVER_KEY`.
 async fn trade_notifier() {
     use tokio::time::{sleep, Duration};
-    if std::env::var("FCM_SERVER_KEY").map(|k| k.is_empty()).unwrap_or(true) {
-        info!("push: FCM_SERVER_KEY unset — trade notifications disabled");
+    if !fcm_configured() {
+        info!("push: FCM_SERVICE_ACCOUNT / FCM_SERVER_KEY unset — trade notifications disabled");
         return;
     }
     let path = artifact_path("scematica-trades.jsonl");
@@ -746,7 +888,7 @@ async fn trade_notifier() {
         } else {
             ("Scematica".to_string(), format!("{count} new trades — latest: {latest}"))
         };
-        let _ = fcm_send(&title, &body, json!({ "kind": "trade", "count": count })).await;
+        let _ = fcm_send(&title, &body, json!({ "kind": "trade", "count": count.to_string() })).await;
     }
 }
 

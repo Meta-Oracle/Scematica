@@ -159,20 +159,21 @@ Both halves ship:
 
 The **Gradle side is already wired** — the Capacitor android project conditionally
 applies `com.google.gms.google-services` when `google-services.json` is present
-(`android/app/build.gradle`), and the classpath ships in `android/build.gradle`. So
-activation is just:
+(`android/app/build.gradle`), and the classpath ships in `android/build.gradle`. The
+server sends via **FCM HTTP v1** (modern, service-account based — not the deprecated
+legacy key). Activation:
 1. Create a Firebase project, add an Android app (`io.scematica.app`), download
    `google-services.json` → `web/android/app/` (git-ignored). Rebuild the APK.
-2. Set the messaging credential and restart `scematica-api`; pair a device;
-   `curl -H "Authorization: Bearer $TOKEN" -X POST <base>/api/push/test` to verify.
+2. Create a **service account** (Firebase console → Project settings → Service accounts
+   → *Generate new private key*), put the JSON on the box, and point the API at it:
+   `FCM_SERVICE_ACCOUNT=C:\path\to\service-account.json`. Restart `scematica-api`.
+3. Pair a device, then verify:
+   `curl -H "Authorization: Bearer $TOKEN" -X POST <base>/api/push/test`.
 
-> **Server-send caveat (be honest):** `scematica-api` currently sends via the **legacy
-> FCM HTTP** API (`FCM_SERVER_KEY`). Google turned that endpoint down in mid-2024, so a
-> **new** Firebase project has no legacy server key — the client half (device
-> registration) works, but the server won't deliver until you swap `fcm_send()` to **FCM
-> HTTP v1** (a service-account JSON → OAuth2 access token → `POST
-> /v1/projects/<id>/messages:send`). That's a self-contained change in `main.rs`; it's
-> the one remaining piece to make push end-to-end on a fresh project.
+`scematica-api` mints and caches an OAuth2 access token from the service account (RS256
+JWT → `oauth2.googleapis.com/token`) and sends one v1 message per registered device. The
+legacy server key (`FCM_SERVER_KEY`) is still honored as a fallback but is deprecated —
+prefer `FCM_SERVICE_ACCOUNT`.
 
 ## Caveats
 

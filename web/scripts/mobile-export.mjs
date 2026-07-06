@@ -25,6 +25,13 @@ process.on('SIGINT', () => { restore(); process.exit(1) })
 
 try {
   if (existsSync(apiDir)) renameSync(apiDir, stash)
+  // Clean prior build output. A `.next` left over from a `standalone` build (or whose
+  // files OneDrive has demoted to cloud placeholders) makes `next build` throw
+  // `EINVAL: readlink`, so always start the export from a clean tree.
+  for (const dir of ['.next', 'out']) {
+    const p = join(root, dir)
+    if (existsSync(p)) rmSync(p, { recursive: true, force: true })
+  }
   console.log('[mobile-export] building static export (MOBILE_EXPORT=1)…')
   execSync('next build', { stdio: 'inherit', env: { ...process.env, MOBILE_EXPORT: '1' } })
   console.log('[mobile-export] done → out/')

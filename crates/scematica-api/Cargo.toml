@@ -16,6 +16,9 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-# FCM push delivery (legacy HTTP server-key API). rustls (no openssl); this crate has
-# no solana-sdk in its tree, so reqwest 0.11 + rustls 0.21 is conflict-free here.
+# FCM push delivery (HTTP v1 via service account, with a legacy server-key fallback).
+# rustls (no openssl); this crate has no solana-sdk in its tree, so reqwest 0.11 +
+# rustls 0.21 is conflict-free here.
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+# RS256 JWT signing for the FCM HTTP v1 service-account OAuth2 exchange.
+jsonwebtoken = "9"

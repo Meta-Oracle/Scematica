@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { apiFetch } from '@/lib/net'
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ const BUILDER_INFO: Record<BuilderMode, BuilderInfo> = {
 
 async function postControl(endpoint: string, body: object) {
   try {
-    await fetch(endpoint, {
+    await apiFetch(endpoint, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body),
@@ -80,7 +81,7 @@ export function SniperControls() {
     let alive = true
     async function poll() {
       try {
-        const r = await fetch('/api/controls')
+        const r = await apiFetch('/api/controls')
         if (!alive || !r.ok) return
         const d = await r.json().catch(() => null)
         if (d) setState(d as ControlState)

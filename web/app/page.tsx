@@ -6,6 +6,7 @@ import { GatedControls }    from '@/components/GatedControls'
 import { HealthBadge }      from '@/components/HealthBadge'
 import { Links }            from '@/components/Links'
 import { LogStream }        from '@/components/LogStream'
+import { MobileGate }       from '@/components/MobileGate'
 import { MetricsPanel }     from '@/components/MetricsPanel'
 import { NNStatus }         from '@/components/NNStatus'
 import { OpenPositions }    from '@/components/OpenPositions'
@@ -34,6 +35,7 @@ function Row2({ left, right, height = 'h-72' }: {
 
 export default function Home() {
   return (
+    <MobileGate>
     <div className="flex flex-col min-h-screen">
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -128,5 +130,6 @@ export default function Home() {
 
       <Links />
     </div>
+    </MobileGate>
   )
 }

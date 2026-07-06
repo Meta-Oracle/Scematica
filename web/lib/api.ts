@@ -11,13 +11,15 @@ import type {
   TxTelemetry,
 } from './types'
 
-// All requests go to the Next.js proxy route (/api/*), which forwards
-// server-side to the Rust API. The browser never touches port 3001 directly.
+import { apiFetch } from './net'
+
+// On web, requests go to the same-origin Next.js proxy (/api/*), which forwards
+// server-side to the Rust API. On a paired mobile build, `apiFetch` retargets them at
+// the operator's own instance and attaches the bearer token (see lib/net.ts).
 async function get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
   try {
-    const url = new URL(path, typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
-    if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v))
-    const res = await fetch(url.toString(), { cache: 'no-store' })
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    const res = await apiFetch(path + qs)
     if (!res.ok) return null
     return res.json()
   } catch {

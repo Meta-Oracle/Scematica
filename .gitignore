@@ -70,6 +70,17 @@ web/.env.local
 web/out/
 *.tsbuildinfo
 
+# ── Mobile (Capacitor / Android) build outputs + signing secrets ──────────────
+web/android/.gradle/
+web/android/build/
+web/android/app/build/
+web/android/local.properties
+web/android/keystore.properties
+web/android/app/src/main/assets/public/
+web/android/app/google-services.json
+*.jks
+*.keystore
+
 # ── Session-artifact docs (Claude-generated per-session reports, not source truth) ──
 ANALYSIS_REPORT.md
 BUILD_STATUS.md

@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "mobile:export": "node scripts/mobile-export.mjs",
+    "mobile:sync": "npm run mobile:export && cap sync android",
+    "mobile:open": "cap open android",
+    "mobile:signing": "node scripts/setup-signing.mjs",
+    "mobile:apk": "npm run mobile:sync && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@dexterai/x402": "^3.11.1",
@@ -18,9 +23,15 @@
     "@solana/wallet-adapter-react": "^0.15.35",
     "@solana/wallet-adapter-react-ui": "^0.9.35",
     "@solana/wallet-adapter-phantom": "^0.9.24",
-    "@solana/spl-token": "^0.4.9"
+    "@solana/spl-token": "^0.4.9",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/preferences": "^6.0.2",
+    "@capacitor/push-notifications": "^6.0.2",
+    "qrcode.react": "^4.1.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
     "@types/node": "^20",
     "@types/react": "18.2.79",
     "@types/react-dom": "18.2.25",

@@ -40,11 +40,15 @@
 //! `num_queries` to drive that arbitrarily low — the cost/soundness dial an
 //! optimistic window can't offer.
 //!
-//! **Not** in scope (what a SNARK backend — risc0 / SP1 / halo2 — adds behind this
-//! same role): zero-knowledge *hiding* of the weights, a proof size independent of
-//! the trace, and cryptographic binding to a registered model commitment. Those slot
-//! in without touching [`crate::coordinator`] — this module is the transparent,
-//! trusted-setup-free reference that already makes refutation succinct.
+//! **Not** in scope here (what a SNARK backend adds): zero-knowledge *hiding* of the
+//! weights, a proof size independent of the trace, and cryptographic binding to a
+//! registered model commitment. Those now ship in [`crate::zksnark`] (the `snark`
+//! feature) — an arkworks **Groth16 / BN254** backend behind the very same
+//! [`crate::zkproof::InferenceProof`] role: a ~128-byte constant-size proof, weights
+//! hidden behind the verifying key, model identity = VK hash. It slots in without
+//! touching [`crate::coordinator`] — this module remains the transparent,
+//! trusted-setup-free reference that already makes refutation succinct, and stays the
+//! default because it needs no per-model setup.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -8,8 +8,13 @@
 > **6** the `programs/scemadex-escrow` Anchor program and the
 > `scemadex_settle::OptimisticUsdcSettler` four-way on-chain settler, and
 > **7** the transparent succinct `zkbackend.rs` spot-check proof system
-> (+ `examples/zk_settlement.rs`, resolving a bond via `resolve_via_oracle`).
-> `scemadex-sdk`: 80 unit tests + 2 doctests; `scemadex-settle`: 5 tests; clippy clean.
+> (+ `examples/zk_settlement.rs`, resolving a bond via `resolve_via_oracle`), now
+> joined by a **real zk-SNARK backend** — `zksnark.rs`, arkworks Groth16/BN254 behind
+> the shared `zkproof::InferenceProof` role (`snark` feature, default-off), with a
+> ~128-byte constant-size proof, weight-hiding zero-knowledge, and model-identity =
+> VK hash (+ `examples/snark_settlement.rs`).
+> `scemadex-sdk`: 89 unit tests + 2 doctests (7 SNARK, feature-gated); `scemadex-settle`:
+> 5 tests; clippy clean (default and `--features snark`).
 
 ## Why this document exists
 
@@ -155,9 +160,12 @@ primitives were built to plug into.
   collateral (not just fees) back up the experience lineage — upstream teachers share
   downstream losses, aligning incentives symmetrically.
 - **I · zkML bonds** — a succinct or re-execution proof resolves **Disputed →
-  Finalized(ProofVerified)** deterministically, collapsing the window. Today's
-  `ReexecutionProofSystem` is the optimistic resolver; a real zk backend (risc0/SP1)
-  drops in behind the same `InferenceProofSystem` seam and shrinks `W` toward zero.
+  Finalized(ProofVerified)** deterministically, collapsing the window. `ReexecutionProofSystem`
+  is the optimistic resolver; the transparent `zkbackend` and the **real arkworks
+  Groth16/BN254 `zksnark` backend** both drop in behind the shared
+  `zkproof::InferenceProof` role and shrink `W` toward zero — the SNARK adding
+  constant proof size, weight-hiding ZK, and VK-hash model identity. (risc0/SP1 would
+  slot behind the identical role.)
 - **J · Bond insurance/reinsurance (NEW)** — see below; the state machine's slash-routing
   is its revenue and its liability.
 
@@ -219,7 +227,9 @@ independently shippable and testable.
 5. **Insurance primitive J** + reputation-priced premiums + `SlashRouting` sinks
    (Direction 3 core).
 6. **`scemadex-escrow` Anchor program + mainnet settler** (Direction 1 — closes the loop).
-7. **Real zk backend** behind `InferenceProofSystem` to shrink `W` (Direction 3 stretch).
+7. **Real zk backend** behind the `zkproof::InferenceProof` role to shrink `W`
+   (Direction 3 stretch) — ✅ shipped as `zksnark.rs` (arkworks Groth16/BN254, `snark`
+   feature) alongside the transparent `zkbackend`, plus `examples/snark_settlement.rs`.
 
 ## Backward compatibility
 

@@ -18,13 +18,19 @@
 //! POST /api/controls/high-speed       { "enabled": bool }
 //! POST /api/controls/moon-chase       { "enabled": bool }
 //! POST /api/controls/builder-mode     { "mode": "off"|"growth"|"builder"|"super_builder" }
+//! POST /api/push/register             { "token": "<fcm>", "platform"?: "android" }  (gated)
+//! POST /api/push/test                 send a test push to registered devices        (gated)
 //! GET  /health                        API server liveness
+//!
+//! Control + push POSTs are gated by `SCEMATICA_API_TOKEN` (Bearer). Trade push
+//! delivery is enabled by `FCM_SERVER_KEY`; both are no-ops when unset.
 
 use axum::http::StatusCode;
 use axum::{
-    extract::Query,
-    http::Method,
-    response::{IntoResponse, Json},
+    extract::{Query, Request},
+    http::{HeaderMap, Method},
+    middleware::{self, Next},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -548,6 +554,216 @@ async fn api_health() -> &'static str {
     "ok"
 }
 
+// ── auth ────────────────────────────────────────────────────────────────────────
+//
+// The control POSTs mutate a live sniper (pause buys, force-sell, dump at min_out=0),
+// so a self-hosted operator exposing this API to a phone over the network MUST gate
+// them. When `SCEMATICA_API_TOKEN` is set, every control route requires the token via
+// `Authorization: Bearer <token>` (or `X-Scematica-Token: <token>`); the token is the
+// pairing secret the mobile app stores. When it is unset the gate is open, preserving
+// the local-dev / same-host default. Read routes are unaffected — front them with a
+// reverse proxy if the whole instance must be private.
+
+fn present_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or_else(|| {
+            headers
+                .get("x-scematica-token")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        })
+}
+
+async fn require_token(headers: HeaderMap, req: Request, next: Next) -> Result<Response, StatusCode> {
+    match std::env::var("SCEMATICA_API_TOKEN") {
+        Ok(expected) if !expected.is_empty() => {
+            // Constant-ish comparison is overkill for a LAN pairing secret, but reject
+            // cleanly on any mismatch or absence.
+            if present_token(&headers).as_deref() == Some(expected.as_str()) {
+                Ok(next.run(req).await)
+            } else {
+                Err(StatusCode::UNAUTHORIZED)
+            }
+        }
+        _ => Ok(next.run(req).await), // no token configured → open (local dev)
+    }
+}
+
+// ── push notifications (FCM) ────────────────────────────────────────────────────
+//
+// The single biggest retention lever for the companion app: alert the operator on new
+// pools / fills / PnL with the app closed. Devices register their FCM token (gated,
+// so only paired phones enrol); a background task tails the sniper's trade log and
+// pushes on each new trade. Everything is a no-op unless `FCM_SERVER_KEY` is set, so
+// the default local build is unaffected. Legacy HTTP server-key API — migrate to FCM
+// HTTP v1 (OAuth service account) when you outgrow it.
+
+const FCM_ENDPOINT: &str = "https://fcm.googleapis.com/fcm/send";
+const PUSH_TOKENS_FILE: &str = "scematica-push-tokens.json";
+
+#[derive(Deserialize)]
+struct PushRegisterBody {
+    token: String,
+    #[serde(default)]
+    platform: Option<String>,
+}
+
+fn push_tokens() -> Vec<String> {
+    read_json_file(PUSH_TOKENS_FILE)
+        .get("tokens")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+fn add_push_token(token: &str) -> usize {
+    let mut tokens = push_tokens();
+    if !tokens.iter().any(|t| t == token) {
+        tokens.push(token.to_string());
+        // Bound the store so a leaked endpoint can't grow it without limit.
+        if tokens.len() > 200 {
+            let excess = tokens.len() - 200;
+            tokens.drain(0..excess);
+        }
+        atomic_write(PUSH_TOKENS_FILE, &json!({ "tokens": tokens }));
+    }
+    tokens.len()
+}
+
+/// Send one notification to every registered device. Returns false (no-op) when
+/// `FCM_SERVER_KEY` is unset or there are no devices.
+async fn fcm_send(title: &str, body: &str, data: Value) -> bool {
+    let key = match std::env::var("FCM_SERVER_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => return false,
+    };
+    let tokens = push_tokens();
+    if tokens.is_empty() {
+        return false;
+    }
+    let payload = json!({
+        "registration_ids": tokens,
+        "notification": { "title": title, "body": body },
+        "data": data,
+        "priority": "high",
+    });
+    match reqwest::Client::new()
+        .post(FCM_ENDPOINT)
+        .header("Authorization", format!("key={key}"))
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(r) => r.status().is_success(),
+        Err(e) => {
+            tracing::warn!("fcm send failed: {e}");
+            false
+        }
+    }
+}
+
+fn summarize_trade(v: &Value) -> String {
+    let sym = v.get("symbol").and_then(|s| s.as_str()).unwrap_or("token");
+    let action = v
+        .get("action")
+        .or_else(|| v.get("side"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let pnl = v
+        .get("pnl_pct")
+        .or_else(|| v.get("pnl"))
+        .and_then(|p| p.as_f64());
+    match (action.is_empty(), pnl) {
+        (false, Some(p)) => format!("{} {} {:+.1}%", action.to_uppercase(), sym, p),
+        (false, None) => format!("{} {}", action.to_uppercase(), sym),
+        (true, Some(p)) => format!("{} {:+.1}%", sym, p),
+        (true, None) => sym.to_string(),
+    }
+}
+
+fn read_range(path: &Path, start: u64, end: u64) -> String {
+    use std::io::Read;
+    let mut f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = vec![0u8; end.saturating_sub(start) as usize];
+    if f.read_exact(&mut buf).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Watches the trade log and pushes on each new appended trade. Starts from the log's
+/// current end so a restart doesn't replay history. No-op without `FCM_SERVER_KEY`.
+async fn trade_notifier() {
+    use tokio::time::{sleep, Duration};
+    if std::env::var("FCM_SERVER_KEY").map(|k| k.is_empty()).unwrap_or(true) {
+        info!("push: FCM_SERVER_KEY unset — trade notifications disabled");
+        return;
+    }
+    let path = artifact_path("scematica-trades.jsonl");
+    let mut offset = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    info!("push: notifier watching {} from offset {offset}", path.display());
+    loop {
+        sleep(Duration::from_secs(3)).await;
+        let len = match fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(_) => continue,
+        };
+        if len < offset {
+            offset = 0; // rotated / truncated
+        }
+        if len == offset {
+            continue;
+        }
+        let chunk = read_range(&path, offset, len);
+        offset = len;
+        let mut count = 0usize;
+        let mut latest = String::new();
+        for line in chunk.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                latest = summarize_trade(&v);
+                count += 1;
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        let (title, body) = if count == 1 {
+            ("Scematica trade".to_string(), latest)
+        } else {
+            ("Scematica".to_string(), format!("{count} new trades — latest: {latest}"))
+        };
+        let _ = fcm_send(&title, &body, json!({ "kind": "trade", "count": count })).await;
+    }
+}
+
+async fn push_register_handler(Json(b): Json<PushRegisterBody>) -> impl IntoResponse {
+    if b.token.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "empty token" })));
+    }
+    let count = add_push_token(b.token.trim());
+    info!("push: device registered ({count} total, platform {:?})", b.platform);
+    (StatusCode::OK, Json(json!({ "registered": true, "count": count })))
+}
+
+async fn push_test_handler() -> impl IntoResponse {
+    let sent = fcm_send("Scematica", "Test push — you're paired \u{2705}", json!({ "kind": "test" })).await;
+    (StatusCode::OK, Json(json!({ "sent": sent })))
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -564,6 +780,21 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
+    // Control (write) + push routes — token-gated when SCEMATICA_API_TOKEN is set.
+    let gated = Router::new()
+        .route("/api/controls/sell-mode", post(sell_mode_handler))
+        .route("/api/controls/dump-mode", post(dump_mode_handler))
+        .route("/api/controls/rate-mode", post(rate_mode_handler))
+        .route("/api/controls/high-speed", post(high_speed_handler))
+        .route("/api/controls/moon-chase", post(moon_chase_handler))
+        .route("/api/controls/builder-mode", post(builder_mode_handler))
+        .route("/api/push/register", post(push_register_handler))
+        .route("/api/push/test", post(push_test_handler))
+        .route_layer(middleware::from_fn(require_token));
+
+    // Background: push a notification on each new trade (no-op without FCM_SERVER_KEY).
+    tokio::spawn(trade_notifier());
+
     let app = Router::new()
         .route("/health", get(api_health))
         .route("/api/metrics", get(metrics_handler))
@@ -578,12 +809,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/intelligence", get(intelligence_handler))
         .route("/api/health", get(health_handler))
         .route("/api/controls", get(controls_get_handler))
-        .route("/api/controls/sell-mode", post(sell_mode_handler))
-        .route("/api/controls/dump-mode", post(dump_mode_handler))
-        .route("/api/controls/rate-mode", post(rate_mode_handler))
-        .route("/api/controls/high-speed", post(high_speed_handler))
-        .route("/api/controls/moon-chase", post(moon_chase_handler))
-        .route("/api/controls/builder-mode", post(builder_mode_handler))
+        .merge(gated)
         .layer(cors);
 
     let port: u16 = std::env::var("PORT")

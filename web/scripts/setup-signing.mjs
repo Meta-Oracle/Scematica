@@ -34,9 +34,12 @@ if (!existsSync(props)) {
 }
 
 let src = readFileSync(gradle, 'utf8')
+let changed = false
+
 if (src.includes(MARKER)) {
-  console.log('[signing] build.gradle already patched — nothing to do.')
-  process.exit(0)
+  console.log('[signing] signing block already present — skipping.')
+} else {
+  changed = true
 }
 
 const loader = `${MARKER}
@@ -60,18 +63,38 @@ const signingBlock = `    signingConfigs {
     }
 `
 
-// Prepend the properties loader above the `android {` block.
-src = src.replace(/android\s*\{/, `${loader}android {`)
-
-// Insert signingConfigs right after the `android {` opening brace.
-src = src.replace(/android\s*\{\n/, (m) => `${m}${signingBlock}`)
-
-// Point the release buildType at the signing config.
-if (/buildTypes\s*\{\s*release\s*\{/.test(src)) {
-  src = src.replace(/(buildTypes\s*\{\s*release\s*\{)/, `$1\n            signingConfig signingConfigs.release`)
-} else {
-  console.warn('[signing] could not find buildTypes.release — add `signingConfig signingConfigs.release` manually.')
+if (!src.includes(MARKER)) {
+  // Prepend the properties loader above the `android {` block.
+  src = src.replace(/android\s*\{/, `${loader}android {`)
+  // Insert signingConfigs right after the `android {` opening brace.
+  src = src.replace(/android\s*\{\n/, (m) => `${m}${signingBlock}`)
+  // Point the release buildType at the signing config.
+  if (/buildTypes\s*\{\s*release\s*\{/.test(src)) {
+    src = src.replace(/(buildTypes\s*\{\s*release\s*\{)/, `$1\n            signingConfig signingConfigs.release`)
+  } else {
+    console.warn('[signing] could not find buildTypes.release — add `signingConfig signingConfigs.release` manually.')
+  }
 }
 
-writeFileSync(gradle, src)
-console.log('[signing] patched android/app/build.gradle → release signing wired.')
+// Name the release artifact scematica.apk (not app-release.apk).
+const NAME_MARKER = '// scematica-apk-name'
+if (!src.includes(NAME_MARKER)) {
+  src += `\n${NAME_MARKER}
+android.applicationVariants.all { variant ->
+    if (variant.buildType.name == "release") {
+        variant.outputs.all { output ->
+            output.outputFileName = "scematica.apk"
+        }
+    }
+}
+`
+  changed = true
+  console.log('[signing] release output name set to scematica.apk')
+}
+
+if (changed) {
+  writeFileSync(gradle, src)
+  console.log('[signing] patched android/app/build.gradle.')
+} else {
+  console.log('[signing] build.gradle already fully patched — nothing to do.')
+}

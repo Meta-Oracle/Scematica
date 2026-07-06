@@ -70,3 +70,12 @@ try {
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
+
+// scematica-apk-name: ship the release build as scematica.apk (not app-release.apk).
+android.applicationVariants.all { variant ->
+    if (variant.buildType.name == "release") {
+        variant.outputs.all { output ->
+            output.outputFileName = "scematica.apk"
+        }
+    }
+}

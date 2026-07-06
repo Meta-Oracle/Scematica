@@ -90,6 +90,13 @@ pub mod teach;
 pub mod venue;
 pub mod zkbackend;
 pub mod zkbond;
+pub mod zkproof;
+
+/// A real zk-SNARK (arkworks Groth16 / BN254) proof-of-inference backend behind the
+/// [`zkproof::InferenceProof`] role. Requires the `snark` feature (heavy, default-off).
+#[cfg(feature = "snark")]
+#[cfg_attr(docsrs, doc(cfg(feature = "snark")))]
+pub mod zksnark;
 
 /// Concrete wiring of the SDK traits to the real Scematica Deep Q* agent. Only
 /// compiled with the `scematica` feature; the default published crate carries no
@@ -140,6 +147,9 @@ pub use zkbackend::{
     prove as prove_inference, DenseLayer, LayerShape, OpenedCell, SpotCheckConfig, SpotCheckProof,
     TracedMlp,
 };
+pub use zkproof::{InferenceProof, SNARK_SOUNDNESS};
+#[cfg(feature = "snark")]
+pub use zksnark::{ProvenModel, SnarkConfig, SnarkInferenceProof};
 pub use zkbond::{
     CommittableModel, InferenceAttestation, InferenceProofSystem, ModelCommitment,
     ReexecutionProofSystem, VerifiedBond,

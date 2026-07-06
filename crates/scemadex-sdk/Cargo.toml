@@ -43,6 +43,24 @@ tokio = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
+# Optional: a REAL zk-SNARK backend (the `snark` feature) — arkworks Groth16 over
+# BN254. Pure Rust, in-process setup/prove/verify (no RISC-V guest toolchain), so
+# it runs under `cargo test`. Pinned to the 0.4 line: stable `ark-relations` R1CS
+# API (0.5+ migrated toward gr1cs) and `rand 0.8` matching the workspace. These are
+# heavy and DEFAULT-OFF, so the standard `cargo build`/`test` never pulls them and
+# there is no chance of a zeroize/rustls clash with the bot's pinned solana stack —
+# the conflict only exists if solana + arkworks are unified, which a default build
+# never does. Verify this backend with `cargo test -p scemadex-sdk --features snark`.
+ark-bn254 = { version = "0.4", optional = true, default-features = false, features = ["curve"] }
+ark-groth16 = { version = "0.4", optional = true, default-features = false }
+ark-relations = { version = "0.4", optional = true, default-features = false }
+ark-r1cs-std = { version = "0.4", optional = true, default-features = false }
+ark-ff = { version = "0.4", optional = true, default-features = false }
+ark-ec = { version = "0.4", optional = true, default-features = false }
+ark-snark = { version = "0.4", optional = true, default-features = false }
+ark-serialize = { version = "0.4", optional = true, default-features = false }
+ark-std = { version = "0.4", optional = true, default-features = false }
+
 [features]
 # `cli` is on by default so `cargo install scemadex-sdk` yields a runnable
 # `scemadex` viewer out of the box. Library embedders who want the lean trait
@@ -58,6 +76,18 @@ scematica = ["dep:scematica-nn"]
 ai = ["dep:reqwest"]
 # Networked PeerMarket client (RemotePeerMarket) over an HTTP/JSON relay.
 net = ["dep:reqwest"]
+# A real zk-SNARK proof-of-inference backend (arkworks Groth16 / BN254) behind the
+# same `InferenceProof` role as the transparent `zkbackend`. Default-off (heavy dep
+# tree). See `src/zksnark.rs` and `examples/snark_settlement.rs`.
+snark = [
+    "dep:ark-bn254", "dep:ark-groth16", "dep:ark-relations", "dep:ark-r1cs-std",
+    "dep:ark-ff", "dep:ark-ec", "dep:ark-snark", "dep:ark-serialize", "dep:ark-std",
+    "dep:rand",
+]
+
+[[example]]
+name = "snark_settlement"
+required-features = ["snark"]
 
 [dev-dependencies]
 tokio = { workspace = true }

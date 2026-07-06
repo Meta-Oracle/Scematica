@@ -80,6 +80,8 @@ web/android/app/src/main/assets/public/
 web/android/app/google-services.json
 *.jks
 *.keystore
+*.apk
+*.aab
 
 # ── Session-artifact docs (Claude-generated per-session reports, not source truth) ──
 ANALYSIS_REPORT.md

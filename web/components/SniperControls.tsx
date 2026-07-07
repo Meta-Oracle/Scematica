@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { apiFetch } from '@/lib/net'
+import { apiFetch, isNative } from '@/lib/net'
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -100,6 +100,18 @@ export function SniperControls() {
   useEffect(() => { stateRef.current = state }, [state])
   const editingParamsUntil = useRef(0)
   const paramsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Beginner ⇄ Pro UI mode (persisted; friendly by default on mobile) ────────
+  const [uiMode, setUiModeState] = useState<'beginner' | 'pro'>('pro')
+  useEffect(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('scematica.uimode') : null
+    if (stored === 'beginner' || stored === 'pro') setUiModeState(stored)
+    else setUiModeState(isNative() ? 'beginner' : 'pro')
+  }, [])
+  const setUiMode = useCallback((m: 'beginner' | 'pro') => {
+    setUiModeState(m)
+    try { window.localStorage.setItem('scematica.uimode', m) } catch {}
+  }, [])
 
   // ── poll live state every 2 s ───────────────────────────────────────────────
   useEffect(() => {
@@ -230,17 +242,102 @@ export function SniperControls() {
       <div className="panel-header justify-between">
         <span>Sniper Controls</span>
         <div className="flex items-center gap-3">
-          {lastKey && (
+          {uiMode === 'pro' && lastKey && (
             <span className="text-scema-red-hi text-xs font-bold animate-fade-in font-mono">
               [{lastKey.toUpperCase()}]
             </span>
           )}
-          <span className="text-scema-dim text-xs hidden sm:inline">
-            S·D·H·M·R · 1-8 · O·G·J·K
-          </span>
+          {uiMode === 'pro' && (
+            <span className="text-scema-dim text-xs hidden md:inline">
+              S·D·H·M·R · 1-8 · O·G·J·K
+            </span>
+          )}
+          {/* Beginner ⇄ Pro toggle */}
+          <div className="flex border border-scema-border text-xs overflow-hidden">
+            <button
+              onClick={() => setUiMode('beginner')}
+              className={`px-2 py-0.5 tracking-wide ${uiMode === 'beginner' ? 'bg-scema-green/15 text-scema-green' : 'text-scema-dim hover:text-scema-muted'}`}
+            >Beginner</button>
+            <button
+              onClick={() => setUiMode('pro')}
+              className={`px-2 py-0.5 tracking-wide ${uiMode === 'pro' ? 'bg-scema-red/15 text-scema-red-hi' : 'text-scema-dim hover:text-scema-muted'}`}
+            >Pro</button>
+          </div>
         </div>
       </div>
 
+      {uiMode === 'beginner' ? (
+        /* ── Beginner: friendly, slider-first essentials ─────────────────── */
+        <div className="px-3 pt-3 pb-3 flex flex-col gap-4">
+          {/* Safety */}
+          <div className="flex gap-2">
+            <button
+              onClick={toggleSellMode}
+              className={`flex-1 flex flex-col items-center gap-1 py-3 border transition-all ${
+                state.sell_mode
+                  ? 'border-scema-amber text-scema-amber bg-scema-amber/10'
+                  : 'border-scema-dim text-scema-dim hover:border-scema-amber hover:text-scema-amber'
+              }`}
+            >
+              <span className="text-xl leading-none">{state.sell_mode ? '🔴' : '⏸'}</span>
+              <span className="text-xs font-bold tracking-widest">STOP BUYING</span>
+            </button>
+            <button
+              onClick={toggleDumpMode}
+              className={`flex-1 flex flex-col items-center gap-1 py-3 border transition-all ${
+                state.dump_mode
+                  ? 'border-scema-red-hi text-scema-red-hi bg-scema-red/20 animate-flicker'
+                  : 'border-scema-dim text-scema-dim hover:border-scema-red-hi hover:text-scema-red-hi'
+              }`}
+            >
+              <span className="text-xl leading-none">💥</span>
+              <span className="text-xs font-bold tracking-widest">SELL ALL NOW</span>
+            </button>
+          </div>
+
+          {/* Aggressiveness (maps to rate modes) */}
+          <div>
+            <p className="text-scema-dim text-xs tracking-widest uppercase mb-2">◈ Aggressiveness</p>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(['safe', 'balanced', 'aggressive'] as RateMode[]).map(m => {
+                const info = RATE_INFO[m]
+                const isActive = state.rate_mode === m
+                return (
+                  <button
+                    key={m}
+                    onClick={() => setRateMode(m)}
+                    className={`flex flex-col items-center gap-0.5 py-2.5 border transition-all ${
+                      isActive ? info.active : `${info.dim} hover:opacity-70`
+                    }`}
+                  >
+                    <span className="text-xs font-bold tracking-wider">{info.label}</span>
+                    <span className="text-xs tabular-nums opacity-80">{info.mult}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Sliders */}
+          <div>
+            <p className="text-scema-dim text-xs tracking-widest uppercase mb-2">◈ Fine-Tune</p>
+            <div className="flex flex-col gap-3">
+              <SliderRow label="Take Profit" value={state.tp_pct} min={10} max={1000} step={5} unit="%"
+                color="#00cc44" onChange={v => setParam('tp_pct', v)} />
+              <SliderRow label="Stop Loss" value={state.sl_pct} min={1} max={50} step={1} unit="%"
+                color="#ff2020" onChange={v => setParam('sl_pct', v)} />
+              <SliderRow label="Size" value={state.multiplier} min={0.1} max={5} step={0.1} unit="×"
+                color="#ffaa00" onChange={v => setParam('multiplier', v)} />
+            </div>
+          </div>
+
+          <p className="text-[11px] text-scema-dim leading-relaxed">
+            Simple mode shows the essentials. Switch to <span className="text-scema-red-hi">Pro</span> for
+            all rate presets, speed &amp; builder modes, and keyboard shortcuts.
+          </p>
+        </div>
+      ) : (
+        <>
       {/* ── Section 1: Emergency toggles ─────────────────────────────────── */}
       <div className="px-3 pt-3 pb-1">
         <p className="text-scema-dim text-xs tracking-widest uppercase mb-2">◈ Emergency</p>
@@ -416,6 +513,8 @@ export function SniperControls() {
           {state.high_speed && <span className="text-scema-red">⚡ HIGH SPEED — filters bypassed</span>}
           {state.moon_chase && <span className="text-scema-red-hi">🌙 MOON CHASE — 8 escalations × 1.75×</span>}
         </div>
+      )}
+        </>
       )}
     </div>
   )

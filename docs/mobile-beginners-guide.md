@@ -122,6 +122,15 @@ on your computer — it's only inside the QR you choose to show.)
 
 ## Step 5 — Using the app
 
+The Sniper Controls panel has a **Beginner ⇄ Pro** toggle in its top-right corner (the app
+starts in **Beginner** on the phone):
+
+- **Beginner** — a clean, finger-friendly view: big **Stop Buying** / **Sell All Now**
+  buttons, a simple **Safe / Balanced / Aggressive** choice, and the three sliders. That's
+  all most people need.
+- **Pro** — the full desktop control set: all 8 rate presets, speed/moon/builder modes,
+  and keyboard shortcuts. Your choice is remembered.
+
 Once paired, you get the same panels as the desktop dashboard, live on your phone:
 
 - **Metrics & PnL** — profit/loss, win rate, open positions, wallet balance.

@@ -121,17 +121,27 @@ template (fill it in), injects a `signingConfigs.release` block that reads it in
 `android/app/build.gradle`, and points `buildTypes.release` at it. Idempotent — safe to
 re-run. `keystore.properties` and `*.jks` are git-ignored.
 
-## Wallet signing on device (token gate + on-chain actions)
+## Wallet connect on device (token gate)
 
-**Wired.** On native, `WalletProvider` registers **Mobile Wallet Adapter** as a Standard
-Wallet via `@solana-mobile/wallet-standard-mobile` (the *wallet-standard* build — no React
-Native; do **not** use `@solana-mobile/wallet-adapter-mobile` 2.2+, it peer-requires React
-19 and breaks the React 18 tree). Because the existing `WalletProvider` already relies on
-Wallet-Standard auto-registration, MWA appears in the wallet list automatically and
-connecting **deep-links to the installed Phantom/Solflare app** for the 250k-$SCEMA gate
-signature — the app never holds a key. Registration is native-only and dynamically
-imported, so the web bundle and its browser-extension flow are untouched. Requires a
-wallet app (Phantom/Solflare) installed on the device.
+Native uses the **Phantom deeplink protocol** (`lib/mobileWallet.ts` + `MobileWalletContext`)
+— **not** Mobile Wallet Adapter, whose web bridge (`@solana-mobile/wallet-standard-mobile`)
+*refuses to run in a WebView* (it detects the `wv` user-agent and errors). The deeplink flow
+is the WebView-compatible path:
+
+1. `WalletStatus` shows a native **Connect Wallet** picker (Phantom / Solflare / Backpack).
+2. Connecting generates an ephemeral x25519 keypair and opens the wallet app over its
+   universal link (`https://phantom.app/ul/v1/connect?...`) with `redirect_link=scematica://wallet`.
+3. The wallet returns to `scematica://wallet?...` (an intent-filter in `AndroidManifest.xml`
+   reopens the app); `@capacitor/app`'s `appUrlOpen` fires, and we decrypt the payload
+   (`nacl.box`) to get the connected address + session.
+4. `useActiveWallet()` unifies this with the browser wallet-adapter, so the SCEMA gate and
+   `WalletStatus` consume one identity on both platforms.
+
+Phantom and Solflare speak this protocol identically; Backpack is best-effort. The gate is
+read-only (address → SCEMA balance), so connect is all it needs; a signing path
+(`signMessage`/`signTransaction` over the same encrypted channel + session) can be layered
+on later. Requires the wallet app installed; the app never holds a key. On web, the
+browser-extension wallet-adapter flow is unchanged.
 
 ## Distribution
 

@@ -1,7 +1,8 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { useConnection } from '@solana/wallet-adapter-react'
+import { useActiveWallet } from './useActiveWallet'
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { getAssociatedTokenAddressSync, getAccount, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
 
@@ -18,7 +19,7 @@ export interface ScemaGateCtx {
 const Ctx = createContext<ScemaGateCtx>({ scemaBalance: null, solBalance: null, gated: null })
 
 export function ScemaGateProvider({ children }: { children: ReactNode }) {
-  const { publicKey, connected } = useWallet()
+  const { publicKey, connected } = useActiveWallet()
   const { connection } = useConnection()
   const [scemaBalance, setScemaBalance] = useState<number | null>(null)
   const [solBalance, setSolBalance]     = useState<number | null>(null)

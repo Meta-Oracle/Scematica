@@ -123,13 +123,15 @@ re-run. `keystore.properties` and `*.jks` are git-ignored.
 
 ## Wallet signing on device (token gate + on-chain actions)
 
-The token gate works out of the box: the existing web `PhantomWalletAdapter` deep-links
-to the Phantom app from the WebView for the 250k-$SCEMA gate signature — the app never
-holds a key. For a fully native signing UX later, add **Solana Mobile Wallet Adapter**
-via `@solana-mobile/wallet-standard-mobile` (the *wallet-standard* build, which does not
-drag in React Native — do **not** use `@solana-mobile/wallet-adapter-mobile` 2.2+, it
-peer-requires React 19 and breaks the React 18 tree). Register it alongside the Phantom
-adapter so on Android it routes through MWA.
+**Wired.** On native, `WalletProvider` registers **Mobile Wallet Adapter** as a Standard
+Wallet via `@solana-mobile/wallet-standard-mobile` (the *wallet-standard* build — no React
+Native; do **not** use `@solana-mobile/wallet-adapter-mobile` 2.2+, it peer-requires React
+19 and breaks the React 18 tree). Because the existing `WalletProvider` already relies on
+Wallet-Standard auto-registration, MWA appears in the wallet list automatically and
+connecting **deep-links to the installed Phantom/Solflare app** for the 250k-$SCEMA gate
+signature — the app never holds a key. Registration is native-only and dynamically
+imported, so the web bundle and its browser-extension flow are untouched. Requires a
+wallet app (Phantom/Solflare) installed on the device.
 
 ## Distribution
 

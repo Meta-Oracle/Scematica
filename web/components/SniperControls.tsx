@@ -70,11 +70,36 @@ const DEFAULT_STATE: ControlState = {
   builder_target_sol: 0, tp_pct: 150, sl_pct: 15, multiplier: 1,
 }
 
+// ── slider row (touch-friendly fine-tune control) ──────────────────────────────
+function SliderRow({ label, value, min, max, step, unit, color, onChange }: {
+  label: string; value: number; min: number; max: number; step: number
+  unit: string; color: string; onChange: (v: number) => void
+}) {
+  const display = step < 1 ? value.toFixed(1) : Math.round(value)
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-xs text-scema-dim w-20 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={min} max={max} step={step} value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="flex-1 h-1.5 cursor-pointer"
+        style={{ accentColor: color }}
+      />
+      <span className="text-xs tabular-nums w-14 text-right font-bold" style={{ color }}>
+        {display}{unit}
+      </span>
+    </div>
+  )
+}
+
 export function SniperControls() {
   const [state, setState]   = useState<ControlState>(DEFAULT_STATE)
   const [lastKey, setLastKey] = useState('')
   const stateRef = useRef(state)
   useEffect(() => { stateRef.current = state }, [state])
+  const editingParamsUntil = useRef(0)
+  const paramsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ── poll live state every 2 s ───────────────────────────────────────────────
   useEffect(() => {
@@ -84,7 +109,13 @@ export function SniperControls() {
         const r = await apiFetch('/api/controls')
         if (!alive || !r.ok) return
         const d = await r.json().catch(() => null)
-        if (d) setState(d as ControlState)
+        if (d) setState(s => {
+          // Don't let the 2s poll clobber sliders the user is actively dragging.
+          const editing = Date.now() < editingParamsUntil.current
+          return editing
+            ? { ...(d as ControlState), tp_pct: s.tp_pct, sl_pct: s.sl_pct, multiplier: s.multiplier }
+            : (d as ControlState)
+        })
       } catch {}
     }
     poll()
@@ -134,6 +165,19 @@ export function SniperControls() {
     const next = RATE_MODES[(idx + 1) % RATE_MODES.length]
     await setRateMode(next)
   }, [setRateMode])
+
+  // ── fine-tune sliders (custom TP/SL/multiplier, debounced) ──────────────────
+  const setParam = useCallback((key: 'tp_pct' | 'sl_pct' | 'multiplier', value: number) => {
+    editingParamsUntil.current = Date.now() + 3000
+    setState(s => ({ ...s, [key]: value }))
+    if (paramsTimer.current) clearTimeout(paramsTimer.current)
+    paramsTimer.current = setTimeout(() => {
+      const s = stateRef.current
+      postControl('/api/controls/params', {
+        tp_pct: s.tp_pct, sl_pct: s.sl_pct, multiplier: s.multiplier,
+      })
+    }, 300)
+  }, [])
 
   // ── builder mode (click active = turn off) ──────────────────────────────────
   const setBuilderMode = useCallback(async (mode: BuilderMode) => {
@@ -306,6 +350,22 @@ export function SniperControls() {
           <span className="text-scema-muted tabular-nums">{activeRate.mult}</span>
           <span className="text-scema-dim">TP <span className="text-scema-green tabular-nums">{activeRate.tp}</span></span>
           <span className="text-scema-dim">SL <span className="text-scema-red-hi tabular-nums">{activeRate.sl}</span></span>
+        </div>
+      </div>
+
+      {/* ── Section 3.5: Fine-tune sliders ───────────────────────────────── */}
+      <div className="px-3 pt-2 pb-1">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-scema-dim text-xs tracking-widest uppercase">◈ Fine-Tune</p>
+          <span className="text-scema-dim text-xs">overrides the rate preset</span>
+        </div>
+        <div className="flex flex-col gap-2.5">
+          <SliderRow label="Take Profit" value={state.tp_pct} min={10} max={1000} step={5} unit="%"
+            color="#00cc44" onChange={v => setParam('tp_pct', v)} />
+          <SliderRow label="Stop Loss" value={state.sl_pct} min={1} max={50} step={1} unit="%"
+            color="#ff2020" onChange={v => setParam('sl_pct', v)} />
+          <SliderRow label="Size" value={state.multiplier} min={0.1} max={5} step={0.1} unit="×"
+            color="#ffaa00" onChange={v => setParam('multiplier', v)} />
         </div>
       </div>
 

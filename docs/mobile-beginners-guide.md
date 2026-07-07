@@ -132,9 +132,16 @@ Once paired, you get the same panels as the desktop dashboard, live on your phon
   - **Dump mode** — force‑sell everything immediately (the kill‑switch).
   - **Rate mode** — how aggressive to be (bearish → moon).
   - **High‑speed**, **Moon‑chase**, **Builder mode** — strategy toggles.
+  - **Fine‑Tune sliders** — drag to set exact **Take Profit %**, **Stop Loss %**, and
+    position **Size ×**. Great on a phone — no typing. These override the rate‑mode preset;
+    picking a rate mode again resets them.
 
-Tapping a control sends the command to your computer instantly; the bot picks it up on
-its next check.
+Tapping a control (or dragging a slider) sends the command to your computer instantly; the
+bot picks it up on its next check.
+
+**Connecting your wallet (for the membership check).** Tap the wallet button and pick your
+wallet — the app opens **Phantom** or **Solflare** on your phone to approve, then comes
+back. (You need one of those wallet apps installed.) Your keys never enter Scematica.
 
 ---
 

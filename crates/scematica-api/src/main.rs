@@ -15,6 +15,7 @@
 //! POST /api/controls/sell-mode        { "enabled": bool }
 //! POST /api/controls/dump-mode        { "enabled": bool }
 //! POST /api/controls/rate-mode        { "mode": "bearish"|"micro"|"safe"|"balanced"|"aggressive"|"degen"|"bullish"|"moon" }
+//! POST /api/controls/params           { "tp_pct"?: f64, "sl_pct"?: f64, "multiplier"?: f64 }  (sliders)
 //! POST /api/controls/high-speed       { "enabled": bool }
 //! POST /api/controls/moon-chase       { "enabled": bool }
 //! POST /api/controls/builder-mode     { "mode": "off"|"growth"|"builder"|"super_builder" }
@@ -382,6 +383,15 @@ struct RateModeBody {
 struct BuilderModeBody {
     mode: String,
 }
+#[derive(Deserialize)]
+struct ParamsBody {
+    #[serde(default)]
+    tp_pct: Option<f64>,
+    #[serde(default)]
+    sl_pct: Option<f64>,
+    #[serde(default)]
+    multiplier: Option<f64>,
+}
 
 async fn sell_mode_handler(Json(b): Json<EnabledBody>) -> impl IntoResponse {
     let v = json!({ "enabled": b.enabled, "paused_by": "web" });
@@ -427,6 +437,34 @@ async fn rate_mode_handler(Json(b): Json<RateModeBody>) -> impl IntoResponse {
     });
     if atomic_write(RATE_MODE_FILE, &v) {
         Json(json!({"ok": true, "mode": b.mode, "tp_pct": tp_pct, "sl_pct": sl_pct, "multiplier": multiplier})).into_response()
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"write failed"})),
+        )
+            .into_response()
+    }
+}
+
+async fn params_handler(Json(b): Json<ParamsBody>) -> impl IntoResponse {
+    // Custom TP/SL/multiplier from the sliders — override the numeric params while
+    // keeping the current rate mode + high-speed flag. controls_get already prefers file
+    // values over the preset, so slider values take effect live.
+    let existing = read_json_file(RATE_MODE_FILE);
+    let mode = existing
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("balanced")
+        .to_string();
+    let (ptp, psl, pmult) = rate_preset(&mode);
+    let cur = |k: &str, d: f64| existing.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
+    let tp = b.tp_pct.unwrap_or_else(|| cur("tp_pct", ptp)).clamp(1.0, 10_000.0);
+    let sl = b.sl_pct.unwrap_or_else(|| cur("sl_pct", psl)).clamp(1.0, 99.0);
+    let mult = b.multiplier.unwrap_or_else(|| cur("multiplier", pmult)).clamp(0.1, 10.0);
+    let high_speed = existing.get("high_speed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let v = json!({ "mode": mode, "tp_pct": tp, "sl_pct": sl, "multiplier": mult, "high_speed": high_speed });
+    if atomic_write(RATE_MODE_FILE, &v) {
+        Json(json!({"ok": true, "tp_pct": tp, "sl_pct": sl, "multiplier": mult})).into_response()
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -927,6 +965,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/controls/sell-mode", post(sell_mode_handler))
         .route("/api/controls/dump-mode", post(dump_mode_handler))
         .route("/api/controls/rate-mode", post(rate_mode_handler))
+        .route("/api/controls/params", post(params_handler))
         .route("/api/controls/high-speed", post(high_speed_handler))
         .route("/api/controls/moon-chase", post(moon_chase_handler))
         .route("/api/controls/builder-mode", post(builder_mode_handler))

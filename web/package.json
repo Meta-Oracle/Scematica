@@ -14,20 +14,21 @@
     "mobile:apk": "npm run mobile:sync && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/preferences": "^6.0.2",
     "@dexterai/x402": "^3.11.1",
-    "next": "14.2.5",
-    "react": "^18",
-    "react-dom": "^18",
-    "@solana/web3.js": "^1.95.3",
+    "@solana-mobile/wallet-standard-mobile": "^0.5.3",
+    "@solana/spl-token": "^0.4.9",
     "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-phantom": "^0.9.24",
     "@solana/wallet-adapter-react": "^0.15.35",
     "@solana/wallet-adapter-react-ui": "^0.9.35",
-    "@solana/wallet-adapter-phantom": "^0.9.24",
-    "@solana/spl-token": "^0.4.9",
-    "@capacitor/core": "^6.1.2",
-    "@capacitor/android": "^6.1.2",
-    "@capacitor/preferences": "^6.0.2",
-    "qrcode.react": "^4.1.0"
+    "@solana/web3.js": "^1.95.3",
+    "next": "14.2.5",
+    "qrcode.react": "^4.1.0",
+    "react": "^18",
+    "react-dom": "^18"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2",

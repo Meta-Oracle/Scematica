@@ -33,7 +33,8 @@ commands. Nothing sensitive leaves your computer.
 - An **Android phone** (Android 5.1 or newer).
 - The phone and the computer on the **same Wi‑Fi network** (easiest). *(Off‑network
   access is possible later — see "Using it away from home" near the end.)*
-- The app file **`scematica.apk`** (you built it, or download it from the release page).
+- The app file **`scematica-v1.11.3.apk`** — the number is the app version (you built it,
+  or download it from the release page; newer versions have a higher number).
 
 ---
 
@@ -42,9 +43,9 @@ commands. Nothing sensitive leaves your computer.
 You have two ways to install it.
 
 **Option A — Install the file directly (works today)**
-1. Get `scematica.apk` onto your phone. Easiest: email it to yourself, or put it in
-   Google Drive, and open it on the phone. (On the computer it's at the project root as
-   `scematica.apk`.)
+1. Get the `scematica-v1.11.3.apk` file onto your phone. Easiest: email it to yourself, or
+   put it in Google Drive, and open it on the phone. (On the computer it's at the project
+   root — the filename ends in the version number.)
 2. Tap the file. Android will say *"For your security, your phone can't install unknown
    apps from this source."* Tap **Settings → allow from this source**, then go back and
    tap **Install**.

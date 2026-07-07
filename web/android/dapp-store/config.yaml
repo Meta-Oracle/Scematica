@@ -28,8 +28,9 @@ release:
     - purpose: screenshot
       uri: ./media/screenshot-2.png
   files:
+    # Update the version in this path when web/package.json is bumped.
     - purpose: install
-      uri: ../app/build/outputs/apk/release/scematica.apk
+      uri: ../app/build/outputs/apk/release/scematica-v1.11.3.apk
   catalog:
     en-US:
       name: Scematica

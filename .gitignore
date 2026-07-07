@@ -84,7 +84,7 @@ web/android/app/google-services.json
 *.aab
 web/android/dapp-store/media/*.png
 web/android/dapp-store/media/*.jpg
-web/public/scematica.apk
+web/public/scematica*.apk
 
 # ── Session-artifact docs (Claude-generated per-session reports, not source truth) ──
 ANALYSIS_REPORT.md

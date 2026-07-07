@@ -83,16 +83,22 @@ cd android; .\gradlew.bat assembleDebug
 #   → android/app/build/outputs/apk/debug/app-debug.apk
 
 # Release APK/AAB (see signing below):
-.\gradlew.bat assembleRelease   # → scematica.apk (dApp Store + direct download)
+.\gradlew.bat assembleRelease   # → scematica-v<version>.apk (dApp Store + direct download)
 .\gradlew.bat bundleRelease     # → .aab (if you also list on Play)
 ```
 
-`npm run mobile:apk` chains export → sync → `assembleRelease`. The release output is
-named **`scematica.apk`** (via the `applicationVariants` rename in `app/build.gradle`) and
-lands at `web/android/app/build/outputs/apk/release/scematica.apk`.
+**Versioning (single source):** the app's `versionName`/`versionCode` and the artifact
+name are derived from `web/package.json`'s `version` at build time (read in
+`app/build.gradle`) — `versionCode` is the semver packed as `major*10000+minor*100+patch`
+(1.11.3 → 11103), and the release artifact is named **`scematica-v<version>.apk`**. Bump
+`web/package.json` to version the whole app; nothing else to edit.
 
-> A signed `scematica.apk` (v1+v2 schemes, verified) has already been built in this repo
-> and copied to the project root and `web/public/scematica.apk`. The release keystore is
+`npm run mobile:apk` chains export → sync → `assembleRelease`. The release output lands at
+`web/android/app/build/outputs/apk/release/scematica-v<version>.apk` (e.g.
+`scematica-v1.11.3.apk`).
+
+> A signed `scematica-v1.11.3.apk` (v1+v2 schemes, verified) has already been built in this
+> repo and copied to the project root and `web/public/`. The release keystore is
 > `web/android/scematica-release.jks` with creds in `web/android/keystore.properties`
 > (both git-ignored) — **back up the keystore; losing it means you can't ship updates.**
 
@@ -128,11 +134,11 @@ adapter so on Android it routes through MWA.
 ## Distribution
 
 ### A. Direct `.apk` download (ship today)
-`scematica.apk` is already at the project root and `web/public/scematica.apk` (served at
-`/scematica.apk`). Because it's git-ignored, host it as a **GitHub Release asset** (the
-canonical, versioned home) and/or un-ignore `web/public/scematica.apk` to serve it from
-the dashboard. Add a QR + "enable install from unknown sources" note. No auto-update —
-bump `versionCode` in `app/build.gradle` and re-host for each update.
+`scematica-v<version>.apk` (e.g. `scematica-v1.11.3.apk`) is already at the project root
+and `web/public/` (served at `/scematica-v<version>.apk`). Because it's git-ignored, host
+it as a **GitHub Release asset** (the canonical, versioned home) and/or un-ignore it to
+serve it from the dashboard. Add a QR + "enable install from unknown sources" note. No
+auto-update — bump `web/package.json` and re-host for each update.
 
 ### B. Solana dApp Store (the adoption channel)
 Crypto-native, **no auto-trading/financial policy restriction** (unlike Google Play), and

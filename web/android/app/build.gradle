@@ -1,5 +1,21 @@
 apply plugin: 'com.android.application'
 
+// scematica-version: single source of truth is web/package.json. versionCode is derived
+// from the semver (1.11.3 -> 11103) and the release artifact is named
+// scematica-v<version>.apk. Bump web/package.json to version the whole mobile app.
+def scematicaVersionName = "1.11.3"
+def scematicaVersionCode = 11103
+try {
+    def pkgText = new File(rootProject.projectDir, "../package.json").getText("UTF-8")
+    def vm = (pkgText =~ /"version"\s*:\s*"([^"]+)"/)
+    if (vm.find()) {
+        scematicaVersionName = vm.group(1)
+        scematicaVersionCode = scematicaVersionName.tokenize('.').inject(0) { acc, part -> acc * 100 + (part as int) }
+    }
+} catch (Exception e) {
+    logger.warn("scematica: couldn't read web/package.json version; using ${scematicaVersionName}")
+}
+
 // scematica-signing
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
@@ -24,8 +40,8 @@ android {
         applicationId "io.scematica.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode scematicaVersionCode
+        versionName scematicaVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -71,11 +87,11 @@ try {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
 
-// scematica-apk-name: ship the release build as scematica.apk (not app-release.apk).
+// scematica-apk-name: ship the release build as scematica-v<version>.apk.
 android.applicationVariants.all { variant ->
     if (variant.buildType.name == "release") {
         variant.outputs.all { output ->
-            output.outputFileName = "scematica.apk"
+            output.outputFileName = "scematica-v${scematicaVersionName}.apk"
         }
     }
 }

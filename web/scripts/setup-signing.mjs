@@ -76,20 +76,46 @@ if (!src.includes(MARKER)) {
   }
 }
 
-// Name the release artifact scematica.apk (not app-release.apk).
+// Version the app from web/package.json (single source of truth): drives versionName,
+// versionCode (semver -> N), and the release artifact name.
+const VERSION_MARKER = '// scematica-version'
+if (!src.includes(VERSION_MARKER)) {
+  const versionBlock = `${VERSION_MARKER}
+def scematicaVersionName = "1.11.3"
+def scematicaVersionCode = 11103
+try {
+    def pkgText = new File(rootProject.projectDir, "../package.json").getText("UTF-8")
+    def vm = (pkgText =~ /"version"\\s*:\\s*"([^"]+)"/)
+    if (vm.find()) {
+        scematicaVersionName = vm.group(1)
+        scematicaVersionCode = scematicaVersionName.tokenize('.').inject(0) { acc, part -> acc * 100 + (part as int) }
+    }
+} catch (Exception e) {
+    logger.warn("scematica: couldn't read web/package.json version; using \${scematicaVersionName}")
+}
+
+`
+  src = src.replace(/android\s*\{/, `${versionBlock}android {`)
+  src = src.replace(/versionCode\s+\d+/, 'versionCode scematicaVersionCode')
+  src = src.replace(/versionName\s+"[^"]*"/, 'versionName scematicaVersionName')
+  changed = true
+  console.log('[signing] versioned from web/package.json')
+}
+
+// Name the release artifact scematica-v<version>.apk (not app-release.apk).
 const NAME_MARKER = '// scematica-apk-name'
 if (!src.includes(NAME_MARKER)) {
   src += `\n${NAME_MARKER}
 android.applicationVariants.all { variant ->
     if (variant.buildType.name == "release") {
         variant.outputs.all { output ->
-            output.outputFileName = "scematica.apk"
+            output.outputFileName = "scematica-v\${scematicaVersionName}.apk"
         }
     }
 }
 `
   changed = true
-  console.log('[signing] release output name set to scematica.apk')
+  console.log('[signing] release output name set to scematica-v<version>.apk')
 }
 
 if (changed) {

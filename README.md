@@ -1,4 +1,4 @@
-# Scematica v1.11.0
+# Scematica v1.11.3
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
@@ -96,6 +96,11 @@ SDK and playground are pre-1.0.
 | `scemadex-settle` | 0.1.0 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
+The **web dashboard** (`web/`) and the **Android companion app** share one version,
+sourced from `web/package.json` (**1.11.3**). The mobile build reads it at build time to
+set the app's `versionName`/`versionCode` and names the artifact **`scematica-v<version>.apk`**
+— bump `web/package.json` to version the app. See [docs/mobile-app.md](docs/mobile-app.md).
+
 Pin a version with `cargo install <crate> --version <x.y.z>`, or depend on a
 library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 (no TUI deps) use `default-features = false` on `scematica-nn` / `scemadex-sdk`.
@@ -104,7 +109,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.11.0) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.11.3) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

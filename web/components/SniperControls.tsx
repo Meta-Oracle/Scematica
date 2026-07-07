@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { apiFetch, isNative } from '@/lib/net'
+import { apiFetch } from '@/lib/net'
+import { useUiMode } from '@/lib/UiModeContext'
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -101,17 +102,8 @@ export function SniperControls() {
   const editingParamsUntil = useRef(0)
   const paramsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── Beginner ⇄ Pro UI mode (persisted; friendly by default on mobile) ────────
-  const [uiMode, setUiModeState] = useState<'beginner' | 'pro'>('pro')
-  useEffect(() => {
-    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('scematica.uimode') : null
-    if (stored === 'beginner' || stored === 'pro') setUiModeState(stored)
-    else setUiModeState(isNative() ? 'beginner' : 'pro')
-  }, [])
-  const setUiMode = useCallback((m: 'beginner' | 'pro') => {
-    setUiModeState(m)
-    try { window.localStorage.setItem('scematica.uimode', m) } catch {}
-  }, [])
+  // ── Beginner ⇄ Pro UI mode (shared app-wide; also gates advanced panels) ─────
+  const { mode: uiMode, setMode: setUiMode } = useUiMode()
 
   // ── poll live state every 2 s ───────────────────────────────────────────────
   useEffect(() => {

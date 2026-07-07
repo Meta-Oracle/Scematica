@@ -4,7 +4,9 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useConnection } from '@solana/wallet-adapter-react'
 import { useActiveWallet } from './useActiveWallet'
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
-import { getAssociatedTokenAddressSync, getAccount, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
+// `@solana/spl-token` is heavy and only needed once a wallet connects (the SCEMA balance
+// read), so it's dynamically imported inside the fetch below to keep it out of the
+// initial bundle.
 
 const SCEMA_MINT_PK = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
 export const SCEMA_REQUIRED = 250_000
@@ -41,6 +43,8 @@ export function ScemaGateProvider({ children }: { children: ReactNode }) {
 
       // SCEMA balance (Token-2022)
       try {
+        const { getAssociatedTokenAddressSync, getAccount, TOKEN_2022_PROGRAM_ID } =
+          await import('@solana/spl-token')
         const ata  = getAssociatedTokenAddressSync(SCEMA_MINT_PK, publicKey!, false, TOKEN_2022_PROGRAM_ID)
         const acct = await getAccount(connection, ata, 'confirmed', TOKEN_2022_PROGRAM_ID)
         const bal  = Number(acct.amount) / 1e6

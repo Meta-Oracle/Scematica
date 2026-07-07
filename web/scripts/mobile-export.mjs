@@ -6,7 +6,7 @@
 // temporarily relocate the server-only `app/api` proxy tree, run the export, then
 // always restore it — even if the build fails.
 import { execSync } from 'node:child_process'
-import { existsSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 const root = process.cwd()
@@ -31,6 +31,16 @@ try {
   for (const dir of ['.next', 'out']) {
     const p = join(root, dir)
     if (existsSync(p)) rmSync(p, { recursive: true, force: true })
+  }
+  // CRITICAL: never let a built .apk sit in public/ during export — Next copies public/
+  // into out/, cap sync copies out/ into the Android assets, and the apk would nest
+  // inside the next apk (compounding ~15MB every build). Distribute via a GitHub release,
+  // not public/.
+  const pub = join(root, 'public')
+  if (existsSync(pub)) {
+    for (const f of readdirSync(pub)) {
+      if (f.endsWith('.apk') || f.endsWith('.aab')) rmSync(join(pub, f), { force: true })
+    }
   }
   console.log('[mobile-export] building static export (MOBILE_EXPORT=1)…')
   execSync('next build', { stdio: 'inherit', env: { ...process.env, MOBILE_EXPORT: '1' } })

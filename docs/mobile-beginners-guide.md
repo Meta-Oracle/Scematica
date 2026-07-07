@@ -126,10 +126,12 @@ The Sniper Controls panel has a **Beginner ⇄ Pro** toggle in its top-right cor
 starts in **Beginner** on the phone):
 
 - **Beginner** — a clean, finger-friendly view: big **Stop Buying** / **Sell All Now**
-  buttons, a simple **Safe / Balanced / Aggressive** choice, and the three sliders. That's
+  buttons, a simple **Safe / Balanced / Aggressive** choice, and the three sliders. It also
+  **hides the technical panels** (the AI/NN internals, pool radar, filter stats, decision
+  ledgers, and log stream), so you just see your metrics, controls, trades, and PnL. That's
   all most people need.
-- **Pro** — the full desktop control set: all 8 rate presets, speed/moon/builder modes,
-  and keyboard shortcuts. Your choice is remembered.
+- **Pro** — everything: the full control set (all 8 rate presets, speed/moon/builder modes,
+  keyboard shortcuts) **and** every dashboard panel. Your choice is remembered.
 
 Once paired, you get the same panels as the desktop dashboard, live on your phone:
 

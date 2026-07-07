@@ -1,3 +1,4 @@
+import { AdvancedOnly }    from '@/components/AdvancedOnly'
 import { CABanner }        from '@/components/CABanner'
 import { DecisionLedger }  from '@/components/DecisionLedger'
 import { ExecutionQuality } from '@/components/ExecutionQuality'
@@ -82,11 +83,13 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Intelligence */}
-        <section>
-          <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">â—ˆ Intelligence</p>
-          <NNStatus />
-        </section>
+        {/* Intelligence (advanced) */}
+        <AdvancedOnly>
+          <section>
+            <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">◈ Intelligence</p>
+            <NNStatus />
+          </section>
+        </AdvancedOnly>
 
         {/* Controls */}
         <section>
@@ -98,17 +101,21 @@ export default function Home() {
           </GatedControls>
         </section>
 
-        {/* Pool Radar + Filter Stats */}
-        <Row2 height="h-80"
-          left={<PoolRadar />}
-          right={<FilterStatsPanel />}
-        />
+        {/* Pool Radar + Filter Stats (advanced) */}
+        <AdvancedOnly>
+          <Row2 height="h-80"
+            left={<PoolRadar />}
+            right={<FilterStatsPanel />}
+          />
+        </AdvancedOnly>
 
-        {/* Intelligence ledgers */}
-        <Row2 height="h-72"
-          left={<DecisionLedger />}
-          right={<ExecutionQuality />}
-        />
+        {/* Intelligence ledgers (advanced) */}
+        <AdvancedOnly>
+          <Row2 height="h-72"
+            left={<DecisionLedger />}
+            right={<ExecutionQuality />}
+          />
+        </AdvancedOnly>
 
         {/* Trades + Open Positions */}
         <Row2 height="h-72"
@@ -121,10 +128,12 @@ export default function Home() {
           <PnlChart />
         </section>
 
-        {/* Log Stream */}
-        <section className="h-72 overflow-hidden">
-          <LogStream />
-        </section>
+        {/* Log Stream (advanced) */}
+        <AdvancedOnly>
+          <section className="h-72 overflow-hidden">
+            <LogStream />
+          </section>
+        </AdvancedOnly>
 
       </main>
 

@@ -97,10 +97,15 @@ name are derived from `web/package.json`'s `version` at build time (read in
 `web/android/app/build/outputs/apk/release/scematica-v<version>.apk` (e.g.
 `scematica-v1.11.3.apk`).
 
-> A signed `scematica-v1.11.3.apk` (v1+v2 schemes, verified) has already been built in this
-> repo and copied to the project root and `web/public/`. The release keystore is
+> A signed `scematica-v1.11.3.apk` (v1+v2 schemes, verified) has already been built and
+> copied to the **project root** for convenience. The release keystore is
 > `web/android/scematica-release.jks` with creds in `web/android/keystore.properties`
 > (both git-ignored) — **back up the keystore; losing it means you can't ship updates.**
+>
+> ⚠️ **Do not put the built `.apk` in `web/public/`.** Next copies `public/` into the
+> export and cap sync bundles it into the *next* apk — the apk nests inside itself and
+> compounds ~15 MB per build. `scripts/mobile-export.mjs` deletes any `public/*.apk`
+> before building as a guard. Distribute via a GitHub release, not `public/`.
 
 ## Signing (release)
 
@@ -146,11 +151,11 @@ browser-extension wallet-adapter flow is unchanged.
 ## Distribution
 
 ### A. Direct `.apk` download (ship today)
-`scematica-v<version>.apk` (e.g. `scematica-v1.11.3.apk`) is already at the project root
-and `web/public/` (served at `/scematica-v<version>.apk`). Because it's git-ignored, host
-it as a **GitHub Release asset** (the canonical, versioned home) and/or un-ignore it to
-serve it from the dashboard. Add a QR + "enable install from unknown sources" note. No
-auto-update — bump `web/package.json` and re-host for each update.
+`scematica-v<version>.apk` (e.g. `scematica-v1.11.3.apk`) is at the **project root**. Host
+it as a **GitHub Release asset** (the canonical, versioned home) and link/QR to it. **Do
+not** serve it from `web/public/` — that nests the apk inside itself (see the warning
+above). Add an "enable install from unknown sources" note. No auto-update — bump
+`web/package.json` and re-host for each update.
 
 ### B. Solana dApp Store (the adoption channel)
 Crypto-native, **no auto-trading/financial policy restriction** (unlike Google Play), and

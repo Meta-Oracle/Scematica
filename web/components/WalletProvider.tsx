@@ -7,6 +7,7 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
 import { clusterApiUrl } from '@solana/web3.js'
 import { ScemaGateProvider } from '@/lib/ScemaGateContext'
 import { MobileWalletProvider } from '@/lib/MobileWalletContext'
+import { UiModeProvider } from '@/lib/UiModeContext'
 
 // Import wallet adapter CSS
 import '@solana/wallet-adapter-react-ui/styles.css'
@@ -30,7 +31,9 @@ export function WalletProviderWrapper({ children }: { children: React.ReactNode 
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <MobileWalletProvider>
-            <ScemaGateProvider>{children}</ScemaGateProvider>
+            <UiModeProvider>
+              <ScemaGateProvider>{children}</ScemaGateProvider>
+            </UiModeProvider>
           </MobileWalletProvider>
         </WalletModalProvider>
       </WalletProvider>

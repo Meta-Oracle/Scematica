@@ -27,8 +27,12 @@ pub struct ArbExecutor {
     #[allow(dead_code)]
     skip_preflight: bool,
     min_profit_lamports: u64,
-    /// Program ID of the on-chain scematica-swap program
+    /// Program ID of the on-chain scematica-swap program (used only when `!program_less`)
     swap_program_id: Pubkey,
+    /// When true, run arbitrage with **no custom program**: skip start_swap/profit_or_revert
+    /// and let Solana's atomic revert + the final hop's min_out enforce profit-or-revert.
+    /// This is the zero-deploy path — no program upload, no rent, live immediately.
+    program_less: bool,
     /// DEX builders for generating swap instructions
     builders: std::collections::HashMap<scematica_core::types::DexKind, Box<dyn SwapInstructionBuilder>>,
 }
@@ -40,6 +44,7 @@ impl ArbExecutor {
         metrics: Arc<BotMetrics>,
         ai: Option<Arc<AiCoordinator>>,
         swap_program_id: Pubkey,
+        program_less: bool,
         min_profit_lamports: u64,
     ) -> Self {
         let mut builders = std::collections::HashMap::new();
@@ -64,6 +69,7 @@ impl ArbExecutor {
             skip_preflight: true,
             min_profit_lamports,
             swap_program_id,
+            program_less,
             builders,
         }
     }
@@ -252,13 +258,21 @@ impl ArbExecutor {
         let cu_fee_lamports = (self.compute_unit_limit as u64 * self.compute_unit_price) / 1_000_000;
         let gas_adjusted_min = (cu_fee_lamports * 3).max(self.min_profit_lamports);
         let min_output = (path.input_amount as u64).saturating_add(gas_adjusted_min);
-        ixs.push(self.build_start_swap_ix(path.input_amount as u64, min_output, &start_mint)?);
+
+        // On-chain profit guard — only when a scematica-swap program is deployed. In
+        // program-less mode the identical guarantee comes from Solana's atomic revert:
+        // the FINAL hop's min_out is set to `min_output`, so any shortfall fails that
+        // swap and reverts the whole transaction. No custom program, no deploy.
+        if !self.program_less {
+            ixs.push(self.build_start_swap_ix(path.input_amount as u64, min_output, &start_mint)?);
+        }
 
         // Per-hop swap instructions
+        let last_hop = path.pool_path.len().saturating_sub(1);
         for (i, edge) in path.pool_path.iter().enumerate() {
             let in_mint = path.mint_path[i];
             let out_mint = path.mint_path[i + 1];
-            
+
             let builder = self.builders.get(&edge.dex)
                 .ok_or_else(|| anyhow::anyhow!("No builder for DEX {:?}", edge.dex))?;
 
@@ -272,9 +286,15 @@ impl ArbExecutor {
             );
 
             let hop_amount_in = path.hop_amounts.get(i).copied().unwrap_or(0);
-            // min_amount_out for intermediate hops: use next hop's input as floor, or 1 for last hop
-            // (final safety is enforced by ProfitOrRevert on-chain)
-            let hop_min_out = path.hop_amounts.get(i + 1).copied().unwrap_or(1);
+            // Intermediate hops floor at the next hop's expected input. The last hop's
+            // min_out is the profit guardrail in program-less mode (recover input + profit
+            // floor, else the atomic tx reverts); with the on-chain program it stays 1 and
+            // ProfitOrRevert does the final check.
+            let hop_min_out = if self.program_less && i == last_hop {
+                min_output
+            } else {
+                path.hop_amounts.get(i + 1).copied().unwrap_or(1)
+            };
 
             let hop_ixs = builder.build_swap(
                 &edge.pool_address,
@@ -290,8 +310,10 @@ impl ArbExecutor {
             ixs.extend(hop_ixs);
         }
 
-        // ProfitOrRevert instruction
-        ixs.push(self.build_profit_or_revert_ix(path.input_amount as u64, &start_mint)?);
+        // ProfitOrRevert instruction (on-chain program path only).
+        if !self.program_less {
+            ixs.push(self.build_profit_or_revert_ix(path.input_amount as u64, &start_mint)?);
+        }
 
         Ok(ixs)
     }

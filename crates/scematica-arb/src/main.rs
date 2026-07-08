@@ -141,13 +141,27 @@ async fn main() -> Result<()> {
         config.arb.min_profit_lamports,
     );
 
-    // Swap program ID (deployed scematica-swap program)
+    // Swap program: if SWAP_PROGRAM_ID isn't set, run **program-less** — no scematica-swap
+    // deploy needed. Solana's atomic revert + the final hop's min_out enforce
+    // profit-or-revert for free. Set SWAP_PROGRAM_ID to use a deployed program, or force
+    // either path with ARB_PROGRAM_LESS=1/0.
+    let swap_program_env = std::env::var("SWAP_PROGRAM_ID").ok();
+    let program_less = match std::env::var("ARB_PROGRAM_LESS").ok().as_deref() {
+        Some("1") | Some("true") => true,
+        Some("0") | Some("false") => false,
+        _ => swap_program_env.is_none(),
+    };
     let default_program_id: solana_sdk::pubkey::Pubkey =
         "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc".parse().unwrap();
-    let swap_program_id = std::env::var("SWAP_PROGRAM_ID")
-        .ok()
+    let swap_program_id = swap_program_env
         .and_then(|s| s.parse().ok())
         .unwrap_or(default_program_id);
+
+    if program_less {
+        tracing::info!("arb: program-less mode — no on-chain deploy; atomic min_out profit guard");
+    } else {
+        tracing::info!("arb: using on-chain scematica-swap program {}", swap_program_id);
+    }
 
     let executor = Arc::new(ArbExecutor::new(
         rpc.clone(),
@@ -155,6 +169,7 @@ async fn main() -> Result<()> {
         metrics.clone(),
         ai,
         swap_program_id,
+        program_less,
         config.arb.min_profit_lamports,
     ));
 

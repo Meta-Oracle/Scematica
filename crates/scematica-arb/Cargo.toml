@@ -4,16 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Cross-DEX arbitrage engine for Scematica"
+description = "Cross-DEX arbitrage engine for Scematica — Raydium/Orca/Meteora/Jupiter graph search with atomic profit-or-revert execution (program-less or on-chain)."
+keywords = ["solana", "arbitrage", "dex", "defi", "mev"]
+categories = ["cryptography::cryptocurrencies"]
+readme = "README.md"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [[bin]]
 name = "arb"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { path = "../scematica-core" }
-scematica-ai = { path = "../scematica-ai" }
-scematica-executor = { path = "../scematica-executor" }
+scematica-core = { version = "1.11.0", path = "../scematica-core" }
+scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
+scematica-executor = { version = "1.11.0", path = "../scematica-executor" }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

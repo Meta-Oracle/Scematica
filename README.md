@@ -1,4 +1,4 @@
-# Scematica v1.11.3
+# Scematica v1.11.4
 
 **CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
 
@@ -86,14 +86,15 @@ SDK and playground are pre-1.0.
 | `scematica-suite` | 1.11.2 | `scematica` | launcher + umbrella lib |
 | `scematica-dashboard` | 1.11.3 | `dashboard` | bin + lib |
 | `scematica-sniper` | 1.11.3 | `sniper`, `backtest` | bin + lib |
-| `scematica-protocol` | 1.11.2 | `protocol` | bin + lib |
-| `scematica-ai` | 1.11.2 | — | library |
-| `scematica-executor` | 1.11.2 | — | library |
-| `scematica-core` | 1.11.2 | — | library |
+| `scematica-arb` | 1.11.4 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.11.4 | `protocol` | bin + lib |
+| `scematica-ai` | 1.11.4 | — | library |
+| `scematica-executor` | 1.11.4 | — | library |
+| `scematica-core` | 1.11.4 | — | library |
 | `scematica-nn` | 1.13.1 | `scema-ddqn` | bin + lib |
-| `scemadex-sdk` | 0.2.1 | `scemadex` | bin + lib (incl. zkML-verified bonds) |
+| `scemadex-sdk` | 0.2.2 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
 | `scemadex-mcp` | 0.1.1 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
-| `scemadex-settle` | 0.1.0 | — | devnet reference settler |
+| `scemadex-settle` | 0.1.1 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
@@ -109,7 +110,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.11.3) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.11.4) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

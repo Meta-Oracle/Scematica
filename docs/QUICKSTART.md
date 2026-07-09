@@ -1,4 +1,8 @@
-# Scematica v1.11.0 - Quick Start Guide
+# Scematica v1.11.4 - Quick Start Guide
+
+> **How much SOL do I need?** Minimum viable **0.5 SOL**, recommended **0.7–1.0 SOL**,
+> scaling **2–3 SOL** (plus 250k SCEMA for the token gate). Computed from the real trade
+> log, not guessed — see `Ideal-Scema-Trading.txt` (repo root) for the data-driven playbook.
 
 ## Install from crates.io (No Build — Fastest)
 
@@ -18,10 +22,16 @@ works:
 
 ```bash
 cargo install scematica-suite scematica-dashboard scematica-sniper \
-              scematica-protocol scematica-nn scemadex-sdk
+              scematica-arb scematica-protocol scematica-nn scemadex-sdk
 ```
 
-Commands: `scematica dashboard | sniper | backtest | protocol | ddqn | scemadex`.
+Commands: `scematica dashboard | sniper | arb | backtest | protocol | ddqn | scemadex`.
+
+**Arbitrage (program-less — no on-chain deploy):** seed the pool graph once, then run.
+```bash
+cargo run --release -p pool-seeder    # writes ~500 Raydium pools to pools/
+cargo run --release --bin arb         # program-less by default; atomic profit-or-revert
+```
 See the [README "Install from crates.io"](../README.md#install-from-cratesio)
 section for the full command table and per-crate versions.
 

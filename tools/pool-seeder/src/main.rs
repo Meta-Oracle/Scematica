@@ -56,36 +56,62 @@ async fn fetch_raydium(client: &reqwest::Client, limit: usize, min_liquidity: f6
         .cloned()
         .unwrap_or_default();
 
-    let mut result = Vec::new();
-    for p in pools {
-        let tvl = p["tvl"].as_f64().unwrap_or(0.0);
-        if tvl < min_liquidity {
+    // The v3 list endpoint no longer includes vault addresses — collect id + mints + tvl
+    // here, then fetch the vaults from the `pools/key/ids` endpoint below.
+    struct Meta {
+        id: String,
+        a: String,
+        b: String,
+    }
+    let mut metas: Vec<Meta> = Vec::new();
+    for p in &pools {
+        if p["tvl"].as_f64().unwrap_or(0.0) < min_liquidity {
             continue;
         }
-
         let id = p["id"].as_str().unwrap_or("").to_string();
-        let base_mint = p["mintA"]["address"].as_str().unwrap_or("").to_string();
-        let quote_mint = p["mintB"]["address"].as_str().unwrap_or("").to_string();
-        // Raydium V3 API provides vault addresses directly
-        let vault_a = p["vaultA"]["address"].as_str().unwrap_or("").to_string();
-        let vault_b = p["vaultB"]["address"].as_str().unwrap_or("").to_string();
-
-        if id.is_empty() || base_mint.is_empty() || quote_mint.is_empty()
-            || vault_a.is_empty() || vault_b.is_empty()
-        {
-            continue;
+        let a = p["mintA"]["address"].as_str().unwrap_or("").to_string();
+        let b = p["mintB"]["address"].as_str().unwrap_or("").to_string();
+        if !id.is_empty() && !a.is_empty() && !b.is_empty() {
+            metas.push(Meta { id, a, b });
         }
+    }
 
-        result.push(PoolJson {
-            address: id,
-            dex: "Raydium".into(),
-            token_a_mint: base_mint,
-            token_b_mint: quote_mint,
-            token_a_vault: vault_a,
-            token_b_vault: vault_b,
-            fee_numerator: 25,       // Raydium standard: 0.25%
-            fee_denominator: 10_000,
-        });
+    // Fetch vaults (vault.A / vault.B) in batches of 100 ids.
+    let mut result = Vec::new();
+    for chunk in metas.chunks(100) {
+        let ids = chunk.iter().map(|m| m.id.as_str()).collect::<Vec<_>>().join(",");
+        let key_url = format!("https://api-v3.raydium.io/pools/key/ids?ids={}", ids);
+        let key_resp: serde_json::Value = match client.get(&key_url).send().await {
+            Ok(r) => match r.json().await {
+                Ok(j) => j,
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        };
+        let mut vaults: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        for k in key_resp["data"].as_array().cloned().unwrap_or_default() {
+            let id = k["id"].as_str().unwrap_or("").to_string();
+            let va = k["vault"]["A"].as_str().unwrap_or("").to_string();
+            let vb = k["vault"]["B"].as_str().unwrap_or("").to_string();
+            if !id.is_empty() && !va.is_empty() && !vb.is_empty() {
+                vaults.insert(id, (va, vb));
+            }
+        }
+        for m in chunk {
+            if let Some((va, vb)) = vaults.get(&m.id) {
+                result.push(PoolJson {
+                    address: m.id.clone(),
+                    dex: "Raydium".into(),
+                    token_a_mint: m.a.clone(),
+                    token_b_mint: m.b.clone(),
+                    token_a_vault: va.clone(),
+                    token_b_vault: vb.clone(),
+                    fee_numerator: 25, // Raydium standard: 0.25%
+                    fee_denominator: 10_000,
+                });
+            }
+        }
     }
 
     Ok(result)

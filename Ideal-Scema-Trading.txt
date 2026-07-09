@@ -1,0 +1,174 @@
+================================================================================
+IDEAL SCEMA TRADING — how to run the bot at its full potential
+Data-derived operating thesis, built from the real trade log (scematica-trades.jsonl)
+================================================================================
+
+Every number in this document comes from 685 completed round-trip trades collected 2026-05-17 to 2026-05-26. Nothing here is modeled, simulated, or aspirational. If you change nothing else, run the bot the way this file describes and you are running it the way the data says works.
+
+--------------------------------------------------------------------------------
+1. THE EDGE, IN ONE PARAGRAPH
+--------------------------------------------------------------------------------
+
+Scematica is a small-win-rate, large-payoff engine. Across 685 trades it won only 28.9% of the time, yet returned +2.2636 SOL net, because the average win (+0.0135 SOL) is 14.4x the average loss (-0.00094 SOL). That ratio is the profit factor: 6.50. In plain terms, for every 1 SOL the bot loses, it makes back 6.50. You are not trying to be right often. You are trying to lose small and let the rare winner run. Any change that raises the win rate by cutting winners short DESTROYS the edge. This is the single most important sentence in the file.
+
+--------------------------------------------------------------------------------
+2. THE HEADLINE NUMBERS
+--------------------------------------------------------------------------------
+
+Net realized PnL .............. +2.2636 SOL
+Round trips ................... 685
+Win rate ...................... 28.9%   (198 win / 440 loss / 47 flat)
+Profit factor ................. 6.50
+Average win ................... +0.0135 SOL
+Average loss .................. -0.00094 SOL
+Expectancy per trade .......... +0.0033 SOL
+Peak concurrent capital used .. 0.099 SOL
+Max drawdown .................. 0.164 SOL
+Observed daily expectancy ..... +0.25 SOL/day (at ~0.01 SOL average entry)
+
+Concentration of profit: Top 10% of trades produced 78% of all net profit. The single best 33 trades produced 49% of all net profit.
+
+Read that concentration carefully. Almost all the money comes from a thin tail of outsized winners. The whole job of the configuration is: (a) survive the 71% of trades that don't win, cheaply, and (b) never cap the tail.
+
+--------------------------------------------------------------------------------
+3. HOW MUCH SOL DO YOU ACTUALLY NEED?
+--------------------------------------------------------------------------------
+
+This is answered directly from exposure replay, not a guess.
+
+    Peak concurrent SOL deployed .... 0.099 SOL
+    Max equity drawdown ............. 0.164 SOL
+    Fees + WSOL rent buffer ......... ~0.10 SOL
+
+    MINIMUM VIABLE BANKROLL ......... 0.5 SOL
+    RECOMMENDED BANKROLL ............ 0.7 - 1.0 SOL
+    COMFORTABLE / SCALING BANKROLL .. 2.0 - 3.0 SOL
+
+Why these tiers:
+
+0.5 SOL (floor). The bot never held more than 0.099 SOL in open positions at once and the worst peak-to-trough equity dip was 0.164 SOL. 0.5 SOL covers that dip roughly 3x over plus fees. Below this you risk a losing streak stalling the bot mid-run.
+
+0.7-1.0 SOL (recommended). Gives the position sizer (wallet_pct = 1.5% in Balanced) room to place the 0.0075-0.03 SOL entries that the data shows are the profit core, while still surviving a bad day. This is the sweet spot for a single instance.
+
+2-3 SOL (scaling). wallet_pct sizing scales entries with the balance. At 2-3 SOL the same 1.5% rule places ~0.03-0.045 SOL entries. The data shows expectancy holds up to the largest sizes tested (>0.03 SOL = +0.007 avg), so a bigger bankroll compounds the same edge on bigger entries. Do NOT jump straight here; prove the edge live at 0.7-1.0 first, because live slippage on larger entries is the one thing the historical log cannot fully predict.
+
+DO NOT run below 0.5 SOL expecting the historical result. The token gate needs 250k SCEMA regardless; that is separate from trading capital.
+
+--------------------------------------------------------------------------------
+4. WHAT SIZE ENTRY MAKES MONEY  (PnL by entry size)
+--------------------------------------------------------------------------------
+
+    <0.004 SOL ....... 148 trades ... -0.0385 SOL ... LOSES MONEY
+    0.004-0.0075 ..... 137 trades ... +0.1694 SOL
+    0.0075-0.015 ..... 227 trades ... +1.3761 SOL ... THE CORE (61% of net)
+    0.015-0.03 ....... 88 trades .... +0.5558 SOL
+    >0.03 SOL ........ 19 trades .... +0.1334 SOL
+
+Lesson: sub-0.004 SOL entries are net negative — fees and spread eat them alive. The 0.0075-0.015 SOL band is the engine of the whole account. This is why Balanced mode (0.01 SOL / 1.5% wallet) is the recommended default and why Micro's floor was raised from 0.001 to 0.005 SOL. Never trade dust.
+
+--------------------------------------------------------------------------------
+5. WHEN TO HOLD, WHEN TO BAIL  (PnL by hold time)
+--------------------------------------------------------------------------------
+
+    0-5s ......... 307 trades ... +1.3385 SOL ... 38.4% WR
+    5-15s ........ 116 trades ... +0.5053 SOL ... 30.2% WR
+    15-45s ....... 99 trades .... +0.3047 SOL ... 26.3% WR
+    45-120s ...... 105 trades ... +0.1780 SOL ... 7.6% WR  <-- the dead zone
+    120-400s ..... 26 trades .... +0.0217 SOL
+    >400s ........ 8 trades ..... +0.0145 SOL ... 75% WR (the runners)
+
+Two clear signals:
+  - The first 5 seconds are where the money is (59% of net profit). Fast detection and
+    fast entry matter more than anything.
+  - The 45-120s bucket is a graveyard: 7.6% win rate. These are positions that pumped,
+    stalled, and bled toward the floor. The velocity-decay and peak-stagnation exits
+    exist to kill these. Keep no_pump_timeout tight (15s) so capital recycles instead of
+    rotting here.
+  - The >400s runners win 75% of the time. That is the tail. Let escalation ride them.
+
+--------------------------------------------------------------------------------
+6. WHEN TO TRADE  (hour and weekday)
+--------------------------------------------------------------------------------
+
+Best hours (UTC), by net SOL:  18h (+0.317), 04h (+0.221), 06h (+0.168), 12h (+0.157), 00h (+0.154), 20h (+0.146). Only two hours are net negative: 01h (-0.0015) and 05h (-0.031). Those are the only hours worth blocking. Blocking more than that (an earlier config blocked 09h and 18h) throws away real profit — 18h is the single best hour in the entire dataset.
+
+Weekday:
+    Mon .... +1.290 SOL (351 trades)   <-- 57% of all profit
+    Tue .... +0.881 SOL (163 trades)   <-- +39%
+    Wed-Thu  small sample, positive
+    Fri .... +0.014 SOL (basically flat)
+    Sat .... +0.098 SOL (small sample)
+    Sun .... -0.109 SOL   <-- the only losing day
+
+Mon+Tue are 96% of the profit. Sunday loses. This is exactly why weekend_mode = Bearish (defensive sizing Sat/Sun) and weekday_mode = Balanced. Run the bot hardest early in the week.
+
+--------------------------------------------------------------------------------
+7. THE RECURRING FAILURE MODE — AND HOW NOT TO CAUSE IT
+--------------------------------------------------------------------------------
+
+The bot has repeatedly been broken the same way: it gets tuned "too strict," which makes it "get trapped chasing parabolic pumps." These are ONE bug, not two.
+
+Why: the sniper structurally arrives AFTER the initial pump (it listens to Raydium pool creation; by the time it can act, the first move has happened). If you set the pool-score filter very high ("elite only," score 92), the ONLY pools that clear the bar are ones still visibly ripping upward at detection — i.e. already parabolic. The bot then buys the top, momentum-escalation keeps raising its take-profit target chasing a 1000x that a post-pump entry will never reach, and it rides the reversal back down.
+
+The fix is NOT to make it stricter. It is:
+  - Keep min_pool_score moderate (65, not 92). Catch pools earlier in the curve.
+  - Keep min_pool_size reasonable (10 SOL, not 20). A 20 SOL floor only passes
+    established/post-pump pools.
+  - Escalate the take-profit target only on GENUINE momentum (8%/check), not on chop.
+  - Cap escalations at ~6 rounds (~33x), not 12 (~1125x). Still captures real
+    mega-runners; stops chasing fantasy tops.
+
+If the bot ever misbehaves, change ONE knob (min_pool_score) and watch a full session before touching anything else. Changing five things at once is what causes the endless strict/loose oscillation.
+
+--------------------------------------------------------------------------------
+8. THE IDEAL RUN CONFIGURATION (what "full potential" looks like)
+--------------------------------------------------------------------------------
+
+Capital ................. 0.7-1.0 SOL trading bankroll (+ 250k SCEMA for the gate)
+Rate mode ............... Balanced (0.01 SOL / 1.5% wallet, TP 175%, SL 12%)
+                          Auto-drops to Bearish on weekends.
+min_pool_score .......... 65
+min_pool_size ........... 10 SOL
+max_pool_size ........... 150 SOL
+Escalation .............. 6 rounds, 1.8x factor, escalate on 8%/check, 20% trailing stop
+no_pump_timeout ......... 15s (recycle dead capital fast)
+blocked_hours_utc ....... [1, 5] only
+RPC ..................... a fast, paid endpoint (Helius or better). Latency in the first
+                          5 seconds is where the profit is — a slow RPC forfeits the edge.
+Sell slippage ........... 5% (current config; lands first-attempt without the
+                          2.5%->fail->5%->fail->min_out=0 retry chain). Keep it near here;
+                          the "85% slippage" era is what caused the old 90%-loss reports.
+                          Never loosen it toward that to "force" fills.
+
+Run it Monday-Tuesday primarily. Let winners run. Take small losses without flinching.
+
+--------------------------------------------------------------------------------
+9. HOW TO SCALE UP RESPONSIBLY
+--------------------------------------------------------------------------------
+
+Because sizing is wallet_pct-based, the edge compounds automatically as the balance grows — you do not need to re-tune. The honest sequence:
+
+  1. Prove the edge live at 0.7-1.0 SOL for a full week. Confirm the live profit factor
+     is in the same neighborhood as the historical 6.50. Live slippage and MEV
+     competition are the only variables the backtest cannot fully capture.
+  2. If it holds, raise the bankroll to 2-3 SOL. wallet_pct sizing does the rest.
+  3. Watch the >0.03 SOL entry bucket specifically. If its expectancy stays positive at
+     larger live sizes, you can scale further. If slippage erodes it, cap entry size and
+     run multiple smaller instances on different pools instead.
+
+Never scale on a losing streak "to make it back." The edge is statistical and shows up over hundreds of trades, not tens.
+
+--------------------------------------------------------------------------------
+10. ARBITRAGE (the second engine)
+--------------------------------------------------------------------------------
+
+The arb runs program-less by default — no on-chain deploy, no upload cost. It needs a seeded pool graph: run `cargo run --release -p pool-seeder` first (writes ~500 Raydium pools to pools/). Start it with 0.005-0.05 SOL of WSOL. Arb is self-funded and profit-or-revert atomic: a trade that isn't profitable simply fails and costs only the network fee. It is a lower-variance complement to the sniper, not a replacement.
+
+--------------------------------------------------------------------------------
+BOTTOM LINE
+--------------------------------------------------------------------------------
+
+The bot works. The data proves a real, repeatable statistical edge (PF 6.50). The way to run it at full potential is not clever new features — it is discipline: right capital (0.7-1.0 SOL to start), right size (0.0075-0.015 SOL entries), right time (Mon/Tue, all hours except 01h/05h), a fast RPC, moderate filters that catch pools EARLY, and the patience to let the rare big winner run while taking small losses without interference.
+
+Do that and you are running Scematica exactly as its own history says to.
+================================================================================

@@ -3910,12 +3910,13 @@ impl SellMonitor {
         // recent per-check % deltas (vs entry) for the momentum signal.
         //
         // Moon Chase override: when the dashboard toggles `[m]`, the params below
-        // swap to a "chase parabolic outliers" preset that allows ~8 escalations
-        // (vs default 4), uses factor 1.75× (vs 1.5×), tolerates 25 % pullback
-        // (vs 15 %), and trips on 3 %/check velocity (vs 5 %).
+        // swap to a "chase parabolic outliers" preset. Tamed so it can't trap the
+        // position: escalate only on GENUINE velocity (6 %/check, was a chop-sensitive
+        // 3 %), cap at 6 rounds (was 8), and lock profit faster on reversal (20 %
+        // pullback, was 25 %).
         let moon_chase = self.moon_chase.load(Ordering::Relaxed);
         let (mom_max_esc, mom_factor, mom_pullback, mom_threshold) = if moon_chase {
-            (8u32, 1.75f64, 25.0f64, 3.0f64)
+            (6u32, 1.75f64, 20.0f64, 6.0f64)
         } else {
             // Read escalation count from live_params (set by rate-mode watcher on switch),
             // falling back to static config if the mode field is 0 (unset).

@@ -24,7 +24,8 @@ cargo install scemadex-sdk && scemadex     # ScemaDEX live viewer
 cargo run --release --bin dashboard          # TUI entry point
 cargo run --release --bin dashboard -- --demo  # No keypair/RPC required
 cargo run --release --bin sniper             # Sniper standalone
-cargo run --release --bin arb                # Arb standalone
+cargo run --release -p pool-seeder           # Seed pools/ (arb graph) — REQUIRED before arb
+cargo run --release --bin arb                # Arb standalone (program-less by default: no on-chain deploy; atomic min-out profit-or-revert. Set SWAP_PROGRAM_ID to use a deployed program, or ARB_PROGRAM_LESS=1/0 to force)
 cargo run --release --bin scematica-protocol -- --pay-to <wallet> --price-lamports 10000
 
 # ScemaDEX agentic-liquidity layer (separate from the bot)
@@ -93,7 +94,7 @@ crates/
                         (published as `scema-agent-playground`). Bin: `playground`
 tools/
   key-converter/        Keypair format conversion
-  pool-seeder/          Pre-seeds pool-cache.json from on-chain state
+  pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
 programs/
   scematica-swap/       Anchor on-chain program (NOT in cargo workspace).
                         Devnet deploy: programs/scematica-swap/DEPLOY_DEVNET.md

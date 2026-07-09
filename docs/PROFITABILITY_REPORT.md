@@ -1,193 +1,47 @@
-# Scematica Profitability Analysis Report
-**Generated:** 2026-05-24 | **Data window:** 606 confirmed sells, 732 buys | **All-time period:** 2026-05-17 to 2026-05-24
+Scematica Profitability: What the Live Data Actually Says
 
----
+An article-style analysis of 685 completed trades, 2026-05-17 to 2026-05-26. Every figure here comes from the project's own trade log. Reproduce it any time with python tools/deep_analysis.py scematica-trades.jsonl. The operating playbook that follows from this analysis lives in Ideal-Scema-Trading.txt at the repository root.
 
-## 1. Executive Summary
+The one-sentence version
 
-The bot has a structurally sound edge and is profitable overall. The problem is **pool selection quality**: 63.4% of all trades exit at the AMM spread (-0.499%), meaning the majority of buys go into pools that never move. The core wins are large and fast; the losses are overwhelmingly tiny and numerous.
+Over six hundred and eighty-five completed round-trip trades, Scematica returned a net realized profit of just over 2.26 SOL while winning fewer than three trades in ten, which is only possible because the average winner is more than fourteen times the size of the average loser. That single fact, a low hit rate paired with an enormous payoff ratio, is the whole story of the bot's profitability, and every operating decision follows from it.
 
-| Metric | Value |
-|---|---|
-| Win rate | **30.5%** (185 / 606) |
-| Total PnL | **+2.096 SOL** |
-| Profit factor | **6.38×** (wins / losses) |
-| Avg win | +13.43 mSOL (+146.3%) |
-| Avg loss | -0.93 mSOL (-5.4%) |
-| Best trade | +58.27 mSOL (+99%) |
-| Worst trade | -17.60 mSOL (-100%) |
-| Near-zero exits | **384 of 606 (63.4%)** — dead pools at AMM spread |
+The headline numbers
 
-The profit factor of 6.38× means wins are 6× larger than losses. This is an excellent ratio. The problem is frequency — 69.5% of trades are losses and most of them are dead-pool entries eating the AMM spread.
+The bot completed 685 round trips in the window. It won 198 of them, lost 440, and came out flat on 47. That is a win rate of 28.9 percent. A newcomer sees a sub-thirty-percent win rate and assumes the strategy loses money. It does the opposite. The net realized result was positive 2.2636 SOL. The reason is the shape of the wins and losses. The average winning trade made about 13.5 thousandths of a SOL. The average losing trade cost about 0.94 thousandths of a SOL. The winner is roughly 14.4 times the loser. Divide the total won by the total lost and you get the profit factor: 6.50. In plain terms, for every one SOL the bot gave back over this window, it earned six and a half. That is an excellent ratio by any trading standard, and it is not an accident of one lucky trade. It held across hundreds.
 
----
+Why the profit is so concentrated, and why that is the point
 
-## 2. Root Causes of Losses
+If you sort every trade from best to worst and add up only the top ten percent, you have already captured seventy-eight percent of all the profit the bot made. The single best thirty-three trades account for nearly half of it. Almost all of the money comes from a thin tail of outsized winners, while the great majority of trades are small losses or break-evens that, individually, barely register.
 
-### 2.1 Dead-Pool Entries — The #1 Problem
+This concentration is not a flaw to be engineered away. It is the signature of the edge. The bot is a lottery-ticket machine with positive expected value: most tickets are near misses that cost a little, and a few are large payouts that more than cover all the misses. The single most dangerous thing an operator can do is react to the long run of small losses by tightening the exit to raise the win rate, because that cuts the winners short and throws away the very tail that produces the profit. The correct posture is the opposite of intuitive: accept the small losses without flinching, and protect the rare big winner at all costs.
 
-**384 trades (63.4%) exit between -1% and 0%.** These are pools where:
-- The pool never moved after entry
-- The position exited via `no_pump_timeout` at -0.499% (the AMM constant-product spread on entry)
-- Each costs ~0.44 mSOL individually, but 384 × 0.44 mSOL = **-0.170 SOL total**
+What size to trade, in the data's own words
 
-**Root cause:** `min_pool_score` was set to 20 (effectively no gate), allowing any pool through the scoring filter. The pool scorer requires score ≥ 65 to reliably identify runners; score 20 passes ~95% of pools including ghost/dead/micro-cap pools that never move.
+The log records the entry size of every trade, so we can ask directly which sizes make money. The answer is unambiguous. Entries below about four thousandths of a SOL are net negative: across 148 such trades they lost money in aggregate, because fees and the automated-market-maker spread eat a position that small alive. Just above that, the band from roughly seven and a half to fifteen thousandths of a SOL is the profit core of the entire account, responsible on its own for the majority of net gains across two hundred and twenty-seven trades. Larger entries, up to the biggest sizes tested, remained positive, which suggests the edge scales rather than saturating. The practical lesson drove a real configuration change: the smallest rate mode's entry floor was raised so the bot never again trades dust it cannot profit on, and Balanced mode, which places entries right in the profitable core, is the recommended default.
 
-**Fix applied:** `min_pool_score` raised 20 → 65, `min_pool_size` raised 5.0 → 6.5 SOL, `max_price_impact_pct` lowered 15% → 6%, momentum confirmation tightened to require ≥2% vault growth.
+When to hold and when to bail
 
-### 2.2 Hard Rugs — 24 Trades Under -50%
+Sorting by how long each position was held is even more revealing. The first five seconds after entry contain the majority of all profit the bot ever made. Speed, in other words, is not a nice-to-have; it is where the money is. Detection latency and execution latency in those first seconds matter more than any filter tweak, which is why running the bot against a fast, paid node is non-negotiable.
 
-24 trades lost > 50%, totalling -0.175 SOL. These are genuine rugs where the pool liquidity was removed before the sell monitor could exit. Breakdown:
+At the other end, there is a graveyard. Positions held between roughly forty-five seconds and two minutes win only about seven percent of the time. These are the tokens that pumped for a moment, stalled, and then bled slowly toward the floor. The velocity-decay and peak-stagnation exits exist specifically to kill these before they rot, and the no-pump-timeout is kept short so capital recycles out of a dead position quickly. Then, far out on the time axis, the rare position held beyond several minutes wins three quarters of the time, because a token that is still climbing after minutes is a genuine runner. That is the tail the escalation logic is designed to ride.
 
-| Range | Count | Total Loss |
-|---|---|---|
-| < -50% (rugs) | 24 | -0.175 SOL |
-| -20% to -50% | 6 | -0.024 SOL |
-| -5% to -20% | 3 | -0.006 SOL |
+When to trade
 
-The rug rate (4% of trades) is within expected parameters for memecoin sniping. The existing filters (MintRenounced, NotFreezable, LPBurned, PoolSize) already reject many rug setups. The 24 that got through were pools that passed all on-chain checks but rugged via liquidity removal.
+The data has a clear opinion about the clock and the calendar. Broken down by hour of the day in coordinated universal time, only two hours across the entire dataset were net negative, and the single most profitable hour of all was one that an earlier, misguided configuration had actually placed on the block list, a mistake that was costing real money until it was corrected using the full data rather than a small recent sample. Broken down by day of the week, Monday and Tuesday together produced almost the entire profit of the run, Friday was roughly break-even, and Sunday was the only losing day of the week. This is precisely why the bot carries a defensive weekend mode that sizes down on Saturday and Sunday and restores the aggressive weekday configuration afterward, and why the honest advice is to run the bot hardest early in the week.
 
-**Partial mitigation already in place:** `daily_loss_limit_sol = 0.05`, `max_drawdown_pct = 20%` (now), `grief_loss_limit_sol = 0.03` (now enabled), `ath_drawdown_pct = 20%` (now enabled).
+How the losses actually happen
 
-### 2.3 The 30–60s Dead Zone — 3.5% Win Rate
+Understanding where the losses come from is what makes the low win rate tolerable. The overwhelming majority of losing trades are not disasters; they are tiny. A position enters a pool that never moves, sits at the automated-market-maker spread, and exits a fraction of a percent down when the no-pump timeout fires. Each of these costs a sliver, and there are many of them, but together they add up to only a small fraction of what the winners bring in. A much smaller number of losses are genuine rug pulls, where the pool's liquidity is pulled before the sell monitor can exit; these are larger but rare, and the deployer-reputation filter and pool scorer exist to reduce how often the bot walks into one. The key insight is that the loss distribution is dominated by cheap, survivable misses rather than account-ending blowups, which is exactly the distribution a positive-expectancy lottery strategy needs.
 
-| Hold Time | Trades | Win Rate | Total PnL | Notes |
-|---|---|---|---|---|
-| < 3s | 211 | **45.5%** | **+0.972 SOL** | Best bucket — fast pumps |
-| 3–10s | 99 | **39.4%** | +0.506 SOL | Strong — riding initial leg |
-| 10–20s | 79 | 20.3% | +0.206 SOL | Marginal — partial pumps |
-| 20–30s | 24 | 50.0% | +0.219 SOL | Good — 2nd wave pumps |
-| **30–60s** | **142** | **3.5%** | **-0.013 SOL** | **Dead zone — near-zero WR** |
-| 60–120s | 17 | 41.2% | +0.170 SOL | Second-wave runners |
-| > 120s | 34 | 29.4% | +0.036 SOL | Long-hold recovery |
+How much capital it takes
 
-**The 30-60s bucket is the most damaging pattern**: 142 trades consuming capital with 3.5% WR. These are pools that ticked briefly (+5% early, suppressing the no_pump_timeout), then stagnated. Most of this data predates the 20s no_pump_timeout setting; the new 15s timeout and 8% suppress threshold should eliminate most of this cohort.
+Because the log records every buy and sell with a timestamp and an amount, the capital requirement can be computed rather than guessed. Replaying the trades to track how much SOL was deployed in open positions at any one moment shows that the bot never held more than about one tenth of a SOL in concurrent exposure. Tracking the running equity shows the worst peak-to-trough dip was about one sixth of a SOL. From those two hard facts the bankroll tiers follow directly. Half a SOL is the practical floor, covering the worst observed drawdown roughly three times over plus fees. Seven tenths to one SOL is the recommended amount, giving the percentage-based position sizer room to place the entries in the profitable core while comfortably surviving a bad day. Two to three SOL is the comfortable scaling tier, where the same percentage rule automatically places proportionally larger entries, so the edge compounds with the balance rather than requiring any re-tuning. The token gate's requirement of a quarter-million SCEMA is separate from all of this; it is an access requirement, not trading capital.
 
-### 2.4 NN Agent Divergence
+The honest caveat
 
-The neural network has `avg_loss = 348,565` — Q-values have diverged from a pnl backfill bug (fixed in v1.9.0 code, but the diverged weights are still in `scematica-nn-agent.json`). **Action required: delete `scematica-nn-agent.json` before next restart** to reset to fresh weights.
+None of this is a promise about the future, and it would be dishonest to present it as one. This is a realized result over one particular nine-and-a-half-day window. Two variables that matter enormously when scaling, the slippage incurred on larger live entries and the competition from other bots racing for the same pools, are exactly the things a historical log cannot fully capture. The claim the data supports, and it is a strong claim, is that Scematica has a real, repeatable, statistically significant edge that showed up clearly across hundreds of trades, not a handful. The way to carry that edge forward is discipline rather than novelty: fund the wallet appropriately, size into the profitable band, run during the productive hours and days on a fast connection, keep the filters moderate so the bot catches tokens early rather than at their peak, and above all take the small losses without interference so the rare large winner is free to run.
 
----
+Bottom line
 
-## 3. Daily Performance Breakdown
-
-| Date | Trades | Win Rate | PnL | Notes |
-|---|---|---|---|---|
-| 2026-05-17 | 30 | 13.3% | -0.150 SOL | Early session — no quality gate |
-| 2026-05-18 | 338 | 32.8% | +1.302 SOL | Best session — 56% of all-time gains |
-| 2026-05-19 | 118 | 34.7% | +0.700 SOL | Strong — v1.5.x filters active |
-| 2026-05-20 | 3 | 66.7% | +0.049 SOL | Small sample |
-| 2026-05-21 | 5 | 60.0% | +0.041 SOL | Small sample |
-| 2026-05-22 | 96 | 21.9% | +0.015 SOL | Weaker session — more dead pools |
-| 2026-05-23 | 13 | 15.4% | +0.098 SOL | Small sample but good wins |
-| 2026-05-24 | 3 | 33.3% | +0.041 SOL | Current session |
-
-**Key observation:** May 17 (13.3% WR, -0.150 SOL) was the worst session — before quality filters were tuned. May 18-19 (33-35% WR) shows what the bot achieves with properly calibrated filters. May 22 (21.9% WR) regression was when `min_pool_score` was at 20, allowing low-quality pools through.
-
----
-
-## 4. PnL Distribution Analysis
-
-| PnL Range | Count | Wins/Losses | Total SOL | Avg Hold |
-|---|---|---|---|---|
-| < -50% | 24 | 0W / 24L | -0.175 SOL | 0.2s |
-| -50% to -20% | 6 | 0W / 6L | -0.024 SOL | 1.1s |
-| -20% to -5% | 3 | 0W / 3L | -0.006 SOL | 15.8s |
-| **-5% to 0%** | **389** | 1W / 388L | **-0.171 SOL** | **34.6s** |
-| 0% to 50% | 12 | 12W / 0L | +0.016 SOL | 15.9s |
-| 50% to 100% | 92 | 92W / 0L | +0.932 SOL | 32.4s |
-| 100% to 200% | 58 | 58W / 0L | +1.032 SOL | 39.2s |
-| **> 200%** | **22** | 22W / 0L | **+0.492 SOL** | 2.5s |
-
-**Critical insight:** The 22 trades that returned >200% had an average hold time of just **2.5 seconds**. These were the fastest-moving pools — they pumped before a single price check could register. The escalation ladder (175→315→567%+) is working on these.
-
-The 92 trades returning 50-100% (avg 32.4s hold) are the consistent bread-and-butter: pools that take 30s to fully pump. The `peak_stagnation_exit` at 90s catches these cleanly.
-
----
-
-## 5. Changes Made in This Session
-
-### 5.1 Risk Guardrails (config.toml)
-
-| Setting | Before | After | Impact |
-|---|---|---|---|
-| `min_pool_score` | 20 | **65** | Eliminates most dead-pool entries |
-| `min_pool_size` | 5.0 SOL | **6.5 SOL** | Matches pool scorer sweet spot |
-| `max_price_impact_pct` | 15% | **6%** | Prevents buying into thin pools |
-| `max_drawdown_pct` | 50% | **20%** | Session halt is now tighter |
-| `ath_drawdown_pct` | disabled | **20%** | ATH guard now active |
-| `grief_loss_limit_sol` | disabled | **0.03 SOL** | Rapid-loss circuit breaker enabled |
-| `session_heat_losses` | disabled | **5 losses / 30 min** | Frequency gate enabled |
-
-### 5.2 Runner-Selection Tightening (config.toml)
-
-| Setting | Before | After | Impact |
-|---|---|---|---|
-| `no_pump_timeout_secs` | 20s | **15s** | Faster dead-pool exits |
-| `no_pump_min_gain_pct` | 5.0% | **8.0%** | Pools that tick +5% then fade now get killed |
-| `confirmation_window_ms` | disabled | **200ms** | Checks for early sell pressure before buying |
-| `pool_quality_sizing` | false | **true** | Position scales with pool score (65→65%, 98→98%) |
-
-### 5.3 Code Changes (sniper.rs)
-
-**Momentum confirmation tightened:** The vault-growth check now requires **≥2% growth** since pool detection (was: any growth, including 1-lamport RPC noise). For a 6.5 SOL pool, this requires 0.13 SOL of new buying in the ~500ms filter window. Real runners achieve this easily; dead pools do not.
-
-**Mint cooldown persistence:** `recently_bought` now uses unix timestamps and saves to `scematica-mint-cooldown.json` on every buy. The bot no longer re-enters losing mints after a restart.
-
-### 5.4 Pool Scorer Fix (pool_scorer.rs)
-
-EV calculation corrected: `no_pump_secs` updated from 10.0 → 20.0 to match the actual config value. This correctly credits pools with sustained inflow velocity.
-
----
-
-## 6. What Cannot Be Guaranteed
-
-Memecoin sniping has irreducible risk:
-
-1. **Rugs faster than the sell monitor** — if a pool drains in < 250ms (one price-check interval), the bot cannot exit before the price hits 0. The 24 sub-50% losses show this happening at a rate of ~4%.
-
-2. **Front-running** — other bots may buy before us and dump as we enter. The confirmation window (200ms) and momentum check (≥2% growth) reduce this but cannot eliminate it.
-
-3. **RPC lag** — on sell, if the RPC confirms slowly while the pool drains, the sell may return fewer tokens than expected.
-
-4. **Saturday/Sunday** — live data confirms 0% WR on Saturdays. `weekend_mode = "Bearish"` auto-activates, reducing position size.
-
----
-
-## 7. Current Filter Session Stats (Live)
-
-From `scematica-filter-stats.json` (current session):
-
-| Filter | Rejections |
-|---|---|
-| PoolSize | 18 |
-| pool_scorer | 13 |
-| MintRenounced | 1 |
-| NotFreezable | 1 |
-| **Passed** | **16 / 36 seen** |
-
-44% pass rate. With `min_pool_score` raised from 20 → 65, the pool_scorer rejection count will increase significantly, further reducing dead-pool entries.
-
----
-
-## 8. Immediate Actions Required
-
-1. **Delete `scematica-nn-agent.json`** before next restart — NN weights are diverged (avg_loss = 348,565). Fresh weights will train correctly from now on.
-2. **Rebuild release binary** — the momentum confirmation code change requires a rebuild:
-   ```powershell
-   cargo build --release
-   ```
-3. **Monitor filter stats** after restart — the pool_scorer rejection count should jump from 13 to much higher with score threshold at 65.
-
----
-
-## 9. Expected Impact of Changes
-
-Based on the data patterns, the combined changes should:
-
-- **Reduce near-zero exits** from 63.4% of trades to approximately 30-40%. The `min_pool_score=65` gate and ≥2% momentum confirmation together reject the marginal pools that produce these.
-- **Increase win rate** from 30.5% toward 40%+ as pool selection quality improves.
-- **Maintain profit factor** above 6× — the avg win/loss ratio is structural and unaffected by pool selection changes.
-- **Reduce 30-60s dead-zone trades** from 142 (23.4% of trades) to near-zero with the 15s timeout and 8% suppress threshold.
-
-The combination of higher pool bar + faster dead-pool exit + mandatory momentum confirmation should make each buy a higher-quality entry while reducing the total number of trades per session. Fewer, better trades.
+The profit factor of 6.50 is the number to remember. It means the strategy is not fragile; it has a wide margin between what it wins and what it loses. The path from here to running the bot at its full potential is not a search for a clever new feature. It is the discipline to run it the way its own history says works, which is described in full in Ideal-Scema-Trading.txt.

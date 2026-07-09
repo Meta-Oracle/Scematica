@@ -698,6 +698,7 @@ async fn main() -> Result<()> {
             use chrono::{Datelike, Weekday};
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600));
             let mut last_applied = String::new();
+            let mut first_tick = true;
             loop {
                 interval.tick().await;
                 let weekday = chrono::Utc::now().weekday();
@@ -712,6 +713,15 @@ async fn main() -> Result<()> {
                         wm.clone()
                     }
                 };
+                // Transition-only: on the FIRST tick just record the current day-class
+                // without writing, so a restart never clobbers the manually-selected
+                // mode. The switch fires only when the weekday/weekend boundary is
+                // actually crossed while the sniper is running.
+                if first_tick {
+                    first_tick = false;
+                    last_applied = target_mode;
+                    continue;
+                }
                 if target_mode == last_applied {
                     continue;
                 }

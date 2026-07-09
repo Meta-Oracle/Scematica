@@ -32,7 +32,7 @@ one_token_at_a_time = true
 use_snipe_list = false
 snipe_list_path = "snipe-list.txt"
 max_buys = 10              # Auto-activate sell mode after 10 successful buys; 0 = unlimited
-trailing_stop_loss_pct = 25.0  # Tightened: 25% trail catches bleed from peak; still gives parabolic pumps room
+trailing_stop_loss_pct = 20.0  # Tightened 25→20: locks profit faster when a parabolic pump reverses, so a chased runner gives back less from its peak. Still enough room for normal volatility.
 partial_tp_pct = 0.0           # Disabled — single full exit at take_profit_pct
 partial_tp_trigger = 0.0       # Disabled — no partial sells below the 0.05 SOL target
 
@@ -48,9 +48,9 @@ profit_lock_checks = 0              # Disabled — profit floor in code locks 0.
 
 # ── v1.6.0 Momentum Escalation (Hold Longer) ──────────────────────────────────
 momentum_hold = true
-momentum_max_escalations = 12       # 12-round ladder: 175→315→567→1021→1837→3307→5952→10714→19285→34713→62484→112471% (~1125x at round 11)
+momentum_max_escalations = 6        # Fallback cap (was 12/~1125x). 6-round ladder: 175→315→567→1021→1837→3307% (~33x) — big-runner room without the fantasy chase that traps post-pump entries.
 momentum_escalation_factor = 1.8    # TP grows 1.8× per round
-momentum_escalation_threshold_pct = 5.0  # Escalate on 5%/check avg velocity (was 8%) — catches sustained pumps that plateau briefly before next leg
+momentum_escalation_threshold_pct = 8.0  # Only escalate the TP target on GENUINE sustained velocity (8%/check). At 5% it escalated on post-pump chop → kept raising the target instead of taking profit → trapped. 8% lets real runners escalate but a stalling pump takes the base TP.
 momentum_pullback_exit_pct = 15.0   # At peak 200%: 15% pullback fires at 185%, above 175% floor → satisfiable
 adaptive_pullback = false            # Disabled: adaptive formula makes pullback unreachable at 175-250% peak
 max_concurrent_positions = 1   # 1 at a time — prevents RPC overload causing sell timeouts on multiple open positions
@@ -66,7 +66,7 @@ blacklist_path = "blacklist.txt"
 # Score 50 = unknown/stale pool, small size, no signals.
 # Score 80 = fresh detection + 15-20 SOL + no buy pressure (baseline runner candidate).
 # Score 92+ = fresh + 20-45 SOL + buy pressure confirmed OR pumpfun signal.
-min_pool_score = 92              # Elite-only mode: require top-decile runner profile before entry.
+min_pool_score = 65              # Balanced (was 92 = elite-only). 92 only passed pools still visibly pumping = parabolic tops; 65 catches quality pools earlier in the curve. Validated-profitable value.
 require_moonshot_confirmation = false     # Disabled: live inflow is 0 for all pools (arrive post-pump); score+fib gate quality instead
 moonshot_min_score = 92.0
 moonshot_min_inflow_sol_per_sec = 0.5
@@ -121,9 +121,9 @@ pumpfun_max_last_buy_age_secs = 12  # Last buy must be recent at graduation time
 #   0% WR hours (UTC): 01:00, 21:00 → hard-blocked
 #   53% WR: 03:00 | 52% WR: 16:00 | 50% WR: 10:00 (best trading windows)
 time_of_day_weighting = true        # Scale buy size by hour quality (1.3× peak, 0.5× dead)
-blocked_hours_utc = [1, 5, 9, 18, 21] # Recent tail: 09h negative and 18h 0% win; keep prior dead windows blocked.
-weekend_mode = "Bearish"            # Auto-switch Sat/Sun (0% WR Sat, 22% WR Fri vs 32% Mon)
-weekday_mode = "Balanced"           # Auto-restore Mon–Fri
+blocked_hours_utc = [1, 5]         # Full-dataset analysis (685 trades): only 01h (-0.0015) and 05h (-0.0306) are net negative. 09h is +0.087 and 18h is +0.317 SOL (2nd-best hour!) — the old blocks came from a small recent-tail sample and were costing real money. Prefer full-data estimates over recent tails.
+weekend_mode = "Bearish"            # RE-ENABLED with the transition-only fix: the watcher no longer writes on startup (manual mode selection persists across sessions); it only switches when the Sat/Sun boundary is crossed while running. Data (685 trades): Sunday is NET NEGATIVE (-0.109 SOL, 12.5% WR) — Bearish sizing on weekends is worth real money.
+weekday_mode = "Balanced"           # Restored Mon-Fri after a weekend transition (Mon+Tue = 96% of all profit in the data).
 
 # ── v1.1.0 Buy Improvements ─────────────────────────────────────────────────────
 min_sol_reserve = 0.02              # Keep at least this SOL in wallet after buy
@@ -179,7 +179,7 @@ check_socials = false               # v1.6.0: Set true to hard-reject tokens wit
                                     # Social enrichment now reads Metaplex + off-chain URI
                                     # Scorer applies −4 to +10 boost based on social count
 filter_cache_ttl_secs = 30          # Cache filter results per pool
-min_pool_size = 20.0          # Recent tail: sub-20 SOL pools had weak win rate; only snipe deeper liquidity.
+min_pool_size = 10.0          # Loosened from 20 (which rejected ~60% of pools — PoolSize was the #1 rejection). 20 SOL floor only let established/post-pump pools through, reinforcing parabolic-peak entries.
 max_pool_size = 150.0         # Raised from 100 — 105-147 SOL pools were scoring 99.9 but being blocked
 check_name = true             # v1.2.0: Enabled — zero-cost scam-word filter
 check_volume = true           # v1.2.0: Require recent transaction activity
@@ -232,7 +232,7 @@ deployer_min_age_hours = 24         # Only used if check_deployer_wallet_age = t
 [[sniper.rate_modes]]
 name = "Micro"
 order = 1
-quote_amount = 0.001       # Entry: 1 milliSOL (fallback if wallet_pct=0)
+quote_amount = 0.005       # Raised from 0.001 — full-data analysis: entries <0.004 SOL are NET NEGATIVE (-0.0385 SOL over 148 trades; fees+spread eat them). 0.005 is the smallest size with positive expectancy.
 wallet_pct = 0.3           # 0.3% of wallet per trade
 take_profit_pct = 50.0     # Exit goal: 50% profit
 stop_loss_pct = 8.0        # Exit pain: 8% loss
@@ -276,7 +276,7 @@ quote_amount = 0.01        # Entry: 10 milliSOL (fallback)
 wallet_pct = 1.5           # 1.5% of wallet per trade (SWEET SPOT!)
 take_profit_pct = 175.0    # Exit goal: 175% profit (escalator starting point)
 stop_loss_pct = 12.0       # Exit pain: 12% loss
-momentum_max_escalations = 12  # 12-round ladder reaches ~1125x from 175% base
+momentum_max_escalations = 6   # Capped from 12. 12 chased a ~1125x fantasy target a post-pump entry never reaches → rode the reversal down. 6 (~33x ceiling) still captures genuine mega-runners but takes profit instead of chasing top-and-back.
 enabled = true
 
 # Aggressive mode: 2× entry, accepting more volatility

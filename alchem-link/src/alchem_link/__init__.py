@@ -1,5 +1,7 @@
 """Alchemy x Chainlink developer package scaffold."""
 
+__version__ = "0.1.0"
+
 from .alchemy import summarize_alchemy_capabilities
 from .chainlink import summarize_chainlink_capabilities
 from .core import build_package_blueprint

@@ -105,10 +105,22 @@ scematica_analysis.md
 # ── Backup / alternate config files (not source of truth) ─────────────────────
 config-*.toml
 
+# ── Python build / dist artifacts ───────────────────────────────────────────
+alchem-link/dist/
+alchem-link/build/
+alchem-link/src/*.egg-info/
+alchem-link/.eggs/
+*.tar.gz
+*.whl
+
 # ── Python cache ─────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md

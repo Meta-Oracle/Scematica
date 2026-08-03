@@ -105,6 +105,11 @@ scematica_analysis.md
 # ── Backup / alternate config files (not source of truth) ─────────────────────
 config-*.toml
 
+# ── Python cache ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 tweets.md
 

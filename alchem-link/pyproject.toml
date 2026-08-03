@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alchem-link"
+version = "0.1.0"
+description = "Alchemy x Chainlink developer package scaffold"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "DarkStarMatters" }]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+alchem-link = "alchem_link.cli:main"

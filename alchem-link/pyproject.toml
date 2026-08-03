@@ -9,6 +9,7 @@ description = "Alchemy x Chainlink developer package scaffold"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+dependencies = ["textual>=0.61.0"]
 authors = [{ name = "meta-oracle" }]
 keywords = ["alchemy", "chainlink", "web3", "solana", "oracle", "rpc", "defi"]
 classifiers = [
@@ -35,6 +36,7 @@ where = ["src"]
 
 [project.scripts]
 alchem-link = "alchem_link.cli:main"
+alchem-link-ui = "alchem_link.tui:launch"
 
 [tool.pytest.ini_options]
 addopts = "-p no:anchorpy"

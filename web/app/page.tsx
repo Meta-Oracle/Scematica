@@ -7,6 +7,7 @@ import { GatedControls }    from '@/components/GatedControls'
 import { HealthBadge }      from '@/components/HealthBadge'
 import { Links }            from '@/components/Links'
 import { LogStream }        from '@/components/LogStream'
+import { ManualSwap }       from '@/components/ManualSwap'
 import { MobileGate }       from '@/components/MobileGate'
 import { MetricsPanel }     from '@/components/MetricsPanel'
 import { NNStatus }         from '@/components/NNStatus'
@@ -103,6 +104,18 @@ export default function Home() {
           <GatedControls>
             <SniperControls />
           </GatedControls>
+        </section>
+
+        {/* Manual, non-custodial execution — works with no bot at all. Deliberately
+            separate from the sniper controls above: this spends the user's own wallet
+            with a signature prompt, it does not steer the bot. */}
+        <section>
+          <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">
+            ◈ Manual Execution <span className="text-scema-dim ml-1">(your wallet signs)</span>
+          </p>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="lg:col-span-1"><ManualSwap /></div>
+          </div>
         </section>
 
         {/* Pool Radar + Filter Stats (advanced) */}

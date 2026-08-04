@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { useLogs } from '@/lib/queries'
 
 const LEVEL_COLOR: Record<string, string> = {
   INFO:  'text-scema-text',
@@ -33,22 +33,15 @@ export function LogStream() {
   const [pinned, setPinned] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const pausedRef = useRef(false)
 
-  useEffect(() => { pausedRef.current = paused }, [paused])
+  const { data } = useLogs()
+  const live = data?.lines
 
+  // Pause freezes *this panel*, not the shared poll — other subscribers still need it.
+  // `live` only changes identity when a poll brings new data, so this can't loop.
   useEffect(() => {
-    let alive = true
-    async function poll() {
-      if (pausedRef.current) return
-      const r = await api.logs(80)
-      if (!alive || !r) return
-      setLines(r.lines)
-    }
-    poll()
-    const iv = setInterval(poll, 2000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+    if (!paused && live) setLines(live)
+  }, [live, paused])
 
   useEffect(() => {
     if (pinned && !paused && bottomRef.current) {

@@ -9,7 +9,7 @@ import {
   createTransferInstruction,
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token'
-import { api } from './api'
+import { useTrades } from './queries'
 import type { Trade } from './types'
 import { getScemaPriceInSol } from './scemaPrice'
 import { SCEMA_MINT as SCEMA_MINT_ADDR } from './ScemaGateContext'
@@ -131,6 +131,9 @@ export function useFeeManager(): FeeState {
     }
   }, [publicKey, sendTransaction]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reads the shared 'trades' key rather than opening a 5th poll against it.
+  const { data: tradesData } = useTrades()
+
   useEffect(() => {
     if (!connected || !publicKey) {
       setPendingSolLamports(0)
@@ -145,7 +148,7 @@ export function useFeeManager(): FeeState {
     let alive = true
 
     async function checkTrades() {
-      const result = await api.trades(200)
+      const result = tradesData
       if (!alive || !result) return
 
       const paid = loadPaidSet()
@@ -195,10 +198,10 @@ export function useFeeManager(): FeeState {
       }
     }
 
+    // Re-runs whenever the shared trades poll delivers a new snapshot.
     checkTrades()
-    const iv = setInterval(checkTrades, 8_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [connected, publicKey]) // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { alive = false }
+  }, [connected, publicKey, tradesData]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { pendingSolLamports, pendingScemaRaw, pendingCount, totalPaidSol, status, payNow }
 }

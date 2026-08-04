@@ -1,25 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { NNAdvice, NNStats } from '@/lib/types'
+import { useNN, useNNAdvice } from '@/lib/queries'
 
 export function NNStatus() {
-  const [data, setData] = useState<NNStats | null>(null)
-  const [advice, setAdvice] = useState<NNAdvice | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const [stats, nextAdvice] = await Promise.all([api.nn(), api.nnAdvice()])
-      if (!alive) return
-      if (stats) setData(stats)
-      if (nextAdvice) setAdvice(nextAdvice)
-    }
-    poll()
-    const iv = setInterval(poll, 10_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const { data } = useNN()
+  const { data: advice } = useNNAdvice()
 
   if (!data) return null
 

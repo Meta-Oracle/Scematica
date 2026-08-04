@@ -1,8 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { LivePosition, Metrics, Trade } from '@/lib/types'
+import { useMetrics, usePositions, useTrades } from '@/lib/queries'
 
 const LAMPORTS = 1_000_000_000
 
@@ -30,32 +28,15 @@ function fmtUptime(secs: number) {
 }
 
 export function MetricsPanel() {
-  const [data, setData]     = useState<Metrics | null>(null)
-  const [trades, setTrades] = useState<Trade[]>([])
-  const [positions, setPositions] = useState<LivePosition[]>([])
-  const [err, setErr]       = useState(false)
+  const { data, ok, loading } = useMetrics()
+  const { data: tradesData } = useTrades()
+  const { data: positionsData } = usePositions()
 
-  useEffect(() => {
-    let alive = true
-    async function pollMetrics() {
-      const m = await api.metrics()
-      if (!alive) return
-      if (m) { setData(m); setErr(false) } else setErr(true)
-    }
-    async function pollTrades() {
-      const r = await api.trades(200)
-      if (alive && r?.trades) setTrades(r.trades)
-    }
-    async function pollPositions() {
-      const p = await api.positions()
-      if (alive) setPositions(p ?? [])
-    }
-    pollMetrics(); pollTrades(); pollPositions()
-    const m = setInterval(pollMetrics, 3_000)
-    const t = setInterval(pollTrades, 15_000)
-    const p = setInterval(pollPositions, 3_000)
-    return () => { alive = false; clearInterval(m); clearInterval(t); clearInterval(p) }
-  }, [])
+  const trades = tradesData?.trades ?? []
+  const positions = positionsData ?? []
+  // Don't show the "no sniper" prompt during the very first poll — only once one
+  // has actually come back empty.
+  const err = !ok && !loading
 
   if (err && !data) {
     return (

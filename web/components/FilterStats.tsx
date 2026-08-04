@@ -1,22 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { FilterStats as FS } from '@/lib/types'
+import { useFilterStats } from '@/lib/queries'
+import { useDiscovery } from '@/lib/useDiscovery'
 
 export function FilterStatsPanel() {
-  const [data, setData] = useState<FS | null>(null)
+  const discovery = useDiscovery()
+  const live = useFilterStats()
 
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.filters()
-      if (alive && r) setData(r)
-    }
-    poll()
-    const iv = setInterval(poll, 5000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const fromLive = discovery.source === 'live'
+  const data = fromLive
+    ? live.data
+    : discovery.stats.pools_seen > 0
+      ? discovery.stats
+      : null
 
   if (!data) return (
     <div className="panel h-full">
@@ -36,7 +32,17 @@ export function FilterStatsPanel() {
     <div className="panel flex flex-col h-full">
       <div className="panel-header justify-between">
         <span>Filter Pipeline</span>
-        <span className="text-scema-muted">{passRate}% pass</span>
+        <span className="flex items-center gap-2">
+          {!fromLive && (
+            <span
+              title="Ported filter pipeline run over the public mint feed. DeployerReputation and DevHoldings are documented approximations — see lib/feed/scorer.ts."
+              className="text-scema-amber border border-scema-amber/40 px-1.5 leading-tight"
+            >
+              FEED
+            </span>
+          )}
+          <span className="text-scema-muted">{passRate}% pass</span>
+        </span>
       </div>
 
       {/* Summary bar */}

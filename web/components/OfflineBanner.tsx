@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { useHealth } from '@/lib/queries'
 import { getPairing } from '@/lib/net'
 import { Pairing } from './Pairing'
 
@@ -11,23 +11,16 @@ import { Pairing } from './Pairing'
 // the fix is the same "Pair with it" flow, so both cases share this one banner
 // instead of only pointing people at a same-machine `api.exe`.
 export function OfflineBanner() {
-  const [offline, setOffline]   = useState(false)
   const [dismissed, setDismissed] = useState(false)
   const [pairing, setPairing]   = useState(false)
 
-  useEffect(() => {
-    let alive = true
-    async function check() {
-      const h = await api.health()
-      if (!alive) return
-      const down = h === null
-      setOffline(down)
-      if (!down) setDismissed(false) // auto-restore when API comes back
-    }
-    check()
-    const iv = setInterval(check, 5_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  // Shared 'health' key — HealthBadge and useDataSource read the same poll.
+  const { ok, loading } = useHealth()
+  const offline = !loading && !ok
+
+  // Auto-restore the banner once the API comes back, so a dismissal doesn't hide a
+  // *later* outage.
+  useEffect(() => { if (ok) setDismissed(false) }, [ok])
 
   if (pairing) {
     return (

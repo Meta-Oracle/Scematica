@@ -1,4 +1,5 @@
 import type {
+  ControlState,
   FilterStats,
   HealthStatus,
   IntelligenceSnapshot,
@@ -38,6 +39,7 @@ export const api = {
   tournament: () => get<TournamentSnapshot>('/api/tournament'),
   intelligence: (limit = 60) => get<IntelligenceSnapshot>('/api/intelligence', { limit: String(limit) }),
   health:    () => get<HealthStatus>('/api/health'),
+  controls:  () => get<ControlState>('/api/controls'),
   pools:     (limit = 30) => get<{ pools: Pool[]; total: number }>('/api/pools', { limit: String(limit) }),
   logs:      (lines = 80) => get<{ lines: string[] }>('/api/logs', { lines: String(lines) }),
   trades:    (limit = 20) => get<{ trades: Trade[] }>('/api/trades', { limit: String(limit) }),

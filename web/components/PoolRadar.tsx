@@ -1,8 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { Pool } from '@/lib/types'
+import { usePools } from '@/lib/queries'
+import { useDiscovery } from '@/lib/useDiscovery'
 
 function scoreColor(score: number) {
   if (score >= 98) return 'text-scema-red-hi'
@@ -23,27 +22,30 @@ function fmtAge(ts: number) {
 }
 
 export function PoolRadar() {
-  const [pools, setPools] = useState<Pool[]>([])
-  const [total, setTotal] = useState(0)
+  const discovery = useDiscovery()
+  const livePools = usePools()
 
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.pools(30)
-      if (!alive || !r) return
-      setPools(r.pools)
-      setTotal(r.total)
-    }
-    poll()
-    const iv = setInterval(poll, 3000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  // A paired bot's own view wins; otherwise these are real mints off the public feed,
+  // scored by the ported pipeline.
+  const fromLive = discovery.source === 'live'
+  const pools = fromLive ? (livePools.data?.pools ?? []) : discovery.pools
+  const total = fromLive ? (livePools.data?.total ?? 0) : discovery.pools.length
 
   return (
     <div className="panel flex flex-col h-full">
       <div className="panel-header justify-between">
         <span>Pool Radar</span>
-        <span className="text-scema-dim">{total} total</span>
+        <span className="flex items-center gap-2">
+          {!fromLive && (
+            <span
+              title="Live mints from the public Jupiter feed, scored by the ported pipeline. Pair a sniper to see its own vault-level view."
+              className="text-scema-amber border border-scema-amber/40 px-1.5 leading-tight"
+            >
+              FEED
+            </span>
+          )}
+          <span className="text-scema-dim">{total} total</span>
+        </span>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {pools.length === 0 ? (

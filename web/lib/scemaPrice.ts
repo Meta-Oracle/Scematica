@@ -1,30 +1,40 @@
 /**
  * SCEMA/SOL price oracle.
- * Primary:  Jupiter Price API v6 (vsToken=WSOL — direct SOL-denominated price)
+ * Primary:  Jupiter Price API v3 (USD prices for SCEMA + WSOL → SOL-denominated ratio)
  * Fallback: DexScreener pair data (priceNative field)
  * Cache TTL: 60 s
+ *
+ * NOTE: the old `price.jup.ag/v6` host was retired and no longer resolves — calling it
+ * from the browser produced a `net::ERR_NAME_NOT_RESOLVED` on every poll. v3 only quotes
+ * in USD, so SOL-denominated price is derived by asking for both mints in one request.
  */
 
+import { getUsdPrices, WSOL_MINT } from './feed/price'
 import { SCEMA_MINT } from './ScemaGateContext'
 
-const WSOL_MINT  = 'So11111111111111111111111111111111111111112'
 const CACHE_TTL  = 60_000
+// After both sources fail, don't retry (and don't log another pair of network errors)
+// until this cools off — a persistent outage otherwise spams the console on every poll.
+const FAIL_TTL   = 30_000
 
 let _price: number | null = null
 let _fetchedAt = 0
+let _failedAt = 0
 
 async function fromJupiter(): Promise<number> {
-  const url = `https://price.jup.ag/v6/price?ids=${SCEMA_MINT}&vsToken=${WSOL_MINT}`
-  const res  = await fetch(url, { signal: AbortSignal.timeout(5_000) })
-  const json = await res.json()
-  const p = json?.data?.[SCEMA_MINT]?.price
-  if (typeof p === 'number' && p > 0) return p
-  throw new Error('jupiter: no price')
+  // Shares the feed's price cache, so the SOL quote the pool feed already fetched is
+  // reused rather than re-requested.
+  const prices = await getUsdPrices([SCEMA_MINT, WSOL_MINT])
+  const scemaUsd = prices[SCEMA_MINT]
+  const solUsd   = prices[WSOL_MINT]
+  if (!scemaUsd || !solUsd) throw new Error('jupiter: no price')
+  return scemaUsd / solUsd
 }
 
 async function fromDexScreener(): Promise<number> {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${SCEMA_MINT}`
   const res  = await fetch(url, { signal: AbortSignal.timeout(5_000) })
+  if (!res.ok) throw new Error(`dexscreener: HTTP ${res.status}`)
   const json = await res.json()
   // priceNative is SOL-denominated on Solana pairs
   const pairs: Array<{ priceNative?: string; liquidity?: { usd?: number } }> =
@@ -46,6 +56,7 @@ async function fromDexScreener(): Promise<number> {
 export async function getScemaPriceInSol(): Promise<number> {
   const now = Date.now()
   if (_price !== null && now - _fetchedAt < CACHE_TTL) return _price
+  if (now - _failedAt < FAIL_TTL) return _price ?? 0.000001
 
   try {
     _price = await fromJupiter()
@@ -59,6 +70,7 @@ export async function getScemaPriceInSol(): Promise<number> {
     return _price
   } catch { /* fall through */ }
 
+  _failedAt = now
   // Return last known value or a conservative default (1 SCEMA = 0.000001 SOL)
   return _price ?? 0.000001
 }

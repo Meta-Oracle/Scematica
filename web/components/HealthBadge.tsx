@@ -1,22 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { HealthStatus } from '@/lib/types'
+import { useHealth } from '@/lib/queries'
 
 export function HealthBadge() {
-  const [health, setHealth]   = useState<HealthStatus | null | 'loading'>('loading')
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const h = await api.health()
-      if (alive) setHealth(h)
-    }
-    poll()
-    const iv = setInterval(poll, 5_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  // Shared 'health' key — OfflineBanner and useDataSource read the same single poll.
+  const { data, ok, loading } = useHealth()
+  const health = loading ? 'loading' : ok ? data : null
 
   if (health === 'loading') {
     return (

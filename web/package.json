@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "check:parity": "node --experimental-strip-types scripts/check-parity.mjs",
     "mobile:export": "node scripts/mobile-export.mjs",
     "mobile:sync": "npm run mobile:export && cap sync android",
     "mobile:open": "cap open android",

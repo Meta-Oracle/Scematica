@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { api } from '@/lib/api'
-import type { PoolDecision } from '@/lib/types'
+import { useMemo } from 'react'
+import { useDecisions } from '@/lib/queries'
+import { useDiscovery } from '@/lib/useDiscovery'
 
 function shortMint(mint: string) {
   return mint ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : '----'
@@ -23,19 +23,13 @@ function decisionClass(decision: string) {
 }
 
 export function DecisionLedger() {
-  const [decisions, setDecisions] = useState<PoolDecision[] | null>(null)
+  const discovery = useDiscovery()
+  const live = useDecisions()
 
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.decisions(60)
-      if (!alive) return
-      setDecisions(r?.decisions ?? [])
-    }
-    poll()
-    const iv = setInterval(poll, 5000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const fromLive = discovery.source === 'live'
+  const decisions = fromLive
+    ? (live.loading && !live.data ? null : (live.data?.decisions ?? []))
+    : (discovery.loading ? null : discovery.decisions)
 
   const stats = useMemo(() => {
     const rows = decisions ?? []
@@ -51,7 +45,17 @@ export function DecisionLedger() {
     <div className="panel flex flex-col h-full">
       <div className="panel-header justify-between">
         <span>Pool Decision Ledger</span>
-        <span className="text-scema-muted">{decisions === null ? '...' : decisions.length}</span>
+        <span className="flex items-center gap-2">
+          {!fromLive && (
+            <span
+              title="Verdicts from the ported pipeline over the public mint feed. INFLOW and DQ* are blank because the feed cannot supply them."
+              className="text-scema-amber border border-scema-amber/40 px-1.5 leading-tight"
+            >
+              FEED
+            </span>
+          )}
+          <span className="text-scema-muted">{decisions === null ? '...' : decisions.length}</span>
+        </span>
       </div>
 
       <div className="grid grid-cols-4 divide-x divide-scema-border border-b border-scema-border text-xs">

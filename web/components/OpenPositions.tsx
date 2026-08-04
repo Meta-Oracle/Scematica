@@ -1,8 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { LivePosition } from '@/lib/types'
+import { usePositions } from '@/lib/queries'
 
 const LAMPORTS = 1_000_000_000
 const STALE_SECS = 10 // no price-check update in this long ⇒ flag as stale
@@ -27,20 +26,9 @@ function fmtSol(lamports: number) {
 // this reads the bot's actual in-flight risk rather than being reconstructed after
 // the fact from trade history.
 export function OpenPositions() {
-  const [positions, setPositions] = useState<LivePosition[] | null>(null)
+  // Shares the 'positions' key with MetricsPanel — one poll feeds both.
+  const { data: positions } = usePositions()
   const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.positions()
-      if (!alive) return
-      setPositions(r ?? [])
-    }
-    poll()
-    const iv = setInterval(poll, 3_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
 
   // Re-render every second so AGE / staleness stay live between polls.
   useEffect(() => {

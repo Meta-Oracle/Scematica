@@ -110,6 +110,28 @@ export interface TxTelemetry {
   blockhash_error_count: number
 }
 
+export const RATE_MODES = [
+  'bearish', 'micro', 'safe', 'balanced', 'aggressive', 'degen', 'bullish', 'moon',
+] as const
+export type RateMode = typeof RATE_MODES[number]
+
+export const BUILDER_MODES = ['off', 'growth', 'builder', 'super_builder'] as const
+export type BuilderMode = typeof BUILDER_MODES[number]
+
+// Mirrors the GET /api/controls snapshot in crates/scematica-api/src/main.rs.
+export interface ControlState {
+  sell_mode:          boolean
+  dump_mode:          boolean
+  rate_mode:          RateMode
+  high_speed:         boolean
+  moon_chase:         boolean
+  builder_mode:       BuilderMode
+  builder_target_sol: number
+  tp_pct:             number
+  sl_pct:             number
+  multiplier:         number
+}
+
 export interface HealthStatus {
   api: string
   sniper_running: boolean

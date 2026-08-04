@@ -33,6 +33,25 @@ export function isNative(): boolean {
   )
 }
 
+/**
+ * True when this bundle was built as a static export (`MOBILE_EXPORT=1`), baked in at
+ * build time by next.config.js. A static export ships no Next server, so the
+ * `app/api/[...slug]` proxy does not exist and a relative `/api/*` call resolves against
+ * whatever static host is serving the files — 404, with an HTML error page as the body.
+ */
+export function isStaticExport(): boolean {
+  return process.env.NEXT_PUBLIC_STATIC_EXPORT === '1'
+}
+
+/**
+ * True when this build has no same-origin `/api/*` proxy to fall back on, so API calls
+ * have nowhere to go until the operator pairs an instance. Both the native shell and a
+ * statically-exported bundle opened in a browser are in this position.
+ */
+export function needsPairing(): boolean {
+  return (isNative() || isStaticExport()) && getPairing() === null
+}
+
 export function getPairing(): Pairing | null {
   if (typeof window === 'undefined') return null
   try {
@@ -65,6 +84,22 @@ export function apiBase(): string {
  * the base is prepended only when a pairing exists.
  */
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  // No proxy in this build and nothing paired: the request would hit the static host,
+  // 404, and return an HTML error page that every JSON caller then fails to parse.
+  // Answer locally with the same 503 the proxy uses for "no instance" instead — one
+  // synthetic response beats a 404 + a parse error per panel, per poll.
+  if (needsPairing()) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          error: 'no_instance_paired',
+          hint: 'Pair this app with your own sniper API to load data.',
+        }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+  }
+
   const base = apiBase()
   const url = base ? base + path : path
   const p = getPairing()

@@ -1,8 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { api } from '@/lib/api'
-import type { TxTelemetry } from '@/lib/types'
+import { useMemo } from 'react'
+import { useTelemetry } from '@/lib/queries'
 
 function fmtTime(ts: string) {
   try {
@@ -18,19 +17,8 @@ function avg(values: number[]) {
 }
 
 export function ExecutionQuality() {
-  const [rows, setRows] = useState<TxTelemetry[] | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.txTelemetry(60)
-      if (!alive) return
-      setRows(r?.telemetry ?? [])
-    }
-    poll()
-    const iv = setInterval(poll, 5000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const { data, loading } = useTelemetry()
+  const rows = loading && !data ? null : (data?.telemetry ?? [])
 
   const stats = useMemo(() => {
     const data = rows ?? []

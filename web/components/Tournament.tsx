@@ -1,8 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import type { TournamentSnapshot } from '@/lib/types'
+import { useTournament } from '@/lib/queries'
 
 const VARIANT_LABEL: Record<string, string> = {
   conservative: 'CONSERVATIVE',
@@ -17,18 +15,7 @@ const VARIANT_LABEL: Record<string, string> = {
 // the stack that's genuinely proprietary — not a static rule table, an agent that's
 // still competing with itself in the background.
 export function Tournament() {
-  const [data, setData] = useState<TournamentSnapshot | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.tournament()
-      if (alive) setData(r)
-    }
-    poll()
-    const iv = setInterval(poll, 10_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const { data } = useTournament()
 
   if (!data) return null
 

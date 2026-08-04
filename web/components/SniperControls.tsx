@@ -2,28 +2,16 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { apiFetch } from '@/lib/net'
+import { useControls } from '@/lib/queries'
+import { invalidate } from '@/lib/store'
 import { useUiMode } from '@/lib/UiModeContext'
-
-// ── types ─────────────────────────────────────────────────────────────────────
-
-const RATE_MODES = ['bearish','micro','safe','balanced','aggressive','degen','bullish','moon'] as const
-type RateMode = typeof RATE_MODES[number]
-
-const BUILDER_MODES = ['off','growth','builder','super_builder'] as const
-type BuilderMode = typeof BUILDER_MODES[number]
-
-interface ControlState {
-  sell_mode:          boolean
-  dump_mode:          boolean
-  rate_mode:          RateMode
-  high_speed:         boolean
-  moon_chase:         boolean
-  builder_mode:       BuilderMode
-  builder_target_sol: number
-  tp_pct:             number
-  sl_pct:             number
-  multiplier:         number
-}
+import {
+  BUILDER_MODES,
+  RATE_MODES,
+  type BuilderMode,
+  type ControlState,
+  type RateMode,
+} from '@/lib/types'
 
 // ── rate mode table ───────────────────────────────────────────────────────────
 
@@ -61,6 +49,8 @@ async function postControl(endpoint: string, body: object) {
       body:    JSON.stringify(body),
     })
   } catch {}
+  // Pull the authoritative state straight back rather than waiting out the interval.
+  invalidate('controls')
 }
 
 // ── component ─────────────────────────────────────────────────────────────────
@@ -105,27 +95,18 @@ export function SniperControls() {
   // ── Beginner ⇄ Pro UI mode (shared app-wide; also gates advanced panels) ─────
   const { mode: uiMode, setMode: setUiMode } = useUiMode()
 
-  // ── poll live state every 2 s ───────────────────────────────────────────────
+  // ── live state from the shared 'controls' key ───────────────────────────────
+  const { data: remote } = useControls()
   useEffect(() => {
-    let alive = true
-    async function poll() {
-      try {
-        const r = await apiFetch('/api/controls')
-        if (!alive || !r.ok) return
-        const d = await r.json().catch(() => null)
-        if (d) setState(s => {
-          // Don't let the 2s poll clobber sliders the user is actively dragging.
-          const editing = Date.now() < editingParamsUntil.current
-          return editing
-            ? { ...(d as ControlState), tp_pct: s.tp_pct, sl_pct: s.sl_pct, multiplier: s.multiplier }
-            : (d as ControlState)
-        })
-      } catch {}
-    }
-    poll()
-    const iv = setInterval(poll, 2_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+    if (!remote) return
+    setState(s => {
+      // Don't let the poll clobber sliders the user is actively dragging.
+      const editing = Date.now() < editingParamsUntil.current
+      return editing
+        ? { ...remote, tp_pct: s.tp_pct, sl_pct: s.sl_pct, multiplier: s.multiplier }
+        : remote
+    })
+  }, [remote])
 
   // ── flash key indicator ─────────────────────────────────────────────────────
   function flashKey(k: string) {

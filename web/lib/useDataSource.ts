@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from './api'
+import { useHealth } from './queries'
 
 export type DataSource = 'loading' | 'live' | 'simulation' | 'offline'
 
@@ -16,20 +15,9 @@ export type DataSource = 'loading' | 'live' | 'simulation' | 'offline'
  * simulated PnL must never be mistaken for real money.
  */
 export function useDataSource(): DataSource {
-  const [source, setSource] = useState<DataSource>('loading')
-
-  useEffect(() => {
-    let alive = true
-    async function check() {
-      const h = await api.health()
-      if (!alive) return
-      if (h === null) setSource('offline')
-      else setSource(h.simulated ? 'simulation' : 'live')
-    }
-    check()
-    const iv = setInterval(check, 10_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
-
-  return source
+  // Reads the shared 'health' key — no timer of its own.
+  const { data, ok, loading } = useHealth()
+  if (loading) return 'loading'
+  if (!ok || data === null) return 'offline'
+  return data.simulated ? 'simulation' : 'live'
 }

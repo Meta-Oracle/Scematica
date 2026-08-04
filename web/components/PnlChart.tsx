@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { useMemo } from 'react'
+import { useTrades } from '@/lib/queries'
 import type { Trade } from '@/lib/types'
 
 interface Point { cumPnl: number; ts: string }
@@ -11,33 +11,24 @@ function fmtSol(n: number) {
 }
 
 export function PnlChart() {
-  const [points, setPoints] = useState<Point[]>([])
+  const { data } = useTrades()
 
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.trades(200)
-      if (!alive || !r?.trades) return
+  const points = useMemo<Point[]>(() => {
+    // Confirmed sells oldest-first
+    const sells: Trade[] = (data?.trades ?? [])
+      .filter((t: Trade) => t.kind === 'SELL' && t.status === '✓')
+      .reverse()
 
-      // Confirmed sells oldest-first
-      const sells: Trade[] = r.trades
-        .filter((t: Trade) => t.kind === 'SELL' && t.status === '✓')
-        .reverse()
+    if (sells.length === 0) return []
 
-      if (sells.length === 0) { setPoints([]); return }
-
-      let cum = 0
-      const pts: Point[] = [{ cumPnl: 0, ts: sells[0].timestamp }]
-      for (const t of sells) {
-        cum += t.pnl
-        pts.push({ cumPnl: cum, ts: t.timestamp })
-      }
-      setPoints(pts)
+    let cum = 0
+    const pts: Point[] = [{ cumPnl: 0, ts: sells[0].timestamp }]
+    for (const t of sells) {
+      cum += t.pnl
+      pts.push({ cumPnl: cum, ts: t.timestamp })
     }
-    poll()
-    const iv = setInterval(poll, 15_000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+    return pts
+  }, [data])
 
   const current = points.length > 0 ? points[points.length - 1].cumPnl : null
   const positive = (current ?? 0) >= 0

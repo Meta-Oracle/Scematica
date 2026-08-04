@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { useTrades } from '@/lib/queries'
 import type { Trade } from '@/lib/types'
+
+/** Rows rendered here; the shared 'trades' poll fetches a deeper history for other panels. */
+const VISIBLE = 25
 
 function shortMint(mint: string) {
   return `${mint.slice(0, 4)}…${mint.slice(-4)}`
@@ -26,19 +28,8 @@ function fmtSol(t: Trade): string {
 }
 
 export function TradesHistory() {
-  const [trades, setTrades] = useState<Trade[] | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      const r = await api.trades(25)
-      if (!alive) return
-      setTrades(r?.trades ?? [])
-    }
-    poll()
-    const iv = setInterval(poll, 5000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [])
+  const { data, loading } = useTrades()
+  const trades: Trade[] | null = loading && !data ? null : (data?.trades ?? []).slice(0, VISIBLE)
 
   return (
     <div className="panel flex flex-col h-full">

@@ -197,6 +197,35 @@ that opens the same `Pairing` component used by the app, storing the pairing in
 banner, price ticker, buy links, wallet connect + SCEMA gate check — already talks
 directly to public Solana RPC / Jupiter / DexScreener and needs no pairing or API.
 
+## Standalone web: the self-contained API
+
+`web/` runs with **no backend of any kind**. `app/api/[...slug]/route.ts` resolves each
+request in two tiers:
+
+1. **Live** — if `RUST_API_URL` points at a reachable `scematica-api`, proxy it (real
+   trades, real money, control routes work). Reachability is cached for 15s so a deploy
+   with no bot doesn't pay the connect timeout on every poll.
+2. **Simulation** — otherwise, serve `lib/sim/engine.ts`, which runs entirely inside the
+   Next.js server. No database, no external service, no Rust process.
+
+The simulation is **honest about what it is**. Responses carry `simulated: true` and an
+`X-Scematica-Source: simulation` header; `useDataSource()` turns that into a
+non-dismissible amber SIMULATION banner plus a SIMULATION chip in the header, and control
+POSTs return **503** rather than pretending a toggle applied. Simulated PnL must never be
+mistaken for real trading results.
+
+**What is genuinely real in simulation mode:** the Deep Q*™ network itself.
+`lib/sim/dqstar.ts` is a full Dueling Double-DQN in TypeScript mirroring
+`crates/scematica-nn` — `STATE_DIM(24) → 128 → 64 → {V, A}`, He init, ReLU,
+`Q = V + A − mean(A)`, online/target pair, replay buffer, ε-greedy, and real
+backpropagation. Forward passes and gradient steps actually execute per request; average
+loss visibly converges (~0.42 → ~0.21 over a session) because the net is really training.
+Only the market feeding it is synthetic.
+
+Determinism matters on serverless: the session is a pure function of
+`(SEED, elapsed-time-in-cycle)`, so a cold lambda reproduces exactly what a warm one had.
+A session runs 6h then reseeds. A full replay costs ~0.5s and is cached for 4s.
+
 ## Push notifications (opt-in — NOT in the default build)
 
 > ⚠️ **Why it's opt-in:** `@capacitor/push-notifications` pulls in Firebase Messaging,

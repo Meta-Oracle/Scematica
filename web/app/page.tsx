@@ -13,6 +13,7 @@ import { NNStatus }         from '@/components/NNStatus'
 import { OpenPositions }    from '@/components/OpenPositions'
 import { PnlChart }         from '@/components/PnlChart'
 import { PoolRadar }        from '@/components/PoolRadar'
+import { SimulationBanner } from '@/components/SimulationBanner'
 import { SniperControls }   from '@/components/SniperControls'
 import { Tournament }       from '@/components/Tournament'
 import { TradeFee }         from '@/components/TradeFee'
@@ -72,6 +73,7 @@ export default function Home() {
       </header>
 
       <CABanner />
+      <SimulationBanner />
       <OfflineBanner />
 
       <main className="flex-1 max-w-[1600px] mx-auto w-full px-3 py-4 flex flex-col gap-4">

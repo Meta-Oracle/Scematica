@@ -114,6 +114,9 @@ export interface HealthStatus {
   api: string
   sniper_running: boolean
   sniper_pid?: number
+  /** True when served by the built-in simulation engine rather than a real bot. */
+  simulated?: boolean
+  note?: string
 }
 
 export interface IntelligenceSnapshot {

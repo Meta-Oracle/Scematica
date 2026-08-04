@@ -38,6 +38,17 @@ export function HealthBadge() {
     )
   }
 
+  // Simulation must never render as a live sniper in the status chrome.
+  if (health.simulated) {
+    return (
+      <div className="hidden md:flex items-center gap-2 px-2 py-0.5 border border-scema-amber/50
+                      bg-scema-amber/5 text-scema-amber text-xs">
+        <span className="w-1.5 h-1.5 rounded-full bg-scema-amber animate-pulse shrink-0" />
+        SIMULATION
+      </div>
+    )
+  }
+
   const apiOk    = health.api === 'ok'
   const sniperOk = health.sniper_running === true
 

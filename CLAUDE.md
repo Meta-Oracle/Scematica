@@ -103,6 +103,14 @@ programs/
 The ScemaDEX SDK family (`scemadex-*`, `sdk-dashboard`) is the agentic-liquidity
 layer; see `docs/scemadex.md`. The web dashboard lives in `web/` (Next.js).
 
+**`web/` is standalone.** `app/api/[...slug]/route.ts` proxies a reachable
+`scematica-api` when `RUST_API_URL` resolves, and otherwise falls back to a
+self-contained simulation in `web/lib/sim/` — including a real Dueling Double-DQN
+(`lib/sim/dqstar.ts`) mirroring `scematica-nn`. Simulated responses are tagged
+`simulated: true` + `X-Scematica-Source: simulation` and surface a permanent
+SIMULATION banner; control POSTs 503 instead of faking success. Never let
+simulated PnL render as live results. See `docs/mobile-app.md`.
+
 ## Architecture: File-Based IPC
 
 The sniper and dashboard are separate processes that communicate exclusively through JSON files in the working directory. There is no socket/IPC channel — touching one of these files is how the dashboard issues commands, and tailing them is how the dashboard observes state. **When adding cross-process behavior, follow this pattern; don't introduce new IPC mechanisms.**

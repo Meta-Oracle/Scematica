@@ -2,7 +2,7 @@
 
 ### Technical Whitepaper — workspace v1.11.0 · verified against source 2026-06-05
 
-**Contract Address:** `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`  
+**Contract Address:** `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`  
 **Token:** $SCEMA (Token-2022, Solana Mainnet)  
 **Gate:** 250,000 SCEMA required to operate
 
@@ -1009,7 +1009,7 @@ The sniper and dashboard are separate OS processes. A dashboard crash, UI hang, 
 
 ### 21.1 $SCEMA Token
 
-$SCEMA is a Token-2022 token on Solana mainnet with contract address `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`.
+$SCEMA is a Token-2022 token on Solana mainnet with contract address `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`.
 
 **Access Gate:**
 - 250,000 $SCEMA required to operate the sniper or dashboard

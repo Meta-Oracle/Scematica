@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
+import { SCEMA_MINT as CA } from '@/lib/ScemaGateContext'
 
-const CA = 'AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump'
 const PUMPFUN = `https://pump.fun/coin/${CA}`
 const DEXSCREENER = `https://dexscreener.com/solana/${CA}`
 

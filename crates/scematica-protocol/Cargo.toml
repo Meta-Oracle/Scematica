@@ -16,7 +16,7 @@ name = "protocol"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { version = "1.11.0", path = "../scematica-core" }
+scematica-core = { version = "1.12.0", path = "../scematica-core" }
 
 # Solana
 solana-sdk.workspace = true

@@ -8,9 +8,11 @@ import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js'
 // read), so it's dynamically imported inside the fetch below to keep it out of the
 // initial bundle.
 
-const SCEMA_MINT_PK = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
+// Single source of truth for the SCEMA contract address — every other web
+// module imports SCEMA_MINT from here rather than hardcoding its own copy.
+export const SCEMA_MINT = 'HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump'
 export const SCEMA_REQUIRED = 250_000
-export const SCEMA_MINT = 'AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump'
+const SCEMA_MINT_PK = new PublicKey(SCEMA_MINT)
 
 export interface ScemaGateCtx {
   scemaBalance: number | null   // null = not yet fetched (wallet disconnected or loading)

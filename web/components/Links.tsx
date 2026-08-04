@@ -1,6 +1,5 @@
 import React from 'react'
-
-const CA = 'AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump'
+import { SCEMA_MINT as CA } from '@/lib/ScemaGateContext'
 
 const LINKS = [
   {

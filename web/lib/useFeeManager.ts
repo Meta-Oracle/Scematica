@@ -12,9 +12,10 @@ import {
 import { api } from './api'
 import type { Trade } from './types'
 import { getScemaPriceInSol } from './scemaPrice'
+import { SCEMA_MINT as SCEMA_MINT_ADDR } from './ScemaGateContext'
 
 const FEE_RECIPIENT  = new PublicKey('CvLUHUooCN8k3vJunor9qwX7oJNCt8Q6VhyKi5EMBKet')
-const SCEMA_MINT     = new PublicKey('AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump')
+const SCEMA_MINT     = new PublicKey(SCEMA_MINT_ADDR)
 const SCEMA_DECIMALS = 6
 
 const FEE_PCT         = 0.01                                  // 1% in both SOL and SCEMA

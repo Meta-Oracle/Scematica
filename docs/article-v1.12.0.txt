@@ -1,0 +1,61 @@
+Scematica v1.12.0 — Fibonacci Protocol Is Live
+
+
+The Fibonacci recovery system is now fully wired into the sniper execution path. Not a config toggle. Not a paper spec sitting in a whitepaper. Running on every pool event, every price tick, every exit decision.
+
+Here is exactly what changed and why it matters.
+
+
+The Entry Gate
+
+Every incoming pool now passes through the Fibonacci entry evaluator before it reaches the pool scorer. Four signals are weighted against golden-ratio thresholds and combined into a composite score.
+
+Pool size carries 35% of the weight. The sweet spot is 8 to 21 SOL — the F6 to F8 Fibonacci band. Too small and there is no liquidity to exit into. Too large and the pump already happened.
+
+Pool age carries 30%. Peak score at 3 seconds or under. Still acceptable up to 13 seconds. Anything older is a pool someone else already found.
+
+Inflow velocity carries 25%. Strong signal at 1.618 SOL per second — phi itself. Exceptional at 2.618 SOL per second, which is phi squared. These are not arbitrary numbers. They are the natural acceleration thresholds that separate genuine momentum from noise.
+
+Buy pressure carries the remaining 10%. Confirmed when the quote-to-base vault ratio exceeds 1.618. The golden ratio showing up in the AMM state.
+
+Pools scoring below 0.55 on the composite are rejected immediately with a logged reason. The gate runs before any expensive RPC call. Rejection is cheap. Execution is reserved for pools that earn it.
+
+
+The Fast Lane
+
+When all four signals hit maximum strength simultaneously — 8 to 21 SOL, under 5 seconds old, velocity above 2.618 SOL per second, ratio above 1.618 — the pool is classified as a Fibonacci Runner. It bypasses normal scheduling entirely and executes immediately. No queue. No wait. These are the setups the system was built for.
+
+
+Position Sizing by Score
+
+The position multiplier is now driven directly by the entry score.
+
+Score 0.90 or above gets 2.0x. Exceptional setup, maximum conviction, maximum size.
+
+Score 0.75 to 0.89 gets 1.618x. The golden ratio applied literally to position size. Strong setup, proportionally sized.
+
+Score 0.55 to 0.74 gets 1.0x. Baseline. The setup qualifies but does not warrant extra exposure.
+
+Below 0.55 never reaches sizing. The gate already rejected it.
+
+The bot concentrates capital on the highest-conviction entries automatically. No manual adjustment. The math does the allocation.
+
+
+Exit Tracking
+
+FibonacciMomentum runs inside every sell monitor task. The golden retracement exit fires when a position pulls back 61.8% from its peak while still in profit. This sits alongside the existing exit ladder — trailing stop, velocity decay, adaptive pullback, tiered partial TP — as a first-class exit signal.
+
+Stats are logged every 10 exits: win rate, average PnL, entry count, exit count. The Fibonacci system and its stats are shared via Arc across the sniper and all concurrent sell monitor tasks, consistent with the file-based IPC architecture the rest of the system uses.
+
+
+Version Table
+
+Workspace and bot stack: 1.12.0
+scematica-nn: 1.14.0
+scemadex-sdk: 0.3.0
+scemadex-mcp: 0.1.2
+scemadex-settle: 0.1.2
+
+All crates versioned. Full changelog at github.com/Meta-Oracle/Scematica
+
+CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump

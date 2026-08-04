@@ -193,7 +193,7 @@ echo "YOUR_PRIVATE_KEY_HERE" > "$env:USERPROFILE\Documents\my-wallet.txt"
 
 You need 250,000 SCEMA tokens to use the bot. SCEMA's mint address is:
 ```
-AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump
+HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump
 ```
 
 You can buy SCEMA on pump.fun or Raydium by searching for this mint address. Make sure you're buying the right token — always verify the mint address.
@@ -582,7 +582,7 @@ If you don't have enough, the controls section shows:
 The gate re-checks your balance every 15 seconds automatically.
 
 **To get SCEMA:**
-- Mint address: `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`
+- Mint address: `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`
 - Buy on Jupiter (https://jup.ag) or pump.fun — search the mint address above.
 - Always verify the mint address before buying.
 
@@ -658,7 +658,7 @@ The sniper isn't running, or it crashed. Start it:
 ```
 
 **Controls show "Insufficient $SCEMA"**
-Your connected Phantom wallet doesn't have 250,000 SCEMA. Buy SCEMA on Jupiter using the mint address `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump` and then reconnect.
+Your connected Phantom wallet doesn't have 250,000 SCEMA. Buy SCEMA on Jupiter using the mint address `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump` and then reconnect.
 
 **Panels show data but controls do nothing**
 Make sure the API server (`api.exe`) is running — it's what receives control POST requests from the web UI.

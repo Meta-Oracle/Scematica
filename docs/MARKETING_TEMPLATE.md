@@ -92,7 +92,7 @@ Pick one primary ask. Decide the goal of this post and make the call to action u
 
 Template: {{Primary call to action}}, at {{link}}.
 
-Choose one primary ask from these: invite people to try it with cargo install scematica-suite then scematica dashboard --demo; ask for a star or follow at your GitHub URL; tell them to hold to unlock, since the full bot is gated behind 250k SCEMA at mint AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump; invite them to build on it, with docs at docs/scemadex.md and the SDK being MIT-licensed, lean-core, and requiring no Solana dependencies; or invite partners and funders to reach out at your contact.
+Choose one primary ask from these: invite people to try it with cargo install scematica-suite then scematica dashboard --demo; ask for a star or follow at your GitHub URL; tell them to hold to unlock, since the full bot is gated behind 250k SCEMA at mint HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump; invite them to build on it, with docs at docs/scemadex.md and the SDK being MIT-licensed, lean-core, and requiring no Solana dependencies; or invite partners and funders to reach out at your contact.
 
 Example close: Scematica is live, installable, and adversarial. Quote it, doubt it, slash it. Run cargo install scemadex-sdk then scemadex. Star the repo at your GitHub URL. And hold 250k SCEMA to run the full bot.
 

@@ -30,6 +30,12 @@ those as point-in-time references, not always current to the latest release.
 - [QUICKSTART.md](QUICKSTART.md) — crates.io install, script reference, dashboard
   navigation, rate modes, and troubleshooting.
 
+## Alchem-Link (Python developer toolkit)
+- [alchem-link/README.md](../alchem-link/README.md) — install, CLI, and TUI dashboard overview.
+- [alchem-link/docs/GUIDE.md](../alchem-link/docs/GUIDE.md) — full developer guide: all modules, recipes, integration patterns, and the Python API.
+- [alchem-link/docs/TUI.md](../alchem-link/docs/TUI.md) — TUI dashboard reference: navigation, panels, keybindings, and building the standalone exe.
+- [alchem-link/docs/RECIPES.md](../alchem-link/docs/RECIPES.md) — all four developer recipes with full step-by-step breakdowns and extension guidance.
+
 ## Mobile app (Android companion remote)
 - [mobile-beginners-guide.md](mobile-beginners-guide.md) — plain-English: install the
   `.apk`, pair to your self-hosted bot, use the Beginner/Pro modes and sliders.

@@ -1,6 +1,6 @@
 [package]
 name = "scemadex-mcp"
-version = "0.1.1"
+version = "0.1.2"
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
@@ -34,5 +34,5 @@ tracing-subscriber = { workspace = true }
 
 # Optional x402 auto-pay (feature `pay`). Pulls the pinned solana-sdk — only when
 # explicitly enabled, so the default install stays lean.
-scematica-protocol = { version = "1.11.2", path = "../scematica-protocol", optional = true }
+scematica-protocol = { version = "1.12.0", path = "../scematica-protocol", optional = true }
 solana-sdk = { workspace = true, optional = true }

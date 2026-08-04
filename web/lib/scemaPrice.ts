@@ -5,7 +5,8 @@
  * Cache TTL: 60 s
  */
 
-const SCEMA_MINT = 'AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump'
+import { SCEMA_MINT } from './ScemaGateContext'
+
 const WSOL_MINT  = 'So11111111111111111111111111111111111111112'
 const CACHE_TTL  = 60_000
 

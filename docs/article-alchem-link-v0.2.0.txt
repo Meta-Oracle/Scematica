@@ -1,0 +1,61 @@
+Alchem-Link v0.2.0 — A Real Developer Tool Now
+
+
+The first version of Alchem-Link was a CLI that printed JSON. Useful for scripting. Not useful for understanding. v0.2.0 fixes that.
+
+One command launches a full terminal dashboard. No config. No flags. No documentation tab-switching.
+
+
+What Alchem-Link Is
+
+Alchemy and Chainlink are two of the most important infrastructure layers in Web3. Alchemy handles the RPC side — node access, WebSocket subscriptions, transaction monitoring, enhanced APIs for token and NFT intelligence. Chainlink handles the oracle side — price feeds, verifiable randomness, automation, and CCIP for cross-chain messaging.
+
+Most developers use them in isolation. Alchem-Link maps the integration layer between them. Where they complement each other. How to wire them together. What the concrete workflows look like end to end.
+
+That is the whole point of the package. Not a wrapper. Not an SDK. A reference layer for builders who want to understand how these systems fit together and ship faster because of it.
+
+
+The Dashboard
+
+Run alchem-link-ui from any terminal.
+
+Five panels in the sidebar. Navigate with arrow keys or j/k.
+
+Blueprint shows the full integration architecture across both systems. Structured cards with labelled sections. The big picture in one view.
+
+Alchemy breaks down the core capabilities — high-throughput RPC, real-time WebSocket event subscriptions, Enhanced APIs for transaction and token intelligence, debug and trace endpoints. Each one explained in plain language, not marketing copy.
+
+Chainlink covers price feeds, VRF for verifiable randomness, condition-based automation, and CCIP for secure cross-chain token and message transfers. What each primitive does and why it matters for hybrid smart contract development.
+
+Integration Map shows four domains where the two systems connect: data ingestion, execution, monitoring, and cross-chain. Each domain shows what Alchemy handles and what Chainlink handles, side by side. This is the panel most developers will spend the most time in.
+
+Recipes contains four developer workflows with full step-by-step checklists. Oracle-backed automation. Real-time data pipeline. Secure bridge experiment. CCIP cross-chain transfer. Navigate into any recipe to see the complete breakdown. Press Escape to return to the list.
+
+Everything is rendered as formatted cards. No raw JSON anywhere in the UI.
+
+
+Standalone Executable
+
+The dashboard builds into a single exe via PyInstaller. No Python required on the target machine.
+
+pip install pyinstaller
+pyinstaller alchem-link-ui.spec
+
+Output lands at dist/alchem-link-ui.exe. Drop it anywhere and run it. Works on any Windows machine.
+
+
+Install
+
+pip install alchem-link
+
+Python 3.10 or later. Works on Windows, macOS, and Linux. The TUI needs a terminal with 256-colour support — Windows Terminal, iTerm2, or any modern Linux terminal all qualify.
+
+The CLI entry point is unchanged. alchem-link blueprint, alchem-link recipes, alchem-link list — all still work exactly as before. The UI is additive.
+
+
+Version
+
+alchem-link 0.2.0
+
+PyPI: pypi.org/project/alchem-link
+GitHub: github.com/Meta-Oracle/Scematica

@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
                 if held < MIN_SCEMA_REQUIRED {
                     error!(
                         "Insufficient SCEMA balance: {:.2} held, {:.2} required. \
-                         Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the arb engine.",
+                         Acquire SCEMA (HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump) to run the arb engine.",
                         held, MIN_SCEMA_REQUIRED
                     );
                     return Err(anyhow::anyhow!(
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
             Err(_) => {
                 warn!(
                     "No SCEMA token account found. \
-                     Acquire SCEMA (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump) to run the arb engine."
+                     Acquire SCEMA (HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump) to run the arb engine."
                 );
                 return Err(anyhow::anyhow!("SCEMA balance gate: no token account found"));
             }

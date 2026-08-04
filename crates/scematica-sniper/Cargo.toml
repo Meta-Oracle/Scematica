@@ -20,10 +20,10 @@ name = "backtest"
 path = "src/bin/backtest.rs"
 
 [dependencies]
-scematica-core = { version = "1.11.0", path = "../scematica-core" }
-scematica-ai = { version = "1.11.0", path = "../scematica-ai" }
-scematica-executor = { version = "1.11.0", path = "../scematica-executor" }
-scematica-nn = { version = "1.12.0", path = "../scematica-nn", default-features = false }
+scematica-core = { version = "1.12.0", path = "../scematica-core" }
+scematica-ai = { version = "1.12.0", path = "../scematica-ai" }
+scematica-executor = { version = "1.12.0", path = "../scematica-executor" }
+scematica-nn = { version = "1.14.0", path = "../scematica-nn", default-features = false }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

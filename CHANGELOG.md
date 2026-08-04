@@ -2,6 +2,26 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## What's New in v1.12.0
+
+### Fibonacci Recovery System — Live Integration
+
+The three Fibonacci modules (`fibonacci_momentum`, `fibonacci_pool_scorer`, `fibonacci_recovery_system`) are now fully wired into the sniper execution path.
+
+**Entry gate:** Every incoming pool is evaluated by `FibonacciRecoverySystem::evaluate_entry()` before the pool scorer. Pools scoring below 0.55 on the composite Fibonacci signal are rejected with a logged reason. The gate weighs pool size (35%), pool age (30%), inflow velocity (25%), and buy pressure (10%) against golden-ratio thresholds.
+
+**Position sizing:** `calculate_position_size()` applies a multiplier to the configured quote amount — 2.0× for exceptional entries (score ≥ 0.90), 1.618× for strong (≥ 0.75), 1.0× baseline, 0.5× for weak patterns. The Fibonacci Runner fast-lane (all four signals at maximum strength) bypasses normal scheduling and executes immediately.
+
+**Exit tracking:** `FibonacciMomentum` runs inside every sell monitor. The golden retracement exit (61.8% pullback from peak) is evaluated each price-check tick alongside the existing exit ladder. Stats are logged every 10 exits: win rate, average PnL, entry/exit counts.
+
+**Stats IPC:** `fib_system` and `fib_stats` are shared via `Arc` between the sniper and all sell monitor tasks, consistent with the file-based IPC architecture.
+
+### alchem-link v0.2.0 — TUI Dashboard
+
+The Python developer kit ships a full terminal UI (`alchem-link-ui`) built on Textual. Sidebar navigation across Blueprint, Alchemy, Chainlink, Integration, and Recipes panels. All data rendered as formatted cards — no raw JSON. Recipe drill-in with step-by-step checklist. Standalone `.exe` buildable via PyInstaller. Published to PyPI.
+
+---
+
 ## What's New in v1.11.0
 
 ### Intelligence Data Pipeline

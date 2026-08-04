@@ -1,6 +1,6 @@
-# Scematica v1.11.4
+# Scematica v1.12.0
 
-**CA: AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump**
+**CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump**
 
 Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitrage, Dueling Deep Q* reinforcement learning, and a Rust-native x402 monetization protocol — unified under a real-time TUI dashboard.
 
@@ -83,18 +83,18 @@ SDK and playground are pre-1.0.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.11.2 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.11.3 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.11.3 | `sniper`, `backtest` | bin + lib |
-| `scematica-arb` | 1.11.4 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
-| `scematica-protocol` | 1.11.4 | `protocol` | bin + lib |
-| `scematica-ai` | 1.11.4 | — | library |
-| `scematica-executor` | 1.11.4 | — | library |
-| `scematica-core` | 1.11.4 | — | library |
-| `scematica-nn` | 1.13.1 | `scema-ddqn` | bin + lib |
-| `scemadex-sdk` | 0.2.2 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
-| `scemadex-mcp` | 0.1.1 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
-| `scemadex-settle` | 0.1.1 | — | devnet reference settler |
+| `scematica-suite` | 1.12.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.12.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.12.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-arb` | 1.12.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.12.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.12.0 | — | library |
+| `scematica-executor` | 1.12.0 | — | library |
+| `scematica-core` | 1.12.0 | — | library |
+| `scematica-nn` | 1.14.0 | `scema-ddqn` | bin + lib |
+| `scemadex-sdk` | 0.3.0 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
+| `scemadex-mcp` | 0.1.2 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
+| `scemadex-settle` | 0.1.2 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,

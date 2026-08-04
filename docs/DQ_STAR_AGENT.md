@@ -1,6 +1,6 @@
 # Scematica DQ* Agent — Technical Reference
 
-> Crate: `scematica-nn` 1.11.0 · Agent architecture generation: **v1.1.0** (dueling / PER / n-step) · Last verified against source: 2026-06-05  
+> Crate: `scematica-nn` 1.14.0 · Agent architecture generation: **v1.1.0** (dueling / PER / n-step) · Last verified against source: 2026-06-05  
 > Full technical documentation of the Deep Q* reinforcement learning agent in `crates/scematica-nn`.
 >
 > Note on versions: the crate ships at the workspace version (1.11.0); the

@@ -2262,7 +2262,7 @@ fn render_config(f: &mut Frame, area: Rect, state: &Arc<AppState>) {
         Line::from(vec![
             Span::styled("  Mint:    ", Style::default().fg(COLOR_ACCENT)),
             Span::styled(
-                "AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump",
+                "HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump",
                 Style::default().fg(COLOR_TEXT),
             ),
         ]),

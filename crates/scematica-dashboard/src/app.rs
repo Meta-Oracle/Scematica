@@ -144,7 +144,7 @@ pub struct AppState {
     /// Latest SOL/USD price from CoinGecko — refreshed every 60 s. 0.0 = not yet loaded.
     pub sol_price_usd: RwLock<f64>,
     pub quote_balance: RwLock<f64>,
-    /// SCEMATICA token balance (AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump)
+    /// SCEMATICA token balance (HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump)
     pub scematica_balance: RwLock<f64>,
     pub active_mode: RwLock<BotMode>,
     pub is_ai_loading: RwLock<bool>,

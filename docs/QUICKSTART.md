@@ -1,4 +1,4 @@
-# Scematica v1.11.4 - Quick Start Guide
+# Scematica v1.12.0 - Quick Start Guide
 
 > **How much SOL do I need?** Minimum viable **0.5 SOL**, recommended **0.7–1.0 SOL**,
 > scaling **2–3 SOL** (plus 250k SCEMA for the token gate). Computed from the real trade
@@ -164,7 +164,7 @@ cargo run --release --bin arb
 
 ### Token Gate
 - Requires **≥250,000 SCEMA** tokens in your wallet
-- CA: `AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump`
+- CA: `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`
 - Emergency bypass: Set `SCEMATICA_SKIP_GATE=1` in .env (RPC outages only)
 
 ### File-Based IPC

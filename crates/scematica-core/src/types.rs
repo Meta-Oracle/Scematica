@@ -46,7 +46,7 @@ pub mod known_tokens {
     pub const BONK_MINT: Pubkey = pubkey!("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263");
 
     /// SCEMATICA token — the native project token (PumpFun launch)
-    pub const SCEMATICA_MINT: Pubkey = pubkey!("AbKiP2Jc6nM7937jTDfqoJC1bsg5FQ24Buk2iqRFpump");
+    pub const SCEMATICA_MINT: Pubkey = pubkey!("HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump");
     /// SCEMATICA token decimals (PumpFun standard: 6)
     pub const SCEMATICA_DECIMALS: u8 = 6;
     /// SCEMATICA token symbol

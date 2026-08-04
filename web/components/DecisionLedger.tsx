@@ -89,6 +89,7 @@ export function DecisionLedger() {
                 <th className="text-left px-2 py-1.5 font-normal">GATE</th>
                 <th className="text-right px-2 py-1.5 font-normal">SCORE</th>
                 <th className="text-right px-2 py-1.5 font-normal">INFLOW</th>
+                <th className="text-left px-2 py-1.5 font-normal">DQ*</th>
                 <th className="text-left px-2 py-1.5 font-normal">REASON</th>
               </tr>
             </thead>
@@ -118,7 +119,21 @@ export function DecisionLedger() {
                   <td className="px-2 py-1 text-right font-mono tabular-nums text-scema-muted">
                     {(d.inflow_rate_sol_per_sec ?? 0).toFixed(3)}
                   </td>
-                  <td className="px-2 py-1 text-scema-dim truncate max-w-[260px]" title={d.reason}>
+                  <td className="px-2 py-1 font-mono whitespace-nowrap">
+                    {d.dq_action ? (
+                      <span className={
+                        d.dq_action.startsWith('Buy') ? 'text-scema-green'
+                        : d.dq_action.startsWith('Sell') ? 'text-scema-red-hi'
+                        : 'text-scema-amber'
+                      }>
+                        {d.dq_action}
+                        <span className="text-scema-dim ml-1">{((d.dq_confidence ?? 0) * 100).toFixed(0)}%</span>
+                      </span>
+                    ) : (
+                      <span className="text-scema-dim">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1 text-scema-dim truncate max-w-[220px]" title={d.reason}>
                     {d.reason || d.decision}
                   </td>
                 </tr>

@@ -2,12 +2,14 @@ import type {
   FilterStats,
   HealthStatus,
   IntelligenceSnapshot,
+  LivePosition,
   NNAdvice,
   Metrics,
   NNStats,
   Pool,
   PoolDecision,
   Trade,
+  TournamentSnapshot,
   TxTelemetry,
 } from './types'
 
@@ -32,6 +34,8 @@ export const api = {
   filters:   () => get<FilterStats>('/api/filters'),
   nn:        () => get<NNStats>('/api/nn'),
   nnAdvice:  () => get<NNAdvice>('/api/nn-advice'),
+  positions: () => get<LivePosition[]>('/api/positions'),
+  tournament: () => get<TournamentSnapshot>('/api/tournament'),
   intelligence: (limit = 60) => get<IntelligenceSnapshot>('/api/intelligence', { limit: String(limit) }),
   health:    () => get<HealthStatus>('/api/health'),
   pools:     (limit = 30) => get<{ pools: Pool[]; total: number }>('/api/pools', { limit: String(limit) }),

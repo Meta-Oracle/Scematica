@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import type { Metrics, Trade } from '@/lib/types'
+import type { LivePosition, Metrics, Trade } from '@/lib/types'
 
 const LAMPORTS = 1_000_000_000
 
@@ -32,6 +32,7 @@ function fmtUptime(secs: number) {
 export function MetricsPanel() {
   const [data, setData]     = useState<Metrics | null>(null)
   const [trades, setTrades] = useState<Trade[]>([])
+  const [positions, setPositions] = useState<LivePosition[]>([])
   const [err, setErr]       = useState(false)
 
   useEffect(() => {
@@ -45,10 +46,15 @@ export function MetricsPanel() {
       const r = await api.trades(200)
       if (alive && r?.trades) setTrades(r.trades)
     }
-    pollMetrics(); pollTrades()
+    async function pollPositions() {
+      const p = await api.positions()
+      if (alive) setPositions(p ?? [])
+    }
+    pollMetrics(); pollTrades(); pollPositions()
     const m = setInterval(pollMetrics, 3_000)
     const t = setInterval(pollTrades, 15_000)
-    return () => { alive = false; clearInterval(m); clearInterval(t) }
+    const p = setInterval(pollPositions, 3_000)
+    return () => { alive = false; clearInterval(m); clearInterval(t); clearInterval(p) }
   }, [])
 
   if (err && !data) {
@@ -79,6 +85,11 @@ export function MetricsPanel() {
   const pnlKind = pnlSol > 0 ? 'positive' : pnlSol < 0 ? 'negative' : 'neutral'
   const wlKind  = wins > losses ? 'positive' : losses > wins ? 'negative' : 'neutral'
 
+  const unrealizedSol = positions.reduce(
+    (sum, p) => sum + (p.current_value_lamports - p.entry_lamports), 0,
+  ) / LAMPORTS
+  const unrealizedKind = unrealizedSol > 0 ? 'positive' : unrealizedSol < 0 ? 'negative' : 'neutral'
+
   return (
     <>
       <MetricCard
@@ -86,6 +97,12 @@ export function MetricsPanel() {
         value={`${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL`}
         sub={`${confirmed} confirmed trades`}
         kind={pnlKind}
+      />
+      <MetricCard
+        label="Unrealized PnL"
+        value={`${unrealizedSol >= 0 ? '+' : ''}${unrealizedSol.toFixed(4)} SOL`}
+        sub={positions.length > 0 ? `${positions.length} open position${positions.length === 1 ? '' : 's'}` : 'no open positions'}
+        kind={positions.length > 0 ? unrealizedKind : 'neutral'}
       />
       <MetricCard
         label="Trades"

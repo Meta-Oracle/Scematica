@@ -36,10 +36,14 @@ export function NNStatus() {
   return (
     <div className="panel flex flex-col gap-0">
       <div className="panel-header justify-between">
-        <span>Deep Q* Agent</span>
+        <span>Deep Q*™ Agent</span>
         <span className={`text-xs ${advisorColor}`}>
           {data.ready_to_advise ? '● ADVISING' : '○ TRAINING'}
         </span>
+      </div>
+      <div className="px-3 pt-2 text-[0.65rem] text-scema-dim leading-relaxed">
+        Proprietary Dueling Double-DQN — prioritized replay, n-step returns, and
+        per-regime agent branching, trained live on every trade this bot makes.
       </div>
       <div className="grid grid-cols-4 divide-x divide-scema-border text-xs">
         <div className="flex flex-col items-center py-2 px-3 gap-0.5">

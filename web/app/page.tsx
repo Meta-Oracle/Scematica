@@ -14,6 +14,7 @@ import { OpenPositions }    from '@/components/OpenPositions'
 import { PnlChart }         from '@/components/PnlChart'
 import { PoolRadar }        from '@/components/PoolRadar'
 import { SniperControls }   from '@/components/SniperControls'
+import { Tournament }       from '@/components/Tournament'
 import { TradeFee }         from '@/components/TradeFee'
 import { TradesHistory }    from '@/components/TradesHistory'
 import { OfflineBanner }    from '@/components/OfflineBanner'
@@ -51,7 +52,7 @@ export default function Home() {
               <span className="text-scema-red-hi font-bold tracking-[0.3em] text-sm animate-text-glow">
                 SCEMATICA
               </span>
-              <span className="text-scema-dim text-xs tracking-widest">SOLANA SNIPER PROTOCOL</span>
+              <span className="text-scema-dim text-xs tracking-widest">DEEP Q*™ AUTONOMOUS SNIPER</span>
             </div>
           </div>
           <div className="hidden lg:flex items-center gap-2 text-xs text-scema-muted">
@@ -60,7 +61,7 @@ export default function Home() {
             <span className="text-scema-dim mx-1">·</span>
             <span className="text-scema-dim">RAYDIUM AMM V4</span>
             <span className="text-scema-dim mx-1">·</span>
-            <span className="text-scema-dim">3-LAYER AI</span>
+            <span className="text-scema-red-hi">DEEP Q*™ NEURAL ENGINE</span>
           </div>
           <div className="flex items-center gap-3 ml-auto">
             <HealthBadge />
@@ -78,18 +79,19 @@ export default function Home() {
         {/* Live metrics */}
         <section>
           <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">◈ Live Metrics</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
             <MetricsPanel />
           </div>
         </section>
 
-        {/* Intelligence (advanced) */}
-        <AdvancedOnly>
-          <section>
-            <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">◈ Intelligence</p>
+        {/* Deep Q* — the flagship feature, visible in every mode */}
+        <section>
+          <p className="text-xs text-scema-muted tracking-widest uppercase mb-2">◈ Deep Q*™ Intelligence</p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             <NNStatus />
-          </section>
-        </AdvancedOnly>
+            <Tournament />
+          </div>
+        </section>
 
         {/* Controls */}
         <section>

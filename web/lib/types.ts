@@ -123,3 +123,31 @@ export interface IntelligenceSnapshot {
   telemetry: TxTelemetry[]
   paths?: Record<string, string>
 }
+
+// Matches LivePositionSnapshot in crates/scematica-sniper/src/sniper.rs — one row per
+// open position, flushed to scematica-positions.json every 1s by the sell-monitor.
+export interface LivePosition {
+  mint: string
+  entry_lamports: number
+  current_value_lamports: number
+  peak_value_lamports: number
+  entry_unix_secs: number
+  dynamic_tp_pct: number
+  escalations: number
+  last_check_unix_secs: number
+  current_sl_lamports: number
+  current_sl_pct: number
+  decline_streak: number
+}
+
+// Matches TournamentSnapshot in crates/scematica-nn/src/tournament.rs — 3 DQ* agent
+// variants (conservative/balanced/aggressive) trained in parallel; the highest-reward
+// variant is promoted to primary_idx every eval_freq steps.
+export interface TournamentSnapshot {
+  primary_idx: number
+  steps_since_eval: number
+  eval_freq: number
+  agent_names: string[]
+  agent_total_rewards: number[]
+  agent_epsilons: number[]
+}

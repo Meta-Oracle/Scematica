@@ -9,6 +9,8 @@
 //! GET  /api/tx-telemetry              scematica-tx-telemetry.jsonl (last N)
 //! GET  /api/nn                        scematica-nn-stats.json
 //! GET  /api/nn-advice                 scematica-nn-advice.json
+//! GET  /api/positions                 scematica-positions.json (live open positions)
+//! GET  /api/tournament                scematica-nn-tournament.json (DQ* agent tournament)
 //! GET  /api/intelligence              combined NN/decision/tx snapshot
 //! GET  /api/health                    sniper liveness (lock file + process)
 //! GET  /api/controls                  full control state snapshot
@@ -54,6 +56,8 @@ const POOL_RADAR_FILE: &str = "scematica-pool-radar.json";
 const FILTER_STATS_FILE: &str = "scematica-filter-stats.json";
 const NN_STATS_FILE: &str = "scematica-nn-stats.json";
 const NN_ADVICE_FILE: &str = "scematica-nn-advice.json";
+const POSITIONS_FILE: &str = "scematica-positions.json";
+const TOURNAMENT_FILE: &str = "scematica-nn-tournament.json";
 const LOG_FILE: &str = "scematica-sniper.log";
 const LOCK_FILE: &str = "scematica-sniper.lock";
 const TRADES_FILE: &str = "scematica-trades.jsonl";
@@ -222,6 +226,31 @@ async fn nn_advice_handler() -> impl IntoResponse {
             "q_values": [],
             "top_reason": "No DQ* advice snapshot has been written yet.",
             "confidence": 0.0
+        }))
+    } else {
+        Json(v)
+    }
+}
+
+/// Live open-position snapshots (unrealized PnL, dynamic TP/SL, escalations) —
+/// written every 1s by the sniper's position-flush task to `scematica-positions.json`.
+async fn positions_handler() -> impl IntoResponse {
+    let v = read_json_file(POSITIONS_FILE);
+    Json(if v.is_array() { v } else { json!([]) })
+}
+
+/// Deep Q* multi-agent tournament state (conservative/balanced/aggressive variants
+/// racing in paper-trading mode; the highest-reward variant is promoted to primary).
+async fn tournament_handler() -> impl IntoResponse {
+    let v = read_json_file(TOURNAMENT_FILE);
+    if v.is_null() {
+        Json(json!({
+            "primary_idx": 1,
+            "steps_since_eval": 0,
+            "eval_freq": 1000,
+            "agent_names": ["conservative", "balanced", "aggressive"],
+            "agent_total_rewards": [0.0, 0.0, 0.0],
+            "agent_epsilons": [1.0, 1.0, 1.0]
         }))
     } else {
         Json(v)
@@ -987,6 +1016,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/tx-telemetry", get(tx_telemetry_handler))
         .route("/api/nn", get(nn_handler))
         .route("/api/nn-advice", get(nn_advice_handler))
+        .route("/api/positions", get(positions_handler))
+        .route("/api/tournament", get(tournament_handler))
         .route("/api/intelligence", get(intelligence_handler))
         .route("/api/health", get(health_handler))
         .route("/api/controls", get(controls_get_handler))

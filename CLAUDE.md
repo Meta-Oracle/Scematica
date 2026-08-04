@@ -41,6 +41,15 @@ cargo test --workspace
 cargo test -p scematica-sniper kelly         # Filter to a single module
 cargo test -p scematica-nn agent::tests::    # Run one module's tests in a crate
 
+# Web dashboard (web/ — standalone Next.js, see below)
+cd web ; npm run dev                         # dev server on :3000
+cd web ; npx tsc --noEmit                    # typecheck
+cd web ; npm run check:parity                # TS pool scorer vs pool_scorer.rs fixtures
+
+# alchem-link (Python, outside the cargo workspace)
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m unittest discover -s tests
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli doctor
+
 # Lint / format
 cargo clippy --workspace --all-targets
 cargo fmt --all
@@ -92,6 +101,11 @@ crates/
                         launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
                         (published as `scema-agent-playground`). Bin: `playground`
+alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
+                        developer toolkit: live Chainlink feed reads with staleness
+                        detection, RPC diagnostics, and the integration reference.
+                        Stdlib-only except the Textual TUI. Bins: `alchem-link`,
+                        `alchem-link-ui`. Tests: `python -m unittest discover -s tests`
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -110,6 +124,20 @@ self-contained simulation in `web/lib/sim/` — including a real Dueling Double-
 `simulated: true` + `X-Scematica-Source: simulation` and surface a permanent
 SIMULATION banner; control POSTs 503 instead of faking success. Never let
 simulated PnL render as live results. See `docs/mobile-app.md`.
+
+**Web data sourcing.** Three rules that are easy to break:
+
+1. **One timer per endpoint.** Panels subscribe through `lib/store.ts` / `lib/queries.ts`;
+   they must not call `setInterval` themselves. Polling is refcounted, so a hidden panel
+   stops fetching — adding a private timer silently undoes that.
+2. **Discovery prefers a live bot, falls back to the real feed, never invents data.**
+   `lib/useDiscovery.ts` picks the source; there is no third "make something up" branch.
+   Panels sourced from the public feed show a `FEED` badge.
+3. **The TS pool scorer is a port, not a second brain.** `lib/feed/scorer.ts` copies the
+   ladders from `pool_scorer.rs`; Rust stays authoritative. Every filter declares
+   `parity: 'port' | 'approx'` — never promote an `approx` without the Rust input
+   actually existing. `npm run check:parity` pins the Rust unit-test cases; run it after
+   touching either side.
 
 ## Architecture: File-Based IPC
 

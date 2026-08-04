@@ -1,10 +1,10 @@
-[package]
+﻿[package]
 name = "scemadex-mcp"
 version = "0.1.2"
 edition = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
-description = "Model Context Protocol (MCP) server exposing the ScemaDEX agentic-liquidity rail — reputation, pool-score, advice, bonded inference quotes, and experience purchase — to any LLM agent, monetized over x402."
+description = "Model Context Protocol (MCP) server exposing the ScemaDEX agentic-liquidity rail â€” reputation, pool-score, advice, bonded inference quotes, and experience purchase â€” to any LLM agent, monetized over x402."
 repository = "https://github.com/meta-oracle/scematica"
 homepage = "https://github.com/meta-oracle/scematica"
 readme = "README.md"
@@ -19,7 +19,7 @@ path = "src/main.rs"
 default = []
 # `pay`: let the server auto-settle x402 402s (holds a keypair, signs the SPL
 # payment, retries with X-Payment). Off by default keeps the lean, publishable
-# build free of solana-sdk — "lean core, injected power".
+# build free of solana-sdk â€” "lean core, injected power".
 pay = ["dep:scematica-protocol", "dep:solana-sdk"]
 
 [dependencies]
@@ -32,7 +32,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Optional x402 auto-pay (feature `pay`). Pulls the pinned solana-sdk — only when
+# Optional x402 auto-pay (feature `pay`). Pulls the pinned solana-sdk â€” only when
 # explicitly enabled, so the default install stays lean.
-scematica-protocol = { version = "1.12.0", path = "../scematica-protocol", optional = true }
+scematica-protocol = { version = "1.13.0", path = "../scematica-protocol", optional = true }
 solana-sdk = { workspace = true, optional = true }

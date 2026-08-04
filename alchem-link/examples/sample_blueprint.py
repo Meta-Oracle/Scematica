@@ -1,13 +1,19 @@
+"""Reference tour: the offline integration material.
+
+For the live half — reading real Chainlink feeds — see `live_feeds.py`.
+"""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from alchem_link.alchemy import summarize_alchemy_capabilities
-from alchem_link.chainlink import summarize_chainlink_capabilities
-from alchem_link.core import build_package_blueprint
-from alchem_link.integration import build_integration_map
-from alchem_link.recipes import get_recipes
+from alchem_link import (
+    build_integration_map,
+    build_package_blueprint,
+    get_recipes,
+    summarize_alchemy_capabilities,
+    summarize_chainlink_capabilities,
+)
 
 
 if __name__ == "__main__":

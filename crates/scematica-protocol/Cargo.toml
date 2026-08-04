@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "scematica-protocol"
 version.workspace = true
 edition.workspace = true
@@ -16,7 +16,7 @@ name = "protocol"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { version = "1.12.0", path = "../scematica-core" }
+scematica-core = { version = "1.13.0", path = "../scematica-core" }
 
 # Solana
 solana-sdk.workspace = true
@@ -24,7 +24,7 @@ solana-client.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
 
-# HTTP server — axum 0.6 shares http/tower crate versions with the rest of the workspace
+# HTTP server â€” axum 0.6 shares http/tower crate versions with the rest of the workspace
 axum = { version = "0.6", features = ["macros"] }
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors", "trace"] }

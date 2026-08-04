@@ -80,9 +80,12 @@ if (!src.includes(MARKER)) {
 // versionCode (semver -> N), and the release artifact name.
 const VERSION_MARKER = '// scematica-version'
 if (!src.includes(VERSION_MARKER)) {
+  // The fallback is deliberately 0.0.0/1, not a plausible-looking version. If reading
+  // package.json ever fails, a build that silently ships the wrong-but-believable
+  // version is far worse than one that is obviously broken.
   const versionBlock = `${VERSION_MARKER}
-def scematicaVersionName = "1.11.3"
-def scematicaVersionCode = 11103
+def scematicaVersionName = "0.0.0"
+def scematicaVersionCode = 1
 try {
     def pkgText = new File(rootProject.projectDir, "../package.json").getText("UTF-8")
     def vm = (pkgText =~ /"version"\\s*:\\s*"([^"]+)"/)
@@ -91,7 +94,7 @@ try {
         scematicaVersionCode = scematicaVersionName.tokenize('.').inject(0) { acc, part -> acc * 100 + (part as int) }
     }
 } catch (Exception e) {
-    logger.warn("scematica: couldn't read web/package.json version; using \${scematicaVersionName}")
+    logger.error("scematica: could not read web/package.json version — falling back to \${scematicaVersionName}. This apk is NOT correctly versioned.")
 }
 
 `

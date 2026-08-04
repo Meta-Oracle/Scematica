@@ -1,10 +1,10 @@
-[package]
+﻿[package]
 name = "scematica-executor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "DEX-specific swap instruction builders for Scematica — Raydium, Orca, Meteora, Jupiter."
+description = "DEX-specific swap instruction builders for Scematica â€” Raydium, Orca, Meteora, Jupiter."
 keywords = ["solana", "dex", "swap", "defi", "jupiter"]
 categories = ["cryptography::cryptocurrencies"]
 readme = "README.md"
@@ -12,7 +12,7 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
-scematica-core = { version = "1.12.0", path = "../scematica-core" }
+scematica-core = { version = "1.13.0", path = "../scematica-core" }
 borsh.workspace = true
 
 solana-sdk.workspace = true

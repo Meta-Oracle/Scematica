@@ -58,10 +58,14 @@ export function Pairing({ onPaired }: { onPaired?: () => void }) {
       setError('Base URL must start with http:// or https://')
       return
     }
-    const ok = await probePairing(candidate)
-    if (!ok) {
+    const probe = await probePairing(candidate)
+    if (!probe.ok) {
       setStatus('error')
-      setError('Could not reach the instance, or the token was rejected. Check the URL, that the API is running, and the token.')
+      setError(
+        probe.reason === 'unauthorized'
+          ? 'The instance rejected this token. Check SCEMATICA_API_TOKEN on the machine running the API.'
+          : 'Could not reach the instance. Check the URL and port, that the API is running, and that a firewall isn’t blocking it.',
+      )
       return
     }
     setPairing(candidate)

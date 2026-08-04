@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 members = [
     "crates/scematica-core",
     "crates/scematica-sniper",
@@ -28,14 +28,14 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "1.12.0"
+version = "1.13.0"
 edition = "2021"
 authors = ["Scematica Team"]
 license = "MIT"
 
 [workspace.dependencies]
-# Solana — pinned to 1.18.x; upgrading to 2.x+ requires code changes across the board
-# and creates irreconcilable zeroize version conflicts with reqwest ≥0.12 / rustls ≥0.22.
+# Solana â€” pinned to 1.18.x; upgrading to 2.x+ requires code changes across the board
+# and creates irreconcilable zeroize version conflicts with reqwest â‰¥0.12 / rustls â‰¥0.22.
 solana-sdk = "1.18.26"
 solana-client = "1.18.26"
 solana-program = "1.18.26"
@@ -74,7 +74,7 @@ rust_decimal = { version = "1", features = ["serde-with-str"] }
 num-traits = "0.2"
 
 # Networking
-# reqwest must stay at 0.11: 0.12 pulls rustls 0.23 which requires zeroize ≥1.7,
+# reqwest must stay at 0.11: 0.12 pulls rustls 0.23 which requires zeroize â‰¥1.7,
 # conflicting with curve25519-dalek 3 (used by solana-sdk's ed25519-dalek) which caps at <1.4.
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 # tokio-tungstenite 0.21 matches the tungstenite version compatible with solana-sdk's deps
@@ -96,7 +96,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "5"
 parking_lot = "0.12"
 # base64 0.21 still exposes legacy decode/encode functions used in jupiter.rs and sniper executor;
-# 0.22 removes them — would require code changes.
+# 0.22 removes them â€” would require code changes.
 base64 = "0.21"
 bs58 = "0.5"
 hex = "0.4"

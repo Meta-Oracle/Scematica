@@ -1,10 +1,13 @@
 apply plugin: 'com.android.application'
 
 // scematica-version: single source of truth is web/package.json. versionCode is derived
-// from the semver (1.11.3 -> 11103) and the release artifact is named
+// from the semver (1.13.0 -> 11300) and the release artifact is named
 // scematica-v<version>.apk. Bump web/package.json to version the whole mobile app.
-def scematicaVersionName = "1.11.3"
-def scematicaVersionCode = 11103
+// The fallback below is deliberately 0.0.0/1 rather than a plausible version: if the
+// read ever fails, an obviously-broken build beats one that silently ships the wrong
+// version number.
+def scematicaVersionName = "0.0.0"
+def scematicaVersionCode = 1
 try {
     def pkgText = new File(rootProject.projectDir, "../package.json").getText("UTF-8")
     def vm = (pkgText =~ /"version"\s*:\s*"([^"]+)"/)
@@ -13,7 +16,7 @@ try {
         scematicaVersionCode = scematicaVersionName.tokenize('.').inject(0) { acc, part -> acc * 100 + (part as int) }
     }
 } catch (Exception e) {
-    logger.warn("scematica: couldn't read web/package.json version; using ${scematicaVersionName}")
+    logger.error("scematica: could not read web/package.json version — falling back to ${scematicaVersionName}. This apk is NOT correctly versioned.")
 }
 
 // scematica-signing

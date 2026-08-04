@@ -1,0 +1,131 @@
+Alchem-Link v0.3.0 — It Actually Reads The Chain Now
+
+Version 0.2.0 shipped a nice terminal dashboard. Every panel in it was hardcoded prose. The package described Alchemy and Chainlink accurately and did not touch a network once.
+
+v0.3.0 fixes the part that mattered. One command, no API key, no setup:
+
+alchem-link price ETH/USD
+
+ETH / USD  (ethereum)
+  price      1,877.94
+  status     FRESH
+  updated    50m 20s ago (heartbeat 3600s)
+  round      129127208515966893520
+  aggregator 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419
+
+That is a real read of a real aggregator on Ethereum mainnet.
+
+Staleness Is The Whole Point
+
+A price feed that answers is not the same as a price feed that published. Call latestRoundData() on a dead aggregator and it returns cheerfully — the same struct, the same shape, an answer from six hours ago. Nothing in the response says "do not use this."
+
+That gap is where oracle integrations lose money, and it is invisible if you only ever check that the call succeeded.
+
+Every reading here carries its age against the expected heartbeat:
+
+  ETH/USD           1,877.94  FRESH   50m 51s ago
+  BTC/USD          64,316.05  FRESH   51m 15s ago
+  LINK/USD            8.2016  FRESH   30m 27s ago
+  SOL/USD            74.1103  STALE   3h 16m ago
+  USDC/USD        0.99974201  FRESH   13h 32m ago
+
+Look at the last two lines. SOL/USD is flagged at three hours. USDC/USD is not flagged at thirteen — because stablecoin feeds publish on a far longer cadence, and treating them by the same clock as a volatile pair produces alerts nobody reads. The thresholds are per-feed for that reason.
+
+alchem-link price exits non-zero on a stale read, so it drops straight into a health check or a CI gate without anyone writing glue.
+
+Verified, Not Copied
+
+Feed addresses get passed around in blog posts and gists, and they get passed around wrong. So every address in this registry was called for description() and decimals() before shipping, and each one is filed under the pair the contract itself reports.
+
+That check earned its keep immediately. The address widely shared as Base "BTC/USD" reports WBTC / USD on-chain. Wrapped BTC is not spot BTC — it is a bridged asset that can depeg from the thing it tracks. Quoting it as BTC/USD is a live foot-gun in a lending or liquidation path.
+
+It ships registered as WBTC/USD, with a note explaining why.
+
+Eighteen feeds across six networks, all confirmed the same way. You can re-run the check yourself:
+
+alchem-link verify -n base
+
+  [ok  ] ETH/USD    0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70  ETH / USD
+  [ok  ] WBTC/USD   0xCCADC697c55bbB68dc5bCdf8d3CBe83CdD4E071E  WBTC / USD
+
+  2/2 registry entries match their on-chain description
+
+Doctor
+
+Three things go wrong in practice, and all three are quiet. You are on the keyless fallback endpoint and getting rate limited. You are pointed at the wrong chain. A feed responds but has not published in hours.
+
+doctor turns each into a line you can read:
+
+network   ethereum
+endpoint  https://ethereum-rpc.publicnode.com  (public fallback)
+
+  [ok  ] credentials      using the keyless public endpoint
+           Set ALCHEMY_API_KEY for higher rate limits and reliability.
+  [ok  ] rpc reachable    block 25,684,264 in 295 ms
+  [ok  ] chain id         expected 1, got 1
+  [ok  ] gas price        0.102 gwei
+  [ok  ] feed read        ETH/USD = 1,877.9446 (FRESH, 3022s old)
+
+The chain id check exists because pointing a mainnet config at a testnet endpoint fails in the most confusing way possible — everything works, the numbers are just wrong. An API key in the endpoint is redacted before anything prints.
+
+Zero Dependencies For The Live Half
+
+Reading a Chainlink aggregator needs four function selectors and the ability to decode five static words plus one dynamic string. That is a few dozen lines of standard library. Pulling in web3 and its transitive tree to do the same job is a large amount of dependency for a small amount of work.
+
+There is one wrinkle. Function selectors are the first four bytes of keccak256 of the signature, and Python's standard library ships SHA3-256 — which is not Keccak-256. The padding differs, so the stdlib gives you the wrong answer, silently.
+
+Rather than add a hashing library for four constants, the four selectors are stored as constants. Each was verified against a live mainnet aggregator, and the decoded fixtures are pinned in the test suite so a change to the decoder fails offline instead of in production.
+
+The TUI is the only part that needs a third-party package.
+
+The 403 That Looks Like An Outage
+
+One detail worth stating out loud because it costs people an afternoon: several public RPC providers reject Python's default Python-urllib/3.x User-Agent with a flat 403.
+
+The failure reads exactly like the chain being unreachable. It is not. The client always sends a real User-Agent now, and that single header is the difference between "nothing works" and "everything works."
+
+New Commands
+
+  price      read one feed, with a staleness verdict
+  feeds      list registered feeds, or --live to read them all
+  block      current block height and round-trip latency
+  gas        current gas price in gwei
+  networks   supported chains, chain ids, feed counts
+  doctor     end-to-end readiness check
+  verify     confirm the registry still matches on-chain
+
+All of them take -n/--network, --rpc-url, and --json. Endpoint resolution goes most-explicit-first: --rpc-url, then ALCHEMY_URL, then ALCHEMY_API_KEY, then the public fallback. Doctor always tells you which one you got.
+
+The Dashboard Has A Live Panel
+
+alchem-link-ui now opens on Live Feeds — real prices, colour-coded by freshness, read off the UI thread so an RPC round trip never freezes the interface. Press r to refresh, n to cycle networks.
+
+The five reference panels are unchanged and still work offline.
+
+Python API
+
+from alchem_link import read_feed
+
+reading = read_feed("ETH/USD", network="ethereum")
+if reading.stale:
+    raise RuntimeError(f"{reading.pair} is {reading.age_secs}s old")
+print(reading.price)
+
+That guard is the pattern worth copying. It is three lines, and it is the difference between an oracle integration that degrades safely and one that quietly trades on an hours-old number.
+
+Install
+
+pip install alchem-link
+
+Python 3.10 or later. Works with no API key against a public endpoint; set ALCHEMY_API_KEY when you want real rate limits.
+
+Every 0.2.0 command still works. The reference layer did not go anywhere — it just stopped being the only thing in the box.
+
+The test suite went from 12 cases to 76, all offline.
+
+Version
+
+alchem-link 0.3.0
+
+PyPI: pypi.org/project/alchem-link
+GitHub: github.com/Meta-Oracle/Scematica

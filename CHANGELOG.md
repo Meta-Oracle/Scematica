@@ -2,6 +2,45 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## What's New in v1.13.0
+
+### Web dashboard — real data without a bot
+
+The web dashboard no longer depends on a local sniper to show something real. Discovery now runs off a live public feed, scored by a TypeScript port of the sniper's own pipeline.
+
+**Shared polling store** (`web/lib/store.ts`, `queries.ts`): panels used to own a `setInterval` each — 19 timers, ~251 requests/min, with `/api/health` polled by three components, `/api/positions` by two, and `/api/trades` by four. There is now one timer per endpoint key, fanned out to subscribers and refcounted, so duplicate consumers cost nothing and hidden panels stop fetching entirely. Pro mode with a bot paired: ~169 req/min. Beginner mode: ~102, because the `AdvancedOnly` panels unmount and their upstreams go quiet.
+
+**Live mint feed** (`web/lib/feed/jupiter.ts`): reads recently-created mints from Jupiter's keyless, CORS-open token endpoint and normalises them to the shapes the panels already consume. USD liquidity is converted to SOL through a shared price cache.
+
+**Ported pool scorer** (`web/lib/feed/scorer.ts`): the likelihood-ratio ladders and logistic from `pool_scorer.rs`, plus seven filters. Each filter declares `parity` — `port` for a faithful translation, `approx` where the Rust input does not exist in the feed. `npm run check:parity` pins the cases the Rust unit tests assert, so the two implementations cannot drift silently.
+
+**Wallet-signed swaps** (`web/lib/swap.ts`, `components/ManualSwap.tsx`): non-custodial execution via Jupiter quote → build → wallet signature → confirm. Labelled NOT SNIPING in the UI, because a wallet prompt puts a human in the loop for seconds. Hidden in the Capacitor shell, which connects wallets by deeplink but cannot sign.
+
+### Web dashboard — fixes
+
+- **Dead price endpoint.** `price.jup.ag` no longer resolves; every poll produced a `net::ERR_NAME_NOT_RESOLVED`. Replaced with Jupiter Price v3, which quotes in USD, so the SOL-denominated price is derived from a combined SCEMA + WSOL request.
+- **Static-export 404 storm.** The mobile/static build ships no Next server, so `/api/*` resolved against the static host — a 404 per panel per poll, each returning an HTML error page that callers then failed to parse as JSON. `apiFetch` now short-circuits to a synthetic 503 when the build has no proxy and nothing is paired, and `MobileGate` offers the pairing screen in that case instead of polling into the void.
+- **`probePairing` did not validate the token.** It probed `GET /api/controls`, which is not token-gated — only the control POSTs carry `require_token` — so pairing reported success for any token, including none. It now POSTs to a gated route with a deliberately malformed body: the auth middleware runs before the `Json` extractor, so a bad token gives 401 and a good one gives 422 without the handler ever running. That matters because `params_handler` writes `scematica-rate-mode.json`; a valid probe body would have silently rewritten live TP/SL on every pairing attempt.
+- `probePairing` returns a discriminated result, so the pairing screen distinguishes "unreachable" from "token rejected" rather than showing one combined message.
+
+### alchem-link v0.3.0 — a toolkit that does something
+
+The Python kit was a scaffold: every function returned a hardcoded dict of prose and nothing touched a network. It now reads live Chainlink price feeds and Alchemy-served chain state, with no dependencies beyond the standard library.
+
+**Zero-dependency chain reads.** Function selectors are stored as the constants they are — the stdlib ships SHA3-256, which is not Keccak-256 — so reading an aggregator needs no hashing library and no `web3`. Each selector was verified against a live mainnet aggregator.
+
+**Verified feed registry** (`feeds.py`): 18 feeds across Ethereum, Sepolia, Base, Arbitrum, OP and Polygon. Every address was called for `description()` and `decimals()` before being registered, and each is filed under the pair the contract itself reports. That check caught a real error: the address widely shared as Base "BTC/USD" reports `WBTC / USD`, and is registered under that name because WBTC can depeg.
+
+**Staleness detection.** A feed that responds is not necessarily a feed that published. Readings carry age against the expected heartbeat and report FRESH, STALE or INVALID. Stablecoin feeds get a longer heartbeat than volatile pairs, matching observed behaviour.
+
+**New commands:** `price`, `feeds --live`, `block`, `gas`, `networks`, `doctor`, `verify`. The reference commands (`blueprint`, `alchemy`, `chainlink`, `integration`, `recipes`) are unchanged. Works with no API key against a public endpoint; set `ALCHEMY_API_KEY` for real rate limits.
+
+**Live Feeds panel** in the TUI, reading off the UI thread so an RPC round trip cannot freeze the app. `r` refreshes, `n` cycles networks.
+
+Test suite grew from 12 to 76 cases, all offline.
+
+---
+
 ## What's New in v1.12.0
 
 ### Fibonacci Recovery System — Live Integration

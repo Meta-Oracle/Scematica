@@ -79,6 +79,19 @@ those as point-in-time references, not always current to the latest release.
 - [WHITEPAPER.md](WHITEPAPER.md) — system architecture and design.
 - [ROADMAP.md](ROADMAP.md) — Q1 2026 → Q1 2027 plan.
 
+## Release articles
+Plain-text, publication-ready write-ups of what shipped in each release. Newest first.
+- [article-v1.13.0-web-standalone.txt](article-v1.13.0-web-standalone.txt) — the web
+  dashboard stops simulating discovery: live mint feed, the pool scorer ported to
+  TypeScript with an enforced parity contract, one shared poll per endpoint,
+  wallet-signed swaps, and the pairing-probe fix.
+- [article-alchem-link-v0.3.0.txt](article-alchem-link-v0.3.0.txt) — alchem-link goes
+  from prose scaffold to a toolkit that reads live Chainlink feeds, with staleness
+  detection and a verified feed registry.
+- [article-v1.12.0.txt](article-v1.12.0.txt) · [article-v1.12.0-fibonacci.txt](article-v1.12.0-fibonacci.txt)
+  — the v1.12.0 release and the Fibonacci recovery system.
+- [article-alchem-link-v0.2.0.txt](article-alchem-link-v0.2.0.txt) — the alchem-link TUI.
+
 ## Reports
 - [PROFITABILITY_REPORT.md](PROFITABILITY_REPORT.md) — live-data profitability analysis,
   refreshed to the full 685-trade dataset (+2.26 SOL net, profit factor 6.50). Reproduce

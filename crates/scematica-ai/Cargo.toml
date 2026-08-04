@@ -1,10 +1,10 @@
-[package]
+﻿[package]
 name = "scematica-ai"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "AI agent layer for Scematica — risk scoring, strategy tuning, arb evaluation, reporting"
+description = "AI agent layer for Scematica â€” risk scoring, strategy tuning, arb evaluation, reporting"
 keywords = ["llm", "ai", "trading", "agents", "solana"]
 categories = ["cryptography::cryptocurrencies", "science"]
 readme = "README.md"
@@ -12,8 +12,8 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
-scematica-core = { version = "1.12.0", path = "../scematica-core" }
-scematica-protocol = { version = "1.12.0", path = "../scematica-protocol" }
+scematica-core = { version = "1.13.0", path = "../scematica-core" }
+scematica-protocol = { version = "1.13.0", path = "../scematica-protocol" }
 solana-sdk.workspace = true
 
 tokio.workspace = true

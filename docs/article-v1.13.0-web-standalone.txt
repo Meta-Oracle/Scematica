@@ -1,0 +1,93 @@
+Scematica v1.13.0 — The Dashboard Stopped Making Things Up
+
+The web dashboard has always been standalone in one narrow sense: open it with no backend and it renders. It did that by simulating. Real layout, real Deep Q* network, entirely synthetic market underneath it.
+
+That is a demo, not a product. v1.13.0 changes where the numbers come from.
+
+Three Planes, Three Different Answers
+
+The question "can this run without a backend?" does not have one answer. It has three, and conflating them is why the problem sat unsolved.
+
+Discovery — which pools exist, what they score, which filters they pass. This can be fully standalone. No key required.
+
+Intelligence — the DQ* agent, its advice, the tournament. Already standalone. The network in lib/sim/dqstar.ts genuinely trains; only its inputs were fake.
+
+Execution — trades, positions, PnL, control commands. This can never be standalone. Somebody has to hold a key and sign. There is no clever architecture that removes that requirement.
+
+Everything below follows from that split.
+
+Real Mints, Real Scores
+
+Discovery now reads live new mints from a public, keyless, CORS-open endpoint, and scores them with a TypeScript port of the sniper's own pipeline.
+
+The payload carries almost exactly what the Rust filters consume: creation timestamp for pool age, liquidity for depth, mint and freeze authority flags, deployer mint and migration counts, five-minute buy counts and volume, holder count.
+
+Run against mainnet, it produces this:
+
+  fetched 30 pools
+  rejections: DeployerReputation 18, PoolSize 6, NameFilter 1
+
+  WINP      score=100.0  30.25 SOL  age 9s   rejected  Serial deployer: 1187 mints, 12 migrations
+  XT        score=100.0  33.14 SOL  age 24s  accepted  All filters passed
+
+A deployer with 1187 launches and 12 that ever graduated is a signature, not a coincidence. Twenty-five of thirty pools rejected on real grounds.
+
+The Parity Problem
+
+Porting scoring logic to a second language creates a second source of truth, and two sources of truth drift. That is not a hypothetical risk; it is the default outcome.
+
+So the port is explicit about what it is. The likelihood-ratio ladders and the logistic are copied verbatim from pool_scorer.rs, and Rust stays authoritative — it reads real vault balances over a WebSocket and decides real money. The TypeScript is a preview.
+
+Every filter declares its parity. Five are faithful ports. Two are marked approx, because the input the Rust version uses does not exist in a public REST feed — the deployer reputation ledger is built from this bot's own sell outcomes, so the port substitutes the deployer's mint-to-migration ratio instead. The UI badges say which is which.
+
+And npm run check:parity pins the exact cases the Rust unit tests assert, plus monotonicity invariants that catch transposed ladder rungs. Ten checks, all offline. Drift fails a command instead of quietly mis-scoring pools.
+
+Nineteen Timers Became Thirteen Keys
+
+Every panel used to own a setInterval. That produced 19 timers and roughly 251 requests per minute, with /api/health polled by three separate components, /api/positions by two, and /api/trades by four.
+
+Against a bot on localhost that is merely wasteful. Against a rate-limited public API it is disqualifying — which is what forced the fix.
+
+There is now one timer per endpoint key, fanned out to every subscriber. Two properties follow that the old pattern could not give. Duplicate consumers cost nothing: three health subscribers are one request. And polling is refcounted, so a hidden panel stops fetching — in Beginner mode the advanced panels unmount and their upstreams go silent on their own.
+
+Pro mode with a bot paired: about 169 requests per minute. Beginner mode: about 102. And duplication is now structurally impossible rather than merely absent.
+
+The net effect on the components was subtraction. They lost 304 lines and gained 266.
+
+Wallet-Signed Execution, Honestly Labelled
+
+There is a genuinely standalone way to execute: quote the route from Jupiter, hand the transaction to the user's own wallet, let them sign it. No backend, no custody, no key ever leaving the device.
+
+It is also not sniping, and the UI says so in the panel header.
+
+A wallet prompt puts a human in the loop for seconds. The bot's edge on a new pool is sub-second. Shipping this without that label would be the kind of framing that lets someone believe they have a sniper when what they have is a manual swap button with an AI-scored candidate list. Both are useful. Only one of them is what the word implies.
+
+It is hidden in the Android shell, which connects wallets by deeplink but has no signing bridge — a button that can only fail is worse than no button.
+
+Three Fixes Worth Naming
+
+A dead endpoint. price.jup.ag stopped resolving entirely. Every poll produced a DNS error in the console. Now on Jupiter Price v3, which quotes in USD, so the SOL-denominated price comes from a combined request for the token and WSOL.
+
+A 404 storm. The mobile and static builds ship no Next server, so every /api/ call resolved against the static host — a 404 per panel per poll, each returning an HTML error page that callers then failed to parse as JSON. That is where the "unexpected token '<'" errors came from. The client now short-circuits when the build has no proxy and nothing is paired, and offers the pairing screen instead of polling into the void. Previously a static build opened in a browser had no way to pair at all.
+
+A pairing check that checked nothing. probePairing validated your API token by calling GET /api/controls. That route is not token-gated — only the control POSTs are. So pairing reported success for any token, including none, and you found out when a control button quietly did nothing.
+
+It now POSTs to a gated route with a deliberately malformed body. The auth middleware runs before the JSON extractor, so a bad token gives 401 and a good token gives 422 — without the handler ever executing. That last part matters: the handler writes the live rate-mode file, so a valid probe body would have silently overwritten the operator's TP and SL on every pairing attempt.
+
+Measured against a running instance, with and without a token configured, all four cases behave correctly. The old GET probe with a deliberately wrong token still returns 200, which is the bug, preserved as a test.
+
+What Is Still Simulated
+
+Trades, positions and PnL still come from the simulation when no bot is paired. Discovery is real, execution history is not, and both are on screen at once.
+
+Each is individually labelled — a FEED badge on the real panels, the permanent SIMULATION banner on the page. But the mix is incoherent, and the honest fix is empty states rather than synthetic trade history. That is the next step, and it is small now that the plumbing exists.
+
+Also outstanding: the RPC endpoint is still a hardcoded key in the client bundle. It should come from user settings.
+
+Version
+
+Scematica 1.13.0
+Web dashboard and Android companion 1.13.0
+alchem-link 0.3.0
+
+GitHub: github.com/Meta-Oracle/Scematica

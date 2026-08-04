@@ -1,4 +1,4 @@
-# Scematica v1.12.0
+# Scematica v1.13.0
 
 **CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump**
 
@@ -83,14 +83,14 @@ SDK and playground are pre-1.0.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.12.0 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.12.0 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.12.0 | `sniper`, `backtest` | bin + lib |
-| `scematica-arb` | 1.12.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
-| `scematica-protocol` | 1.12.0 | `protocol` | bin + lib |
-| `scematica-ai` | 1.12.0 | — | library |
-| `scematica-executor` | 1.12.0 | — | library |
-| `scematica-core` | 1.12.0 | — | library |
+| `scematica-suite` | 1.13.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.13.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.13.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-arb` | 1.13.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.13.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.13.0 | — | library |
+| `scematica-executor` | 1.13.0 | — | library |
+| `scematica-core` | 1.13.0 | — | library |
 | `scematica-nn` | 1.14.0 | `scema-ddqn` | bin + lib |
 | `scemadex-sdk` | 0.3.0 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
 | `scemadex-mcp` | 0.1.2 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
@@ -98,7 +98,7 @@ SDK and playground are pre-1.0.
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
-sourced from `web/package.json` (**1.11.3**). The mobile build reads it at build time to
+sourced from `web/package.json` (**1.13.0**). The mobile build reads it at build time to
 set the app's `versionName`/`versionCode` and names the artifact **`scematica-v<version>.apk`**
 — bump `web/package.json` to version the app. See [docs/mobile-app.md](docs/mobile-app.md).
 
@@ -110,7 +110,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.11.4) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.13.0) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

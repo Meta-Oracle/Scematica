@@ -108,22 +108,58 @@ export function apiFetch(path: string, init: RequestInit = {}): Promise<Response
   return fetch(url, { cache: 'no-store', ...init, headers })
 }
 
+export type ProbeResult =
+  | { ok: true }
+  /** Nothing answered at the base URL — wrong host/port, or a firewall in the way. */
+  | { ok: false; reason: 'unreachable' }
+  /** The instance answered but rejected the token. */
+  | { ok: false; reason: 'unauthorized' }
+
 /**
- * Probe a candidate pairing by hitting its `/health`. Returns true iff reachable and
- * (when a token is supplied) authorized to POST a no-op control. Used by the pairing
- * screen to validate before saving.
+ * Validate a candidate pairing before saving it: reachable, and carrying a token the
+ * instance actually accepts.
+ *
+ * Getting the second half right is fiddly. `GET /api/controls` is NOT token-gated —
+ * only the control **POSTs** carry `require_token` (see `main.rs`, where the gated
+ * router holds `post(...)` routes and the plain router serves `get(controls)`), so
+ * probing the GET reports success for any token at all, including none.
+ *
+ * So the probe POSTs to a gated route instead, with a deliberately malformed body.
+ * Axum runs the `route_layer` auth middleware *before* the `Json` extractor, giving
+ * three clean outcomes:
+ *
+ *   • bad/missing token  → 401 from the middleware; the handler never runs
+ *   • good token         → 4xx from the extractor rejecting the body; still no handler
+ *   • no token required  → same as above
+ *
+ * The malformed body is the point: `params_handler` writes `scematica-rate-mode.json`,
+ * so a *valid* probe body would silently rewrite the operator's live TP/SL. A JSON
+ * string cannot deserialize into any of the control structs, so the handler is
+ * unreachable by construction.
  */
-export async function probePairing(p: Pairing): Promise<boolean> {
+export async function probePairing(p: Pairing): Promise<ProbeResult> {
   const base = p.baseUrl.replace(/\/+$/, '')
+
   try {
     const health = await fetch(base + '/health', { cache: 'no-store' })
-    if (!health.ok) return false
-    // Confirm the token is accepted by reading the (gated-adjacent) controls snapshot.
-    const headers = new Headers()
-    if (p.token) headers.set('Authorization', `Bearer ${p.token}`)
-    const ctl = await fetch(base + '/api/controls', { headers, cache: 'no-store' })
-    return ctl.ok
+    if (!health.ok) return { ok: false, reason: 'unreachable' }
   } catch {
-    return false
+    return { ok: false, reason: 'unreachable' }
+  }
+
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (p.token) headers.set('Authorization', `Bearer ${p.token}`)
+
+  try {
+    const res = await fetch(base + '/api/controls/params', {
+      method: 'POST',
+      headers,
+      body: '"scematica-pairing-probe"',
+      cache: 'no-store',
+    })
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: 'unauthorized' }
+    return { ok: true }
+  } catch {
+    return { ok: false, reason: 'unreachable' }
   }
 }

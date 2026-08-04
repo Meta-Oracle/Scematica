@@ -188,6 +188,15 @@ browser, only encoded into the QR). The app parses that string (paste today; in-
 scan is a small follow-up with `@capacitor/barcode-scanner`). Pairing is stored in
 `localStorage` and every panel re-fetches against the paired instance.
 
+**The desktop web dashboard can pair too** (`components/OfflineBanner.tsx`) — this is
+what makes a *publicly hosted* `web/` deploy standalone: it doesn't need `scematica-api`
+running on the same box as the Next.js server. When no bot is reachable (no pairing yet,
+or a paired instance went offline), the banner offers a "Pair with your instance ↗" action
+that opens the same `Pairing` component used by the app, storing the pairing in
+`localStorage` exactly as on mobile. Everything that *doesn't* need a bot at all — the CA
+banner, price ticker, buy links, wallet connect + SCEMA gate check — already talks
+directly to public Solana RPC / Jupiter / DexScreener and needs no pairing or API.
+
 ## Push notifications (opt-in — NOT in the default build)
 
 > ⚠️ **Why it's opt-in:** `@capacitor/push-notifications` pulls in Firebase Messaging,

@@ -74,17 +74,19 @@ impl FibonacciPoolScorer {
         // Calculate velocity — same fallback logic as pool_scorer.rs:
         // when open_time=0 (all pump.fun migrations), use a conservative 30s age
         // estimate rather than returning 0.0 which kills Fibonacci signal entirely.
-        let velocity_sol_per_sec =
+        // `None` means "could not be measured", which the scorer treats as neutral.
+        // Returning 0.0 here would read as "measured, and stalled" and penalise the pool.
+        let velocity_sol_per_sec: Option<f64> =
             if pool_size_lamports > 0 && pool.open_time > 0 && pool.open_time <= now_secs {
                 let age_s = now_secs.saturating_sub(pool.open_time).max(1) as f64;
-                size_sol / age_s
+                Some(size_sol / age_s)
             } else if pool_size_lamports > 0
                 && detected_at_secs > 0
                 && detected_at_secs >= now_secs.saturating_sub(60)
             {
-                size_sol / 30.0 // conservative 30s age estimate for freshly-detected open_time=0 pools
+                Some(size_sol / 30.0) // conservative 30s age estimate for freshly-detected open_time=0 pools
             } else {
-                0.0
+                None
             };
 
         // Calculate buy pressure ratio
@@ -114,15 +116,15 @@ impl FibonacciPoolScorer {
             fib_score * 10.0 // +0 to +5
         };
 
-        // Runner detection bonus: exceptional velocity matching Fibonacci growth
-        let runner_bonus = if velocity_sol_per_sec >= 3.236 && age_secs <= 8 {
+        // Runner detection bonus: exceptional velocity matching Fibonacci growth.
+        // A bonus, not a penalty — an unmeasured velocity simply earns nothing here,
+        // which is the correct treatment for absent evidence.
+        let runner_bonus = match velocity_sol_per_sec {
             // φ² (2.618) SOL/s in first 8 seconds = strong runner signal
-            10.0
-        } else if velocity_sol_per_sec >= 1.618 && age_secs <= 13 {
+            Some(v) if v >= 3.236 && age_secs <= 8 => 10.0,
             // φ (1.618) SOL/s in first 13 seconds = moderate runner
-            5.0
-        } else {
-            0.0
+            Some(v) if v >= 1.618 && age_secs <= 13 => 5.0,
+            _ => 0.0,
         };
 
         // Combine scores

@@ -67,7 +67,17 @@ blacklist_path = "blacklist.txt"
 # Score 80 = fresh detection + 15-20 SOL + no buy pressure (baseline runner candidate).
 # Score 92+ = fresh + 20-45 SOL + buy pressure confirmed OR pumpfun signal.
 min_pool_score = 65              # Balanced (was 92 = elite-only). 92 only passed pools still visibly pumping = parabolic tops; 65 catches quality pools earlier in the curve. Validated-profitable value.
-require_moonshot_confirmation = false     # Disabled: live inflow is 0 for all pools (arrive post-pump); score+fib gate quality instead
+# false = the live-inflow check is ADVISORY: the measured rate still feeds the pool
+# scorer as a bonus, but a flat vault reading no longer vetoes the buy.
+# true  = the check may VETO, for operators who want confirmation-only entries.
+#
+# This flag did not actually work until 2026-08-05. Setting it false only relaxed the
+# pass condition; the reject path fired regardless, and was the single largest source
+# of rejections in the decision log (1,643 pools at inflow_rate=0.000, including pools
+# scoring 99.9). The check samples vault growth over a fraction of a second, so it
+# cannot tell "nobody is buying" from "no buy landed in my window" — live inflow was
+# measurable for only 9.2% of observations. It is not sound enough to veto on.
+require_moonshot_confirmation = false
 moonshot_min_score = 92.0
 moonshot_min_inflow_sol_per_sec = 0.5
 moonshot_min_growth_pct = 1.0

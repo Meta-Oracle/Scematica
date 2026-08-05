@@ -1523,8 +1523,14 @@ impl Sniper {
                             needed_sol = %format!("{:.4}", min_growth as f64 / 1e9),
                             "❌ Moonshot momentum failed — insufficient live buying"
                         );
-                        if !(self.config.require_moonshot_confirmation
-                            && (pregrad_moonshot || historical_moonshot))
+                        // Only count it as a rejection if it is going to *be* one. When
+                        // the gate is advisory the pool continues to the scorer, and
+                        // recording it here would inflate `no_momentum` in the dashboard's
+                        // filter stats with pools that were never actually turned away.
+                        if (self.config.require_moonshot_confirmation
+                            || self.config.elite_pool_mode)
+                            && !(self.config.require_moonshot_confirmation
+                                && (pregrad_moonshot || historical_moonshot))
                         {
                             self.filter_pipeline.stats.record_rejection("no_momentum");
                         }
@@ -1569,7 +1575,32 @@ impl Sniper {
                     (pregrad_moonshot || historical_moonshot, 0.0)
                 }
             };
+            // Whether a failed momentum sample may *veto* the buy, as opposed to merely
+            // informing the score below.
+            //
+            // This used to reject unconditionally, which meant `require_moonshot_confirmation
+            // = false` did not actually disable the gate — it only relaxed the pass
+            // condition from "grew and fast enough" to "grew", and still threw the pool
+            // away when neither held. In one month's decision log that path rejected
+            // 1,643 pools with `inflow_rate=0.000`, more than any other single cause,
+            // including pools carrying a 99.9 predictive score.
+            //
+            // The measurement cannot support a veto by default. It compares one vault
+            // reading against another taken a fraction of a second earlier, so it does
+            // not distinguish "nobody is buying this" from "no buy happened to land
+            // inside my sampling window" — and the live inflow figure was non-zero for
+            // only 9.2% of observations. Absence of evidence, sampled that thinly, is
+            // not evidence of absence.
+            //
+            // So the veto now applies only when the operator explicitly asked for
+            // confirmation. Otherwise the measured rate still flows into the pool
+            // scorer below as a positive signal, where a real inflow earns a bonus and
+            // an unmeasured one simply earns nothing.
+            let momentum_may_veto =
+                self.config.require_moonshot_confirmation || self.config.elite_pool_mode;
+
             if !confirmed
+                && momentum_may_veto
                 && !(self.config.require_moonshot_confirmation
                     && (pregrad_moonshot || historical_moonshot))
             {

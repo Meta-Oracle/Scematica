@@ -14,6 +14,12 @@ use crate::fibonacci_momentum::{FibonacciMomentum, FibonacciSignal, PHI};
 use crate::fibonacci_pool_scorer::FibonacciPoolScorer;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Slack allowed when comparing a Fibonacci score against the entry threshold.
+///
+/// Large enough to absorb the accumulated error of four weighted decimal terms, small
+/// enough that it cannot promote a pool that genuinely missed the bar.
+const FIB_SCORE_EPSILON: f64 = 1e-9;
+
 /// Recovery-focused configuration derived from live data patterns
 #[derive(Debug, Clone)]
 pub struct FibonacciRecoveryConfig {
@@ -119,11 +125,17 @@ impl FibonacciRecoverySystem {
             0
         };
 
-        // Calculate velocity (SOL/s)
+        // Velocity (SOL/s), when it can honestly be computed.
+        //
+        // `age_secs` above is measured from *our own detection timestamp* in whole
+        // seconds, and this runs within the same wall-clock second as detection — so
+        // it was always 0, and velocity was always 0. That fed the scorer a fabricated
+        // "stalled" reading for every pool the bot has ever seen. `None` says what is
+        // actually true: one observation of a pool cannot establish a growth rate.
         let velocity_sol_per_sec = if age_secs > 0 {
-            size_sol / age_secs as f64
+            Some(size_sol / age_secs as f64)
         } else {
-            0.0
+            None
         };
 
         // Calculate buy pressure ratio
@@ -141,8 +153,13 @@ impl FibonacciRecoverySystem {
             buy_pressure_ratio,
         );
 
-        // Check if pool meets entry criteria
-        let should_enter = fib_score >= self.config.min_entry_score;
+        // Check if pool meets entry criteria.
+        //
+        // The tolerance is not cosmetic. The component weights are decimal fractions,
+        // so a pool that lands exactly on the threshold sums to 0.49999999999999994 —
+        // which `>= 0.50` rejects. 198 pools in one month's decision log were turned
+        // away by 6e-17, all of them logged as "score 0.50 below threshold 0.50".
+        let should_enter = fib_score >= self.config.min_entry_score - FIB_SCORE_EPSILON;
 
         // Calculate position multiplier based on Fibonacci score
         let position_multiplier = if self.config.use_fibonacci_sizing {

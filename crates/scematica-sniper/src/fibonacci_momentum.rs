@@ -306,10 +306,24 @@ impl FibonacciMomentum {
     /// - Pool size in Fibonacci sweet spot (8-21 SOL)
     /// - Age in Fibonacci window (1-8 seconds)
     /// - Velocity matching Fibonacci growth pattern
+    ///
+    /// `velocity_sol_per_sec` is `None` when velocity could not be measured — which is
+    /// the normal case at detection time, because a pool observed once has no growth
+    /// history yet. It previously arrived as a literal `0.0`, which fell into the
+    /// "weak" bucket and docked **every** pool 0.05 of its score. With age and buy
+    /// pressure also near-constant at detection, that left the outcome decided by pool
+    /// size alone, and parked the two possible results at 0.395 and 0.4999… — directly
+    /// on top of a 0.50 entry threshold. 519 of 543 gate rejections in one month's
+    /// decision log were those two values.
+    ///
+    /// Missing data is not bad data, so an unmeasurable velocity now scores neutral
+    /// rather than weak. The gate keeps discriminating on the signals that *do* vary
+    /// (size, and buy pressure when it is meaningful); it just stops charging a
+    /// uniform penalty for a number nobody could have supplied.
     pub fn score_pool_fibonacci(
         pool_size_sol: f64,
         age_secs: u64,
-        velocity_sol_per_sec: f64,
+        velocity_sol_per_sec: Option<f64>,
         buy_pressure_ratio: f64,
     ) -> f64 {
         let mut score: f64 = 0.0;
@@ -341,14 +355,14 @@ impl FibonacciMomentum {
         score += age_score * 0.30;
 
         // Velocity: Should match Fibonacci growth (φ ≈ 1.618 SOL/s minimum)
-        let velocity_score = if velocity_sol_per_sec >= PHI * 2.0 {
-            1.0 // Exceptional: > 3.2 SOL/s
-        } else if velocity_sol_per_sec >= PHI {
-            0.8 // Strong: > 1.618 SOL/s
-        } else if velocity_sol_per_sec >= 1.0 {
-            0.5 // Moderate
-        } else {
-            0.2 // Weak
+        let velocity_score = match velocity_sol_per_sec {
+            // Unmeasured — neither evidence for nor against. Neutral keeps the
+            // component from acting as a flat tax on every candidate.
+            None => 0.5,
+            Some(v) if v >= PHI * 2.0 => 1.0, // Exceptional: > 3.2 SOL/s
+            Some(v) if v >= PHI => 0.8,       // Strong: > 1.618 SOL/s
+            Some(v) if v >= 1.0 => 0.5,       // Moderate
+            Some(_) => 0.2,                   // Weak — measured, and genuinely slow
         };
         score += velocity_score * 0.25;
 
@@ -550,7 +564,7 @@ mod tests {
     #[test]
     fn test_pool_fibonacci_scoring() {
         // Perfect Fibonacci pool: 13 SOL, 3s old, 2.5 SOL/s velocity, 1.8 pressure
-        let score = FibonacciMomentum::score_pool_fibonacci(13.0, 3, 2.5, 1.8);
+        let score = FibonacciMomentum::score_pool_fibonacci(13.0, 3, Some(2.5), 1.8);
         assert!(
             score > 0.85,
             "Perfect Fibonacci pool should score high: {}",
@@ -558,7 +572,58 @@ mod tests {
         );
 
         // Poor pool: 100 SOL, 60s old, 0.1 SOL/s, 0.2 pressure
-        let score = FibonacciMomentum::score_pool_fibonacci(100.0, 60, 0.1, 0.2);
+        let score = FibonacciMomentum::score_pool_fibonacci(100.0, 60, Some(0.1), 0.2);
         assert!(score < 0.3, "Poor pool should score low: {}", score);
+    }
+
+    /// An unmeasurable velocity must not be scored as a slow one.
+    ///
+    /// This is the regression for the bug that stalled the sniper: velocity arrived as
+    /// a literal 0.0 for every pool, so every candidate was docked the same 0.05 and
+    /// the gate stopped discriminating on anything but size.
+    #[test]
+    fn unmeasured_velocity_scores_neutral_not_weak() {
+        let unmeasured = FibonacciMomentum::score_pool_fibonacci(13.0, 3, None, 1.8);
+        let measured_slow = FibonacciMomentum::score_pool_fibonacci(13.0, 3, Some(0.1), 1.8);
+        let measured_fast = FibonacciMomentum::score_pool_fibonacci(13.0, 3, Some(3.5), 1.8);
+
+        assert!(
+            unmeasured > measured_slow,
+            "absent evidence must not be penalised like a measured stall: {} vs {}",
+            unmeasured,
+            measured_slow
+        );
+        assert!(
+            unmeasured < measured_fast,
+            "absent evidence must not be rewarded like a measured surge: {} vs {}",
+            unmeasured,
+            measured_fast
+        );
+    }
+
+    /// The exact shape that produced 519 of 543 gate rejections in the decision log.
+    ///
+    /// With velocity unmeasurable and buy pressure on its raw (unnormalised) scale, a
+    /// pool in the Fibonacci size range must clear a 0.50 entry threshold, while one
+    /// outside the range must still be turned away. If both pass, the gate has become a
+    /// no-op and the bot is buying indiscriminately — which is the failure mode on the
+    /// other side of this fix.
+    #[test]
+    fn detection_time_pool_is_graded_by_size_not_blocked_wholesale() {
+        // 12 SOL: inside the 8-21 SOL sweet spot.
+        let sweet_spot = FibonacciMomentum::score_pool_fibonacci(12.0, 0, None, 0.0001);
+        // 400 SOL: far outside any Fibonacci band.
+        let oversized = FibonacciMomentum::score_pool_fibonacci(400.0, 0, None, 0.0001);
+
+        assert!(
+            sweet_spot >= 0.50,
+            "a sweet-spot pool must clear the 0.50 gate at detection time, got {}",
+            sweet_spot
+        );
+        assert!(
+            oversized < 0.50,
+            "an oversized pool must still be rejected, got {}",
+            oversized
+        );
     }
 }

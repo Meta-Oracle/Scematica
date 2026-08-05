@@ -178,6 +178,29 @@ pyinstaller alchem-link-ui.spec
 # output: dist/alchem-link-ui.exe
 ```
 
+The palette — black surfaces, mid-blue signal — lives in `alchem_link/theme.py`, which
+is the single source for both the Textual stylesheet and the inline Rich markup the
+render functions emit. Change it there and the whole terminal follows; `tests/test_theme.py`
+fails if a panel starts hardcoding its own colours again.
+
+## Web build
+
+The same reader runs as a web console at `/alchem-link` in the Scematica dashboard
+(`web/`), mirroring this palette so the two are recognisably one tool:
+
+```bash
+cd ../web && npm run dev     # → http://localhost:3000/alchem-link
+```
+
+It ports `abi.py`, `networks.py` and `feeds.py` to TypeScript under `web/lib/alchem/`
+and serves three routes — `/api/alchem/feeds`, `/api/alchem/doctor`, `/api/alchem/verify`
+— that read aggregators **server-side**, so `ALCHEMY_API_KEY` never reaches the browser
+and CORS-less public RPC hosts still work.
+
+This package stays authoritative. When the feed registry here changes, change
+`web/lib/alchem/feeds.ts` too; `/api/alchem/verify` is what catches the two drifting
+apart, because it asks the chain rather than either table.
+
 ## Reference commands
 
 The integration reference is unchanged and still offline:

@@ -139,6 +139,22 @@ simulated PnL render as live results. See `docs/mobile-app.md`.
    actually existing. `npm run check:parity` pins the Rust unit-test cases; run it after
    touching either side.
 
+**`/alchem-link` is a second product on the same site**, not a sniper panel: the web
+build of the `alchem-link` toolkit (`components/alchem/`, `lib/alchem/`,
+`app/api/alchem/`). It reads live Chainlink aggregators and has its own black-and-blue
+palette against the sniper's black-and-red — `alchem-*` tokens in `tailwind.config.ts`
+and `.alchem-root` in `globals.css` mirror `alchem-link/src/alchem_link/theme.py`, so a
+palette change moves both. Three constraints:
+
+- `lib/alchem/` is a **port of the Python package**; Python stays authoritative. When
+  `feeds.py` or `networks.py` changes, change the TS table too — `/api/alchem/verify`
+  is what catches the two drifting, because it asks the chain rather than either table.
+- `lib/alchem/endpoint.ts` is **server-only** (it reads `ALCHEMY_API_KEY` and throws if
+  imported in a browser). Client components import `networks.ts`, which is a pure table.
+- **No simulation branch.** Unlike the sniper endpoints, these routes read a chain or
+  report the error. A fabricated price would defeat the entire point of a staleness
+  verdict, and unreadable feeds render as failure rows rather than being dropped.
+
 ## Architecture: File-Based IPC
 
 The sniper and dashboard are separate processes that communicate exclusively through JSON files in the working directory. There is no socket/IPC channel — touching one of these files is how the dashboard issues commands, and tailing them is how the dashboard observes state. **When adding cross-process behavior, follow this pattern; don't introduce new IPC mechanisms.**

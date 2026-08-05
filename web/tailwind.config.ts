@@ -22,6 +22,28 @@ const config: Config = {
         'scema-dim':     '#333333',
         'scema-green':   '#00cc44',
         'scema-amber':   '#ffaa00',
+
+        // ── alchem-link ────────────────────────────────────────────────────
+        // The /alchem-link page is a different product on the same site, so it
+        // gets its own identity: black surfaces with a mid-blue signal, against
+        // the sniper's black-and-red. These values mirror
+        // `alchem-link/src/alchem_link/theme.py` exactly — the terminal and the
+        // web build are meant to be recognisably the same tool, so when one
+        // palette moves, move both.
+        'alchem-black':   '#04070c',
+        'alchem-surface': '#080e17',
+        'alchem-hi':      '#0e1926',
+        'alchem-border':  '#1b3d63',
+        'alchem-border-hi':'#2c6296',
+        'alchem-blue':    '#4d9fff',
+        'alchem-blue-hi': '#7cc0ff',
+        'alchem-blue-dim':'#2f6ba8',
+        'alchem-text':    '#cddced',
+        'alchem-muted':   '#7f9ec0',
+        'alchem-dim':     '#47678c',
+        'alchem-green':   '#2ee6a0',
+        'alchem-amber':   '#ffb340',
+        'alchem-red':     '#ff5c78',
       },
       fontFamily: {
         mono: ['Space Mono', 'JetBrains Mono', 'Fira Code', 'monospace'],
@@ -70,6 +92,9 @@ const config: Config = {
         'red-md':  '0 0 12px rgba(204,17,17,0.5)',
         'red-lg':  '0 0 24px rgba(204,17,17,0.4), inset 0 0 24px rgba(102,0,0,0.1)',
         'panel':   'inset 0 1px 0 rgba(204,17,17,0.08)',
+        'blue-sm': '0 0 6px rgba(77,159,255,0.35)',
+        'blue-md': '0 0 12px rgba(77,159,255,0.45)',
+        'blue-lg': '0 0 24px rgba(77,159,255,0.35), inset 0 0 24px rgba(27,61,99,0.25)',
       },
     },
   },

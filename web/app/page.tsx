@@ -1,3 +1,5 @@
+import Link from 'next/link'
+
 import { AdvancedOnly }    from '@/components/AdvancedOnly'
 import { CABanner }        from '@/components/CABanner'
 import { DecisionLedger }  from '@/components/DecisionLedger'
@@ -66,6 +68,15 @@ export default function Home() {
             <span className="text-scema-red-hi">DEEP Q*™ NEURAL ENGINE</span>
           </div>
           <div className="flex items-center gap-3 ml-auto">
+            {/* Sister tool on the same site — its own product, hence its own palette. */}
+            <Link
+              href="/alchem-link"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-alchem-border
+                         text-alchem-blue hover:border-alchem-blue hover:text-alchem-blue-hi
+                         hover:shadow-blue-sm transition-all text-xs tracking-widest"
+            >
+              ◈ ALCHEM-LINK
+            </Link>
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

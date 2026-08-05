@@ -193,3 +193,80 @@ body::after {
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .font-mono { font-family: 'Space Mono', monospace; }
 .border-red { border-color: #1a0000; }
+
+/* ── alchem-link ───────────────────────────────────────────────────────────── */
+/* /alchem-link is a different product sharing this site: an Alchemy x Chainlink
+   oracle console rather than the sniper. It gets its own identity — black surfaces
+   with a mid-blue signal — mirroring `alchem-link/src/alchem_link/theme.py` so the
+   terminal and the web build are recognisably the same tool. */
+
+.alchem-root {
+  --a-black:     #04070c;
+  --a-surface:   #080e17;
+  --a-hi:        #0e1926;
+  --a-border:    #1b3d63;
+  --a-border-hi: #2c6296;
+  --a-blue:      #4d9fff;
+  --a-blue-hi:   #7cc0ff;
+  --a-text:      #cddced;
+  --a-muted:     #7f9ec0;
+  --a-dim:       #47678c;
+
+  background: var(--a-black);
+  color: var(--a-text);
+  min-height: 100vh;
+}
+
+/* The site-wide scan bar and vignette are tinted red for the sniper. Rather than
+   duplicating those fixed overlays, retint them from the page that sits under them:
+   `:has()` is the only way a descendant can reach a body pseudo-element. */
+body:has(.alchem-root)::after {
+  background: linear-gradient(
+    transparent 0%,
+    rgba(77, 159, 255, 0.02) 50%,
+    transparent 100%
+  );
+}
+
+.alchem-panel {
+  background: var(--a-surface);
+  border: 1px solid var(--a-border);
+  border-top-color: var(--a-border-hi);
+  position: relative;
+}
+
+.alchem-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(77, 159, 255, 0.035) 0%, transparent 30%);
+  pointer-events: none;
+}
+
+.alchem-panel-header {
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--a-blue);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--a-border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.alchem-panel-header::before {
+  content: '◈';
+  color: var(--a-blue-hi);
+  font-size: 0.55rem;
+}
+
+.glow-blue {
+  color: var(--a-blue-hi);
+  text-shadow: 0 0 8px rgba(77, 159, 255, 0.55), 0 0 20px rgba(44, 98, 150, 0.3);
+}
+
+/* Scoped so the sniper dashboard keeps its red scrollbar. */
+.alchem-root ::-webkit-scrollbar-track { background: var(--a-black); }
+.alchem-root ::-webkit-scrollbar-thumb { background: var(--a-border); }
+.alchem-root ::-webkit-scrollbar-thumb:hover { background: var(--a-border-hi); }

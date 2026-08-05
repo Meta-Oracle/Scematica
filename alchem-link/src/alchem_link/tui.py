@@ -22,130 +22,20 @@ from .feeds import read_all_feeds
 from .integration import build_integration_map
 from .networks import DEFAULT_NETWORK, list_networks, resolve_endpoint
 from .recipes import get_recipe_by_id, get_recipes
+from .theme import (
+    AMBER,
+    BLUE,
+    CSS,
+    GREEN,
+    MUTED,
+    RED,
+    STATUS_COLOUR,
+    TEXT,
+    hint,
+    key,
+    title,
+)
 from . import __version__
-
-# ── colour palette (CSS vars) ────────────────────────────────────────────────
-CSS = """
-Screen {
-    background: #0a0e1a;
-}
-
-#sidebar {
-    width: 26;
-    background: #0d1220;
-    border-right: solid #1e3a5f;
-    padding: 1 0;
-}
-
-#sidebar-title {
-    text-align: center;
-    color: #00d4ff;
-    text-style: bold;
-    padding: 0 1 1 1;
-}
-
-ListView {
-    background: #0d1220;
-    border: none;
-}
-
-ListItem {
-    padding: 0 2;
-    color: #7a9cc4;
-}
-
-ListItem:hover {
-    background: #1a2a40;
-    color: #00d4ff;
-}
-
-ListItem.--highlight {
-    background: #0f2a45;
-    color: #00d4ff;
-    text-style: bold;
-}
-
-#main {
-    background: #0a0e1a;
-    padding: 1 2;
-}
-
-.section-title {
-    color: #00d4ff;
-    text-style: bold;
-    padding: 0 0 1 0;
-}
-
-.card {
-    background: #0d1220;
-    border: solid #1e3a5f;
-    padding: 1 2;
-    margin: 0 0 1 0;
-}
-
-.card-key {
-    color: #4a9eff;
-    text-style: bold;
-}
-
-.card-value {
-    color: #c8d8e8;
-}
-
-.card-tag {
-    color: #00ff9f;
-    text-style: italic;
-}
-
-.step-num {
-    color: #f0a500;
-    text-style: bold;
-}
-
-.step-text {
-    color: #c8d8e8;
-}
-
-.dim {
-    color: #3a5070;
-}
-
-.status-fresh {
-    color: #00ff9f;
-    text-style: bold;
-}
-
-.status-stale {
-    color: #f0a500;
-    text-style: bold;
-}
-
-.status-invalid {
-    color: #ff4d6d;
-    text-style: bold;
-}
-
-.recipe-summary {
-    color: #a0c4e8;
-    padding: 0 0 1 0;
-}
-
-Rule {
-    color: #1e3a5f;
-}
-
-Header {
-    background: #0d1220;
-    color: #00d4ff;
-    border-bottom: solid #1e3a5f;
-}
-
-Footer {
-    background: #0d1220;
-    color: #3a6090;
-    border-top: solid #1e3a5f;
-}
-"""
 
 NAV_ITEMS = [
     ("live",       "◉  Live Feeds"),
@@ -155,13 +45,6 @@ NAV_ITEMS = [
     ("integration","⇄  Integration"),
     ("recipes",    "✦  Recipes"),
 ]
-
-_STATUS_CLASS = {
-    "FRESH": "status-fresh",
-    "STALE": "status-stale",
-    "INVALID": "status-invalid",
-}
-
 
 def _fmt_price(value: float) -> str:
     magnitude = abs(value)
@@ -180,10 +63,10 @@ def _fmt_age(seconds: int) -> str:
     return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
 
 
-def _kv(key: str, value: str) -> list[Static]:
+def _kv(name: str, text: str) -> list[Static]:
     return [
-        Static(f"[bold #4a9eff]{key}[/]", classes="card-key"),
-        Static(f"[#c8d8e8]{value}[/]", classes="card-value"),
+        Static(key(name), classes="card-key"),
+        Static(f"[{TEXT}]{text}[/]", classes="card-value"),
     ]
 
 
@@ -192,17 +75,17 @@ def _render_blueprint() -> list[Static | Rule | Label]:
     widgets: list = [Label("◈  BLUEPRINT", classes="section-title")]
     for section, data in bp.items():
         widgets.append(Rule())
-        widgets.append(Static(f"[bold #00d4ff]{section.upper()}[/]", classes="card-key"))
+        widgets.append(Static(title(section.upper()), classes="card-key"))
         if isinstance(data, dict):
             for k, v in data.items():
                 if isinstance(v, list):
-                    widgets.append(Static(f"[bold #4a9eff]{k}[/]", classes="card-key"))
+                    widgets.append(Static(key(k), classes="card-key"))
                     for i, item in enumerate(v, 1):
-                        widgets.append(Static(f"  [#f0a500]{i}.[/] [#c8d8e8]{item}[/]"))
+                        widgets.append(Static(f"  [{AMBER}]{i}.[/] [{TEXT}]{item}[/]"))
                 else:
                     widgets += _kv(f"  {k}", str(v))
         else:
-            widgets.append(Static(f"[#c8d8e8]{data}[/]", classes="card-value"))
+            widgets.append(Static(f"[{TEXT}]{data}[/]", classes="card-value"))
     return widgets
 
 
@@ -212,9 +95,9 @@ def _render_alchemy() -> list:
     for k, v in data.items():
         widgets.append(Rule())
         if isinstance(v, list):
-            widgets.append(Static(f"[bold #4a9eff]{k.upper()}[/]", classes="card-key"))
+            widgets.append(Static(key(k.upper()), classes="card-key"))
             for item in v:
-                widgets.append(Static(f"  [#c8d8e8]• {item}[/]"))
+                widgets.append(Static(f"  [{TEXT}]• {item}[/]"))
         else:
             widgets += _kv(k.upper(), str(v))
     return widgets
@@ -234,7 +117,7 @@ def _render_integration() -> list:
     widgets: list = [Label("⇄  INTEGRATION MAP", classes="section-title")]
     for domain, sides in data.items():
         widgets.append(Rule())
-        widgets.append(Static(f"[bold #00d4ff]{domain.upper().replace('_', ' ')}[/]"))
+        widgets.append(Static(title(domain.upper().replace("_", " "))))
         for side, desc in sides.items():
             widgets += _kv(f"  {side.capitalize()}", desc)
     return widgets
@@ -249,14 +132,14 @@ def _render_recipes(selected_id: str | None = None) -> list:
     widgets: list = [Label("✦  RECIPES", classes="section-title")]
     for r in recipes:
         widgets.append(Rule())
-        widgets.append(Static(f"[bold #00d4ff]{r['name']}[/]"))
-        widgets.append(Static(f"[#a0c4e8]{r['summary']}[/]", classes="recipe-summary"))
+        widgets.append(Static(title(r["name"])))
+        widgets.append(Static(f"[{MUTED}]{r['summary']}[/]", classes="recipe-summary"))
         widgets.append(Static(
-            "  " + "  ".join(f"[#00ff9f]#{t}[/]" for t in r["tags"]),
+            "  " + "  ".join(f"[{GREEN}]#{t}[/]" for t in r["tags"]),
             classes="card-tag",
         ))
         widgets.append(Static(
-            f"  [dim #3a6090]id: {r['id']}  →  press [bold]r[/] then type id to drill in[/]",
+            hint(f"id: {r['id']}  →  press [bold]r[/] then type id to drill in"),
             classes="dim",
         ))
     return widgets
@@ -265,19 +148,19 @@ def _render_recipes(selected_id: str | None = None) -> list:
 def _render_recipe_detail(recipe: dict) -> list:
     widgets: list = [
         Label(f"✦  {recipe['name'].upper()}", classes="section-title"),
-        Static(f"[#a0c4e8]{recipe['summary']}[/]", classes="recipe-summary"),
+        Static(f"[{MUTED}]{recipe['summary']}[/]", classes="recipe-summary"),
         Rule(),
-        Static("[bold #4a9eff]STEPS[/]", classes="card-key"),
+        Static(key("STEPS"), classes="card-key"),
     ]
     for i, step in enumerate(recipe["steps"], 1):
-        widgets.append(Static(f"  [bold #f0a500]{i}.[/] [#c8d8e8]{step}[/]"))
+        widgets.append(Static(f"  [bold {AMBER}]{i}.[/] [{TEXT}]{step}[/]"))
     widgets.append(Rule())
     widgets.append(Static(
-        "  " + "  ".join(f"[#00ff9f]#{t}[/]" for t in recipe["tags"]),
+        "  " + "  ".join(f"[{GREEN}]#{t}[/]" for t in recipe["tags"]),
         classes="card-tag",
     ))
     widgets.append(Static(
-        f"\n  [dim #3a6090]← press [bold]Escape[/] to return to recipes[/]",
+        "\n  " + hint("← press [bold]Escape[/] to return to recipes"),
         classes="dim",
     ))
     return widgets
@@ -287,9 +170,9 @@ def _render_live_loading(network: str) -> list:
     endpoint = resolve_endpoint(network=network)
     return [
         Label(f"◉  LIVE FEEDS — {network.upper()}", classes="section-title"),
-        Static(f"[#3a6090]{endpoint.redacted()}  ({endpoint.source})[/]", classes="dim"),
+        Static(hint(f"{endpoint.redacted()}  ({endpoint.source})"), classes="dim"),
         Rule(),
-        Static("[#f0a500]Reading aggregators…[/]"),
+        Static(f"[{AMBER}]Reading aggregators…[/]"),
     ]
 
 
@@ -297,41 +180,45 @@ def _render_live(network: str, readings: list, error: str | None = None) -> list
     endpoint = resolve_endpoint(network=network)
     widgets: list = [
         Label(f"◉  LIVE FEEDS — {network.upper()}", classes="section-title"),
-        Static(f"[#3a6090]{endpoint.redacted()}  ({endpoint.source})[/]", classes="dim"),
+        Static(hint(f"{endpoint.redacted()}  ({endpoint.source})"), classes="dim"),
         Rule(),
     ]
     if error:
-        widgets.append(Static(f"[#ff4d6d]{error}[/]"))
-        widgets.append(Static("[#3a6090]press [bold]r[/] to retry, [bold]n[/] to switch network[/]", classes="dim"))
+        widgets.append(Static(f"[{RED}]{error}[/]"))
+        widgets.append(Static(
+            hint("press [bold]r[/] to retry, [bold]n[/] to switch network"), classes="dim"
+        ))
         return widgets
     if not readings:
-        widgets.append(Static("[#f0a500]No feeds could be read on this network.[/]"))
+        widgets.append(Static(f"[{AMBER}]No feeds could be read on this network.[/]"))
         return widgets
 
     width = max(len(r.pair) for r in readings)
     for r in readings:
-        colour = {"FRESH": "#00ff9f", "STALE": "#f0a500", "INVALID": "#ff4d6d"}[r.status]
+        colour = STATUS_COLOUR[r.status]
         widgets.append(
             Static(
-                f"  [bold #4a9eff]{r.pair:<{width}}[/]  "
-                f"[#c8d8e8]{_fmt_price(r.price):>16}[/]  "
+                f"  [bold {BLUE}]{r.pair:<{width}}[/]  "
+                f"[{TEXT}]{_fmt_price(r.price):>16}[/]  "
                 f"[bold {colour}]{r.status:<7}[/]  "
-                f"[#7a9cc4]{_fmt_age(r.age_secs)} ago[/]"
+                f"[{MUTED}]{_fmt_age(r.age_secs)} ago[/]"
             )
         )
         if r.note:
-            widgets.append(Static(f"      [#f0a500]{r.note}[/]", classes="dim"))
+            widgets.append(Static(f"      [{AMBER}]{r.note}[/]", classes="dim"))
     widgets.append(Rule())
     stale = sum(1 for r in readings if r.stale)
     widgets.append(
         Static(
-            f"  [#7a9cc4]{len(readings)} feeds · "
+            f"  [{MUTED}]{len(readings)} feeds · "
             f"{len(readings) - stale} fresh · "
             f"{stale} past heartbeat[/]"
         )
     )
     widgets.append(
-        Static("  [#3a6090]press [bold]r[/] to refresh · [bold]n[/] to switch network[/]", classes="dim")
+        Static(
+            hint("press [bold]r[/] to refresh · [bold]n[/] to switch network"), classes="dim"
+        )
     )
     return widgets
 
@@ -374,7 +261,7 @@ class AlchemLinkApp(App):
             with Vertical(id="sidebar"):
                 yield Static("ALCHEM-LINK", id="sidebar-title")
                 yield ListView(
-                    *[ListItem(Static(label), id=f"nav-{key}") for key, label in NAV_ITEMS],
+                    *[ListItem(Static(label), id=f"nav-{nav}") for nav, label in NAV_ITEMS],
                     id="nav",
                 )
             with ScrollableContainer(id="main"):

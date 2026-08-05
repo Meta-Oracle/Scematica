@@ -1,5 +1,9 @@
 {
   "compilerOptions": {
+    // ES2020 for BigInt literals: `lib/alchem/abi.ts` decodes int256 aggregator answers,
+    // which do not fit a double. Typecheck-only — `noEmit` is on and Next compiles with
+    // SWC against its own browser targets, so this changes no shipped output.
+    "target": "es2020",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,

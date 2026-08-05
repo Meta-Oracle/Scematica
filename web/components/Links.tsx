@@ -1,5 +1,5 @@
 import React from 'react'
-import { SCEMA_MINT as CA } from '@/lib/ScemaGateContext'
+import { BUY_URL, PUMPFUN_URL } from '@/lib/scemaLinks'
 
 const LINKS = [
   {
@@ -41,7 +41,7 @@ export function Links() {
 
         {/* Buy button — prominent CTA */}
         <a
-          href={`https://pump.fun/coin/${CA}`}
+          href={BUY_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="group relative flex items-center gap-3 px-8 py-3 bg-scema-red border border-scema-red-hi
@@ -59,7 +59,20 @@ export function Links() {
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
           </svg>
           BUY $SCEMA
-          <span className="text-white/60 text-xs font-normal normal-case">pump.fun ↗</span>
+          <span className="text-white/60 text-xs font-normal normal-case">jupiter ↗</span>
+        </a>
+
+        {/* pump.fun kept as a secondary route: it reaches the same bonding-curve
+            liquidity, but geo-blocks some regions and trips common DNS filters, so it
+            cannot be the only way to buy. */}
+        <a
+          href={PUMPFUN_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-scema-dim hover:text-scema-red-hi text-xs tracking-widest
+                     transition-colors -mt-3"
+        >
+          or buy on pump.fun ↗
         </a>
 
         {/* Divider */}

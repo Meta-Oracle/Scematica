@@ -1,10 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { SCEMA_MINT as CA } from '@/lib/ScemaGateContext'
-
-const PUMPFUN = `https://pump.fun/coin/${CA}`
-const DEXSCREENER = `https://dexscreener.com/solana/${CA}`
+import { BUY_URL, DEXSCREENER_URL, PUMPFUN_URL, SCEMA_MINT as CA } from '@/lib/scemaLinks'
 
 export function CABanner() {
   const [copied, setCopied] = useState(false)
@@ -23,7 +20,7 @@ export function CABanner() {
         <div className="flex gap-8 whitespace-nowrap text-scema-red text-xs"
           style={{ animation: 'marquee 24s linear infinite' }}>
           {Array.from({length: 10}).map((_, i) => (
-            <span key={i}>$SCEMA · {CA} · BUY ON PUMP.FUN · 250K REQUIRED · </span>
+            <span key={i}>$SCEMA · {CA} · BUY ON JUPITER · 250K REQUIRED · </span>
           ))}
         </div>
       </div>
@@ -56,9 +53,9 @@ export function CABanner() {
           {copied ? '✓ COPIED' : '⎘ COPY'}
         </button>
 
-        {/* Buy on pump.fun */}
+        {/* Buy — Jupiter, not pump.fun: see lib/scemaLinks.ts */}
         <a
-          href={PUMPFUN}
+          href={BUY_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs px-3 py-1 border border-scema-red bg-scema-red/20 text-scema-red-hi
@@ -68,9 +65,21 @@ export function CABanner() {
           ⚡ BUY
         </a>
 
+        {/* Bonding-curve UI, for anyone who wants it. */}
+        <a
+          href={PUMPFUN_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs px-2 py-1 border border-transparent text-scema-muted
+                     hover:border-scema-red-dim hover:text-scema-red-hi transition-all duration-150
+                     uppercase tracking-widest"
+        >
+          ↗ PUMP
+        </a>
+
         {/* Chart */}
         <a
-          href={DEXSCREENER}
+          href={DEXSCREENER_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs px-2 py-1 border border-transparent text-scema-muted

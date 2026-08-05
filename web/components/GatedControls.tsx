@@ -2,7 +2,8 @@
 
 import { useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
-import { useScemaGate, SCEMA_REQUIRED, SCEMA_MINT } from '@/lib/ScemaGateContext'
+import { useScemaGate, SCEMA_REQUIRED } from '@/lib/ScemaGateContext'
+import { BUY_URL } from '@/lib/scemaLinks'
 
 export function GatedControls({ children }: { children: React.ReactNode }) {
   const { connected } = useWallet()
@@ -64,7 +65,7 @@ export function GatedControls({ children }: { children: React.ReactNode }) {
             more $SCEMA to unlock controls
           </p>
           <a
-            href={`https://jup.ag/swap/SOL-${SCEMA_MINT}`}
+            href={BUY_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs px-3 py-1 border border-scema-red/40 text-scema-red-hi

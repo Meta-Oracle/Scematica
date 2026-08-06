@@ -8,6 +8,7 @@ use scematica_core::{
     token::{apply_slippage, get_ata, resolve_mint, ui_to_raw},
     types::known_tokens,
 };
+use scematica_nn::equations::{EquationMonitor, Verdict};
 use scematica_nn::{DQNAgent, TradeAction, TradeState as NNState};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
@@ -169,6 +170,17 @@ pub struct Sniper {
     nn_agent: Option<Arc<std::sync::Mutex<DQNAgent>>>,
     /// AtomicBool: true while a buy + sell-monitor pair owns the processing slot.
     processing_lock: Arc<std::sync::atomic::AtomicBool>,
+    /// Consecutive buys the DQ* net has vetoed. Reset the moment it advises anything
+    /// else. Retained as a coarse backstop for the window before the dispersion monitor
+    /// has enough samples to speak; `equations` below is the principled measure.
+    nn_veto_streak: Arc<AtomicU64>,
+    /// Running evaluation of the Scematica equations (see `EQUATIONS.md`).
+    ///
+    /// Supplies the intelligence ratio `I = Var_p[Q*] / E_p[Q*]²` — the quantity that
+    /// distinguishes a net reading its input from one emitting a constant. The veto
+    /// streak counts *how often* the net says no; this measures *whether the answer
+    /// depends on the question*, which is the property the veto actually rests on.
+    equations: Arc<Mutex<EquationMonitor>>,
     quote_mint: Pubkey,
     quote_decimals: u8,
     quote_amount_raw: u64,
@@ -332,6 +344,15 @@ fn save_mint_cooldown(map: &Arc<DashMap<Pubkey, u64>>) {
 }
 
 impl Sniper {
+    /// Running evaluation of the Scematica equations (see `EQUATIONS.md`).
+    ///
+    /// Exposed so the stats flush task can publish the intelligence ratio, the
+    /// consistency residual and the capture coefficient next to the agent snapshot,
+    /// making a collapsed policy visible on the dashboard rather than only in the log.
+    pub fn equations(&self) -> Arc<Mutex<EquationMonitor>> {
+        Arc::clone(&self.equations)
+    }
+
     pub fn new(
         config: SniperConfig,
         wallet: Arc<Keypair>,
@@ -433,6 +454,10 @@ impl Sniper {
             ai: AiCoordinator::from_env_optional().map(Arc::new),
             nn_agent,
             processing_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            nn_veto_streak: Arc::new(AtomicU64::new(0)),
+            equations: Arc::new(Mutex::new(EquationMonitor::default())),
+            // (accessor: `Sniper::equations()` — the stats flush task in main.rs reads
+            // this to publish the equation terms alongside the agent snapshot.)
             quote_mint,
             quote_decimals,
             quote_amount_raw,
@@ -2262,6 +2287,21 @@ impl Sniper {
                             //
                             // Require: the bearish Q is genuinely positive AND exceeds the best
                             // buy Q by ≥15% (relative), or the best buy Q is itself non-positive.
+            // Second guard: a net that vetoes *everything* has stopped discriminating.
+            //
+            // The margin test above asks "is this bearish signal decisive?" but never
+            // "is it about this pool at all?". A Double-DQN can collapse onto a single
+            // action and emit it for every input — observed 2026-08-05, where the net
+            // returned SELL_PARTIAL with sell_q ≈ 2× buy_q for 25 consecutive pools,
+            // clearing the 15% margin every time and blocking 100% of buys. The Q-gap
+            // was wide, so the margin guard read it as high conviction; it was a
+            // constant function. Conviction and information are not the same thing.
+            //
+            // Past this streak the veto degrades to size-down, which is what the margin
+            // guard already does for a weak lean. The net keeps training and keeps its
+            // sizing influence — it just cannot hold the gate shut on its own while
+            // saying the same thing about every pool it sees.
+            const NN_VETO_STUCK_STREAK: u64 = 12;
                             const NN_VETO_REL_MARGIN: f64 = 0.15;
                             let buy_q = q_vals
                                 .get(TradeAction::BuyStandard.index())
@@ -2274,8 +2314,64 @@ impl Sniper {
                                         .unwrap_or(f64::NEG_INFINITY),
                                 );
                             let sell_q = q_vals.get(action.index()).copied().unwrap_or(0.0);
-                            let strong_veto = sell_q > 0.0
+                            let decisive = sell_q > 0.0
                                 && (buy_q <= 0.0 || sell_q >= buy_q * (1.0 + NN_VETO_REL_MARGIN));
+
+                            // ── Equation III: does the answer depend on the question? ──
+                            //
+                            // Feed this evaluation's full Q-vector to the dispersion
+                            // monitor and read the intelligence ratio back. This is the
+                            // measured branch of the constraint in EQUATIONS.md; the
+                            // margin test above is the predicted branch, and a collapsed
+                            // policy satisfies the latter trivially while failing the
+                            // former completely.
+                            let (verdict, intelligence, equation_samples) = {
+                                let mut eq = self.equations.lock();
+                                eq.observe_q_values(&q_vals);
+                                // ε and episode count come from the agent; expected
+                                // return is approximated by the mean Q* of the window,
+                                // which is the population term E_Σ in equation II.
+                                let expected_return = eq.mean_q_star();
+                                (
+                                    eq.verdict(expected_return, epsilon, train_steps),
+                                    eq.intelligence_ratio(),
+                                    eq.samples(),
+                                )
+                            };
+
+                            // Coarse backstop: until the window has enough samples the
+                            // ratio is dominated by noise, so the consecutive-veto count
+                            // still guards that interval. Past it, dispersion decides.
+                            let streak = if decisive {
+                                self.nn_veto_streak.fetch_add(1, Ordering::Relaxed) + 1
+                            } else {
+                                self.nn_veto_streak.store(0, Ordering::Relaxed);
+                                0
+                            };
+                            let stuck = match verdict {
+                                Verdict::Collapsed => true,
+                                Verdict::Indeterminate => streak > NN_VETO_STUCK_STREAK,
+                                // A net that is reading its input keeps its veto, even
+                                // when its estimates are noisy — instability argues for
+                                // more training, not for less authority.
+                                Verdict::Consistent | Verdict::Unstable => false,
+                            };
+                            if stuck {
+                                warn!(
+                                    mint = %pool.base_mint,
+                                    verdict = verdict.label(),
+                                    intelligence_ratio = %format!("{:.2e}", intelligence),
+                                    samples = equation_samples,
+                                    streak,
+                                    sell_q,
+                                    buy_q,
+                                    train_steps,
+                                    "DQ*: net is not discriminating between pools \
+                                     (Var[Q*]/E[Q*]² below threshold) — sizing down \
+                                     instead of skipping"
+                                );
+                            }
+                            let strong_veto = decisive && !stuck;
 
                             if !strong_veto {
                                 effective_quote_amount_raw =
@@ -2837,6 +2933,9 @@ impl Sniper {
                         sig = ?result.signature,
                         "Buy confirmed"
                     );
+                    // Equation I: Y is the capture coefficient, and it multiplies the
+                    // whole edge. A confirmed fill is the numerator.
+                    self.equations.lock().record_buy(true);
                     self.metrics.record_trade_confirmed(0);
                     // Stamp the dedup guard so any subsequent pool events for this
                     // mint are skipped for mint_cooldown_secs. Write unix timestamp
@@ -2957,6 +3056,10 @@ impl Sniper {
             }
         }
 
+        // Every retry is exhausted at this point, so this is a genuine capture failure
+        // rather than a single slow attempt. Equation I: this is what caps Y, and Y
+        // multiplies the entire edge — no improvement in selection compensates for it.
+        self.equations.lock().record_buy(false);
         self.metrics.record_trade_failed();
         // Emit failed trade event
         TradeEvent {

@@ -2,6 +2,7 @@ pub mod action;
 pub mod adversarial_sim;
 pub mod agent;
 pub mod distributional;
+pub mod equations;
 pub mod network;
 pub mod replay;
 pub mod state;

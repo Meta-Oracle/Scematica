@@ -152,7 +152,20 @@ grief_loss_window_secs = 300
 grief_loss_limit_sol = 0.03         # Halt if 0.03 SOL lost in 5 min window (= ~3 max-loss trades in a streak — prevents runaway loss spirals)
 
 # ── Multi-RPC Failover ──────────────────────────────────────────────────────────
-extra_rpc_endpoints = []            # Add backup RPC URLs here
+# Was empty, which made the primary endpoint a single point of failure. On 2026-08-05
+# a 60-second window logged 12 "RPC unavailable" filter skips — including 3 Freezable
+# and 4 MintRenounce, both of which **fail open**. A skipped Freezable check is how you
+# buy a token you cannot sell. The same RPC stalls timed out `executor.execute()` at 8s
+# on all three buy attempts, which is the buy failure in the trade log.
+#
+# multi_rpc.rs ranks these by latency and rotates, so a slow primary degrades instead of
+# failing. Public endpoints below are rate-limited — replace with keyed providers
+# (Helius/Triton/QuickNode) before running size.
+extra_rpc_endpoints = [
+    "https://api.mainnet-beta.solana.com",
+    "https://solana-rpc.publicnode.com",
+    "https://rpc.ankr.com/solana",
+]
 
 # v1.4.0: Tiered partial TP ladder (currently disabled for 500% full-exit strategy)
 # When enabled, these levels lock in profits incrementally:

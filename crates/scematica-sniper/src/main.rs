@@ -1286,13 +1286,40 @@ async fn main() -> Result<()> {
         // look like the agent wasn't running at all).
         {
             let agent = Arc::clone(&nn_agent);
+            let equations = sniper.equations();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
                     if let Ok(ag) = agent.lock() {
                         let stats: AgentStats = ag.stats();
-                        if let Ok(s) = serde_json::to_string(&stats) {
+                        // Publish the equation terms beside the agent snapshot. The
+                        // intelligence ratio is the quantity that makes a collapsed
+                        // policy visible on the dashboard rather than only in the log,
+                        // and the capture coefficient is the multiplier on the whole
+                        // edge — both belong where the operator already looks.
+                        let eq_stats = {
+                            let eq = equations.lock();
+                            eq.stats(eq.mean_q_star(), stats.epsilon, stats.train_steps)
+                        };
+                        let merged = serde_json::json!({
+                            "agent": stats,
+                            "equations": eq_stats,
+                        });
+                        // Flattened for backward compatibility: the dashboard reads the
+                        // agent fields at the top level, so keep them there and nest the
+                        // new terms under a key old readers will ignore.
+                        let payload = match (
+                            serde_json::to_value(&stats),
+                            serde_json::to_value(&eq_stats),
+                        ) {
+                            (Ok(serde_json::Value::Object(mut a)), Ok(e)) => {
+                                a.insert("equations".into(), e);
+                                serde_json::Value::Object(a)
+                            }
+                            _ => merged,
+                        };
+                        if let Ok(s) = serde_json::to_string(&payload) {
                             // Atomic write: tmp → rename so the dashboard never reads a
                             // half-written file mid-flush.
                             let path = artifact_path(NN_STATS_FILE);

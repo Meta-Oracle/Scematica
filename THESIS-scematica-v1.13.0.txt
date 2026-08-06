@@ -1,0 +1,238 @@
+SCEMATICA v1.13.0 -- A DISSERTATION ON SILENT SIGNAL DEATH IN AUTONOMOUS TRADING SYSTEMS
+A case study in why threshold tuning cannot repair a system whose inputs have stopped existing
+--------------------------------------------------------------------------------
+ABSTRACT
+--------------------------------------------------------------------------------
+This dissertation documents the diagnosis and repair of a production Solana sniper bot that had, over a four-week period, declined to trade. Across 5,390 logged pool decisions the system accepted 64 candidates -- an acceptance rate of 1.19% -- and produced almost no executed trades. The presenting symptom was interpreted, repeatedly and across multiple prior tuning cycles, as excessive filter strictness. Each intervention loosened thresholds. Each failed.
+The actual cause was categorically different. Four of the input signals on which the entry gates cast vetoes were structurally constant at zero across every record the system had ever written. Two independent gates were rejecting candidates on the basis of measurements that no execution path could ever have supplied. A third gate, a Double-DQN reinforcement learning agent, had collapsed onto a single action and was emitting it for every input while presenting the appearance of high conviction. A fourth failure, at the infrastructure layer, was causing safety filters to fail open and buy transactions to time out.
+No threshold value could have corrected any of these. This paper argues that the class of defect involved -- a gate vetoing on absent evidence -- is systematically misdiagnosed as over-strictness, that the misdiagnosis drives systems toward the opposite failure mode of indiscriminate action, and that the diagnostic discipline required to catch it is cheap, mechanical, and almost never applied. Post-intervention acceptance moved from 1.19% to 16.0% in live operation against a projected 18.94%, with the newly admitted population carrying a median predictive score of 100.0.
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+1.1 Motivation
+Autonomous trading systems fail quietly. Unlike a web service, which announces its failure through error rates and user complaint, a trading bot that stops trading looks identical to a trading bot exercising caution. The absence of activity is indistinguishable from the presence of discipline. This ambiguity is the central hazard addressed in this work.
+The system under study, Scematica, is a Rust implementation of a Solana memecoin sniper with an integrated cross-DEX arbitrage engine, a terminal dashboard, a pure-Rust reinforcement learning agent, and an HTTP 402 payment protocol server. It targets newly created Raydium AMM V4 liquidity pools on Solana mainnet, evaluating each within a window of seconds and deciding whether to take a position.
+1.2 The presenting complaint
+The operator's report was consistent and repeated: the bot had become too strict and was refusing to buy. This is a reasonable inference. The system exposes numerous tunable thresholds -- minimum pool score, minimum and maximum pool size, minimum inflow rate, minimum entry score -- and a system that declines to act is, mechanically, a system whose thresholds exceed its observations.
+1.3 Thesis statement
+This dissertation advances three claims. First, that the observed behaviour was not caused by threshold values at all, but by gates evaluating signals that were structurally incapable of taking a non-zero value. Second, that the standard diagnostic response to a quiet system -- loosening thresholds -- is not merely ineffective against this defect class but actively harmful, since it removes real discrimination while leaving the broken gates intact, producing a system that is simultaneously blind and indiscriminate. Third, that the diagnostic procedure capable of detecting this class in minutes is a simple per-field zero-fraction analysis over the decision log, and that its absence from standard practice is a methodological gap rather than a technical difficulty.
+1.4 Contributions
+The specific contributions are: a documented instance of four concurrent signal-death defects in a production system; a demonstration that a reinforcement learning agent can present high apparent conviction while carrying zero information; identification of an IEEE-754 boundary defect that rejected 198 candidates by a margin of 6e-17; a set of implemented and tested repairs; and a generalisable diagnostic principle stated in Section 12.4.
+--------------------------------------------------------------------------------
+2. SYSTEM ARCHITECTURE
+--------------------------------------------------------------------------------
+2.1 Process topology
+Scematica runs as two cooperating processes. The sniper performs pool detection, evaluation and execution. The dashboard renders state. They share no socket or IPC channel; all cross-process communication occurs through atomic file writes in the working directory, using a write-to-temp-then-rename convention to guarantee readers never observe a partial document. The relevant artifacts for this study are the append-only decision log, the append-only trade log, and the periodic filter statistics snapshot.
+2.2 The evaluation pipeline
+A detected pool traverses, in order: a listener layer that normalises events from Raydium, pump.fun and whale-copy sources into a single stream; a filter pipeline of independent predicates, each with a 3-second per-RPC-call timeout and a fail-open posture so that one slow node cannot stall the queue; a Fibonacci pattern gate; a live momentum confirmation gate; a Bayesian pool scorer emitting a 0-100 predictive score; a reinforcement learning advisory layer; and finally the executor.
+The fail-open posture of the filter pipeline is deliberate and, under normal conditions, correct: a sniper that halts on RPC latency captures nothing. Section 9 examines the conditions under which this posture becomes hazardous.
+2.3 The reinforcement learning agent
+The Deep Q* agent is a Dueling Double-DQN implemented without external ML dependencies. Its architecture is a 24-dimensional state vector feeding two hidden layers of 128 and 64 units with ReLU activation, splitting into value and advantage streams recombined as Q(s,a) = V(s) + A(s,a) - mean(A). It selects among five actions: Hold, BuyStandard, BuyAggressive, SellPartial, SellAll.
+Training uses Double-DQN target selection, prioritised experience replay over a sum-tree with alpha 0.6 and beta annealed from 0.4 to 1.0, and 5-step returns. Exploration decays from epsilon 1.0 to 0.05 at rate 0.9995. The target network is hard-copied every 200 steps. Replay capacity is 10,000 transitions at batch size 64.
+Critically for this study, the agent is not merely observational. Once a readiness condition is satisfied -- at least 10,000 training steps and a non-degenerate Q-vector -- it gains authority to size positions and to veto entries outright.
+2.4 Risk subsystems
+Several independent circuit breakers operate in parallel, any one of which pauses buying: an all-time-high drawdown tracker, a five-minute sliding-window cumulative loss breaker, fractional Kelly position sizing derived from rolling win rate, a deployer reputation ledger blending exponential moving averages of historical rug behaviour, and a latency-ranked multi-RPC failover layer. Concurrency is capped at one open position.
+--------------------------------------------------------------------------------
+3. THE PRESENTING PROBLEM
+--------------------------------------------------------------------------------
+3.1 Observed state
+At the point of investigation the system exhibited: an acceptance rate of 1.19% (64 of 5,390 decisions) over the period following the most recent configuration change; a trade log whose most recent entry predated the investigation by approximately four weeks; and a live filter statistics snapshot showing 21 of 55 pools passing, with pool size rejections dominating.
+3.2 The prior tuning history
+The system's configuration carried extensive commentary from previous remediation attempts, itself a valuable artifact. Minimum pool score had been reduced from 92 to 65 on the reasoning that a 92 threshold admitted only pools still visibly appreciating at detection -- that is, parabolic tops. Minimum pool size had been reduced from 20 to 10 on the observation that pool size was the leading rejection cause. Momentum escalation thresholds had been raised to fire only on genuine velocity.
+Each of these changes was individually well-reasoned and evidence-based. None addressed the actual defect. This is the pattern the dissertation seeks to explain.
+3.3 The oscillation
+Project memory recorded a recurring cycle: the system would be tuned strict, produce no trades, be tuned loose, produce losses through indiscriminate entry, and be tuned strict again. This oscillation had been documented as a known failure mode and attributed to the interaction between entry strictness and momentum escalation. The present work concludes that the oscillation was a downstream symptom of the signal-death defects, and that both poles of the oscillation were attempts to compensate, via thresholds, for gates that were not functioning as gates at all.
+--------------------------------------------------------------------------------
+4. METHODOLOGY
+--------------------------------------------------------------------------------
+4.1 Data sources
+The primary artifact was the pool decision log: 6,182 newline-delimited JSON records spanning 2026-05-30 to 2026-08-05, each carrying the decision, the rejecting stage, a human-readable reason, and the values of eleven evaluation signals at decision time. Secondary artifacts were the trade log (1,459 records from 2026-05-17), the sniper's structured log (40MB), and the live filter statistics snapshot.
+4.2 Temporal partitioning
+Because configuration had changed during the logged period, all rate analysis was partitioned at the timestamp of the last configuration modification. This is essential: aggregate statistics over a period spanning a configuration change describe no system that ever existed. The post-change partition contained 5,390 records and is the basis for all claims about current behaviour.
+4.3 The zero-fraction analysis
+The decisive procedure was mechanically simple. For each numeric signal present in the decision record, compute the fraction of records in which that signal equals exactly zero. The reasoning: a signal that is zero in a large majority of observations is either measuring a genuinely rare phenomenon or is not being measured at all, and the two cases are distinguishable by domain knowledge. A signal that is zero in one hundred percent of observations is not a signal.
+This analysis required approximately thirty seconds of computation and identified the root cause class immediately. Its absence from the prior remediation cycles is the methodological finding of this work.
+4.4 Counterfactual replay
+Proposed interventions were validated by replaying the historical decision log through reimplementations of the modified logic, producing a projected acceptance rate and a characterisation of the newly admitted population. This permits an intervention to be assessed for both magnitude and quality of effect before any capital is exposed. Section 11 compares projection against realised outcome.
+--------------------------------------------------------------------------------
+5. FINDING I: THE DEAD SIGNALS
+--------------------------------------------------------------------------------
+5.1 Results of the zero-fraction analysis
+Across all 6,182 decision records:
+velocity_sol_per_sec was exactly zero in 6,182 of 6,182 records (100.0%).
+pumpfun_score was exactly zero in 6,182 of 6,182 records (100.0%).
+pool_age_secs was exactly zero in 6,180 of 6,182 records (100.0%).
+inflow_rate_sol_per_sec was exactly zero in 5,635 of 6,182 records; it carried a non-zero value in only 9.2% of observations.
+buy_pressure_ratio and pool_score were zero in approximately 20% of records, corresponding to records where pool size was itself unavailable.
+5.2 Interpretation
+Three signals were dead without qualification. A fourth was measurable less than one time in ten. These are not rare phenomena being correctly observed; velocity and pool age are properties every liquidity pool possesses at all times. Their uniform absence indicates a defect in measurement, not in the underlying market.
+5.3 Causal chain for pool age
+Raydium liquidity pools frequently carry an open_time field of zero, signifying immediate availability rather than a scheduled opening. The sniper computed pool age as the difference between detection time and open_time, guarded by a condition requiring open_time to be positive. When open_time was zero -- the common case for pump.fun migrations -- the guard failed and age defaulted to zero. Age being zero propagated to velocity, which was computed as size divided by age and thus undefined.
+5.4 The compounding consequence
+Because the Bayesian pool scorer, the Fibonacci gate and the momentum gate all consumed some subset of these signals, a single upstream measurement failure manifested as three apparently independent gating problems. This is characteristic of the defect class: signal death does not present as one failure but as a diffuse pattern of unrelated-looking symptoms, which is precisely why it resists diagnosis by threshold adjustment.
+--------------------------------------------------------------------------------
+6. FINDING II: THE MOMENTUM GATE
+--------------------------------------------------------------------------------
+6.1 Rejection share
+In the post-configuration-change partition the momentum gate produced 1,963 rejections, 43.7% of all rejections and the single largest cause. Of these, 1,643 carried the reason string inflow_rate=0.000, live_momentum=false.
+6.2 The configuration flag that did nothing
+The system exposed a boolean, require_moonshot_confirmation, documented in configuration commentary as disabling the gate. It was set false. The gate remained fully operational.
+Inspection of the control flow explains why. The flag governed only the pass condition: when true, a pool was confirmed if the quote vault had grown and the implied rate exceeded a floor; when false, growth alone sufficed. The rejection branch that followed was guarded by a condition that evaluated true regardless of the flag's state. Disabling confirmation therefore relaxed the criterion for passing while leaving the penalty for failing entirely intact. The operator believed a gate was disabled that was, in fact, the system's primary cause of rejection.
+6.3 Why the measurement cannot support a veto
+The gate operates by reading the pool's quote vault balance, comparing it against a snapshot taken earlier, and dividing the difference by elapsed time. The elapsed interval is clamped to a minimum of 0.20 seconds. Growth is computed with saturating subtraction, so any vault that did not increase yields exactly zero.
+The epistemological problem is direct. Within a sub-second window, the absence of an observed buy does not distinguish a pool nobody is buying from a pool whose next buy has not yet landed. The measurement has insufficient temporal resolution to support the inference it was being used to justify. The observed 9.2% measurability rate is the empirical confirmation: the gate was not detecting dead pools, it was detecting the ninety percent of sampling windows that happened to contain no transaction.
+6.4 The severity indicator
+The decisive evidence that this gate was harmful rather than merely conservative is the quality of what it rejected. Pools killed by the momentum gate carried a median predictive pool score of 99.94 on a 0-100 scale. The gate was systematically eliminating the highest-scoring candidates the system identified, because high-scoring pools are frequently large and established, and a large vault requires proportionally more absolute inflow to register growth against a percentage-based threshold.
+--------------------------------------------------------------------------------
+7. FINDING III: THE FIBONACCI GATE
+--------------------------------------------------------------------------------
+7.1 Construction
+The Fibonacci gate computes a composite score on [0,1] as a weighted sum of four components: pool size against Fibonacci-derived bands (weight 0.35), age against a freshness ladder (0.30), velocity against golden-ratio-derived rates (0.25), and buy pressure against golden-ratio thresholds (0.10). Candidates scoring below a configured entry threshold, set to 0.50, are rejected.
+7.2 Degeneracy
+Three of the four components were constant in production. Age was always zero, placing every pool in the highest freshness bucket at 1.0. Velocity was always zero, placing every pool in the lowest bucket at 0.2. Buy pressure, for reasons examined in 7.5, was below the lowest golden-ratio threshold for approximately 96% of pools, yielding 0.1. Only the size component varied.
+A four-factor model had silently degenerated into a one-factor model. Worse, it was a one-factor model with a constant offset that placed its two reachable outputs on either side of the decision boundary.
+7.3 The arithmetic
+For a pool in the wide size band (3 to 55 SOL), the score evaluates to 0.4 x 0.35 + 1.0 x 0.30 + 0.2 x 0.25 + 0.1 x 0.10. For a pool outside all bands, the first term becomes 0.1 x 0.35. The two reachable values are therefore approximately 0.500 and 0.395.
+The observed rejection histogram matched this prediction exactly: 321 rejections logged at score 0.39 and 198 at score 0.50, together 519 of 543 total gate rejections. A further tail of 15 records occupied intermediate values where buy pressure happened to clear a higher bucket.
+7.4 The floating-point boundary
+The 198 rejections logged as "Fibonacci score 0.50 below threshold 0.50" are not a logging artifact. The comparison used is greater-than-or-equal, which is the correct operator. The defect is that the weighted sum of decimal fractions does not evaluate to 0.5 in IEEE-754 double precision. It evaluates to 0.49999999999999994.
+The predicate 0.49999999999999994 >= 0.5 is false. One hundred and ninety-eight candidates were rejected by a margin of approximately 6e-17, and the rejection was reported to the operator in a message that appeared self-contradictory and was therefore dismissed as a display rounding issue.
+7.5 The buy pressure unit defect
+Buy pressure ratio was computed as quote vault lamports divided by base vault raw token units. These quantities are dimensionally incompatible: the numerator is denominated in 1e-9 SOL, the denominator in the token's smallest unit, whose relationship to a whole token depends on that token's decimals field. The resulting ratio is not a pressure measurement but an artifact of token supply and decimal configuration.
+The empirical distribution confirms this: median 0.000152, ninetieth percentile 0.0196, ninety-ninth percentile 12.94, maximum 1488.17. A ratio spanning seven orders of magnitude across a homogeneous population is measuring the population's heterogeneity in decimals, not its demand.
+This defect is significant beyond its direct effect. Prior remediation had responded to it by recalibrating a downstream threshold from 0.02 to 0.0001 -- adjusting a constant to accommodate a broken scale rather than repairing the scale. This is the same category of error as the threshold tuning that motivated this study, applied one layer deeper.
+--------------------------------------------------------------------------------
+8. FINDING IV: THE COLLAPSED Q-FUNCTION
+--------------------------------------------------------------------------------
+8.1 Emergence
+Findings II and III were repaired first. Their repair immediately exposed a subsequent bottleneck: the reinforcement learning agent began vetoing every candidate that reached it. This sequencing is instructive -- the RL defect had been latent and unobservable while upstream gates prevented candidates from reaching the agent at all.
+8.2 Observation
+Across 25 consecutive evaluations the agent returned action SELL_PARTIAL with a Q-value of approximately 24 to 32, against a best-buy Q-value of approximately 12 to 17. The ratio was consistently near 2:1. Every candidate was vetoed.
+8.3 The inadequacy of the existing guard
+The system already contained a guard against premature RL authority. It required the bearish Q-value to exceed the best buy Q-value by a relative margin of 15% before permitting a full veto, downgrading weaker signals to reduced position sizing. The guard was well-motivated and correctly implemented.
+It was also entirely ineffective against this failure, because a collapsed policy satisfies it trivially. A network that has converged onto a single action emits a large and stable Q-gap for that action across all inputs. The margin test measures the magnitude of the network's preference. It does not measure whether that preference varies with the input.
+8.4 The conceptual distinction
+This is the theoretically significant finding of the work. The guard conflated conviction with information. A function returning a constant is maximally confident and carries zero mutual information with its input. Any gate that admits a model's authority on the basis of output magnitude, without testing output variance across inputs, is vulnerable to exactly this failure.
+The general form: for a policy to be entitled to veto authority, it is necessary but not sufficient that its recommendation be strong. It must additionally be demonstrable that the recommendation is a function of the candidate rather than a property of the model.
+8.5 Contributing conditions
+The agent reported average loss of 39.09 after 20,500 training steps, indicating a network far from convergence. Replay buffer occupancy was 1,549 against a capacity of 10,000. Critically, the agent had accumulated its training history during precisely the period in which the upstream gates prevented trades from occurring. It had therefore learned a policy from an experience distribution containing almost no completed round-trip trades -- an environment in which declining to act is very nearly optimal, because acting was almost never permitted to produce an outcome.
+The collapse is thus explicable as correct learning from a corrupted environment. The agent was not malfunctioning; it had accurately learned that buying leads nowhere, in a world where the gates ensured that buying led nowhere.
+--------------------------------------------------------------------------------
+9. FINDING V: INFRASTRUCTURE AND THE FAIL-OPEN HAZARD
+--------------------------------------------------------------------------------
+9.1 Absent redundancy
+The multi-RPC failover subsystem, which ranks endpoints by latency and rotates among them, was configured with an empty endpoint list. The primary RPC provider was therefore a single point of failure for a system whose every evaluation depends on remote state reads.
+9.2 Observed degradation
+Within a single 60-second window the structured log recorded twelve filter skips attributed to RPC unavailability: three from the Freezable filter, four from the Mint Renounce filter, three from the Pool Size filter, and two others.
+9.3 The hazard
+Section 2.2 noted that the filter pipeline fails open by design, and that this posture is correct for latency-sensitive operation. Under RPC degradation it becomes actively dangerous, because the filters that fail open include the two that determine whether an acquired position can subsequently be sold. The Freezable filter detects a live freeze authority; the Mint Renounce filter detects retained mint authority. A position taken in a token with either property may be unsaleable.
+This produces a specific and severe interaction: infrastructure degradation silently converts a safety-checked buy into an unchecked one, at exactly the moment when execution reliability is lowest. The system does not distinguish, in its buy decision, between a filter that passed and a filter that was skipped.
+9.4 Execution failure
+The same degradation manifested at the executor. Buy attempts timed out at the 8-second executor ceiling across all three retry attempts, producing a recorded buy failure. For a strategy whose winning trades exit within 90 seconds, a 24-second failed acquisition sequence is not merely a lost trade but a substantial fraction of the entire opportunity window.
+--------------------------------------------------------------------------------
+10. INTERVENTIONS
+--------------------------------------------------------------------------------
+10.1 Principle
+All interventions were governed by a single rule: repair the measurement, preserve the threshold. Thresholds carrying documented empirical validation were left at their existing values, on the reasoning that a threshold validated against broken inputs must be re-validated against repaired inputs before it can be judged, and that changing measurement and policy simultaneously produces an uninterpretable result.
+10.2 Velocity as an optional quantity
+The velocity parameter was changed from a floating-point value to an optional one. Where velocity cannot be computed, the absent case is scored neutrally at 0.5 rather than falling into the weak bucket at 0.2. The justification is that missing data is not bad data, and that a component which assigns a uniform penalty to every candidate is not discriminating between candidates but merely translating the score distribution relative to the threshold.
+The neutral value was chosen over weight renormalisation deliberately. Renormalising across the surviving components would have divided by a smaller total weight, inflating every score, and -- because the age component was itself constant at maximum -- would have pushed the entire population above the entry threshold. That would have converted the gate into a no-op, exchanging one failure mode for its opposite. The neutral imputation preserves the gate's discrimination on the components that genuinely vary.
+10.3 Boundary tolerance
+The entry comparison now carries a tolerance of 1e-9, sufficient to absorb accumulated error across four weighted decimal terms and far too small to promote a candidate that genuinely missed the threshold.
+10.4 Momentum gate demotion
+The momentum gate now vetoes only when an operator has explicitly requested confirmation, via either the confirmation flag or elite pool mode. Otherwise the measured rate flows to the pool scorer as a positive contribution, where a genuine inflow earns a bonus and an unmeasured one earns nothing. The rejection statistics counter was additionally corrected to record a rejection only when one actually occurs, having previously inflated the dashboard's rejection attribution with pools that were never turned away.
+10.5 Non-discrimination guard
+A second RL guard tracks consecutive vetoes, resetting on any non-veto verdict. Beyond a streak of twelve the agent is treated as non-discriminating and its veto degrades to reduced sizing. The agent retains training and sizing influence; it loses only the authority to hold the gate shut unilaterally while emitting an identical verdict for every input.
+The streak threshold of twelve was chosen to sit well above plausible legitimate runs -- adverse market regimes do produce genuine consecutive bearish verdicts -- while remaining far below the observed collapse signature of continuous unanimity.
+10.6 RPC redundancy
+Three failover endpoints were configured, restoring the intended operation of the latency-ranked rotation layer.
+10.7 Verification
+All modifications pass the crate's 40-test suite, including three new regression tests. One asserts that unmeasured velocity scores strictly between measured-slow and measured-fast. A second reproduces the exact production conditions and asserts that a sweet-spot pool clears the threshold while an oversized pool does not -- guarding specifically against the no-op degeneration described in 10.2. The release binary builds cleanly under full link-time optimisation.
+--------------------------------------------------------------------------------
+11. RESULTS
+--------------------------------------------------------------------------------
+11.1 Counterfactual projection
+Replaying the 5,390-record post-change partition through the modified logic projected acceptance rising from 1.19% to 18.94%, composed of 758 candidates newly surviving the demoted momentum gate and 199 newly clearing the corrected Fibonacci gate.
+11.2 Realised outcome
+Live operation following deployment produced 34 acceptances across 212 decisions, an acceptance rate of 16.0% against the projected 18.94%. The structured log confirms the intended mechanism directly: Fibonacci gate passes now appear at score 0.575, precisely the value the neutral-velocity imputation predicts for a sweet-spot pool; momentum failures are logged and then followed by continued evaluation rather than termination; and the pool scorer reports passes at effective minimum 65.
+11.3 Quality of the admitted population
+The concern with any intervention that increases acceptance is that it admits marginal candidates. Counterfactual analysis indicates otherwise: newly admitted pools carry a median predictive score of 100.0 and a median size between 29 and 43 SOL, within the intended band. Additionally, 807 candidates formerly rejected by the momentum gate are now rejected by the pool scorer -- that is, the same pools are still being declined, but on the basis of a signal that exists.
+11.4 Historical performance context
+The system's full trade history comprises 198 winning and 441 losing closed positions, with gross profit of 2.675 SOL against gross loss of 0.412 SOL, netting 2.264 SOL at a profit factor of 6.49. The winning distribution is strongly right-tailed, with individual winners returning between 99% and 397% and exiting within 90 seconds. This asymmetry is the strategic core: the strategy tolerates a 31% win rate because the winners are multiples and the losers are bounded by stop discipline.
+This context governs intervention design. Any change that compresses the right tail -- most obviously, curtailing the momentum escalation ladder, a recurring temptation during loss periods -- would eliminate the cohort responsible for the profit factor while leaving the loss distribution untouched.
+11.5 Negative and unresolved results
+Honesty requires reporting what did not improve. In the observation window following deployment, two buy attempts produced one success and one failure, and the successful position closed at a loss of 0.5% after 5.3 seconds via the dead-pool timeout. No profitable trade has yet been observed under the repaired configuration. The sample is far too small to support any inference about post-repair profitability, and no such inference is made here.
+--------------------------------------------------------------------------------
+12. DISCUSSION
+--------------------------------------------------------------------------------
+12.1 Why the misdiagnosis was rational
+It would be convenient to attribute the prior failed remediations to carelessness. They were not careless; they were well-reasoned and evidence-based. The misdiagnosis was rational because the evidence available to a threshold-focused investigation genuinely supports the threshold hypothesis. A system rejecting most candidates, whose rejection reasons cite numeric comparisons against configured limits, presents as a system whose limits are too tight. Every observation is consistent with that hypothesis.
+The hypothesis is only falsified by an observation nobody thought to make: that the quantities being compared were constant. This is a diagnostic blind spot rather than an analytical error, and it is the reason the zero-fraction analysis is proposed here as routine practice rather than as a clever technique.
+12.2 The asymmetry of gate failure
+A gate that fails closed on absent evidence and a gate that fails open on absent evidence produce opposite and equally undesirable outcomes, but they differ sharply in observability. The fail-closed case, as in the momentum gate, produces visible inaction and eventually attracts investigation. The fail-open case, as in the Freezable filter under RPC degradation, produces invisible risk accumulation and attracts no attention until a loss materialises.
+The system studied here exhibited both simultaneously, in different subsystems, driven by the same underlying condition of unreliable measurement. This suggests that fail-open and fail-closed postures should not be chosen per-filter on latency grounds alone, but with explicit reference to the consequence asymmetry of the specific check. A liquidity check and a saleability check have entirely different cost structures under uncertainty.
+12.3 Learned policies and environmental corruption
+Finding IV raises a consideration specific to systems that combine learned components with hand-written gates. The RL agent's collapse was not a training defect in isolation; it was a correct response to an environment that the hand-written gates had corrupted. The agent learned that buying does not lead to reward, in a world where the gates ensured buying almost never occurred.
+This creates a feedback structure that resists incremental repair. Fixing the gates does not fix the agent, because the agent's parameters encode the broken environment. Any system in which a learned component's training distribution is shaped by repairable defects in surrounding deterministic code must treat a repair of that code as potentially invalidating the learned component -- a consideration absent from conventional model-retraining triggers, which key on data drift rather than on changes to the system generating the data.
+12.4 The generalised principle
+The findings support a compact diagnostic rule for any gated decision system that has become unexpectedly quiet:
+Before adjusting any threshold, verify that the quantity it compares against is capable of varying. Compute the per-field zero-fraction and distinct-value count over the decision log. Any field that is constant across a large sample is not a signal, and every gate consuming it is a constant function wearing the costume of a predicate.
+Three corollaries follow. Absence of evidence, sampled thinly enough, is not evidence of absence -- a measurement whose temporal resolution is insufficient to observe the phenomenon should not be permitted to veto on the phenomenon's absence. Missing data is not bad data -- imputing a penalty for unmeasurable quantities applies a uniform tax that shifts the score distribution without discriminating within it. And a model that answers every question identically is a constant, not a signal -- authority granted to a learned component must be conditioned on demonstrated output variance, not on output magnitude.
+--------------------------------------------------------------------------------
+13. THREATS TO VALIDITY
+--------------------------------------------------------------------------------
+13.1 Sample size
+The post-intervention live observation comprises 212 decisions and two buy attempts. This is adequate to confirm the mechanism -- the log demonstrates the gates behaving as designed -- and wholly inadequate to establish any profitability claim. The 16.0% realised acceptance against 18.94% projected is within plausible sampling variation but should not be treated as a validated estimate.
+13.2 Counterfactual replay assumptions
+The projection assumes that a candidate surviving a demoted gate proceeds to the same downstream evaluation it would have received historically. Downstream state is not fully reconstructible from the decision log; in particular, concurrency limits and circuit-breaker state at the moment of each historical decision are not captured. The projection therefore estimates gate throughput, not executed trade count.
+13.3 Non-stationarity
+The decision log spans ten weeks of a market whose characteristics are not stationary. Signal distributions computed over that period may not describe current conditions. The zero-fraction findings are robust to this concern, since a structurally dead signal is dead in all regimes, but the distributional analyses in Sections 7.5 and Appendix A are more sensitive.
+13.4 Unaddressed defects
+The buy pressure unit mismatch documented in 7.5 remains unrepaired by deliberate choice, to avoid confounding the measurement of the entry-gate interventions. Its continued presence means the Fibonacci gate's fourth component remains largely inert, and the gate should be understood as currently operating on two effective components rather than four.
+13.5 Single-system study
+This is a case study of one system. The generalised principle in 12.4 is offered as a hypothesis motivated by this instance, not as a validated empirical claim across systems.
+--------------------------------------------------------------------------------
+14. FUTURE WORK
+--------------------------------------------------------------------------------
+14.1 Immediate
+Provisioning a keyed RPC provider is the highest-value outstanding change. The currently configured failover endpoints are public and rate-limited; they prevent hard failure but do not address latency, and the executor timeout behaviour documented in 9.4 is fundamentally a latency problem.
+14.2 Reinforcement learning checkpoint reset
+Following the reasoning in 12.3, the agent's checkpoint should be reset and retrained against the repaired environment. The streak guard is a circuit breaker, not a repair; it prevents the collapsed policy from blocking operation without correcting the policy. Retraining should be accompanied by instrumentation of output variance across inputs, so that collapse is detected directly rather than inferred from veto streaks.
+14.3 Dimensional correction of buy pressure
+Buy pressure should be recomputed with proper decimal normalisation, after which the golden-ratio thresholds against which it is compared require re-derivation from the corrected distribution. The downstream threshold previously recalibrated to accommodate the broken scale must be reverted in the same change.
+14.4 Systematic signal health monitoring
+The zero-fraction analysis should be automated as a continuously computed health metric rather than a diagnostic applied after failure. A signal transitioning to constant output is a defect regardless of whether it currently manifests as a symptom, and it is trivially detectable in a system that already writes a structured decision log.
+14.5 Consequence-aware filter posture
+Section 12.2 suggests that fail-open versus fail-closed posture should be assigned per-filter according to the cost asymmetry of the specific check rather than uniformly on latency grounds. Saleability checks in particular warrant a fail-closed posture, or at minimum propagation of a skipped-check flag into the sizing decision, so that a position acquired under degraded verification is smaller than one acquired under full verification.
+14.6 Bounded live validation
+Controlled live testing under the repaired configuration, with predefined metrics: fill rate on attempted buys, rejection attribution across stages, and streak-guard activation frequency. Existing concurrency and daily-loss limits bound exposure during such testing.
+--------------------------------------------------------------------------------
+15. CONCLUSION
+--------------------------------------------------------------------------------
+A production trading system declined to act for four weeks. The symptom was read, across multiple independent remediation attempts, as excessive caution, and each attempt responded by reducing caution. Each failed, because the system was not being cautious. It was evaluating conditions it could not measure, and treating the resulting silence as a negative verdict.
+Four defects were identified and repaired: a measurement path that produced constant zeros for three signals; a gate whose disable flag did not disable it, vetoing on a measurement of insufficient temporal resolution; a scoring function degenerated from four factors to one, with a decision boundary positioned such that a floating-point representation error rejected 198 candidates by 6e-17; and a learned policy that had collapsed onto a single action while satisfying every guard designed to detect exactly that condition. A fifth, at the infrastructure layer, was causing safety filters to fail open under load.
+Acceptance moved from 1.19% to 16.0%, with the admitted population carrying a median predictive score of 100.0 and a substantial number of former rejections now declining on signals that exist. Whether this translates into improved profitability is not established by the evidence available and is not claimed here.
+The durable contribution is methodological. Systems built from gated predicates degrade in a characteristic way: not by producing wrong answers, but by producing correct answers to questions whose inputs have quietly ceased to vary. The failure is invisible to threshold analysis because every threshold comparison continues to execute correctly. It is trivially visible to a two-line computation over the decision log that almost nobody runs. Before tuning any gate, confirm that what it measures still moves.
+--------------------------------------------------------------------------------
+APPENDIX A: SELECTED DISTRIBUTIONS
+--------------------------------------------------------------------------------
+A.1 Rejection attribution, post-configuration partition (n=4,488 rejections)
+momentum_gate 1,963 (43.7%); filters 1,898 (42.3%); fibonacci_gate 543 (12.1%); dq_advice 60 (1.3%); time_gate 17 (0.4%); pool_scorer 5 (0.1%); execution 2 (0.0%).
+A.2 Pool score distribution, non-zero records (n=4,519)
+Below 65 (rejected): 2,621 (58.0%). Between 65 and 90: 205 (4.5%). Between 90 and 99.5: 92 (2.0%). At or above 99.5 (saturated): 1,601 (35.4%).
+The distribution is strongly bimodal, which has a practical consequence: moving the minimum pool score threshold anywhere between 65 and 90 reclassifies approximately 6.5% of the population. It is a weak control surface, and treating it as the primary tuning lever -- as prior remediation did -- offers far less leverage than its prominence suggests.
+A.3 Live inflow rate, non-zero records only (n=494 of 5,390)
+Median 0.105 SOL/s; 75th percentile 1.019; 90th percentile 2.275; 99th percentile 18.38. Records meeting the 0.5 SOL/s configured minimum: 171, or 3.2% of all observations.
+A.4 Pool size distribution (n=4,519 with known size)
+Within the configured 10-150 SOL band: 61.1%. Below 10 SOL: 4.7%. Above 150 SOL: 34.2%. Percentiles: 5th 13.11; 25th 20.05; 50th 59.23; 75th 285.17; 95th 2,187.90.
+The upper bound excludes roughly a third of observed pools. This was left unchanged during the interventions, on the reasoning that the cap functions as a deliberate guard against entering large post-appreciation pools, and that modifying it concurrently with the measurement repairs would render both uninterpretable.
+A.5 Fibonacci gate rejection scores (n=543)
+Score 0.50: 198. Score 0.39: 321. Intermediate values: 24. Within 0.15 of the threshold: 534 of 543 (98.3%).
+--------------------------------------------------------------------------------
+APPENDIX B: OPERATIONAL PARAMETERS AT TIME OF STUDY
+--------------------------------------------------------------------------------
+Minimum pool score 65. Pool size band 10 to 150 SOL. Fibonacci minimum entry score 0.50. Momentum minimum inflow 0.5 SOL/s. Momentum minimum growth 1.0% or 0.01 SOL, whichever greater. Maximum concurrent positions 1. Daily loss limit 0.05 SOL. Grief breaker 0.03 SOL over a 300-second window. All-time-high drawdown halt 20%. Executor timeout 8 seconds, 3 attempts. Reinforcement learning veto relative margin 0.15; non-discrimination streak threshold 12 (introduced by this work).
+--------------------------------------------------------------------------------
+Scematica v1.13.0 -- scematica-nn v1.14.0 -- scemadex-sdk v0.3.0
+github.com/Meta-Oracle/Scematica
+--------------------------------------------------------------------------------

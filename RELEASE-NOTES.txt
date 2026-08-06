@@ -1,0 +1,204 @@
+================================================================================
+SCEMATICA v1.13.0  +  ALCHEM-LINK v0.3.0 -- RELEASE SUMMARY
+Updated 2026-08-06
+================================================================================
+--------------------------------------------------------------------------------
+PART ONE: ALCHEM-LINK v0.3.0
+--------------------------------------------------------------------------------
+Alchem-Link is an Alchemy x Chainlink developer toolkit. It reads live Chainlink
+price feeds and Alchemy-served chain state from a command line, a terminal
+dashboard, or Python -- with no dependencies beyond the standard library.
+  pip install alchem-link
+  alchem-link price ETH/USD
+WHAT IT ACTUALLY SOLVES
+A feed that answers is not a feed that published. latestRoundData() returns
+happily whether the last update was ten seconds or ten hours ago, and acting on
+a stale answer is how oracle integrations lose money. Every reading carries its
+age against the expected heartbeat, and `alchem-link price` exits non-zero on a
+stale read, so it drops straight into a health check or a CI gate.
+The staleness verdict is heartbeat-aware, not a flat timeout. A live read shows
+SOL/USD flagged STALE at 3h while USDC/USD passes at 13h -- because stablecoin
+feeds publish on a far longer cadence, and flagging them would be noise.
+THE REGISTRY IS VERIFIED, NOT COPIED
+Every address ships only after being called for description() and decimals(),
+and is filed under the pair the contract itself reports. That check earns its
+keep: the address widely passed around as Base "BTC/USD" reports WBTC / USD
+on-chain -- a wrapper that can depeg from spot BTC. It is registered here under
+its real name, with a note. Re-run the check any time with `alchem-link verify`.
+NO DEPENDENCIES FOR THE LIVE HALF
+Reading a Chainlink aggregator needs four function selectors and the ability to
+decode five static words plus one dynamic string. That is a few dozen lines of
+standard library, versus pulling in web3 and its transitive tree for the same
+result. Python's stdlib ships SHA3-256, which is NOT Keccak-256 (the padding
+differs), so rather than add a hashing dependency the four selectors are stored
+as the constants they are -- each verified against a live mainnet aggregator.
+COVERAGE
+Six networks: Ethereum, Sepolia, Base, Arbitrum, Optimism, Polygon. Commands for
+price, feeds, block, gas, networks, doctor and verify -- each taking --network,
+--rpc-url and --json. Doctor turns the three silent failure modes into visible
+lines: you are on the keyless fallback and getting rate limited, you are pointed
+at the wrong chain, or a feed responds but has not published in hours.
+NEW IN THIS CYCLE: A DEDICATED TERMINAL PALETTE
+The TUI was retimed to black surfaces with a mid-blue signal. The palette now
+lives in one module, alchem_link/theme.py, which generates both the Textual
+stylesheet and the inline Rich markup helpers -- because CSS classes cannot
+reach inside a markup span, and those colour literals had been scattered across
+a dozen f-strings where a retheme would silently miss several.
+Design intent: the background is black, not navy, so the blue reads as signal
+rather than as another shade of the surface. The accent sits in the mid range
+(#4d9fff); darker muddies into the background on the cheap panels this gets
+demoed on, lighter drifts into cyan and stops looking deliberate.
+A test suite pins it. The palette must stay black-and-blue rather than drift to
+navy, the accent must stay blue rather than drift to cyan, and tui.py must
+contain no hardcoded hex at all -- so a new panel cannot quietly opt out of the
+theme. 84 tests, all offline, all passing.
+NEW IN THIS CYCLE: A WEB BUILD
+The same reader now runs as a web console at /alchem-link inside the Scematica
+dashboard, mirroring the terminal palette so the two are recognisably one tool.
+It ports the ABI decoder, network table and feed registry to TypeScript and
+serves three routes -- feeds, doctor and verify -- that read aggregators
+SERVER-SIDE, so ALCHEMY_API_KEY never reaches the browser and CORS-less public
+RPC hosts still work.
+Three rules hold it honest. There is no simulation branch: the routes read a
+chain or report the error, because a fabricated price would defeat the entire
+point of a staleness verdict. Unreadable feeds render as failure rows rather
+than being dropped, since a missing row would read as "this network has fewer
+feeds" -- a different and wrong claim. And the Python package stays
+authoritative; /api/alchem/verify is what catches the two registries drifting,
+because it asks the chain instead of either table.
+Verified against mainnet, the web build matches the CLI exactly on the same read
+-- same prices, same statuses, same heartbeats.
+STATUS
+Version 0.3.0 is built and tested. PyPI currently carries 0.1.0; the 0.3.0
+upload is pending. Note that PyPI releases are immutable, so two things are
+worth settling first: clear the old artifacts out of dist/ so the upload does
+not collide with the published 0.1.0, and decide whether Textual belongs in hard
+dependencies or as an optional extra -- the README's headline claim is "no
+dependencies beyond the standard library", and the TUI is its only consumer.
+--------------------------------------------------------------------------------
+PART TWO: SCEMATICA v1.13.0
+--------------------------------------------------------------------------------
+Scematica is a Rust Solana sniper and cross-DEX arbitrage bot with a ratatui TUI
+dashboard, a pure-Rust Deep Q* reinforcement-learning agent, and a Rust-native
+x402 payment protocol server. It targets Raydium AMM V4 new-pool events on
+mainnet and is gated behind a 250k $SCEMA balance.
+The workspace ships as publishable crates. The umbrella `scematica-suite`
+installs a `scematica` launcher that dispatches to the component binaries --
+dashboard, sniper, backtest, protocol, ddqn and scemadex.
+THE HEADLINE FIX: THE BOT WAS NOT TOO STRICT, IT WAS BLIND
+For roughly four weeks the sniper accepted 64 of 5,390 pool decisions -- 1.19%
+-- and wrote almost no trades. The obvious reading was over-tight thresholds.
+The decision log said otherwise. Four of the signals the entry gates veto on
+were structurally dead across all 6,182 records ever logged:
+  velocity_sol_per_sec ....... zero in 6182/6182  (100%)
+  pumpfun_score .............. zero in 6182/6182  (100%)
+  pool_age_secs .............. zero in 6180/6182  (100%)
+  inflow_rate_sol_per_sec .... measurable in only 9.2% of observations
+No threshold value can fix a gate that vetoes on a number nobody ever supplies.
+Loosening them further would only have made the bot buy at random.
+ROOT CAUSE ONE: THE MOMENTUM GATE IGNORED ITS OWN CONFIG FLAG
+The momentum gate produced 43.7% of all rejections, 1,643 of them at exactly
+inflow_rate=0.000. Setting require_moonshot_confirmation = false did not disable
+it -- that only relaxed the pass condition from "grew and fast enough" to
+"grew", while the reject path fired regardless. Its victims had a MEDIAN pool
+score of 99.94. It was killing the best pools on the board.
+The measurement cannot support a veto. It compares one vault reading against
+another taken a fraction of a second earlier, so it cannot distinguish "nobody
+is buying this" from "no buy happened to land inside my sampling window". The
+gate is now advisory by default: the measured rate still feeds the pool scorer
+as a bonus, but a flat reading no longer kills the entry. It vetoes only when an
+operator explicitly asks for confirmation.
+ROOT CAUSE TWO: A FABRICATED VELOCITY AND A FLOATING-POINT BOUNDARY
+The Fibonacci gate computed pool age from its own detection timestamp in WHOLE
+SECONDS -- inside the same wall-clock second as detection -- so age was always
+0 and velocity was always 0. Every pool then took the "weak" velocity bucket.
+With age and buy pressure also near-constant at detection, the score was decided
+by pool size alone and could only land on two values:
+  size 3-55 SOL ... 0.35 + 0.30 + 0.05 + 0.01 = 0.4999...  -> 198 rejections
+  size outside .... 0.035 + 0.30 + 0.05 + 0.01 = 0.395     -> 321 rejections
+Against a 0.50 entry threshold, that is 519 of 543 gate rejections in a month.
+The 198 at the boundary failed by 6e-17: in IEEE-754, 0.49999999999999994 >= 0.5
+is false. They were logged, accurately and uselessly, as "score 0.50 below
+threshold 0.50".
+Both are fixed. An unmeasurable velocity now scores NEUTRAL rather than weak --
+missing data is not bad data -- and the threshold comparison carries a 1e-9
+tolerance. Regression tests pin both, including one asserting that a sweet-spot
+pool clears the gate while an oversized one still does not, so the gate cannot
+silently degrade into a no-op in the other direction.
+RESULT
+Acceptance moved from 1.19% to 16% in live operation, closely tracking the 19%
+projected by replaying the historical decision log through the new logic. New
+entrants carry a median pool score of 100.0 at a median size of 29-43 SOL. 807
+pools formerly killed by the momentum gate are now rejected by the pool scorer
+instead -- that is, on a signal that actually exists.
+ROOT CAUSE THREE: THE NEURAL NET COLLAPSED ONTO ONE ANSWER
+With the gates unblocked, a new bottleneck surfaced: the Deep Q* agent vetoed
+every single candidate. It returned SELL_PARTIAL with sell_q roughly twice buy_q
+for 25 consecutive pools. The existing guard asked whether a bearish signal was
+DECISIVE (a 15% margin) but never whether it was ABOUT THIS POOL. A wide Q-gap
+read as high conviction; it was a constant function. Conviction and information
+are not the same thing.
+A second guard now tracks consecutive vetoes. Past a streak of 12 the net is
+treated as non-discriminating and its veto degrades to size-down. It keeps
+training and keeps its sizing influence -- it simply cannot hold the gate shut
+on its own while saying the same thing about every pool it sees.
+ROOT CAUSE FOUR: NO RPC FAILOVER, AND SAFETY FILTERS FAILING OPEN
+The backup endpoint list was empty, making the primary a single point of
+failure. One 60-second window logged 12 "RPC unavailable" filter skips --
+including 3 Freezable and 4 MintRenounce, both of which FAIL OPEN. A skipped
+Freezable check is how you buy a token you cannot sell. The same stalls timed
+out the executor at 8s across all three buy attempts, which accounts for the
+observed buy failures. Three failover endpoints are now configured; multi_rpc
+ranks them by latency and rotates, so a slow primary degrades instead of failing.
+THE EDGE ITSELF IS INTACT
+Across the full trade history: 198 wins against 441 losses, +2.675 SOL gross
+profit against -0.412 SOL gross loss, netting +2.264 SOL at a profit factor of
+6.49. The winners run +99% to +397% and exit inside 90 seconds. That cohort is
+what the entry fixes were written to protect -- the recurring temptation is to
+gut the escalation ladder, which would kill the large-winner tail that drives
+the profit factor.
+--------------------------------------------------------------------------------
+PART THREE: COMING UPDATES
+--------------------------------------------------------------------------------
+NEAR TERM -- SCEMATICA
+A keyed RPC provider is the single highest-value change outstanding. The
+currently configured failover endpoints are public and rate-limited; they stop
+the hard failures but will not be fast, and the 8s executor timeouts are the
+entire buy-failure story.
+The Deep Q* checkpoint likely needs a reset. The streak guard is a circuit
+breaker, not a repair -- it stops the net blocking every buy without addressing
+why it collapsed. Average loss sat at 39.09 after 20,500 training steps, which
+is not a converged network, and everything it learned was learned during the
+period when the broken gates meant it almost never observed a completed trade.
+Retraining against the now-unblocked trade flow is the honest fix.
+buy_pressure_ratio is still unit-mismatched. It divides quote lamports by raw
+token base units without normalising decimals, so its scale depends on the
+token's supply and decimals. Earlier sessions recalibrated thresholds around the
+bad scale instead of fixing it, which is why that component is pinned to its
+lowest bucket for roughly 96% of pools. Fixing the units is a separate change,
+deliberately held back so it does not confound the entry-gate measurements.
+Bounded live stress testing follows, once the RPC path is sound. The metrics
+worth reading are fill rate on attempted buys, the rejection mix between
+no_momentum and pool_scorer, and whether the DQ* streak warning fires.
+max_concurrent_positions = 1 and a 0.05 SOL daily loss halt already bound the
+downside.
+NEAR TERM -- ALCHEM-LINK
+Publishing 0.3.0 to PyPI, after clearing stale artifacts from dist/ and settling
+whether Textual is a hard dependency or an optional extra. The Dexscreener chart
+link in the web dashboard also needs a browser check -- it returned a Cloudflare
+challenge to automated requests, which is bot protection rather than evidence of
+breakage, but it went unconfirmed either way.
+STANDING ENGINEERING PRINCIPLE
+The most useful lesson from this cycle generalises past both projects. When a
+system goes quiet, check whether its inputs are alive before touching its
+thresholds. Three separate gates here were rejecting on signals that were
+structurally always zero, and every previous attempt to fix the symptom by
+loosening numbers left the actual cause untouched -- while pushing the system
+toward the opposite failure, buying indiscriminately. Absence of evidence,
+sampled thinly enough, is not evidence of absence. Missing data is not bad data.
+A model that answers every question identically is a constant, not a signal.
+================================================================================
+Scematica v1.13.0 (scematica-nn v1.14.0, scemadex-sdk v0.3.0)
+Alchem-Link v0.3.0
+github.com/Meta-Oracle/Scematica
+================================================================================

@@ -1,0 +1,162 @@
+CONFIDENCE IS NOT INFORMATION
+A deterministic formalism for autonomous trading agents, and the constraint that catches a model lying about itself
+--------------------------------------------------------------------------------
+ABSTRACT
+--------------------------------------------------------------------------------
+This article presents three deterministic relations governing an autonomous trading system, derives a consistency constraint that follows from them, and demonstrates that the constraint detects a real production failure which every deployed safeguard had missed.
+The central result is structural rather than numerical. Two of the three relations independently determine the same quantity, which converts the third from a definition into a testable constraint. The residual between the constraint's predicted value and its measured value has a sign, and that sign localises the fault. Applied retrospectively to a reinforcement learning agent that had collapsed onto a single action while presenting every appearance of high conviction, the residual is strictly negative -- and the collapse is invisible to any test of the model's output magnitude, which is what the deployed guard measured.
+The underlying claim generalises past trading. A model returning the same answer for every input is maximally confident and carries zero information about that input. Systems that grant authority to a model on the basis of how strongly it asserts something, without testing whether the assertion varies with what it is looking at, are structurally unable to detect this failure. The formalism below makes the distinction measurable in one line.
+--------------------------------------------------------------------------------
+1. INTRODUCTION
+--------------------------------------------------------------------------------
+1.1 Why formalise a working system
+The system under study is Scematica, a Rust implementation of a Solana liquidity sniper with an integrated Deep Q-network agent. It carries a measured historical profit factor of 6.49 across 639 closed positions. It did not require a mathematical formalism to achieve that.
+The motivation is diagnostic rather than predictive. Over a ten-week period the system exhibited a sequence of failures whose common structure was invisible to the instrumentation available: gates evaluating signals that had ceased to vary, thresholds compared against constants, and finally a learned policy that had converged onto a single output while satisfying every guard designed to detect precisely that condition. Each failure was found by manual inspection of decision logs, after weeks of degraded operation.
+A formalism earns its place if it turns that manual inspection into a computed quantity. This one does, for the third failure and for the class it belongs to.
+1.2 What these equations are, and are not
+The relations below are definitional. They assign precise meaning to quantities the system already records. They are deterministic in the strict sense -- given identical inputs they return identical outputs, with no stochastic term on any right-hand side -- and they are not derived from any theory of market behaviour.
+They do not forecast returns. No constant reported here constitutes a prediction; all are historical summaries. What the formalism provides is an internal consistency check: a way for the system to detect that one of its own components has stopped reporting honestly. That is a narrower claim than a predictive model, and a more defensible one.
+1.3 Notation
+Symbols used throughout. Where a quantity is normalised, the normalisation is given.
+  E     expected system edge over the evaluated population
+  AI    agent capability -- learning capacity, not immediate performance
+  eps   exploration rate, the epsilon-greedy parameter
+  N     completed training episodes; nu = N/N0 with N0 = 10,000
+  b     gross benefit, the sum of winning trade PnL
+  L     gross loss, the absolute sum of losing trade PnL
+  Y     yield coefficient, the realised fraction of theoretical edge, in [0,1]
+  Q*    optimal action value, max over actions of Q(s,a); q = Q*/Q0
+  dQ    policy advantage, Q* minus the expected value of random action
+  I     intelligence ratio, the normalised dispersion of Q* across inputs
+  rho   consistency residual, measured I minus predicted I
+  alpha acceptance rate, candidates admitted over candidates seen
+  W     win rate; R payoff ratio; f* Kelly fraction
+  Sigma the population of evaluated pools; E_S denotes expectation over it
+One notational note. The residual is written rho here rather than the script R used in the companion markdown documents, because in plain text it would otherwise collide with R, the payoff ratio. They are distinct quantities.
+--------------------------------------------------------------------------------
+2. THE THREE RELATIONS
+--------------------------------------------------------------------------------
+2.1 Equation I -- the edge
+  E = E_S[ Y * (b - L) * (AI * eps) ]
+The expected edge of the system over its evaluated population, expanded over n pools as the mean of the bracketed quantity.
+The term (b - L) is net realised PnL and is measured directly: 2.675468 minus 0.411967, giving 2.263501 SOL.
+The coefficient Y is the capture term -- the fraction of theoretically available edge the executor actually realises. It is bounded above by fill rate. An RPC layer that times out on one buy attempt in two caps Y at 0.5 regardless of how good candidate selection becomes.
+This yields the first operational consequence, and it is an algebraic one rather than a matter of engineering preference. Selection quality and execution quality multiply. They do not add. No achievable improvement inside the bracket compensates for a halved coefficient in front of it, which forces the ordering of any remediation programme: repair execution before tuning selection.
+2.2 Equation II -- agent capability
+  AI = E_S * eps * nu
+Capability is the product of what the agent expects to earn, how much it still explores, and how much experience it has accumulated.
+The appearance of eps as a positive factor is deliberate and is the point most likely to be misread. Capability here denotes learning capacity, not immediate performance. An agent at eps = 0 has ceased acquiring information about its environment whatever its current returns; it is exploiting a model it can no longer correct. Immediate performance carries the opposite dependence on eps, and Section 5 shows that the two meet at an interior optimum.
+2.3 Equation III -- the value identity
+  AI^2 = I * q * eps
+with the intelligence ratio defined independently as the normalised dispersion of the optimal action value across the population:
+  I = Var_p[Q*(p)] / (E_p[Q*(p)])^2
+This definition carries the weight of the entire framework, and it is worth stating its consequence explicitly before deriving anything from it.
+A model that returns the same value for every input has zero variance in Q* and therefore an intelligence ratio of exactly zero, irrespective of how large that value is and irrespective of how decisively it exceeds the alternatives. Magnitude is not information. A constant function is maximally confident.
+--------------------------------------------------------------------------------
+3. THE OVER-DETERMINATION
+--------------------------------------------------------------------------------
+3.1 The relations are not independent
+Equations II and III both determine AI. Substituting the former into the latter:
+  (E_S * eps * nu)^2 = I * q * eps
+  E_S^2 * eps^2 * nu^2 = I * q * eps
+Dividing through by eps and solving for the intelligence ratio:
+  I = (E_S^2 * eps * nu^2) / q
+The intelligence ratio is therefore predicted by the other measurables. This would be an unremarkable algebraic consequence -- and, in a system where I had no independent meaning, a vacuous one.
+3.2 Why the redundancy is the useful part
+But I is defined independently in Section 2.3, as a measured variance over the population. The system now has two routes to the same quantity: one predicted from expected return, exploration and experience, the other measured directly from the dispersion of the model's own outputs.
+Two independent determinations of one quantity is a constraint. Define the residual:
+  rho = Var_p[Q*]/E_p[Q*]^2  -  (E_S^2 * eps * nu^2)/q
+       [ measured ]              [ predicted ]
+  rho = 0  implies the components are mutually consistent
+  rho != 0 implies one of them is misreporting
+This is what converts a set of definitions into an instrument. The formalism does not predict what the system will earn. It detects when the system has stopped describing itself accurately.
+3.3 Sign conventions
+The residual is signed, and the sign is diagnostic rather than incidental.
+A negative residual means measured dispersion falls below prediction: the model's outputs vary less than its accumulated experience and expected return imply they should. This is the signature of a collapsed policy -- confident, and uninformative.
+A positive residual means measured dispersion exceeds prediction: value estimates are unstable relative to accumulated experience. This is the signature of an undertrained or diverging network, and it argues for more training rather than less authority.
+--------------------------------------------------------------------------------
+4. THE CONSTRAINT APPLIED TO A REAL FAILURE
+--------------------------------------------------------------------------------
+4.1 The observed event
+On 2026-08-05 the Deep Q-network agent in this system returned the action SELL_PARTIAL for twenty-five consecutive candidate pools. The value assigned to that action was approximately 26.5 in every case, against a best-buy alternative of approximately 13.5. The ratio was consistently near 2:1. Every candidate was vetoed. The system, whose entry gates had just been repaired after a four-week outage, resumed producing no trades.
+4.2 Evaluating the residual
+The measured branch collapses first. With Q* effectively constant across the population, its variance approaches zero, and therefore so does the measured intelligence ratio.
+The predicted branch does not. With eps = 0.06794, nu = 2.05 from 20,500 training episodes against a reference of 10,000, and a strictly positive expected return, the predicted intelligence ratio evaluates to (E_S^2 * 0.06794 * 4.2025) / 26.5, which is strictly greater than zero.
+The residual is therefore strictly negative. Per Section 3.3, the diagnosis is a collapsed policy: the agent held high value while carrying no information.
+4.3 Why every deployed safeguard missed it
+This is the part worth dwelling on, because the failure was not one of implementation quality.
+The system already contained a guard against premature agent authority. It required the bearish action value to exceed the best buy alternative by a relative margin of fifteen percent before permitting a full veto, downgrading weaker signals to reduced position sizing instead. The guard was well-motivated, correctly implemented, and thoroughly commented.
+It was also structurally incapable of detecting this failure. A collapsed policy satisfies a margin test trivially. Convergence onto a single action produces a large and stable gap between that action and the alternatives, and it produces that gap for every input. The observed ratio of 2:1 vastly exceeded the 1.15 threshold, and did so on every one of the twenty-five evaluations. The guard read the collapse as maximum conviction, which -- on its own terms -- it was.
+In the language of the formalism: the margin test measures the predicted branch. It asks how large Q* is relative to its alternatives, which is exactly the quantity that appears in the denominator of the predicted intelligence ratio. It never touches the measured branch. Only Var_p[Q*] distinguishes a model whose confidence tracks its input from one whose confidence is a property of the model itself.
+The constraint fails precisely where the guard cannot see. That is not a coincidence; it is the reason the constraint is worth computing.
+4.4 The corrupted environment
+One further observation, which the formalism does not capture but which the diagnosis requires.
+The agent's collapse was not a training defect in isolation. It had accumulated its entire experience during the period in which upstream gates -- separately, and for unrelated reasons -- had prevented nearly all trades from occurring. It had therefore learned a policy from a distribution containing almost no completed round-trips, in an environment where declining to act was very nearly optimal because acting was almost never permitted to produce an outcome.
+The agent was not malfunctioning. It had correctly learned that buying leads nowhere, in a world where the surrounding code guaranteed that buying led nowhere. This has a consequence for remediation that is easy to miss: repairing the gates does not repair the agent, because the agent's parameters encode the broken environment. Any system combining learned components with hand-written gates must treat a repair of those gates as potentially invalidating the learned component -- a retraining trigger that keys on changes to the environment-generating code rather than on data drift.
+--------------------------------------------------------------------------------
+5. THE EXPLORATION OPTIMUM
+--------------------------------------------------------------------------------
+5.1 Derivation
+Under epsilon-greedy action selection, immediate expected value is the greedy value weighted by (1 - eps) plus the random value weighted by eps. Writing dQ for the policy advantage -- the amount by which Q* exceeds the expected value of random action -- this reduces to Q* minus eps times dQ.
+Combining with Equation I, and noting that eps appears twice, once explicitly and once carried inside AI:
+  E(eps) = Y * (b-L) * nu * E_S * eps^2 * (Q* - eps*dQ)
+Differentiating the eps-dependent factor with respect to eps:
+  d/d(eps) [ eps^2 * Q* - eps^3 * dQ ] = 2*eps*Q* - 3*eps^2*dQ
+Setting this to zero and discarding the trivial root at the origin:
+  eps* = (2/3) * (Q* / dQ)
+5.2 Interpretation
+Exploration is set by a ratio, not by a schedule. The optimal rate tracks how far the current policy outperforms random action: a policy with a large advantage should exploit it, and a policy with a small advantage should be gathering information instead.
+The interior optimum exists only while dQ exceeds two thirds of Q*. Below that the objective is monotone over the feasible range and the correct exploration rate is the configured floor.
+5.3 The limiting case, and an independent confirmation
+Consider a collapsed policy. Its advantage over random action approaches zero, because it is no longer selecting on the basis of state. As dQ approaches zero, eps* diverges.
+This is the formal statement that a non-discriminating agent should be exploring rather than acting. It agrees with the residual diagnosis of Section 4.2, and it reaches that agreement by an entirely independent route -- one through the variance of Q*, the other through the mean advantage over random action. Two derivations converging on the same operational conclusion is weak evidence that the conclusion is a property of the system rather than of the formalism.
+--------------------------------------------------------------------------------
+6. THE ACCEPTANCE OPTIMUM
+--------------------------------------------------------------------------------
+Total edge over a window of n candidates at acceptance rate alpha is the product of the number admitted, the expected PnL of those admitted, and the capture coefficient.
+Admitting candidates in descending score order makes the conditional expectation monotonically non-increasing in alpha: each widening of the gate admits a candidate no better than the last. The product of an increasing term and a non-increasing one has an interior maximum, located where the derivative vanishes:
+  d/d(alpha) [ alpha * E(PnL | alpha) ] = 0
+  which holds exactly when E(PnL | marginal candidate) = 0
+Admit exactly down to the pool whose expected PnL is zero. Above that threshold, edge is left unclaimed. Below it, fees are paid to lose money.
+The condition concerns the marginal candidate, not the average, and the distinction has a counterintuitive consequence worth stating plainly. A system whose admitted population shows strongly positive mean PnL is not performing well -- it is under-admitting. The mean is a measure of how far inside the optimum the gate is sitting.
+--------------------------------------------------------------------------------
+7. MEASURED CONSTANTS
+--------------------------------------------------------------------------------
+From 639 closed positions comprising 198 wins and 441 losses:
+  win rate W        = 198/639        = 0.30986
+  average win       = b/198          = 0.013512 SOL
+  average loss      = L/441          = 0.000934 SOL
+  payoff ratio R    = 14.4647
+  profit factor     = b/L            = 6.4944
+  expectancy        = W*w - (1-W)*l  = +0.003542 SOL
+The expectancy decomposition cross-checks exactly against the aggregate, which validates it: net PnL of 2.263501 divided by 639 closed positions gives 0.003542 SOL, to six decimal places.
+7.1 The Kelly bound
+  f* = W - (1-W)/R = 0.30986 - 0.69014/14.4647 = 0.26215
+Full Kelly is 26.2 percent of bankroll per position.
+The structural observation is more useful than the number. This strategy survives a 31 percent win rate only because the payoff ratio is 14.46. The hit rate is not what carries it; the right tail is. Any modification that compresses the distribution of winners destroys the edge even if it simultaneously raises the win rate -- which is the quantitative form of a warning that recurs in this system's operational history, where the standing temptation during loss periods is to curtail the momentum escalation ladder that produces the large winners in the first place.
+--------------------------------------------------------------------------------
+8. OPERATIONAL CONSEQUENCES
+--------------------------------------------------------------------------------
+Four consequences follow directly from the relations, stated in the order the algebra imposes.
+First, the capture coefficient multiplies everything. Execution failure caps total edge regardless of how good selection becomes, so infrastructure repair precedes selection tuning. The ordering is forced by the structure of Equation I, not chosen.
+Second, the intelligence ratio must be measured, not inferred. A negative residual is the signature of a confident and uninformative model, and it is invisible to any guard testing output magnitude alone. The remedy is to instrument the variance of Q* across inputs directly and alert on it -- a single accumulator, computed over the same population the agent is already scoring.
+Third, the exploration rate is a ratio rather than a schedule. It should track the policy's advantage over random action, and a policy with no advantage should not be trading at all.
+Fourth, acceptance is bounded by the marginal candidate rather than the mean. High average admitted PnL indicates under-admission, not good selection.
+--------------------------------------------------------------------------------
+9. LIMITATIONS
+--------------------------------------------------------------------------------
+These relations are definitional and do not forecast returns. The constants in Section 7 are historical summaries of 639 closed positions under configurations that have since changed; none is a prediction.
+The residual is a consistency check on the system's own reporting, not on the market. A residual of zero means the components agree with one another. It does not mean they are correct, and a formalism in which every component is wrong in a mutually consistent way would report zero throughout.
+One technical caveat constrains use directly. The expectation over the population is treated as a scalar, so the substitution performed in Section 3.1 requires expectation to commute with squaring. That holds exactly only for a degenerate distribution. The derived intelligence ratio should therefore be read as a first-order approximation over populations with wide score dispersion -- and in the system studied here that caveat is load-bearing rather than decorative, because its predictive score distribution is strongly bimodal, with 58 percent of candidates below the entry threshold and 35 percent saturated near the maximum.
+Finally, this is a single-system study. The generalisation offered in Section 10 is a hypothesis motivated by one instance, not a validated empirical claim.
+--------------------------------------------------------------------------------
+10. CONCLUSION
+--------------------------------------------------------------------------------
+Three definitional relations, taken together, over-determine one of their own terms. That redundancy is not a defect to be normalised away; it is the only part of the formalism that does any work. It yields a residual which is zero when the system's components agree about themselves and non-zero when one of them has stopped reporting honestly, and whose sign distinguishes a collapsed policy from a diverging one.
+Applied to a production reinforcement learning agent that had converged onto a single action, the residual is negative, and the diagnosis is available from one accumulator over quantities the system already computes. The guard actually deployed against this failure tested how strongly the model asserted its recommendation. It could not have detected the failure, because a collapsed model asserts maximally.
+The generalisation is the durable part. Any system that grants authority to a model on the basis of the strength of its output, without testing whether that output varies with its input, is structurally blind to collapse. Confidence and information are different quantities. The first is a property of the model. The second is a property of the relationship between the model and the world, it is measured by variance rather than by magnitude, and a model that answers every question identically has none of it -- however loudly it answers.
+--------------------------------------------------------------------------------
+Scematica v1.13.0 -- scematica-nn v1.14.0
+Full statements: EQUATIONS.md -- Derivations: EQUATIONS-ANALYSIS.md
+github.com/Meta-Oracle/Scematica
+--------------------------------------------------------------------------------

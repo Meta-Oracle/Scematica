@@ -15,13 +15,21 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any, List, Optional
 
 from . import __version__
 from .aggregator import describe_aggregator, round_history, split_round_id
 from .cadence import profile_feed
 from .ccip import ROUTERS, summarize_chainlink_capabilities, verify_lanes
-from .codegen import LANGUAGES, generate_consumer
+from .codegen import (
+    FRAMEWORKS,
+    LANGUAGES,
+    basket_pairs,
+    generate_basket,
+    generate_consumer,
+    generate_project,
+)
 from .divergence import common_pairs, compare_all, compare_pair
 from .enhanced import (
     NeedsAlchemyKey,
@@ -504,12 +512,70 @@ def _cmd_sequencer(args: argparse.Namespace) -> int:
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
+    if args.basket is not None:
+        pairs = [p.strip() for p in args.basket.split(",") if p.strip()] or basket_pairs(args.network)
+        result = generate_basket(pairs, network=args.network)
+        if args.json:
+            _print_json(result.as_dict())
+        else:
+            print(result.code)
+        return EXIT_OK
+
+    if args.project:
+        project = generate_project(args.pair, network=args.network, framework=args.framework)
+        if not args.out:
+            if args.json:
+                _print_json(project.as_dict())
+                return EXIT_OK
+            # Without --out there is nowhere to put a dozen files, so show the plan and
+            # the command that would write it rather than dumping them all to stdout.
+            print(f"{project.name} — {project.framework} project for "
+                  f"{', '.join(project.pairs)} on {project.network}\n")
+            for artifact in project.artifacts:
+                print(f"  {artifact.path:<44} {artifact.description}")
+            print(f"\n  guards: {', '.join(project.guards)}")
+            print(f"\nWrite it with:  alchem-link generate {args.pair} -n {args.network} "
+                  f"--project --out <dir>")
+            return EXIT_OK
+
+        try:
+            written = project.write(args.out, overwrite=args.force)
+        except FileExistsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if args.json:
+            _print_json({**project.as_dict(), "written": written})
+            return EXIT_OK
+        for path in written:
+            print(f"  wrote {path}")
+        print(f"\n  {len(written)} files. Next:\n"
+              f"    cd {args.out} && forge install foundry-rs/forge-std && forge test -vv")
+        return EXIT_OK
+
     result = generate_consumer(args.pair, network=args.network, language=args.lang)
     if args.json:
         _print_json(result.as_dict())
         return EXIT_OK
+    if args.out:
+        suffix = {"solidity": "sol", "typescript": "ts", "python": "py", "rust": "rs"}[args.lang]
+        target = Path(args.out)
+        if target.is_dir() or not target.suffix:
+            target = target / f"{_identifier_for(result.pair)}Consumer.{suffix}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and not args.force:
+            print(f"error: {target} exists — pass --force to replace it", file=sys.stderr)
+            return EXIT_USAGE
+        target.write_text(result.code, encoding="utf-8")
+        print(f"  wrote {target}")
+        return EXIT_OK
     print(result.code)
     return EXIT_OK
+
+
+def _identifier_for(pair: str) -> str:
+    from .codegen import _identifier
+
+    return _identifier(pair)
 
 
 def _cmd_ccip(args: argparse.Namespace) -> int:
@@ -655,6 +721,78 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_shell(args: argparse.Namespace) -> int:
+    from .shell import Shell
+
+    return Shell(network=args.network, mode=args.mode).run()
+
+
+def _cmd_chat(args: argparse.Namespace) -> int:
+    """One-shot chat: ask a question, print the answer, exit.
+
+    The same agent the shell uses, so this composes into scripts and pipes without
+    holding a session open.
+    """
+    from .agent import build_agent
+    from .llm import NoProviderConfigured
+
+    if not args.pair:
+        print("usage: alchem-link chat \"is the ETH/USD feed on base safe?\"", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        agent = build_agent(network=args.network)
+    except NoProviderConfigured as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    calls: List[Any] = []
+    turn = agent.ask(args.pair, on_tool=calls.append)
+
+    if args.json:
+        _print_json({
+            "question": args.pair,
+            "reply": turn.reply,
+            "model": turn.model,
+            "rounds": turn.rounds,
+            "tool_calls": [
+                {"name": c.name, "arguments": c.arguments, "ok": c.ok, "error": c.error}
+                for c in calls
+            ],
+            "error": turn.error,
+        })
+        return EXIT_OK if turn.ok else EXIT_UNUSABLE
+
+    for call in calls:
+        mark = "·" if call.ok else "×"
+        print(f"  {mark} {call.summary}" + ("" if call.ok else f"  {call.error[:70]}"),
+              file=sys.stderr)
+    if calls:
+        print("", file=sys.stderr)
+    print(turn.reply)
+    return EXIT_OK if turn.ok else EXIT_UNUSABLE
+
+
+def _cmd_providers(args: argparse.Namespace) -> int:
+    from .llm import PROVIDER_ENV, available_providers
+
+    entries = available_providers()
+    if args.json:
+        _print_json(entries)
+        return EXIT_OK if any(e["ready"] for e in entries) else EXIT_UNUSABLE
+
+    for entry in entries:
+        mark = "ok  " if entry["ready"] else "    "
+        cost = "free" if entry["free"] else "paid"
+        print(f"  [{mark}] {entry['label']:<16} {cost}  {entry['detail']}")
+        print(f"           {entry['model']}")
+    if not any(e["ready"] for e in entries):
+        print("\n  No provider configured — chat is unavailable. Everything else works.")
+        return EXIT_UNUSABLE
+    print(f"\n  Override with {PROVIDER_ENV}=<provider>.")
+    return EXIT_OK
+
+
 LIVE_COMMANDS = [
     ("price", "Read one feed, with a staleness verdict"),
     ("feeds", "List registered feeds (--live to read them)"),
@@ -675,6 +813,12 @@ LIVE_COMMANDS = [
     ("ccip", "CCIP routers, chain selectors and live lane status"),
 ]
 
+INTERACTIVE_COMMANDS = [
+    ("shell", "Interactive console — commands and chat in one prompt"),
+    ("chat", "Ask one question; the agent answers by reading chains"),
+    ("providers", "LLM providers and which are usable right now"),
+]
+
 REFERENCE_COMMANDS = [
     ("generate", "Emit a consumer contract with all the checks wired in"),
     ("alchemy", "What the current endpoint can actually do"),
@@ -685,6 +829,9 @@ REFERENCE_COMMANDS = [
 ]
 
 HANDLERS = {
+    "shell": _cmd_shell,
+    "chat": _cmd_chat,
+    "providers": _cmd_providers,
     "price": _cmd_price,
     "feeds": _cmd_feeds,
     "audit": _cmd_audit,
@@ -741,15 +888,22 @@ def build_parser() -> argparse.ArgumentParser:
             help=help_text or "Feed pair, e.g. ETH/USD",
         )
 
-    for name, help_text in LIVE_COMMANDS + REFERENCE_COMMANDS:
+    for name, help_text in LIVE_COMMANDS + INTERACTIVE_COMMANDS + REFERENCE_COMMANDS:
         sub = add(name, help_text)
 
         if name in ("price", "watch"):
             add_pair(sub)
+        elif name == "chat":
+            sub.add_argument("pair", nargs="?", metavar="QUESTION",
+                             help='Your question, e.g. "is ETH/USD on base safe?"')
         elif name in ("audit", "inspect", "history", "cadence", "divergence", "recipes"):
             add_pair(sub, required=False, help_text=(
                 "Recipe id" if name == "recipes" else "Feed pair (default: every feed)"
             ))
+
+        if name == "shell":
+            sub.add_argument("--mode", choices=["auto", "cmd", "chat"], default="auto",
+                             help="Start pinned to a mode (default: infer per line)")
 
         if name in ("audit", "inspect", "history"):
             sub.add_argument("--address", help="Audit an arbitrary aggregator address")
@@ -774,33 +928,57 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--limit", type=int, help="Stop after this many events")
             sub.add_argument("--duration", type=float, help="Stop after this many seconds")
         if name == "generate":
-            add_pair(sub)
-            sub.add_argument("--lang", choices=LANGUAGES, default="solidity")
+            add_pair(sub, required=False, help_text="Feed pair, e.g. ETH/USD")
+            sub.add_argument("--lang", choices=LANGUAGES, default="solidity",
+                             help="Single-file target language (default: solidity)")
+            sub.add_argument("--project", action="store_true",
+                             help="Emit a full project: consumer, mocks, tests, deploy script")
+            sub.add_argument("--framework", choices=FRAMEWORKS, default="foundry")
+            sub.add_argument("--basket", metavar="PAIRS",
+                             help="Comma-separated pairs for one multi-feed contract "
+                                  "(empty string = every feed on the network)")
+            sub.add_argument("--out", help="Write to this directory (or file, for --lang)")
+            sub.add_argument("--force", action="store_true", help="Overwrite existing files")
 
     return parser
+
+
+def command_names() -> List[str]:
+    """Every dispatchable command name. Used by the shell for completion and routing."""
+    return sorted(HANDLERS)
 
 
 def _print_overview() -> int:
     print("Live commands (talk to a chain):")
     for name, help_text in LIVE_COMMANDS:
         print(f"  {name:<12} {help_text}")
+    print("\nInteractive:")
+    for name, help_text in INTERACTIVE_COMMANDS:
+        print(f"  {name:<12} {help_text}")
     print("\nReference and codegen:")
     for name, help_text in REFERENCE_COMMANDS:
         print(f"  {name:<12} {help_text}")
     print(f"\n{feed_count()} feeds across {len(list_networks())} networks.")
     print(f"Set {ALCHEMY_KEY_ENV} to use Alchemy; otherwise a keyless public endpoint is used.")
-    print("\nRun `alchem-link <command> --help` for options.")
+    print("\nRun `alchem-link shell` for an interactive console, or "
+          "`alchem-link <command> --help` for options.")
     return EXIT_OK
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    _configure_output()
+def run_argv(argv: List[str]) -> int:
+    """Parse and dispatch one command line.
+
+    Split out of :func:`main` so the interactive shell dispatches through exactly the
+    same parser and handlers rather than growing its own copy of every command.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
-
     if not args.command:
         return _print_overview()
+    return _dispatch(args)
 
+
+def _dispatch(args: argparse.Namespace) -> int:
     handler = HANDLERS[args.command]
     try:
         return int(handler(args) or EXIT_OK)
@@ -820,6 +998,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_OK
     except KeyboardInterrupt:
         return 130
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    _configure_output()
+    return run_argv(list(argv) if argv is not None else sys.argv[1:])
 
 
 if __name__ == "__main__":

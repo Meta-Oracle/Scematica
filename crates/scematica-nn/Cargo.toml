@@ -11,6 +11,13 @@ readme = "README.md"
 repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
+# Exports the trained policy to ONNX. Deliberately not behind the `cli` feature: it
+# needs no TUI stack, and an export tool that only exists in one build configuration is
+# an export tool nobody runs.
+[[bin]]
+name = "scema-onnx"
+path = "src/bin/scema-onnx.rs"
+
 [[bin]]
 name = "scema-ddqn"
 path = "src/bin/scema-ddqn.rs"

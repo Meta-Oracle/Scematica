@@ -1320,6 +1320,24 @@ impl DQNAgent {
         Ok(agent)
     }
 
+    // ── Network access ───────────────────────────────────────────────────────
+
+    /// The network that selects actions.
+    ///
+    /// Exposed read-only for export (see [`crate::onnx`]) and inspection. The online net
+    /// is the right one to serialise: the target net is a lagged copy kept only to
+    /// stabilise the Double-DQN update, so a consumer running the target would be
+    /// executing a policy the agent itself stopped using up to `target_update_freq`
+    /// steps ago.
+    pub fn online_net(&self) -> &QNetwork {
+        &self.online_net
+    }
+
+    /// The lagged target network, for diagnostics.
+    pub fn target_net(&self) -> &QNetwork {
+        &self.target_net
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────────
 
     pub fn stats(&self) -> AgentStats {

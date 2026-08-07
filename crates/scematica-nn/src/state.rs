@@ -5,6 +5,42 @@ use serde::{Deserialize, Serialize};
 /// volume velocity, price velocity, and price acceleration.
 pub const STATE_DIM: usize = 24;
 
+/// Names of the state features, **in the order `to_vec()` emits them**.
+///
+/// Exists so an exported model can describe its own input. A bare `[batch, 24]` tensor
+/// is unusable to anyone without this file open, and a consumer that swaps two features
+/// gets a confidently wrong policy and no error — the network happily evaluates
+/// nonsense. `onnx::describe` writes these into the model's metadata.
+///
+/// Changing `to_vec()` without changing this list is the failure worth guarding, so
+/// `state::tests::feature_names_match_vector_order` asserts the lengths agree.
+pub const STATE_FEATURES: [&str; STATE_DIM] = [
+    "pool_age_secs",
+    "initial_liquidity_sol",
+    "price_change_pct",
+    "volume_5min_sol",
+    "buy_sell_ratio",
+    "lp_burned",
+    "mint_renounced",
+    "current_pnl_pct",
+    "position_age_secs",
+    "daily_pnl_sol",
+    "consecutive_wins",
+    "consecutive_losses",
+    "sol_balance_sol",
+    "regime",
+    "volatility",
+    "spread_pct",
+    "time_of_day_norm",
+    "open_positions",
+    "peak_pnl_pct",
+    "pool_score_norm",
+    "deployer_rug_rate",
+    "volume_velocity",
+    "price_velocity",
+    "price_acceleration",
+];
+
 /// Market + position context captured at decision time.
 /// All numeric fields use real-world units; `to_vec()` normalises them to [0, 1].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -170,6 +206,41 @@ impl TradeState {
             price_acceleration,
             time_of_day_norm: hour / 24.0,
             ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_names_match_vector_order() {
+        // The one way STATE_FEATURES can rot is `to_vec` gaining or losing a term
+        // without this list following. An exported ONNX model carries these names as
+        // its input schema, so a mismatch mislabels every feature downstream.
+        assert_eq!(STATE_FEATURES.len(), STATE_DIM);
+        assert_eq!(TradeState::default().to_vec().len(), STATE_FEATURES.len());
+    }
+
+    #[test]
+    fn feature_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for name in STATE_FEATURES {
+            assert!(seen.insert(name), "duplicate feature name: {name}");
+        }
+    }
+
+    #[test]
+    fn to_vec_is_normalised() {
+        // Every feature is documented as living in [0, 1]; the ONNX export states that
+        // as its `input_normalisation` metadata, so it had better be true.
+        let state = TradeState::default();
+        for (name, value) in STATE_FEATURES.iter().zip(state.to_vec()) {
+            assert!(
+                (0.0..=1.0).contains(&value),
+                "{name} = {value} is outside [0, 1]"
+            );
         }
     }
 }

@@ -102,7 +102,7 @@ impl KnowledgeGraph {
     }
 
     /// All edges from a given node.
-    pub fn edges_from(&self, id: &str) -> impl Iterator<Item = &KnowledgeEdge> {
+    pub fn edges_from<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a KnowledgeEdge> + 'a {
         self.edges.iter().filter(move |e| e.from == id)
     }
 }

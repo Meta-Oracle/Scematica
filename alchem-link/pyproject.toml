@@ -48,6 +48,7 @@ where = ["src"]
 alchem-link = "alchem_link.cli:main"
 alchem-link-ui = "alchem_link.dashboard:launch"
 alchem-nn = "alchem_nn.cli:main"
+sentience = "sentience.cli:main"
 
 [tool.pytest.ini_options]
 addopts = "-p no:anchorpy"

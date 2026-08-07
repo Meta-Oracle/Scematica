@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Confidence, LearningRate, Observation};
+use crate::types::{LearningRate, Observation};
 
 /// Result of one learning step.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4552,6 +4552,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scematica-sentience"
+version = "1.15.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "scematica-sniper"
 version = "1.15.0"
 dependencies = [

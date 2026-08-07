@@ -46,12 +46,16 @@ impl GrowthModel {
     ///
     /// Returns the new capability value.
     pub fn step(&mut self, l_t: f64, i_t: f64, f_t: f64) -> f64 {
-        let growth_factor = self.alpha * l_t.clamp(0.0, 1.0) * i_t.clamp(0.0, 1.0) * f_t.clamp(0.0, 1.0);
+        let growth_factor = self.alpha
+            * l_t.clamp(0.0, 1.0)
+            * i_t.clamp(0.0, 1.0)
+            * f_t.clamp(0.0, 1.0);
 
         // Logistic update — saturates at C_max.
-        let ratio = (self.c_max - self.capability) / self.capability;
-        let denom = 1.0 + ratio * (-growth_factor).exp();
-        self.capability = self.c_max / denom;
+        let ratio = (self.c_max - self.capability) / self.capability.max(f64::EPSILON);
+        let exp_term = (-growth_factor).exp();
+        let denom = 1.0 + ratio * exp_term;
+        self.capability = (self.c_max / denom).min(self.c_max);
         self.capability
     }
 

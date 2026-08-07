@@ -230,9 +230,10 @@ Two of those numbers are computed differently from how a naive implementation wo
 **TWAP is time-weighted, not sample-weighted.** An oracle publishes on a heartbeat *or*
 on a deviation threshold, so it prints most often precisely when the price is moving —
 which means the mean of the answers systematically over-weights volatile periods. A price
-that sat at 1,900 for fifty minutes and then walked to 1,950 over six rounds has a sample
-mean near 1,940 and a time-weighted mean near 1,905. The second is what a TWAP oracle
-would have reported.
+that sat at 1,900 for fifty minutes and then walked to 1,950 over six one-minute rounds
+has a sample mean of **1,921** and a time-weighted mean of **1,902**: the flat stretch was
+90% of the window but only two of the seven prints. The second number is what a TWAP
+oracle would have reported, and spot is 253 bps above it.
 
 **Volatility is scaled by measured spacing.** Annualising needs the sampling interval;
 assuming one is how the same asset reports wildly different volatility on Polygon (60s
@@ -247,6 +248,8 @@ publishes) and Ethereum (3600s). The interval comes from the timestamps.
 **Offline** — `search` · `networks` · `coverage` · `simulate` · `backtest` · `theme`
 
 **Interactive** — `ui` · `shell` · `chat` · `providers`
+
+`shell` and `chat` take `--workspace DIR`, `--yes`, `--allow-exec` and `--read-only`.
 
 **Reference and codegen** — `generate` · `alchemy` · `chainlink` · `integration` ·
 `blueprint` · `recipes`
@@ -483,6 +486,117 @@ One practical note baked into the client: several public RPC providers reject Py
 default `Python-urllib/3.x` User-Agent with a 403, which reads as "the chain is down" if
 you have not hit it before. The client always sends a real one.
 
+## The agent can write code, not just talk about it
+
+```bash
+alchem-link shell
+```
+
+```
+alchem:base › write me a consumer for ETH/USD on base, with tests
+
+  · audit_feed(pair='ETH/USD', network='base')
+
+   WRITE  generate_project  oracle/
+  scaffold a foundry project for ETH/USD into oracle/ (consumer, mocks, tests, deploy)
+  [y] once  [a] always here  [n] no  [d] never here  [v] view
+  approve? y
+
+  ✎ generate_project(pair='ETH/USD', out='oracle')
+
+  Scaffolded a Foundry project in oracle/. The consumer checks staleness against
+  base's measured 1200s heartbeat, rejects carried rounds, and gates on the L2
+  sequencer with its grace period. Tests cover each failure mode.
+
+  changed: oracle/src/EthUsdConsumer.sol, oracle/test/EthUsdConsumer.t.sol, …
+```
+
+Twenty-eight tools: read, write and edit files, make and search directories, scaffold
+projects, export results, and run commands. `:tools` lists them grouped by what they do
+to your machine.
+
+### Codegen goes through the generator, not the model
+
+When you ask for a Chainlink consumer the agent calls `generate_consumer` rather than
+writing Solidity from memory, and the system prompt says so in as many words. The reason
+is the same one the rest of this toolkit exists for: a model writing that contract from
+training data produces something that compiles, looks correct, hardcodes `3600`, and
+omits the sequencer check. The generator bakes in that feed's **measured** heartbeat for
+that chain and every check `audit` looks for.
+
+A plausible-looking contract is the same class of failure as a plausible-looking price.
+
+### Three gates, not a checkbox
+
+Everything the agent does to your filesystem passes through:
+
+**A workspace root.** Paths are fully resolved — symlinks followed, `..` collapsed — and
+*then* compared against the root. Rejecting strings that contain `..` is theatre; a
+symlink inside the workspace pointing at `/` is not caught by it, and neither is a
+Windows junction.
+
+**A secrets refusal that approval cannot override.** This is the non-obvious one. Tool
+results are sent to a third-party model, so reading `.env` is not a read, it is a
+disclosure of your `ALCHEMY_API_KEY` to whoever runs the inference endpoint. `.env`, PEM
+files, SSH keys, `.npmrc`, cloud credentials and **Solana keypairs** are refused before
+the approval prompt, for reads as much as writes, and they do not appear in directory
+listings or search results either. You cannot meaningfully consent to a disclosure you
+have not been shown.
+
+**A prompt you can actually answer.** It leads with the verb and the path, not the tool
+name, and `v` shows the diff. Approving a write you have not seen is a keystroke, not
+consent — and the edits where that matters are the ones that look routine.
+
+```
+   WRITE  write_file  src/Consumer.sol
+  overwrite src/Consumer.sol — 84 lines, 3,201 bytes
+  [y] once  [a] always here  [n] no  [d] never here  [v] view
+```
+
+`a` grants for that directory for the rest of the session, not for the whole workspace
+and not for the next one. Grants are **never written to disk**: a permission that
+survives the process turns one distracted keystroke into a standing authorisation.
+
+### Execution is off until you turn it on
+
+`run_command` is refused outright until `--allow-exec`, and then still prompts per
+command. It runs **without a shell** — the command is split into an argument vector, so
+pipes, redirection and `;` are not interpreted. That costs some convenience and removes a
+class of injection: the argument list in the approval prompt is exactly what runs, with
+no second layer of parsing in between.
+
+### Defaults, and why
+
+| Situation | Reads | Writes | Commands |
+|---|---|---|---|
+| `alchem-link shell` | yes | prompt | refused |
+| `alchem-link shell --yes` | yes | yes | refused |
+| `alchem-link shell --allow-exec` | yes | prompt | prompt |
+| `alchem-link shell --read-only` | yes | refused | refused |
+| `alchem-link chat "…"` piped or in CI | yes | **refused** | refused |
+
+The last row is the important one. When there is no terminal, a prompt cannot be
+answered, and treating silence as consent is how an agent quietly rewrites a repository
+in a CI job. `--yes` is the explicit opt-out, and it has to be typed.
+
+A refusal also tells the model *why*, accurately. "Running commands is not enabled in
+this session" and "the user was asked and declined" are different facts, and reporting
+the second when no prompt was ever shown leaves you arguing with an assistant about a
+decision neither of you made.
+
+### Steering it from the shell
+
+```
+:workspace [dir]   show or move the directory the agent may write in
+:trust             what it may do without asking
+:trust write       stop prompting for writes, this session
+:trust exec        enable commands, this session
+:trust readonly    refuse writes and commands
+:trust revoke      drop every grant given so far
+:changes           every file written this session
+:diff <path>       what is in a file now
+```
+
 ## The terminal system
 
 ```bash
@@ -611,7 +725,7 @@ both drop straight into a CI gate.
 python -m unittest discover -s tests
 ```
 
-479 cases, all offline — no test in this suite reads a chain.
+561 cases, all offline — no test in this suite reads a chain.
 
 That is a design constraint rather than a convenience. `analytics` and `simulate` compute
 numbers people size positions and write guards against, and a number that can only be

@@ -12,8 +12,21 @@ failure this whole toolkit exists to prevent. So:
   can re-run the same command and check.
 * When no tool applies, the honest answer is "I can't read that", not a guess.
 
-The tool surface is deliberately small and read-only. Nothing here can spend gas, sign,
-or write a file.
+Since 0.23.0 the agent can also work in a directory: read, write and edit files,
+scaffold projects, export results, and — only when explicitly enabled — run commands.
+Those tools live in :mod:`alchem_link.agent_tools`, and every one of them passes through
+two gates before it runs. :class:`~alchem_link.workspace.Workspace` decides *where* it
+may act; :class:`~alchem_link.approvals.TrustPolicy` and an
+:class:`~alchem_link.approvals.Approver` decide *whether* it acts at all.
+
+What has not changed is the rule at the top of this file. The model still never produces
+a price. It now also never produces a Chainlink consumer contract from memory — there is
+a `generate_consumer` tool that bakes in the measured heartbeat and the sequencer gate,
+and the system prompt directs the model to it, because a plausible-looking contract with
+a hardcoded 3600 is the same class of failure as a plausible-looking price.
+
+Nothing here can spend gas or sign a transaction. That part of the surface is still
+closed and is not configurable.
 """
 from __future__ import annotations
 
@@ -21,6 +34,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from .agent_tools import Tool, ToolContext, coding_tools
+from .approvals import Approver, Decision, Risk, TrustPolicy, default_approver
 from .cadence import profile_feed
 from .ccip import ROUTERS, verify_lanes
 from .divergence import common_pairs, compare_pair
@@ -31,8 +46,9 @@ from .llm import Completion, LlmClient, Message, NoProviderConfigured
 from .networks import list_networks
 from .safety import audit_feed, audit_network
 from .sequencer import SEQUENCER_FEEDS, read_sequencer
+from .workspace import Workspace, WorkspaceError, default_workspace
 
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 12
 
 #: Hard cap on one tool result, in characters.
 #:
@@ -53,8 +69,16 @@ knowledge of current prices. If you cannot get a number from a tool, say so plai
 instead of estimating. Inventing an oracle price is the exact failure this tool exists \
 to prevent.
 
+You can also work in the user's directory: read, write and edit files, scaffold projects, export results, and run commands when that has been enabled. Writes are sandboxed to a workspace root and each one may be shown to the user for approval, so a refused call is a normal outcome and not an error to work around.
+
+CODE GENERATION: when the user wants a Chainlink consumer, call `generate_consumer` rather than writing the contract yourself. It bakes in that feed's MEASURED heartbeat for that chain and every check `audit_feed` looks for, including the L2 sequencer gate. A contract you write from memory will hardcode 3600 and omit the sequencer check, which is the exact failure this toolkit exists to prevent. Use `generate_project` when they want tests and a deploy script too. Write ordinary code — scripts, configs, docs — with `write_file` and `edit_file` as normal.
+
 Guidance:
 - Prefer one targeted tool call over several broad ones.
+- Before editing a file, read it. `edit_file` needs the exact existing text and refuses an ambiguous match.
+- Before writing into an unfamiliar project, call `tree` or `list_dir` and match what is already there.
+- If a tool is refused, say so plainly and stop. Do not try a different tool to achieve the same effect — the user declined the action, not the spelling.
+- Secrets are refused before you see them. If a read of a .env or key file comes back refused, do not try to reach it another way.
 - `audit_feed` is the right tool for "is this safe to use" questions. It checks \
 staleness, non-positive answers, incomplete and carried-over rounds, circuit-breaker \
 bounds, and the L2 sequencer.
@@ -77,11 +101,33 @@ class ToolCall:
     ok: bool
     result: Any = None
     error: str = ""
+    #: What the tool was classified as, so the shell can colour a write differently
+    #: from a chain read.
+    risk: str = "network"
+    #: True when the user was asked and declined. Distinguished from a failure because
+    #: it is not a fault, and the model must be told to stop rather than to retry.
+    refused: bool = False
+    #: Workspace-relative path this call touched, when there was one.
+    path: str = ""
 
     @property
     def summary(self) -> str:
-        args = ", ".join(f"{k}={v!r}" for k, v in self.arguments.items())
+        args = ", ".join(f"{k}={_short(v)}" for k, v in self.arguments.items())
         return f"{self.name}({args})"
+
+    @property
+    def mutating(self) -> bool:
+        return self.risk in ("write", "execute")
+
+
+def _short(value: Any, limit: int = 48) -> str:
+    """Argument repr for a one-line summary.
+
+    File contents arrive as tool arguments and are routinely thousands of characters;
+    printing them whole turns the shell's call log into the file.
+    """
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…'"
 
 
 @dataclass
@@ -96,6 +142,19 @@ class AgentTurn:
     @property
     def ok(self) -> bool:
         return not self.error
+
+    @property
+    def changed_paths(self) -> List[str]:
+        """Files this turn actually wrote, in order, without duplicates."""
+        seen: List[str] = []
+        for call in self.tool_calls:
+            if call.ok and call.mutating and call.path and call.path not in seen:
+                seen.append(call.path)
+        return seen
+
+    @property
+    def refusals(self) -> List[ToolCall]:
+        return [c for c in self.tool_calls if c.refused]
 
 
 # ── tool implementations ─────────────────────────────────────────────────────────
@@ -303,19 +362,23 @@ TOOL_IMPLS: Dict[str, Callable[..., Any]] = {
 }
 
 
-def _schema(name: str, description: str, properties: Dict[str, Any], required: List[str]):
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
-    }
+def _schema(name: str, description: str, properties: Dict[str, Any],
+            required: List[str]) -> Tool:
+    """Declare one chain-reading tool.
+
+    Chain reads are all :attr:`~alchem_link.approvals.Risk.NETWORK`: they cost a round
+    trip and nothing else, so they never prompt. The name is kept from when this returned
+    a raw schema dict, because every tool below calls it and the change is mechanical.
+    """
+    return Tool(
+        name=name,
+        description=description,
+        parameters=properties,
+        required=required,
+        impl=TOOL_IMPLS[name],
+        risk=Risk.NETWORK,
+        needs_context=False,
+    )
 
 
 _PAIR = {"type": "string", "description": "Feed pair, e.g. ETH/USD"}
@@ -325,7 +388,7 @@ _NETWORK = {
                    "avalanche, bnb, gnosis, scroll, linea",
 }
 
-TOOL_SCHEMAS: List[Dict[str, Any]] = [
+CHAIN_TOOLS: List[Tool] = [
     _schema(
         "read_feed",
         "Read one Chainlink price feed live. Returns price, age, heartbeat and a "
@@ -417,20 +480,126 @@ def _truncate(payload: str) -> str:
     )
 
 
-def execute_tool(name: str, arguments: Dict[str, Any]) -> ToolCall:
-    """Run one tool, never raising — failures go back to the model as text."""
-    impl = TOOL_IMPLS.get(name)
-    if impl is None:
+#: Every tool, chain and coding, by name. One registry so the dispatcher has one path.
+TOOLS: Dict[str, Tool] = {tool.name: tool for tool in CHAIN_TOOLS + coding_tools()}
+
+#: What the model is sent. Regenerated from :data:`TOOLS` so a tool cannot exist without
+#: a schema or carry a schema without an implementation.
+TOOL_SCHEMAS: List[Dict[str, Any]] = [tool.schema for tool in TOOLS.values()]
+
+
+def tools_for(policy: Optional[TrustPolicy] = None) -> List[Dict[str, Any]]:
+    """The schemas to advertise under a given policy.
+
+    A read-only session does not merely refuse writes, it stops offering them. Advertising
+    a tool that will always be denied wastes tokens on every request and, worse, invites
+    the model into a loop of trying and being refused — which reads to a user as the
+    assistant arguing with them.
+    """
+    if policy is None:
+        return TOOL_SCHEMAS
+    out = []
+    for tool in TOOLS.values():
+        if policy.read_only and tool.risk.mutating:
+            continue
+        if tool.risk is Risk.EXECUTE and not policy.allow_execute:
+            continue
+        out.append(tool.schema)
+    return out
+
+
+def execute_tool(name: str, arguments: Dict[str, Any],
+                 context: Optional[ToolContext] = None) -> ToolCall:
+    """Approve and run one tool, never raising — failures go back to the model as text.
+
+    The approval happens here rather than inside each implementation, so a tool cannot be
+    added that forgets to ask. A refusal is reported distinctly from a failure: the model
+    is told the user declined, which is a stop signal, rather than that something broke,
+    which is an invitation to try another way.
+    """
+    tool = TOOLS.get(name)
+    if tool is None:
         return ToolCall(name=name, arguments=arguments, ok=False,
                         error=f"unknown tool '{name}'")
+
+    if tool.needs_context and context is None:
+        return ToolCall(name=name, arguments=arguments, ok=False, risk=tool.risk.value,
+                        error=f"'{name}' needs a workspace and none is configured")
+
+    path = ""
+    if context is not None:
+        try:
+            request = tool.request_for(context, arguments)
+            path = request.path
+            # Evaluated before deciding, purely so the refusal can say *why*. It is a
+            # pure function of the policy, so asking twice costs nothing.
+            standing = context.policy.preflight(request)
+            decision = context.approver.decide(context.policy, request)
+        except WorkspaceError as exc:
+            # Raised while *describing* the call — a protected or escaping path. Refusing
+            # here means the prompt is never shown for a path the user could not approve
+            # anyway, and a secret is never resolved or previewed.
+            return ToolCall(name=name, arguments=arguments, ok=False, refused=True,
+                            risk=tool.risk.value, error=_with_hint(exc))
+        except Exception as exc:  # pragma: no cover - a describe() bug must not allow
+            return ToolCall(name=name, arguments=arguments, ok=False, refused=True,
+                            risk=tool.risk.value,
+                            error=f"could not evaluate permission: {exc}")
+
+        if not decision.allowed:
+            return ToolCall(
+                name=name, arguments=arguments, ok=False, refused=True,
+                risk=tool.risk.value, path=path,
+                error=_refusal(tool, path, standing, context.policy),
+            )
+
     try:
-        return ToolCall(name=name, arguments=arguments, ok=True, result=impl(**arguments))
+        result = tool.impl(context, **arguments) if tool.needs_context else tool.impl(**arguments)
+        if not path and isinstance(result, dict):
+            path = str(result.get("path", "") or "")
+        return ToolCall(name=name, arguments=arguments, ok=True, result=result,
+                        risk=tool.risk.value, path=path)
     except TypeError as exc:
-        return ToolCall(name=name, arguments=arguments, ok=False,
+        return ToolCall(name=name, arguments=arguments, ok=False, risk=tool.risk.value,
                         error=f"bad arguments: {exc}")
+    except WorkspaceError as exc:
+        # A sandbox refusal is not a bug the model should route around, so it carries the
+        # hint that says so rather than surfacing as a bare exception name.
+        return ToolCall(name=name, arguments=arguments, ok=False, refused=True,
+                        risk=tool.risk.value, path=path, error=_with_hint(exc))
     except Exception as exc:
-        return ToolCall(name=name, arguments=arguments, ok=False,
-                        error=f"{type(exc).__name__}: {exc}")
+        return ToolCall(name=name, arguments=arguments, ok=False, risk=tool.risk.value,
+                        path=path, error=f"{type(exc).__name__}: {exc}")
+
+
+def _with_hint(exc: WorkspaceError) -> str:
+    hint = getattr(exc, "hint", "")
+    return f"{exc}. {hint}" if hint else str(exc)
+
+
+def _refusal(tool: Tool, path: str, standing: Optional[Decision],
+             policy: TrustPolicy) -> str:
+    """Say accurately why a call did not run.
+
+    The distinction matters more than it looks. Telling the model "the user declined"
+    when no prompt was ever shown makes it report a refusal the user never made, and
+    they are left arguing with an assistant about a decision neither of them took. A
+    policy refusal should instead name the switch that would change it.
+    """
+    where = f" on {path}" if path else ""
+    tail = " Do not retry it or attempt the same effect another way."
+
+    if standing is not None and not standing.allowed:
+        if policy.read_only and tool.risk.mutating:
+            return (f"refused: this session is read-only, so {tool.name} cannot run{where}. "
+                    "Tell the user they would need to restart without --read-only." + tail)
+        if tool.risk is Risk.EXECUTE and not policy.allow_execute:
+            return ("refused: running commands is not enabled in this session. Tell the "
+                    "user they can enable it with --allow-exec, and say what you would "
+                    "have run." + tail)
+        return (f"refused by a standing session rule: {tool.name}{where}." + tail)
+
+    return (f"the user was asked and declined this {tool.risk.value} operation{where}." + tail)
 
 
 class Agent:
@@ -442,11 +611,27 @@ class Agent:
         system_prompt: str = SYSTEM_PROMPT,
         max_rounds: int = MAX_TOOL_ROUNDS,
         network: str = "ethereum",
+        workspace: Optional[Workspace] = None,
+        policy: Optional[TrustPolicy] = None,
+        approver: Optional[Approver] = None,
     ) -> None:
         self.client = client or LlmClient()
         self.max_rounds = max_rounds
         self.network = network
+        self.workspace = workspace or default_workspace()
+        self.policy = policy or TrustPolicy.from_env()
+        self.approver = approver or default_approver()
         self.history: List[Message] = [Message(role="system", content=system_prompt)]
+
+    @property
+    def context(self) -> ToolContext:
+        """Rebuilt per access so a network or policy change takes effect immediately."""
+        return ToolContext(
+            workspace=self.workspace,
+            policy=self.policy,
+            approver=self.approver,
+            network=self.network,
+        )
 
     @property
     def label(self) -> str:
@@ -469,7 +654,9 @@ class Agent:
         for round_index in range(self.max_rounds):
             turn.rounds = round_index + 1
             try:
-                completion: Completion = self.client.chat(self.history, tools=TOOL_SCHEMAS)
+                completion: Completion = self.client.chat(
+                    self.history, tools=tools_for(self.policy)
+                )
             except Exception as exc:
                 turn.error = str(exc)
                 turn.reply = f"LLM request failed: {exc}"
@@ -496,7 +683,7 @@ class Agent:
                 except json.JSONDecodeError:
                     arguments = {}
 
-                call = execute_tool(name, arguments)
+                call = execute_tool(name, arguments, self.context)
                 turn.tool_calls.append(call)
                 if on_tool is not None:
                     on_tool(call)
@@ -521,19 +708,38 @@ class Agent:
         return turn
 
 
-def build_agent(network: str = "ethereum") -> Agent:
-    """Construct an agent, or raise :class:`NoProviderConfigured` with setup guidance."""
-    return Agent(client=LlmClient(), network=network)
+def build_agent(network: str = "ethereum", workspace: Optional[str] = None,
+                policy: Optional[TrustPolicy] = None,
+                approver: Optional[Approver] = None) -> Agent:
+    """Construct an agent, or raise :class:`NoProviderConfigured` with setup guidance.
+
+    The defaults are the safe ones and are chosen here rather than left to callers: the
+    workspace is the current directory, the policy comes from the environment, and the
+    approver refuses everything unless there is a real terminal to ask at. A caller that
+    wants more has to say so.
+    """
+    return Agent(
+        client=LlmClient(),
+        network=network,
+        workspace=default_workspace(workspace),
+        policy=policy,
+        approver=approver,
+    )
 
 
 __all__ = [
     "Agent",
     "AgentTurn",
     "ToolCall",
+    "Tool",
+    "ToolContext",
+    "TOOLS",
     "TOOL_SCHEMAS",
     "TOOL_IMPLS",
+    "CHAIN_TOOLS",
     "SYSTEM_PROMPT",
     "execute_tool",
+    "tools_for",
     "build_agent",
     "NoProviderConfigured",
 ]

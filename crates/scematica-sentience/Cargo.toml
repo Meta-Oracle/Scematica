@@ -1,0 +1,27 @@
+[package]
+name = "scematica-sentience"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Recursive cognitive architecture — the Singularity Sentience equation system as a computable Rust library"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+readme = "README.md"
+keywords = ["ai", "cognition", "sentience", "architecture", "agi"]
+categories = ["science", "simulation", "algorithms"]
+
+[lib]
+name = "scematica_sentience"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

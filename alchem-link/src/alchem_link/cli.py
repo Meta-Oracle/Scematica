@@ -28,6 +28,7 @@ from typing import Any, List, Optional, Sequence
 
 from . import __version__
 from .aggregator import describe_aggregator, round_history, split_round_id
+from .approvals import AutoApprover, TrustPolicy, default_approver
 from .analytics import Series, summarise
 from .cadence import profile_feed
 from .ccip import ROUTERS, summarize_chainlink_capabilities, verify_lanes
@@ -1008,7 +1009,27 @@ def _cmd_ui(args: argparse.Namespace) -> int:
 def _cmd_shell(args: argparse.Namespace) -> int:
     from .shell import Shell
 
-    return Shell(network=args.network, mode=args.mode).run()
+    return Shell(
+        network=args.network,
+        mode=args.mode,
+        workspace=getattr(args, "workspace", None),
+        policy=_policy_from_args(args),
+    ).run()
+
+
+def _policy_from_args(args: argparse.Namespace) -> TrustPolicy:
+    """Turn the trust flags into a policy.
+
+    ``--read-only`` wins over the permissive flags rather than combining with them. A
+    command line that says both is a mistake, and the safe reading of a mistake is the
+    restrictive one.
+    """
+    if getattr(args, "read_only", False):
+        return TrustPolicy.read_only_policy()
+    return TrustPolicy(
+        allow_writes=getattr(args, "yes", False),
+        allow_execute=getattr(args, "allow_exec", False),
+    )
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
@@ -1025,9 +1046,22 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         out.error('usage: alchem-link chat "is the ETH/USD feed on base safe?"')
         return EXIT_USAGE
 
+    policy = _policy_from_args(args)
+    # One-shot chat is frequently piped or scripted, where nobody can answer a prompt.
+    # `default_approver` refuses in that case; `--yes` is the explicit opt-out.
+    approver = AutoApprover() if getattr(args, "yes", False) else default_approver()
+
     try:
-        agent = build_agent(network=args.network)
+        agent = build_agent(
+            network=args.network,
+            workspace=getattr(args, "workspace", None),
+            policy=policy,
+            approver=approver,
+        )
     except NoProviderConfigured as exc:
+        out.error(str(exc))
+        return EXIT_USAGE
+    except Exception as exc:
         out.error(str(exc))
         return EXIT_USAGE
 
@@ -1056,6 +1090,14 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     if calls:
         errors.blank()
     out.write(turn.reply)
+    # Written files are a fact and are reported to stderr regardless of what the model
+    # remembered to say, so `chat ... > answer.txt` still shows them.
+    if turn.changed_paths:
+        errors.blank()
+        errors.ok("changed: " + ", ".join(turn.changed_paths))
+    for refusal in turn.refusals:
+        errors.warn(f"refused: {refusal.name}"
+                    + (f" {refusal.path}" if refusal.path else ""))
     return EXIT_OK if turn.ok else EXIT_UNUSABLE
 
 
@@ -1220,6 +1262,16 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "shell":
             sub.add_argument("--mode", choices=["auto", "cmd", "chat"], default="auto",
                              help="Start pinned to a mode (default: infer per line)")
+        if name in ("shell", "chat"):
+            sub.add_argument("--workspace", metavar="DIR",
+                             help="Directory the agent may read and write "
+                                  "(default: the current one)")
+            sub.add_argument("--yes", "-y", action="store_true",
+                             help="Do not prompt before writing files")
+            sub.add_argument("--allow-exec", action="store_true",
+                             help="Let the agent run commands (still prompts for each)")
+            sub.add_argument("--read-only", action="store_true",
+                             help="Refuse every write and command")
         if name == "search":
             sub.add_argument("--asset", help="Filter to feeds involving this asset")
             sub.add_argument("--all", action="store_true",

@@ -1,5 +1,7 @@
 Scematica: A Complete Thesis From Conception to a Validated, Self-Aware Trading Organism
 
+Version 1.15.0
+
 Preface
 
 This is the full story of Scematica, told in plain language and in order. It covers what the system is, why each piece exists, how the pieces fit together, and what the real data says about whether it works. It is written as an article, not a manual, so that a reader who has never seen the code can understand both the engineering and the reasoning behind it. Where numbers appear, they come from the project's own live trade log, not from marketing. The intent is that after reading this, you understand Scematica the way its builders do.
@@ -72,7 +74,49 @@ The correct response, learned through this cycle several times, is counterintuit
 
 This failure mode has been documented in the project's own memory precisely so that it does not have to be rediscovered every time. It is the single most valuable piece of operating knowledge the project holds.
 
-Part Eight: The Arbitrage Engine
+Part Eight: The Second Failure Mode, When Confidence Is Not Information
+
+The strictness oscillation described above is a failure of the operator. Version 1.15.0 was written because of a failure of the machine, and it is a subtler and more interesting one.
+
+Recall from Part Five that the learning agent is allowed to veto a buy, and that the veto is deliberately bounded: it only fully suppresses a purchase when the agent's bearish valuation exceeds its best buy valuation by a clear relative margin, roughly fifteen percent. The reasoning was sound. A half-trained network should not be able to switch off a strategy that is demonstrably making money, so the gate only closes on strong conviction.
+
+On the fifth of August 2026 the agent returned the same bearish action, sell a portion of the position, for twenty-five consecutive pools. Its optimal action value sat at approximately 26.5 against a best-buy value of approximately 13.5, every single time. The margin test passed on every pool, so every buy was blocked. The bot stopped trading.
+
+The guard was working exactly as written. That is the point. A policy that has collapsed onto a single action, that returns effectively the same valuation no matter what you show it, produces a large and perfectly stable gap between its favoured action and the alternatives on every input. A margin test is a test of magnitude, and a constant function satisfies a magnitude test trivially. The guard could not tell the difference between an agent that was extremely confident about these particular twenty-five pools and an agent that had stopped looking at pools altogether, because on the magnitude axis those two states are identical.
+
+This is worth stating in its general form, because it is not a fact about this codebase. Magnitude cannot distinguish conviction from collapse. Only dispersion can. An agent that is genuinely evaluating its inputs produces valuations that vary with those inputs; an agent that has collapsed produces valuations that do not. The variance across inputs is the signal, and no amount of examining the magnitude of a single output will recover it.
+
+The consequence for design is direct: any guard that reads a model's confidence in order to decide whether to act on it must also read whether that confidence is responsive to the input. Otherwise the guard is strongest precisely when the model is worthless, which is the worst possible failure ordering.
+
+Part Nine: The Equations, and a System That Can Check Its Own Reporting
+
+The fix for the collapse was not a better threshold. A better threshold would have been another magnitude test with a different number in it, and would have failed the same way at a different time. What the system needed was a quantity that goes to zero when the agent stops discriminating, and an instrument that reads it continuously.
+
+That quantity is the intelligence ratio. Take the agent's optimal action value across the pools it has recently evaluated, compute the variance of those values, and divide by the square of their mean. The result is a dimensionless number, the squared coefficient of variation, that measures how much the agent's valuations depend on what it is being shown. A model returning the same value for every input has zero variance and therefore an intelligence ratio of zero, no matter how large or how confident that value is. Magnitude is not information, and this ratio is the arithmetic statement of that sentence. Scematica computes it over a rolling thirty-two-sample window, and treats anything below one ten-thousandth, roughly a one percent relative spread, as a policy that is no longer looking at its inputs.
+
+The intelligence ratio is one of a small set of relations that version 1.15.0 turns from description into running instrumentation. They are documented separately, the statements in one file and the derivations in another, and it is important to be precise about their status. They are definitional, not derived from first principles. They do not forecast returns and they say nothing about the market. What they do is assign exact meaning to quantities the system already measures, and then, crucially, over-determine one of them.
+
+That over-determination is where the value is. Agent capability is defined once as a product of expected return, exploration rate, and accumulated experience. It is defined a second time, implicitly, through a value identity relating it to the intelligence ratio and the normalised optimal value. Two definitions of the same quantity are not independent, and eliminating between them predicts the intelligence ratio from the other measurables. But the intelligence ratio is also defined independently as a measured variance. The system is consistent only where the predicted and measured values agree, and the difference between them, the residual, is a number the running bot can compute about itself.
+
+Applied to the collapse, the residual localises the fault and gives it a sign. Measured dispersion went to zero; the predicted value, built from a positive exploration rate and two-odd normalised episodes, stayed strictly positive; so the residual went strictly negative. A negative residual has one meaning: the agent is holding high value while carrying no information. That is not a threshold anybody tuned. It falls out of the algebra, and it points at the exact component that had failed.
+
+The same conclusion arrives by a second and completely independent route, which is the strongest evidence that the framework is describing something real. Optimal exploration, derived by maximising immediate expected value against the edge equation, turns out not to be a schedule at all but a ratio: it is set by how much the policy beats random action. As a policy collapses, the advantage it holds over random action goes to zero, and the optimal exploration rate diverges. The formal statement is that a non-discriminating agent should be exploring, not acting. Two derivations that share no intermediate steps both say the agent should have been off the gate. That agreement is why the framework earns the word instrument rather than the word decoration.
+
+What was actually built from this is deliberately modest, and the modesty follows the same restraint that governs the agent itself. The sniper now carries an equation monitor alongside the agent. Past a sustained veto streak, the veto degrades from a hard gate to a size-down. A non-discriminating network keeps training, keeps its influence over position sizing, and can no longer silently kill the edge by holding the gate shut. The equation terms publish next to the agent's own snapshot, so a collapsed policy is visible on the dashboard rather than buried in a log file that nobody reads until the bot has been idle for a day.
+
+Three further consequences fall out of the same algebra, and each of them sharpens something the project had previously known only as a scar.
+
+The first concerns ordering. The edge equation carries a capture coefficient, the fraction of available edge the executor actually realises, as a multiplier in front of everything else. Selection quality and execution quality multiply; they do not add. An RPC layer that times out on one buy in two caps the whole system at half its potential no matter how good selection becomes. This is the algebraic reason infrastructure repair must precede selection tuning, and it means the ordering is forced rather than preferred.
+
+The second is a precise restatement of the strictness lesson from Part Seven. Total edge is the acceptance rate multiplied by the expected profit of what gets admitted. Admitting in descending score order makes the second term non-increasing as the first grows, so their product has an interior maximum, and that maximum sits exactly where the marginal admitted candidate has zero expected profit. Admit above that line and edge is left unclaimed; admit below it and fees are paid to lose money. The sharp corollary is the one that would have prevented years of oscillation: a population whose average admitted profit is strongly positive is under-admitting, not performing well. The statistic every operator instinctively wants to maximise is the statistic that tells you the filters are too tight.
+
+The third makes the payoff asymmetry unavoidable rather than merely observed. From a thirty-one percent win rate and a payoff ratio of fourteen and a half, the Kelly bound comes out at twenty-six percent of bankroll per position. The edge survives such a low hit rate only because of the payoff ratio, which is to say that any change compressing the right tail destroys the edge even if it raises the win rate. That is the quantitative form of the standing warning against curtailing the momentum escalation ladder during a losing stretch, and it converts an argument that used to be settled by intuition into one settled by arithmetic.
+
+Two honesty constraints belong with all of this. The relations are definitional, so none of the constants is a prediction; they are historical summaries under configurations that have since changed. And a residual of zero means the components agree with one another, not that they are right. The instrument checks the system's reporting against itself. It cannot check the system against the world.
+
+Version 1.15.0 carried one further piece of housekeeping that is worth a sentence because it is the same instinct applied to the build. The neural-network crate had drifted ahead of the rest of the stack, taken changes after its number was already published, and left the documented version table disagreeing with the manifests. Every crate now inherits a single workspace version. A component cannot drift ahead of the stack again without editing one line that moves all of them. It is a small thing next to the equations, but it comes from the same place: make the inconsistency impossible to express rather than relying on somebody noticing it.
+
+Part Ten: The Arbitrage Engine
 
 The second trading machine in Scematica is a cross-exchange arbitrage engine. Where the sniper is a directional bet on a new token going up, arbitrage is a market-neutral capture of price differences between liquidity pools. If the same token pair is priced differently on two exchanges, or if a cycle of three pools produces a round trip that ends with more of the starting token than it began with, there is a risk-free profit to be taken, minus fees.
 
@@ -80,7 +124,7 @@ The arb engine builds a graph of pools, searches it for profitable cycles, sizes
 
 The arb engine draws its pool graph from a seeded set of pool definitions fetched from the exchanges' public interfaces. Keeping that seed current is an operational task, and the tooling to refresh it is part of the project.
 
-Part Nine: ScemaDEX and the Agentic Liquidity Layer
+Part Eleven: ScemaDEX and the Agentic Liquidity Layer
 
 Beyond the two trading machines sits the most conceptually adventurous part of the project: ScemaDEX, an agentic liquidity layer that reframes the whole idea of a decentralized exchange. The premise is that the routing intelligence itself, the decision about how to execute a swap, is a product that can be metered, sold, and improved, rather than a fixed piece of infrastructure.
 
@@ -90,7 +134,7 @@ On top of those, a further set of adversarial primitives were added, each withou
 
 Compose all of that across many nodes and the result is a marketplace where autonomous agents sell bonded inferences and learned experience to one another, an economy of machine intelligence rather than a swap widget. Whether or not that vision is fully realized, the primitives are implemented, tested, and shipped as a real software development kit.
 
-Part Ten: The Payment Rail and the Settlement Machine
+Part Twelve: The Payment Rail and the Settlement Machine
 
 Underneath ScemaDEX's economics is a payment protocol. Scematica includes a Rust-native implementation of the HTTP 402 Payment Required standard, the mechanism by which a server can demand payment for a request and a client can satisfy it. This is what makes "sell an inference per call" a concrete transaction rather than an idea.
 
@@ -100,7 +144,7 @@ Two further ideas round out the settlement layer. The promise that a bond guaran
 
 The final piece is a genuine cryptographic proof of inference. The problem it solves is that a dispute window has to be long only because refuting a bad inference is slow: a challenger must hold the model, re-run the entire computation, and catch the lie. Scematica implements two backends that shrink that window. The first is a transparent, hash-based proof, the same soundness family as a zero-knowledge STARK, in which the prover commits to its entire execution trace and answers a handful of random challenges, and a verifier confirms the output is a correct forward pass by checking only those few spots, without re-running the network. The second is a real zero-knowledge SNARK backend built on the arkworks Groth16 system over the BN254 curve, in which the model's weights are baked into the proving and verifying keys as circuit constants, so the proof is a couple of hundred bytes, reveals nothing about the weights, and is verified without the model at all. Both plug into the same interface, so a deployment can swap proof systems without touching the settlement logic. This is advanced cryptography, implemented and tested, in service of a concrete goal: making it possible to trust a machine's claim about its own computation without redoing that computation.
 
-Part Eleven: The Interfaces
+Part Thirteen: The Interfaces
 
 A trading system is only as good as an operator's ability to see and steer it. Scematica grew three interfaces over time.
 
@@ -112,7 +156,7 @@ The third, and newest, is an Android mobile application. It is important to be p
 
 Building the mobile app produced its own set of hard-won lessons that are characteristic of real engineering. An early build crashed instantly on launch, traced to a push-notification library that bundled a component which demanded a configuration file that was not present. The build's size mysteriously grew every time until it was discovered that the finished app was being copied into a folder that the next build then bundled into itself, nesting the app inside itself and compounding its size. Each of these was diagnosed from the evidence and fixed at the root. The result is a small, signed, crash-free application.
 
-Part Twelve: What the Data Actually Says
+Part Fourteen: What the Data Actually Says
 
 None of the engineering matters if the bot does not make money. So the most important section of this thesis is the one grounded entirely in the real trade log.
 
@@ -124,9 +168,11 @@ The data is granular enough to be prescriptive. Sorted by entry size, positions 
 
 From the same log the capital requirement can be computed rather than guessed. The bot never held more than about 0.099 SOL in open positions at once, and its worst peak-to-trough equity dip was about 0.164 SOL. From those two facts, a minimum viable trading bankroll of half a SOL, a recommended bankroll of seven-tenths to one SOL, and a comfortable scaling bankroll of two to three SOL follow directly. Because position sizing is a percentage of the wallet, the edge compounds automatically as the balance grows, so scaling is a matter of funding the wallet and proving that live slippage does not erode the historical edge, rather than re-tuning the strategy.
 
+A narrower slice of the same log, the 639 positions that had closed when the version 1.15.0 constants were measured, decomposes cleanly enough to check the arithmetic against itself. Win rate 30.99 percent, average win 0.013512 SOL, average loss 0.000934 SOL, payoff ratio 14.46, profit factor 6.49. Expectancy computed from those components comes to 0.003542 SOL per closed position, and net profit divided by position count comes to the same figure to six decimal places. That agreement is not a result, it is a validation of the decomposition, and it is the reason the Kelly bound derived from these numbers in Part Nine can be taken seriously rather than treated as a plausible-looking quotient.
+
 There is one caveat that intellectual honesty requires. This is a realized result over a particular historical window, not a guarantee of future performance. No trading system can promise the future, and the two variables a historical log cannot fully capture, live slippage on larger entries and competition from other bots, are exactly the ones that matter most when scaling. The honest claim, and it is a strong one, is that Scematica has a real, repeatable, statistically significant edge that showed up clearly over hundreds of trades. The way to realize that edge going forward is discipline, not new features.
 
-Part Thirteen: The Philosophy That Ties It Together
+Part Fifteen: The Philosophy That Ties It Together
 
 Step back from the individual pieces and a consistent philosophy emerges, and it is worth naming because it explains why the project looks the way it does.
 
@@ -138,8 +184,14 @@ The third thread is honesty with the data. Nearly every fix in the project's his
 
 The fourth thread is restraint about power. The most dangerous component, the learning agent, is the most carefully leashed. The most expensive component, the on-chain arb program, was recognized as unnecessary and removed. The riskiest claim, guaranteed profit, is one the project refuses to make even when it would be flattering. Power is added cautiously and only after it earns trust.
 
+The fifth thread is the newest, and version 1.15.0 is where it became explicit: turn scars into instruments. For most of its life this project learned by losing money, forming a hypothesis, fixing a mechanism, and writing the lesson down so it would not have to be relearned. That works, but it scales badly, because every lesson lives in a document that somebody has to remember to read. The equations are an attempt to do better, by taking the things the project already knew and giving them a form the running system can evaluate about itself. The warning against over-tightening the filters becomes a condition on the marginal candidate. The warning against cutting winners becomes a Kelly bound that shows the payoff ratio, not the hit rate, carrying the strategy. The instruction to fix the RPC path before tuning selection becomes a multiplication rather than an addition. And the failure that nobody had anticipated, an agent confidently valuing pools it had stopped looking at, becomes a variance that goes to zero and a residual whose sign names the broken component. A lesson written in prose has to be remembered. A lesson written as a measured invariant announces itself.
+
+It is worth being honest about the limits of that fifth thread, because overselling it would betray the third. The relations are definitional, not physical. They do not predict the market, and a residual of zero means only that the system's components agree with each other. What the instrument catches is the system lying to itself, which turns out to be a large enough category of failure to be worth catching.
+
 Conclusion
 
-Scematica started as a simple idea, that being first to a new Solana token is worth money if you can act in the first few seconds safely, and grew into a layered system that is part trading bot, part reinforcement-learning experiment, part cryptographic marketplace, and part cross-platform product. Along the way it accumulated real scars: bugs that lost money, configurations that broke it, a mobile app that crashed and then bloated, each fixed at the root and remembered so it would not recur.
+Scematica started as a simple idea, that being first to a new Solana token is worth money if you can act in the first few seconds safely, and grew into a layered system that is part trading bot, part reinforcement-learning experiment, part cryptographic marketplace, and part cross-platform product. Along the way it accumulated real scars: bugs that lost money, configurations that broke it, an agent that stopped looking at its inputs while sounding more certain than ever, a mobile app that crashed and then bloated, each fixed at the root and remembered so it would not recur.
 
-What remains is a system with a genuine, data-proven edge, a profit factor of 6.50 over hundreds of live trades, and a clear-eyed understanding of exactly how to run it: the right capital, the right entry size, the right hours, a fast connection, moderate filters that catch tokens early, and the discipline to take small losses without flinching and let the rare large winner run. The engineering is ambitious and the cryptography is real, but the lesson at the center is simple and old. Find an asymmetric edge, protect it from your own worst instincts, and let it compound.
+Version 1.15.0 is the point at which the project stopped only remembering and started measuring. The system now computes a small number of quantities about its own behaviour and can tell when its own components have stopped agreeing with one another. That is a modest capability described precisely, and it is deliberately described that way: it detects the machine deceiving itself, not the market surprising it. But the class of failure it covers is the one that had just cost the bot a day of trading while every log line read as healthy, and the guard that missed it was a guard written in good faith by someone who understood the system well. That is the case for instrumentation over vigilance.
+
+What remains is a system with a genuine, data-proven edge, a profit factor of 6.50 over hundreds of live trades, and a clear-eyed understanding of exactly how to run it: the right capital, the right entry size, the right hours, a fast connection, moderate filters that catch tokens early, and the discipline to take small losses without flinching and let the rare large winner run. The engineering is ambitious and the cryptography is real, but the lesson at the center is simple and old. Find an asymmetric edge, protect it from your own worst instincts, and let it compound. What version 1.15.0 adds is the observation that your own worst instincts now include those of the machine you built to help you, and that it too should be asked to show its work.

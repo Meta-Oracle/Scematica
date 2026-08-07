@@ -2,6 +2,131 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## Unreleased
+
+### alchem-link v0.23.0 — the shell becomes a coding agent
+
+The chat agent could read chains and nothing else. It can now work in a directory: 28
+tools covering file reads, writes and edits, directory creation and search, project
+scaffolding, result export, and — only when switched on — command execution.
+
+**Codegen goes through the generator, not the model.** Asked for a Chainlink consumer,
+the agent calls `generate_consumer` rather than writing Solidity from memory, and the
+system prompt says so explicitly. A model writing that contract from training data
+produces something that compiles, looks right, hardcodes `3600`, and omits the sequencer
+gate. The generator bakes in that feed's *measured* per-chain heartbeat and every check
+`audit` looks for. A plausible-looking contract is the same failure class as a
+plausible-looking price, which is the rule this agent was built around in the first place.
+
+**Two gates, answering different questions.** `Workspace` decides *where* a tool may act:
+paths are fully resolved — symlinks followed, `..` collapsed — and only *then* compared
+against the root, because a string check for `..` does not catch a symlink inside the
+workspace pointing at `/`. `TrustPolicy` and an `Approver` decide *whether* it acts at
+all, with risk declared per tool so a new one cannot arrive unclassified.
+
+**Reading a secret is an exfiltration, not a read.** The non-obvious one, and the reason
+the denylist is not overridable by approval: tool results are sent to a third-party
+model, so reading `.env` hands over `ALCHEMY_API_KEY` to whoever runs that endpoint. Env
+files, PEM and SSH keys, `.npmrc`, cloud credentials and Solana keypairs are refused
+before the prompt is even shown, for reads as much as writes, and are omitted from
+directory listings and search results rather than merely being unreadable. A user cannot
+consent to a disclosure they have not been shown.
+
+**No terminal means deny.** Piped `chat` and CI jobs get `DenyApprover`, because a prompt
+that cannot be answered must not be read as consent. `--yes` is the explicit opt-out and
+has to be typed. Execution is refused outright until `--allow-exec` and then prompts per
+command; it runs without a shell, so the argv in the approval prompt is exactly what
+executes with no second parsing layer in between.
+
+**Refusals say why, accurately.** "Running commands is not enabled in this session" and
+"the user was asked and declined" are different facts. Reporting the second when no
+prompt was shown leaves the user arguing with an assistant about a decision neither of
+them made.
+
+The approval prompt leads with the verb and the path rather than the tool name, and `v`
+shows the unified diff — approving a write you have not seen is a keystroke, not consent.
+Grants are session-scoped and never written to disk. New shell verbs: `:workspace`,
+`:trust`, `:changes`, `:diff`. Tests: **479 → 561**, still all offline;
+`test_agent_workspace.py` is the security suite and most of its cases assert that
+something does *not* happen.
+
+### alchem-link v0.23.0 — the terminal system moves in-package
+
+v0.4.0 made the zero-dependency claim true at install time by pushing the TUI into an
+optional extra. That was a technicality: the user interface was still the one part of the
+product that needed somebody else's code, and anyone who ran `alchem-link-ui` installed
+Textual and everything it pulls. **`alchem_link.term` replaces it** — a complete terminal
+toolkit in six strictly-layered modules, and now there is no extra to install at all.
+
+`ansi.py` negotiates colour depth and degrades rather than breaking: truecolor → xterm-256
+→ the basic sixteen → none. That matters more than it sounds. Emitting `38;2;r;g;b` at a
+16-colour terminal does not gracefully lose colour, it prints the digits as text across
+every frame; and a Windows console ignores escape sequences entirely until
+`ENABLE_VIRTUAL_TERMINAL_PROCESSING` is set, which `enable_vt` does through the Win32 API.
+`screen.py` is a double-buffered cell grid that emits only the runs that changed — an idle
+frame costs **zero bytes**, which is the difference between a dashboard that is usable over
+SSH and one that is not. `input.py` is raw mode plus a *pure* parser from escape sequences
+to named keys, including the ambiguity at the heart of terminal input: a bare `Esc` and the
+first byte of an arrow key are the same byte until you wait and see.
+
+**Black and blue before the first frame.** Drawing black rectangles gets you a black
+*pane*; the columns past the last painted cell and the scrollback above the prompt stay
+whatever colour the terminal was. `boot.py` repaints the terminal's **own defaults** via
+OSC 11/10/12 and hands them back on exit. It runs from `alchem-link`, from
+`alchem-link shell`, and from the compiled binary — the case that matters most, because a
+binary launched by double-click lands in a fresh console with no `TERM` at all, which is
+where colour detection has the fewest hints and where theming matters most.
+
+Colour stayed decoration: `NO_COLOR`, a pipe, `--no-color` and a 16-colour terminal all
+produce **character-identical** text to the full-colour form, asserted in tests, because
+this output goes into CI logs and issue reports at least as often as onto a screen.
+
+**Panels render to lines, not to the screen.** A panel returns `List[(text, Style)]` and
+the app paints a window onto that list, so scrolling and clipping are one slice and every
+renderer stays a pure function. All fifteen panels are tested in their loading, empty and
+error states — which matters more here than usual, since a dashboard that crashes takes the
+whole screen with it.
+
+### alchem-link v0.23.0 — simulation, sessions and statistics
+
+**`simulate` — would your guards have caught it?** `audit` describes a feed as it is now.
+This replays *your* consumer's checks against the failure modes that have already cost
+people money: the LUNA bounded-crash shape, a frozen feed, an L2 sequencer outage, carried
+rounds, a flash spike, a future timestamp. The default guard — a staleness window and a
+positivity check, which is what most integrations have — scores **4/8**, and
+`bounded_crash` is in the miss list: every reading after the feed pins to `minAnswer` is
+fresh, positive, complete and orders of magnitude wrong, and only a consumer-side bound or
+a move limit sees it. There is a healthy control in the set so that "reject everything"
+cannot score well, and `backtest` runs the other direction against real round history,
+where a rejection is a false positive rather than a catch.
+
+**`AlchemLink` — one object per session.** The functional API builds a client per call:
+five reads means five clients, five Multicall3 probes and five sets of statistics that add
+up to nothing reportable. `connect("base")` holds the network, the connection and a cache
+whose TTL comes from each feed's *measured* heartbeat — 20s for a 60s Polygon feed, two
+minutes for an hourly mainnet one. `price(..., strict=True)` raises `StaleFeed` instead of
+returning a reading that merely says so, for the paths where forgetting to check `.stale`
+is the bug.
+
+**`analytics`** computes TWAP time-weighted rather than sample-weighted, because an oracle
+publishes most often precisely when the price is moving and the mean of the answers
+therefore over-weights volatile periods; and annualises volatility by the series' own
+measured spacing rather than an assumed interval, which is why the same asset used to
+report wildly different volatility on Polygon and Ethereum. **`logs`** reads publish
+history from `AnswerUpdated` events — one `eth_getLogs` against a hundred `eth_call`s —
+resolving the proxy first, since the address you consume emits nothing. **`parallel`** fans
+a read across every chain concurrently with failures reported as rows rather than raised.
+**`exporters`** adds CSV, NDJSON, Markdown and a **Prometheus** scrape body, so
+`alchem_link_feed_stale == 1` becomes a complete alert rule. **`registry`** adds search,
+fuzzy pair resolution that suggests rather than silently substitutes, and coverage
+reporting. **`errors`** gives everything one hierarchy under `AlchemLinkError` while
+keeping the builtins the replaced classes inherited — `UnknownNetwork` is still a
+`KeyError`, `AbiError` still a `ValueError` — so no existing `except` clause breaks.
+
+Tests: **214 → 479**, still all offline. That constraint is the point rather than a
+convenience: these modules compute numbers people size positions and write guards against,
+and a number that can only be checked against a live chain cannot be checked at all.
+
 ## What's New in v1.15.0
 
 ### One version for the bot stack

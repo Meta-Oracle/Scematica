@@ -34,10 +34,18 @@ from . import __version__
 from .feeds import FEEDS, feed_count, list_feeds
 from .llm import PROVIDER_ENV, NoProviderConfigured, available_providers
 from .networks import DEFAULT_NETWORK, NETWORKS, get_network
+from .approvals import (
+    CallbackApprover,
+    Decision,
+    Request,
+    Risk,
+    TrustPolicy,
+)
 from .registry import all_assets
 from .render import Console, console
 from .term import ansi, boot
 from .theme import role
+from .workspace import Workspace, WorkspaceError, default_workspace
 
 try:  # pragma: no cover - platform dependent
     import readline
@@ -63,6 +71,13 @@ META_HELP = """
   :auto              infer per line (default)
   :ui                open the full-screen dashboard, then come back here
   :theme             the palette, and what this terminal negotiated
+
+  :workspace [dir]   show or move the directory the agent may write in
+  :cd <dir>          alias for :workspace
+  :trust             what the agent is allowed to do without asking
+  :trust write|exec|readonly|revoke   change it for this session
+  :changes           every file the agent has written this session
+  :diff <path>       what the agent changed in one file
   :providers         LLM providers and which are usable
   :tools             what the agent is allowed to call
   :reset             clear the chat history, keep the session
@@ -121,6 +136,7 @@ class Completer:
         self.meta = [
             ":help", ":commands", ":net", ":chat", ":cmd", ":auto", ":ui", ":theme",
             ":providers", ":tools", ":reset", ":quit", ":q",
+            ":workspace", ":cd", ":trust", ":changes", ":diff",
         ]
         self._matches: List[str] = []
 
@@ -157,13 +173,16 @@ class Shell:
     """The REPL."""
 
     def __init__(self, network: str = DEFAULT_NETWORK, mode: str = "auto",
-                 colour: Optional[bool] = None) -> None:
+                 colour: Optional[bool] = None, workspace: Optional[str] = None,
+                 policy: Optional[TrustPolicy] = None) -> None:
         from .cli import command_names  # imported here to avoid a circular import
 
         self.network = get_network(network).key
         self.mode = mode
         self.palette = Palette(colour)
         self.commands = command_names()
+        self.workspace: Workspace = default_workspace(workspace)
+        self.policy = policy or TrustPolicy.from_env()
         self._agent = None
         self._agent_error = ""
 
@@ -176,12 +195,74 @@ class Shell:
         try:
             from .agent import build_agent
 
-            self._agent = build_agent(network=self.network)
+            self._agent = build_agent(
+                network=self.network,
+                policy=self.policy,
+                # The REPL is the one place there is definitely somebody to ask, so it
+                # installs its own prompt rather than taking the default, which refuses
+                # whenever it cannot see a terminal.
+                approver=CallbackApprover(self.approve),
+            )
+            self._agent.workspace = self.workspace
         except NoProviderConfigured as exc:
             self._agent_error = str(exc)
         except Exception as exc:
             self._agent_error = f"could not start the agent: {exc}"
         return self._agent
+
+    # ── approval ─────────────────────────────────────────────────────────────
+
+    def approve(self, request: Request) -> Decision:
+        """Ask the user about one tool call. Called from inside a chat turn.
+
+        The prompt is written to be answerable: it leads with the verb and the path, not
+        the tool name, and `v` shows the actual diff. Approving a write you have not seen
+        is a keystroke rather than consent, and the edits where that matters most are the
+        ones that look routine.
+        """
+        tone = "bad" if request.risk is Risk.EXECUTE else "warn"
+        print()
+        print("  " + self.palette._role(tone, f" {request.risk.value.upper()} ")
+              + " " + self.palette.blue(request.tool)
+              + (("  " + self.palette._role("accent", request.path)) if request.path else ""))
+        if request.summary:
+            print("  " + self.palette.dim(request.summary))
+
+        options = "[y] once  [a] always here  [n] no  [d] never here"
+        if request.preview:
+            options += "  [v] view"
+
+        while True:
+            print("  " + self.palette.dim(options))
+            try:
+                answer = input("  approve? ").strip().lower()[:1]
+            except (EOFError, KeyboardInterrupt):
+                # An interrupted prompt is a refusal. Treating it as approval would make
+                # Ctrl-C the most dangerous key in the session.
+                print()
+                return Decision.DENY
+            if answer == "v" and request.preview:
+                print()
+                for line in list(request.preview)[:80]:
+                    print("    " + self._diff_line(line))
+                print()
+                continue
+            decision = {
+                "y": Decision.ALLOW, "a": Decision.ALLOW_ALWAYS,
+                "n": Decision.DENY, "d": Decision.DENY_ALWAYS,
+            }.get(answer)
+            if decision is not None:
+                return decision
+            print("  " + self.palette.amber("answer y, a, n or d"))
+
+    def _diff_line(self, line: str) -> str:
+        if line.startswith(("+++", "---", "@@")):
+            return self.palette.blue(line)
+        if line.startswith("+"):
+            return self.palette.green(line)
+        if line.startswith("-"):
+            return self.palette.red(line)
+        return self.palette.dim(line)
 
     # ── prompt plumbing ──────────────────────────────────────────────────────
 
@@ -267,9 +348,24 @@ class Shell:
         agent.network = self.network
 
         def show(call) -> None:
-            mark = self.palette.dim("·") if call.ok else self.palette.red("×")
-            detail = "" if call.ok else self.palette.red(f"  {call.error[:70]}")
-            print(f"  {mark} {self.palette.dim(call.summary)}{detail}")
+            """One line per tool call, marked by what kind of act it was.
+
+            A chain read and a file write are not the same event and should not look the
+            same in the log. The whole point of printing these is that the user can see
+            what the agent did without reading the reply for confessions.
+            """
+            if call.refused:
+                mark, tone = self.palette.amber("○"), self.palette.amber
+            elif not call.ok:
+                mark, tone = self.palette.red("×"), self.palette.red
+            elif call.mutating:
+                mark, tone = self.palette.green("✎"), self.palette.green
+            else:
+                mark, tone = self.palette.dim("·"), self.palette.dim
+            line = f"  {mark} {tone(call.summary)}"
+            if not call.ok:
+                line += self.palette.dim(f"  {call.error[:80]}")
+            print(line)
 
         try:
             turn = agent.ask(text, on_tool=show)
@@ -283,6 +379,13 @@ class Shell:
         print()
         for line in turn.reply.splitlines():
             print(f"  {line}")
+
+        # Restate what actually changed on disk. The model is asked to mention it too,
+        # but a written file is a fact and should not depend on the model remembering.
+        if turn.changed_paths:
+            print()
+            print("  " + self.palette.green("changed: ")
+                  + self.palette.dim(", ".join(turn.changed_paths)))
         print()
         return 0
 
@@ -326,6 +429,14 @@ class Shell:
             return 0
         if verb == "theme":
             return self.run_command("theme")
+        if verb in ("workspace", "cd"):
+            return self._meta_workspace(args)
+        if verb == "trust":
+            return self._meta_trust(args)
+        if verb == "changes":
+            return self._meta_changes()
+        if verb == "diff":
+            return self._meta_diff(args)
         if verb == "providers":
             self._print_providers()
             return 0
@@ -353,6 +464,108 @@ class Shell:
                 print(f"    {self.palette.blue(name):<22} {self.palette.dim(help_text)}")
         print()
 
+    def _meta_workspace(self, args: List[str]) -> int:
+        """Show the workspace, or move it. Moving invalidates nothing but the root."""
+        if not args:
+            summary = self.workspace.summary()
+            print(f"  workspace {self.palette.blue(str(self.workspace.root))}")
+            print(f"  {self.palette.dim(str(summary['changes']) + ' change(s) this session')}")
+            return 0
+        try:
+            self.workspace = Workspace.at(args[0])
+        except WorkspaceError as exc:
+            print("  " + self.palette.red(str(exc)))
+            return 2
+        if self._agent is not None:
+            self._agent.workspace = self.workspace
+        print(f"  workspace → {self.palette.blue(str(self.workspace.root))}")
+        return 0
+
+    def _meta_trust(self, args: List[str]) -> int:
+        """Show or change what the agent may do without asking.
+
+        Changes are session-scoped and never written to disk. A permission that survives
+        the process turns one distracted keystroke into a standing authorisation.
+        """
+        if not args:
+            posture = self.policy.describe()
+            print()
+            for name, value in posture.items():
+                if name in ("session_grants", "rules"):
+                    continue
+                print(f"  {self.palette.blue(name.replace('_', ' ')):<28} {value}")
+            grants = posture["session_grants"]
+            if grants:
+                print(f"\n  {self.palette.bold('granted this session')}")
+                for key, decision in grants.items():
+                    tone = self.palette.green if decision == "allow" else self.palette.red
+                    print(f"    {tone(decision):<8} {key}")
+            print(f"\n  {self.palette.dim(':trust write | exec | readonly | prompt | revoke')}\n")
+            return 0
+
+        verb = args[0].lower()
+        if verb == "write":
+            self.policy.allow_writes, self.policy.read_only = True, False
+            print("  " + self.palette.amber("writes no longer prompt for this session"))
+        elif verb == "exec":
+            self.policy.allow_execute = True
+            print("  " + self.palette.red(
+                "command execution enabled — each command is still shown for approval"))
+        elif verb == "readonly":
+            self.policy.read_only = True
+            self.policy.allow_writes = self.policy.allow_execute = False
+            print("  " + self.palette.green("read-only: writes and commands are refused"))
+        elif verb == "prompt":
+            self.policy.read_only = self.policy.allow_writes = False
+            self.policy.allow_execute = False
+            self.policy.revoke()
+            print("  " + self.palette.green("back to prompting for every write"))
+        elif verb == "revoke":
+            gone = self.policy.revoke(args[1] if len(args) > 1 else "")
+            print(f"  revoked {gone} session grant(s)")
+        else:
+            print("  " + self.palette.red(
+                "usage: :trust [write|exec|readonly|prompt|revoke]"))
+            return 2
+        return 0
+
+    def _meta_changes(self) -> int:
+        changes = self.workspace.changes
+        if not changes:
+            print("  " + self.palette.dim("nothing written this session"))
+            return 0
+        print()
+        for change in changes:
+            tone = {
+                "created": self.palette.green, "modified": self.palette.amber,
+                "deleted": self.palette.red, "moved": self.palette.blue,
+            }.get(change.action, self.palette.dim)
+            print(f"  {tone(change.action):<12} {change.path}"
+                  f"   {self.palette.dim(change.detail)}")
+        total = self.workspace.summary()["bytes_written"]
+        print(f"\n  {self.palette.dim(f'{len(changes)} change(s), {total:,} bytes')}\n")
+        return 0
+
+    def _meta_diff(self, args: List[str]) -> int:
+        """Diff a file against nothing — i.e. show it — or against what is on disk.
+
+        Useful after a turn: `:diff src/Consumer.sol` shows what is there now, which is
+        the cheapest way to check what the agent actually wrote.
+        """
+        if not args:
+            print("  " + self.palette.red("usage: :diff <path>"))
+            return 2
+        try:
+            content = self.workspace.read_text(args[0])
+        except WorkspaceError as exc:
+            print("  " + self.palette.red(str(exc)))
+            return 2
+        print()
+        for number, line in enumerate(content.splitlines()[:200], start=1):
+            print(f"  {self.palette.dim(f'{number:>4}')}  {line}")
+        print()
+        return 0
+
     def _print_providers(self) -> None:
         print()
         for entry in available_providers():
@@ -363,14 +576,40 @@ class Shell:
         print(f"\n  {self.palette.dim(f'Override with {PROVIDER_ENV}=<provider>.')}\n")
 
     def _print_tools(self) -> None:
-        from .agent import TOOL_SCHEMAS
+        """Every tool, grouped by what kind of act it performs.
+
+        Grouped by risk rather than listed flat, because that is the question a user
+        actually has. "What can this thing do to my machine" is answered by the shape of
+        the list, not by reading twenty-eight descriptions.
+        """
+        from .agent import TOOLS
+
+        headings = {
+            "network": "network — reads a chain",
+            "read": "read — reads your files",
+            "write": "write — changes your files",
+            "execute": "execute — runs commands",
+        }
+        grouped: dict = {key: [] for key in headings}
+        for tool in TOOLS.values():
+            grouped[tool.risk.value].append(tool)
 
         print()
-        for schema in TOOL_SCHEMAS:
-            function = schema["function"]
-            summary = function["description"].split(".")[0]
-            print(f"  {self.palette.blue(function['name']):<32} {self.palette.dim(summary)}")
-        print(f"\n  {self.palette.dim('All read-only. Nothing here can sign, spend or write.')}\n")
+        for key, heading in headings.items():
+            tools = grouped[key]
+            if not tools:
+                continue
+            print(f"  {self.palette.bold(heading)}")
+            for tool in sorted(tools, key=lambda t: t.name):
+                summary = tool.description.split(".")[0][:62]
+                print(f"    {self.palette.blue(tool.name):<32} {self.palette.dim(summary)}")
+            print()
+
+        posture = self.policy.describe()
+        print(f"  {self.palette.dim('writes: ')}{posture['writes']}"
+              f"   {self.palette.dim('execute: ')}{posture['execute']}")
+        print(f"  {self.palette.dim('sandboxed to ' + str(self.workspace.root))}")
+        print(f"  {self.palette.dim('Nothing here can sign a transaction or spend gas.')}\n")
 
     def _print_banner(self) -> None:
         print(self.palette.blue(BANNER))
@@ -382,6 +621,17 @@ class Shell:
                   f"{self.palette.dim(provider['model'])}")
         else:
             print(f"  {self.palette.dim('chat disabled — no LLM provider. Commands work regardless; see :providers')}")
+        posture = self.policy.describe()
+        if posture["read_only"]:
+            trust = self.palette.green("read-only")
+        elif posture["execute"] == "allowed":
+            trust = self.palette.red("writes + commands allowed")
+        elif posture["writes"] == "allowed":
+            trust = self.palette.amber("writes allowed without asking")
+        else:
+            trust = self.palette.dim("writes ask first")
+        print(f"  {self.palette.dim('workspace')} "
+              f"{self.palette.blue(str(self.workspace.root))}  {trust}")
         print(f"  {self.palette.dim('Type a command, or ask a question. :help for more.')}\n")
 
     # ── loop ─────────────────────────────────────────────────────────────────
@@ -423,7 +673,9 @@ class Shell:
         return 0
 
 
-def launch(network: str = DEFAULT_NETWORK, mode: str = "auto") -> int:
+def launch(network: str = DEFAULT_NETWORK, mode: str = "auto",
+           workspace: Optional[str] = None,
+           policy: Optional[TrustPolicy] = None) -> int:
     """Run the console, on the product's palette.
 
     ``initialize`` here as well as in :func:`alchem_link.cli.main` because the shell is
@@ -431,7 +683,7 @@ def launch(network: str = DEFAULT_NETWORK, mode: str = "auto") -> int:
     shell` does not theme twice.
     """
     boot.initialize(title=boot.banner_title(__version__))
-    return Shell(network=network, mode=mode).run()
+    return Shell(network=network, mode=mode, workspace=workspace, policy=policy).run()
 
 
 if __name__ == "__main__":

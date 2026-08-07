@@ -34,6 +34,13 @@ live network, and the keyless public endpoints make that true before you have an
     :func:`value_holdings` does the same for a portfolio; :func:`export` renders any of it
     as CSV, NDJSON, Markdown or a Prometheus scrape body.
 
+**Build**
+    The chat agent can work in a directory — read, write and edit files, scaffold
+    projects, export results, run commands — behind two gates: :class:`Workspace`
+    confines it to a root and refuses secrets, and :class:`TrustPolicy` with an
+    :class:`Approver` decides what runs. Default posture is prompt-before-write,
+    execution off, and refuse-everything when there is no terminal to ask at.
+
 **Show**
     :mod:`alchem_link.term` is a complete terminal UI toolkit — screen diffing, colour
     depth negotiation, widgets, an event loop — with no dependencies, which is what lets
@@ -85,6 +92,16 @@ from .analytics import (
     summarise,
     twap,
     volatility,
+)
+from .approvals import (
+    Approver,
+    AutoApprover,
+    Decision,
+    DenyApprover,
+    Request,
+    Risk,
+    TrustPolicy,
+    default_approver,
 )
 from .cache import TTLCache, key_for, memoize, ttl_for_feed
 from .cadence import CadenceProfile, profile_feed, profile_rounds
@@ -255,6 +272,15 @@ from .simulate import (
     run_scenario,
 )
 from .watch import WatchEvent, poll_interval_for, watch_feed
+from .workspace import (
+    PROTECTED_PATTERNS,
+    Change,
+    PathEscape,
+    ProtectedPath,
+    Workspace,
+    WorkspaceError,
+    default_workspace,
+)
 
 __all__ = [
     "__version__",
@@ -466,6 +492,22 @@ __all__ = [
     "event_topic",
     "to_checksum_address",
     "is_checksum_address",
+    # agent workspace and trust
+    "Workspace",
+    "WorkspaceError",
+    "PathEscape",
+    "ProtectedPath",
+    "PROTECTED_PATTERNS",
+    "Change",
+    "default_workspace",
+    "Risk",
+    "Decision",
+    "Request",
+    "TrustPolicy",
+    "Approver",
+    "AutoApprover",
+    "DenyApprover",
+    "default_approver",
     # reference
     "build_package_blueprint",
     "build_integration_map",

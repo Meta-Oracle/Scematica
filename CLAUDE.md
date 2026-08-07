@@ -117,7 +117,7 @@ alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
                         padding differs, so function selectors are computed rather than
                         stored; and including `term/`, the in-package terminal system
                         (see below). Bins: `alchem-link`, `alchem-link-ui`.
-                        Tests: `python -m unittest discover -s tests` (479, all offline)
+                        Tests: `python -m unittest discover -s tests` (561, all offline)
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -201,6 +201,48 @@ nothing from `alchem_link` except `theme`. Four rules:
 
 Layout arithmetic uses `ansi.display_width`, never `len` — escapes and wide glyphs both
 make `len` wrong, and the failure is a column that drifts one cell per row.
+
+## Architecture: alchem-link coding agent (`workspace.py` / `approvals.py` / `agent_tools.py`)
+
+The shell's chat agent can read, write and edit files, scaffold projects, export results,
+and run commands. 28 tools. Two independent gates stand in front of every one of them,
+and they answer different questions — keep them separate:
+
+- **`Workspace` answers *where*.** Every filesystem tool resolves paths through it and
+  nothing else; a tool calling `open()` directly bypasses the whole model. Paths are
+  fully resolved (symlinks followed, `..` collapsed) and *then* compared against the
+  root — a string check for `..` misses a symlink pointing at `/`.
+- **`TrustPolicy` + `Approver` answer *whether*.** Risk is declared per tool
+  (`read`/`network`/`write`/`execute`), so a new tool cannot arrive unclassified.
+  Preflight order is: hard refusals → explicit rules → session grants → configuration.
+  A refusal must never be reversible by a grant given for something else.
+
+Four invariants worth not breaking:
+
+- **Secrets are refused before the prompt, and the refusal is not overridable.** Tool
+  results go to a third-party LLM, so reading `.env` is a disclosure of `ALCHEMY_API_KEY`,
+  not a read. `PROTECTED_PATTERNS` covers env files, PEM/SSH keys, `.npmrc`, cloud
+  credentials and **Solana keypairs** (this repo has them). Protected paths are also
+  omitted from `list_dir`, `walk` and `search` — absent, not merely unreadable.
+- **No terminal means deny.** `default_approver()` returns `DenyApprover` when stdin is
+  not a tty. Piped `chat` and CI must not treat silence as consent; `--yes` is the
+  explicit opt-out.
+- **Execution is off until `--allow-exec`, and runs without a shell.** `split_command`
+  produces an argv (see its docstring for why neither `shlex` mode alone is right on
+  Windows). No pipes, no `;`, no second parsing layer between the approval prompt and
+  what runs.
+- **A refusal tells the model *why*, accurately.** `_refusal()` in `agent.py`
+  distinguishes a policy refusal from a declined prompt. Saying "the user declined" when
+  no prompt was shown makes the assistant report a decision nobody made.
+
+Codegen routes through `generate_consumer`/`generate_project`, never the model: the
+generator bakes in the per-chain **measured** heartbeat and the sequencer gate, and a
+model writing that contract from memory hardcodes 3600. Same failure class as a
+hallucinated price.
+
+Grants are session-scoped and never persisted — a permission surviving the process turns
+one keystroke into standing authorisation. `tests/test_agent_workspace.py` is the
+security suite; most of its cases assert something does *not* happen.
 
 ## Architecture: File-Based IPC
 

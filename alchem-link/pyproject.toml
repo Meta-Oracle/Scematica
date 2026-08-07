@@ -45,6 +45,7 @@ where = ["src"]
 [project.scripts]
 alchem-link = "alchem_link.cli:main"
 alchem-link-ui = "alchem_link.ui:launch"
+alchem-nn = "alchem_nn.cli:main"
 
 [tool.pytest.ini_options]
 addopts = "-p no:anchorpy"

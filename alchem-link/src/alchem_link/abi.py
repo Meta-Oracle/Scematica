@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Sequence, Tuple, Union
 
+from .errors import EncodingError
 from .keccak import event_topic, keccak256, selector, to_checksum_address
 
 WORD = 32
@@ -38,8 +39,12 @@ SELECTOR_DESCRIPTION = selector("description()")            # 0x7284e416
 SELECTOR_VERSION = selector("version()")                    # 0x54fd4d50
 
 
-class AbiError(ValueError):
-    """Raised when a payload cannot be encoded or decoded as the expected ABI shape."""
+class AbiError(EncodingError):
+    """Raised when a payload cannot be encoded or decoded as the expected ABI shape.
+
+    Still a ``ValueError`` — :class:`~alchem_link.errors.EncodingError` inherits it — so
+    the name and the catch semantics both survive the move into the shared hierarchy.
+    """
 
 
 # ── hex plumbing ─────────────────────────────────────────────────────────────────

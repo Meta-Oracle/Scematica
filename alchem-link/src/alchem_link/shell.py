@@ -34,6 +34,10 @@ from . import __version__
 from .feeds import FEEDS, feed_count, list_feeds
 from .llm import PROVIDER_ENV, NoProviderConfigured, available_providers
 from .networks import DEFAULT_NETWORK, NETWORKS, get_network
+from .registry import all_assets
+from .render import Console, console
+from .term import ansi, boot
+from .theme import role
 
 try:  # pragma: no cover - platform dependent
     import readline
@@ -57,6 +61,8 @@ META_HELP = """
   :chat              pin chat mode — every line goes to the agent
   :cmd               pin command mode — every line is a command
   :auto              infer per line (default)
+  :ui                open the full-screen dashboard, then come back here
+  :theme             the palette, and what this terminal negotiated
   :providers         LLM providers and which are usable
   :tools             what the agent is allowed to call
   :reset             clear the chat history, keep the session
@@ -67,38 +73,41 @@ META_HELP = """
 """
 
 
-def _supports_colour() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    return sys.stdout.isatty()
-
-
 class Palette:
-    """Mirrors `theme.py`'s roles so the console matches the TUI."""
+    """Colour helpers for the REPL, sourced from :mod:`alchem_link.theme`.
 
-    def __init__(self, enabled: bool) -> None:
-        self.enabled = enabled
+    This used to hold its own table of xterm-256 indices, which meant the console and the
+    dashboard could — and did — drift apart. It now names the same semantic roles
+    everything else does and lets :class:`~alchem_link.render.Console` encode them for
+    whatever depth the terminal admits to, so a palette change moves the whole product.
+    """
 
-    def _wrap(self, code: str, text: str) -> str:
-        return f"\033[{code}m{text}\033[0m" if self.enabled else text
+    def __init__(self, enabled: Optional[bool] = None, stream=None) -> None:
+        self.console = Console(stream)
+        if enabled is False:
+            self.console.depth = ansi.Depth.NONE
+        self.enabled = self.console.colour
+
+    def _role(self, name: str, text: str) -> str:
+        return self.console.paint(text, role(name))
 
     def blue(self, text: str) -> str:
-        return self._wrap("38;5;75", text)
+        return self._role("accent", text)
 
     def dim(self, text: str) -> str:
-        return self._wrap("38;5;244", text)
+        return self._role("hint", text)
 
     def green(self, text: str) -> str:
-        return self._wrap("38;5;79", text)
+        return self._role("ok", text)
 
     def amber(self, text: str) -> str:
-        return self._wrap("38;5;214", text)
+        return self._role("warn", text)
 
     def red(self, text: str) -> str:
-        return self._wrap("38;5;204", text)
+        return self._role("bad", text)
 
     def bold(self, text: str) -> str:
-        return self._wrap("1", text)
+        return self._role("title", text)
 
 
 class Completer:
@@ -108,8 +117,9 @@ class Completer:
         self.commands = sorted(commands)
         self.networks = sorted(NETWORKS)
         self.pairs = sorted({pair for table in FEEDS.values() for pair in table})
+        self.assets = all_assets()
         self.meta = [
-            ":help", ":commands", ":net", ":chat", ":cmd", ":auto",
+            ":help", ":commands", ":net", ":chat", ":cmd", ":auto", ":ui", ":theme",
             ":providers", ":tools", ":reset", ":quit", ":q",
         ]
         self._matches: List[str] = []
@@ -126,7 +136,7 @@ class Completer:
         # First word is the command; later words are usually a pair.
         if not line.strip() or (len(parts) == 1 and not line.endswith(" ")):
             return self.commands + self.meta
-        return self.pairs + self.networks
+        return self.pairs + self.networks + self.assets
 
     def complete(self, text: str, state: int):  # pragma: no cover - readline callback
         if state == 0:
@@ -152,7 +162,7 @@ class Shell:
 
         self.network = get_network(network).key
         self.mode = mode
-        self.palette = Palette(_supports_colour() if colour is None else colour)
+        self.palette = Palette(colour)
         self.commands = command_names()
         self._agent = None
         self._agent_error = ""
@@ -306,6 +316,16 @@ class Shell:
             self.mode = verb
             print(f"  mode → {verb}")
             return 0
+        if verb == "ui":
+            # The dashboard takes the alternate screen and gives it back; the REPL's
+            # scrollback is untouched, so this really is "look at the board, come back".
+            from .dashboard import Dashboard
+
+            Dashboard(network=self.network).run()
+            boot.initialize(title=boot.banner_title(__version__))
+            return 0
+        if verb == "theme":
+            return self.run_command("theme")
         if verb == "providers":
             self._print_providers()
             return 0
@@ -324,9 +344,10 @@ class Shell:
     # ── informational output ─────────────────────────────────────────────────
 
     def _print_commands(self) -> None:
-        from .cli import LIVE_COMMANDS, REFERENCE_COMMANDS
+        from .cli import LIVE_COMMANDS, OFFLINE_COMMANDS, REFERENCE_COMMANDS
 
-        for title, group in (("live", LIVE_COMMANDS), ("reference", REFERENCE_COMMANDS)):
+        for title, group in (("live", LIVE_COMMANDS), ("offline", OFFLINE_COMMANDS),
+                             ("reference", REFERENCE_COMMANDS)):
             print(f"\n  {self.palette.bold(title)}")
             for name, help_text in group:
                 print(f"    {self.palette.blue(name):<22} {self.palette.dim(help_text)}")
@@ -403,6 +424,13 @@ class Shell:
 
 
 def launch(network: str = DEFAULT_NETWORK, mode: str = "auto") -> int:
+    """Run the console, on the product's palette.
+
+    ``initialize`` here as well as in :func:`alchem_link.cli.main` because the shell is
+    also reachable directly — and it is idempotent, so the common path of `alchem-link
+    shell` does not theme twice.
+    """
+    boot.initialize(title=boot.banner_title(__version__))
     return Shell(network=network, mode=mode).run()
 
 

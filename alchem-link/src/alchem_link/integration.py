@@ -91,10 +91,13 @@ def build_package_blueprint() -> Dict[str, Any]:
             "confirmed against the router's own isChainSupported",
             "Function selectors are computed with a bundled Keccak-256, not stored as "
             "constants to be trusted",
+            "The terminal system is in the package — screen diffing, colour negotiation, "
+            "input parsing and widgets — so the user interface is not an exception to the "
+            "zero-dependency claim",
         ],
         "dependencies": {
             "runtime": "none — standard library only",
-            "tui_only": "textual",
+            "optional": "none — the terminal UI moved in-package in 0.23.0",
             "note": "Keccak-256 is implemented in-package because hashlib ships SHA3-256, "
                     "which uses a different padding byte and produces a different digest",
         },

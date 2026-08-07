@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .abi import decode_string, scale, to_int, to_uint, words
+from .errors import UnknownFeed
 from .multicall import Call, batch_call
 from .networks import DEFAULT_NETWORK, get_network
 from .rpc import RpcClient, client_for
@@ -187,8 +188,7 @@ def get_feed(pair: str, network: str = DEFAULT_NETWORK) -> Feed:
     table = FEEDS.get(network.lower(), {})
     key = pair.upper().replace("-", "/").strip()
     if key not in table:
-        known = ", ".join(sorted(table)) or "none"
-        raise KeyError(f"no feed '{pair}' on {network}. Known pairs: {known}")
+        raise UnknownFeed(pair, network, known=list(table))
     return table[key]
 
 

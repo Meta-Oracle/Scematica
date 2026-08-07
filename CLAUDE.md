@@ -51,6 +51,9 @@ cd alchem-link ; $env:PYTHONPATH="src" ; python -m unittest discover -s tests
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli doctor
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli verify -n base   # registry vs chain
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli audit -n arbitrum # consumer-safety lint
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli simulate           # replay guards vs failure modes
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.dashboard              # full-screen console (no deps)
+cd alchem-link ; pyinstaller alchem-link.spec ; pyinstaller alchem-link-ui.spec       # standalone binaries
 
 # Lint / format
 cargo clippy --workspace --all-targets
@@ -104,16 +107,17 @@ crates/
   agent-playground/     ScemaDEX agent playground / experimentation
                         (published as `scema-agent-playground`). Bin: `playground`
 alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
-                        developer toolkit: oracle consumer-safety auditing, measured
-                        feed cadence, cross-chain divergence, Multicall3-batched reads,
-                        EIP-1559 gas priced in USD, CCIP lane verification, and consumer
-                        codegen. 66 verified feeds across 11 networks.
-                        **Stdlib-only** — including a bundled Keccak-256 (`keccak.py`),
-                        because hashlib ships SHA3-256 and the padding differs, so
-                        function selectors are computed rather than stored. `textual` is
-                        an optional extra (`alchem-link[tui]`), not a dependency.
-                        Bins: `alchem-link`, `alchem-link-ui`.
-                        Tests: `python -m unittest discover -s tests` (214, all offline)
+                        developer toolkit: oracle consumer-safety auditing, guard
+                        simulation, measured feed cadence, cross-chain divergence,
+                        Multicall3-batched reads, event-log history, TWAP/volatility
+                        analytics, EIP-1559 gas priced in USD, CCIP lane verification,
+                        and consumer codegen. 66 verified feeds across 11 networks.
+                        **Stdlib-only, no optional extras** — including a bundled
+                        Keccak-256 (`keccak.py`), because hashlib ships SHA3-256 and the
+                        padding differs, so function selectors are computed rather than
+                        stored; and including `term/`, the in-package terminal system
+                        (see below). Bins: `alchem-link`, `alchem-link-ui`.
+                        Tests: `python -m unittest discover -s tests` (479, all offline)
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -168,6 +172,35 @@ palette change moves both. Three constraints:
 - **No simulation branch.** Unlike the sniper endpoints, these routes read a chain or
   report the error. A fabricated price would defeat the entire point of a staleness
   verdict, and unreadable feeds render as failure rows rather than being dropped.
+
+## Architecture: alchem-link terminal system (`term/`)
+
+As of v0.23.0 the terminal UI is in-package — Textual is gone, and there is no `[tui]`
+extra. `alchem_link/term/` is a complete stdlib TUI toolkit: `ansi.py` (escape sequences
++ truecolor→256→16→none negotiation + Windows VT), `screen.py` (double-buffered cell grid,
+diff blit), `input.py` (raw mode + a pure escape-sequence parser), `widgets.py`,
+`app.py` (event loop + worker pool), `boot.py`. The layering is strict and `term/` imports
+nothing from `alchem_link` except `theme`. Four rules:
+
+- **`theme.py` is inert and authoritative.** Hex values plus semantic `Style` roles, no
+  escape sequences. `ansi` encodes a role for the negotiated depth; `render.py` uses the
+  same roles for line output; `web/lib/alchem/` mirrors the values. Render code names a
+  *role*, never a colour — `tests/test_theme.py` fails the build on a hardcoded hex in
+  any render module, and on status colours that collapse into each other at 256 or 16.
+- **Panels render to `List[Line]`, not to the screen.** A line is a list of
+  `(text, Style)` segments; `Dashboard` paints a window onto the list. Scrolling and
+  clipping are one slice, and every renderer stays a pure function testable without a
+  terminal. Don't paint to a `Screen` from a panel renderer.
+- **Colour is decoration, never the message.** `NO_COLOR`, a pipe, `--no-color` and a
+  16-colour terminal must all produce the same text; `tests/test_render.py` asserts the
+  coloured and plain forms are character-identical.
+- **`boot.initialize()` repaints the terminal's own defaults** (OSC 11/10/12), not just
+  the panes, and is idempotent because the CLI, the shell and the frozen binary each call
+  it. It must always be paired with a `restore()` — leaving someone's terminal themed
+  after exit is breaking it, not theming it.
+
+Layout arithmetic uses `ansi.display_width`, never `len` — escapes and wide glyphs both
+make `len` wrong, and the failure is a column that drifts one cell per row.
 
 ## Architecture: File-Based IPC
 

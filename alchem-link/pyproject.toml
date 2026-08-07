@@ -4,19 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alchem-link"
-version = "0.4.0"
-description = "Alchemy x Chainlink developer toolkit — oracle consumer-safety auditing, measured feed cadence, cross-chain divergence, and batched chain reads with zero dependencies"
+version = "0.23.0"
+description = "Alchemy x Chainlink developer toolkit — oracle consumer-safety auditing, guard simulation, measured feed cadence, cross-chain divergence, and a full terminal UI, with zero dependencies"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-# No runtime dependencies. The library and CLI are standard library only — including
-# Keccak-256, which is implemented in-package because hashlib ships SHA3-256 and the
-# padding differs. Only the TUI needs anything, and it is an extra.
+# No runtime dependencies, and as of 0.23.0 no optional ones either. The library, the
+# CLI and the full-screen dashboard are standard library only — including Keccak-256,
+# which is implemented in-package because hashlib ships SHA3-256 and the padding differs,
+# and including the terminal system itself (alchem_link.term): screen diffing, colour
+# depth negotiation, input parsing and the event loop. The user interface used to be the
+# one place the zero-dependency claim was quietly abandoned; it is not any more.
 dependencies = []
 authors = [{ name = "meta-oracle" }]
-keywords = ["alchemy", "chainlink", "web3", "oracle", "rpc", "defi", "ethereum", "price-feed", "keccak", "multicall", "security"]
+keywords = ["alchemy", "chainlink", "web3", "oracle", "rpc", "defi", "ethereum", "price-feed", "keccak", "multicall", "security", "tui", "terminal", "prometheus", "simulation"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -25,11 +28,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Topic :: Office/Business :: Financial",
     "Topic :: Security",
+    "Topic :: Terminals",
+    "Environment :: Console",
     "Programming Language :: Python :: 3.13",
 ]
-
-[project.optional-dependencies]
-tui = ["textual>=0.61.0"]
 
 [project.urls]
 Homepage = "https://github.com/Meta-Oracle/Scematica"
@@ -44,7 +46,7 @@ where = ["src"]
 
 [project.scripts]
 alchem-link = "alchem_link.cli:main"
-alchem-link-ui = "alchem_link.ui:launch"
+alchem-link-ui = "alchem_link.dashboard:launch"
 alchem-nn = "alchem_nn.cli:main"
 
 [tool.pytest.ini_options]

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from .abi import to_checksum_address
 from .feeds import FEEDS, read_feed
 from .multicall import Call, batch_call
+from .errors import MissingCredential
 from .networks import ALCHEMY_KEY_ENV, DEFAULT_NETWORK
 from .rpc import RpcClient, RpcError, client_for
 
@@ -34,7 +35,7 @@ from .rpc import RpcClient, RpcError, client_for
 MAX_TOKENS_PER_CALL = 100
 
 
-class NeedsAlchemyKey(RuntimeError):
+class NeedsAlchemyKey(MissingCredential, RuntimeError):
     """Raised when a call has no keyless equivalent and no key is configured."""
 
     def __init__(self, method: str) -> None:
@@ -42,8 +43,10 @@ class NeedsAlchemyKey(RuntimeError):
             f"{method} is an Alchemy Enhanced API and the current endpoint is not "
             f"authenticated. Set {ALCHEMY_KEY_ENV} (or ALCHEMY_URL) and retry. "
             "Standard JSON-RPC has no equivalent — token holdings cannot be enumerated "
-            "from chain state alone."
+            "from chain state alone.",
+            env_var=ALCHEMY_KEY_ENV,
         )
+        self.method = method
 
 
 @dataclass

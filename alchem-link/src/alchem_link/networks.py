@@ -12,6 +12,8 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from .errors import UnknownNetwork
+
 ALCHEMY_KEY_ENV = "ALCHEMY_API_KEY"
 ALCHEMY_URL_ENV = "ALCHEMY_URL"
 
@@ -158,8 +160,7 @@ def get_network(key: str) -> Network:
     try:
         return NETWORKS[key.lower()]
     except KeyError:
-        known = ", ".join(sorted(NETWORKS))
-        raise KeyError(f"unknown network '{key}'. Known networks: {known}") from None
+        raise UnknownNetwork(key, known=list(NETWORKS)) from None
 
 
 @dataclass(frozen=True)

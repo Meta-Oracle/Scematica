@@ -1,9 +1,14 @@
-# Alchem-Link v0.4.0
+# Alchem-Link v0.23.0
 
 An Alchemy × Chainlink developer toolkit that reads chains instead of documentation.
-Live oracle reads, a consumer-safety audit, and measured feed behaviour — from the
-command line, a terminal dashboard, or Python, with **no dependencies beyond the
-standard library**.
+Live oracle reads, a consumer-safety audit, measured feed behaviour, and a simulator that
+replays your guards against the failure modes that have already cost people money — from
+the command line, a full-screen dashboard, or Python, with **no dependencies at all**.
+
+Not "no dependencies except the UI". The terminal system is in the package: screen
+diffing, colour-depth negotiation, input parsing, widgets and the event loop all live in
+`alchem_link.term`. `pip install alchem-link` pulls nothing, and that now includes the
+dashboard.
 
 ```bash
 pip install alchem-link
@@ -153,16 +158,120 @@ if (answeredInRound < roundId) revert StaleRoundAnswer(answeredInRound, roundId)
 Generate the same feed on Ethereum and the sequencer lines are absent — they would be
 noise on an L1. `--lang typescript` and `--lang python` emit equivalents.
 
+## Would your guards have caught it?
+
+`audit` tells you about a feed as it is right now. `simulate` asks the question that
+actually decides whether a protocol survives: **given the checks your contract performs,
+what would have happened?**
+
+```bash
+alchem-link simulate
+```
+
+```
+scenario          result  accepted  what it takes to catch
+healthy           clean   8/8       a good guard accepts every round here
+bounded_crash     MISSED  10/10     needs a consumer-side price bound or a move limit — staleness will not catch it
+frozen_feed       caught  5/10      caught by a staleness window sized to the real heartbeat
+sequencer_outage  MISSED  10/10     needs the sequencer uptime gate; the price feed answers throughout
+carried_rounds    MISSED  10/10     needs answeredInRound >= roundId
+flash_spike       MISSED  7/7       needs a move limit; the spike is fresh, positive and complete
+incomplete_round  caught  5/6       needs the updatedAt != 0 check
+clock_skew        caught  5/6       needs signed age arithmetic; unsigned subtraction underflows here
+
+4/8 scenarios handled (50%)
+gaps: bounded_crash, sequencer_outage, carried_rounds, flash_spike
+try --strict, or turn on the specific guard each gap names
+```
+
+That is the *default* guard — a staleness window and a positivity check, which is what
+most integrations have. `--strict` turns everything on and handles all eight. `--naive`
+is `latestRoundData()` and nothing else, and handles two.
+
+`bounded_crash` is the one worth staring at. It is the LUNA shape: the price falls
+through the aggregator's `minAnswer` and the feed pins to the floor. Every observation
+after that is **fresh, positive, complete, and orders of magnitude wrong**. Staleness
+cannot see it. Only a consumer-side bound or a move limit can.
+
+There is a healthy control in the set on purpose — without it, a guard that rejects
+everything would score perfectly.
+
+Then check the other direction, against real history:
+
+```bash
+alchem-link backtest ETH/USD -n base --strict
+```
+
+Rejections there are false positives: rounds the feed legitimately produced that your
+guard would have thrown away. A guard that scores 8/8 on the scenarios and rejects a
+third of real history is not a guard anyone can ship.
+
+## Statistics that account for how oracles publish
+
+```bash
+alchem-link stats ETH/USD -n base
+```
+
+```
+ETH/USD  (base)  30 rounds over 8h 20m
+  last          1,930.24
+  change          +0.412%
+  range         1,918.00 – 1,944.51   (1.38%)
+  twap          1,926.88
+  vs twap            +17 bps
+  volatility        31.4% annualised
+  max drawdown     0.884%
+  largest move      94.2 bps
+  interval      median 20m
+```
+
+Two of those numbers are computed differently from how a naive implementation would.
+
+**TWAP is time-weighted, not sample-weighted.** An oracle publishes on a heartbeat *or*
+on a deviation threshold, so it prints most often precisely when the price is moving —
+which means the mean of the answers systematically over-weights volatile periods. A price
+that sat at 1,900 for fifty minutes and then walked to 1,950 over six rounds has a sample
+mean near 1,940 and a time-weighted mean near 1,905. The second is what a TWAP oracle
+would have reported.
+
+**Volatility is scaled by measured spacing.** Annualising needs the sampling interval;
+assuming one is how the same asset reports wildly different volatility on Polygon (60s
+publishes) and Ethereum (3600s). The interval comes from the timestamps.
+
 ## Commands
 
-**Live** — `price` · `feeds` · `audit` · `inspect` · `history` · `cadence` ·
-`divergence` · `sequencer` · `watch` · `gas` · `holdings` · `transfers` · `block` ·
-`networks` · `doctor` · `verify` · `ccip`
+**Live** — `price` · `feeds` · `audit` · `inspect` · `history` · `updates` · `stats` ·
+`cadence` · `divergence` · `sequencer` · `watch` · `gas` · `holdings` · `transfers` ·
+`block` · `doctor` · `verify` · `ccip`
+
+**Offline** — `search` · `networks` · `coverage` · `simulate` · `backtest` · `theme`
+
+**Interactive** — `ui` · `shell` · `chat` · `providers`
 
 **Reference and codegen** — `generate` · `alchemy` · `chainlink` · `integration` ·
 `blueprint` · `recipes`
 
-Every command takes `-n/--network`, `--rpc-url` and `--json`.
+Every command takes `-n/--network`, `--rpc-url`, `--no-color` and `--format`.
+
+### `--format` — one flag, every command
+
+Every result object exposes `as_dict()`, so anything that returns a list can be emitted
+as `json`, `ndjson`, `csv`, `markdown` or a **Prometheus** scrape body:
+
+```bash
+alchem-link feeds --live -n polygon --format prometheus
+```
+
+```
+# HELP alchem_link_feed_stale 1 when the answer is older than its heartbeat plus tolerance
+# TYPE alchem_link_feed_stale gauge
+alchem_link_feed_stale{network="polygon",pair="ETH/USD"} 0
+alchem_link_feed_age_seconds{network="polygon",pair="ETH/USD"} 41
+```
+
+Scrape that on a timer and `alchem_link_feed_stale == 1` is a complete alert rule — the
+tool stops being something you run when you are worried and starts telling you when to
+be.
 
 ## Batched reads
 
@@ -257,6 +366,32 @@ router 0x881e3A65B4d4a04dD529061dd0071cf975F58bCD  (base)
 
 ## Python API
 
+One object holds a network, a connection and a per-feed cache, so a session is one client
+rather than one per call:
+
+```python
+from alchem_link import connect
+
+link = connect("base")
+link.price("ETH/USD")            # one round trip
+link.price("ETH/USD")            # cached — no round trip
+link.audit()                     # reuses the same client and Multicall3 probe
+link.stats("ETH/USD")            # TWAP, volatility, drawdown over recent history
+link.everywhere("ETH/USD")       # every chain that carries it, concurrently
+link.rpc_stats()                 # what the whole session actually cost
+```
+
+Cache TTLs come from each feed's **measured** heartbeat, not a constant — a Polygon feed
+on a 60-second cadence caches for 20 seconds, an hourly mainnet feed for two minutes.
+`price(..., strict=True)` raises `StaleFeed` instead of returning a reading that says so,
+for the contract-facing paths where forgetting to check `.stale` is the bug.
+
+Every exception descends from `AlchemLinkError`, and the ones that replaced a builtin
+still inherit it — `UnknownNetwork` is a `KeyError`, `AbiError` is a `ValueError` — so
+nothing that caught them before stops working.
+
+The functional API is unchanged:
+
 ```python
 from alchem_link import read_feed, audit_feed, profile_feed, compare_pair
 
@@ -290,6 +425,36 @@ report = batch_call(rpc, [
 print(report.tier, report.block_atomic, report.by_label("balance").one())
 ```
 
+History from event logs rather than by walking rounds — one `eth_getLogs` instead of a
+hundred `eth_call`s — plus the statistics over it:
+
+```python
+from alchem_link import Series, answer_updates, summarise
+
+updates = answer_updates(address, hours=24, network="base")
+stats = summarise(Series.from_updates(updates, "ETH/USD", "base"))
+print(stats.twap, stats.volatility_annual, stats.max_drawdown_pct)
+```
+
+Fan a read across every chain that carries a pair, concurrently, with failures reported
+as rows rather than raised:
+
+```python
+from alchem_link import read_pair_everywhere
+
+sweep = read_pair_everywhere("ETH/USD")
+print(sweep.values(), sweep.failed, f"{sweep.speedup:.1f}x")
+```
+
+Replay your consumer's guards, offline:
+
+```python
+from alchem_link import Guard, audit_guard
+
+result = audit_guard(Guard(max_age_secs=3600, require_positive=True))
+print(result.score, result.failed)     # 0.5 ['bounded_crash', 'sequencer_outage', ...]
+```
+
 ## Zero dependencies, including the hash
 
 `hashlib` ships SHA3-256, which is **not** Keccak-256 — NIST changed the
@@ -310,34 +475,111 @@ tuple-array encoding that `Multicall3.aggregate3` requires — and it is pinned 
 against the standard vectors *and* the four selectors this package previously shipped as
 hand-verified constants.
 
-The TUI is the only part needing a third-party package (`textual`), and it is an optional extra — `pip install alchem-link` pulls nothing at all.
+As of 0.23.0 there is no optional extra either. The dashboard used to need `textual`,
+which made the user interface the one place the zero-dependency claim was quietly
+abandoned. It is not any more — see below.
 
 One practical note baked into the client: several public RPC providers reject Python's
 default `Python-urllib/3.x` User-Agent with a 403, which reads as "the chain is down" if
 you have not hit it before. The client always sends a real one.
 
-## Terminal UI
+## The terminal system
 
 ```bash
-pip install 'alchem-link[tui]'
-alchem-link-ui
+pip install alchem-link
+alchem-link ui
 ```
 
-Eleven panels — Live Feeds, Safety Audit, Cross-chain, L2 Sequencer, Gas, CCIP Lanes,
-plus the reference set. Every panel that talks to a chain does so on a worker thread, so
-an RPC round trip never freezes the app, and results cache per panel until `r`. `n`
-cycles networks; `j`/`k` or arrows navigate; `q` quits.
+```
+  Alchem-Link v0.23.0                              base  ·  66 feeds  ·  truecolor
+ ALCHEM-LINK      ┏━ Live Feeds ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+                  ┃ETH/USD            1,930.24  FRESH      3m 21s ago · hb 20m  ┃
+ Live Feeds       ┃WBTC/USD          67,940.11  FRESH      1m 04s ago · hb 20m  ┃
+ Safety Audit     ┃  Wrapped BTC, not spot BTC — can depeg.                     ┃
+ Analytics        ┃USDC/USD               1.00  FRESH     41m 12s ago · hb 1d   ┃
+ Cross-chain      ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ ...
+ Live Feeds · base          ↑↓/jk scroll · tab pane · n network · r refresh · q quit
+```
 
-Build a standalone executable, no Python needed on the target machine:
+Fifteen panels, including the guard simulator and registry coverage. Every panel that
+talks to a chain does so on a worker thread, so an RPC round trip never freezes the app,
+and results cache per panel until `r`. `n`/`N` cycle networks, `tab` moves focus between
+the rail and the panel, `1`-`9` jump, `q` quits.
+
+### It is black and blue before the first frame
+
+Drawing black rectangles gets you a black *pane*. The columns past the last painted cell,
+the scrollback above the prompt, and anything a subprocess writes all stay whatever colour
+the terminal was. So `alchem_link.term.boot` repaints the terminal's **own defaults** via
+OSC 11/10/12 — background, foreground and cursor — and hands them back on exit. That runs
+from `alchem-link`, from `alchem-link shell`, and from the compiled binary, which is why
+plain `alchem-link price ETH/USD` output sits on the same surface the dashboard does.
+
+Colour is negotiated per stream and degrades rather than breaking: truecolor → xterm-256
+→ the basic sixteen → none. `NO_COLOR`, a pipe, or `--no-color` each reduce output to
+plain text **with the layout intact** — the tests assert the two are character-identical,
+because this output goes into CI logs and issue reports at least as often as onto a
+screen. On Windows, VT processing is enabled through the Win32 API first; without that
+call the whole UI renders as visible `←[38;2;…m` garbage.
+
+### What is actually in there
+
+| Module | Job |
+|---|---|
+| `term/ansi.py` | escape sequences, colour-depth negotiation, display-width measurement |
+| `term/screen.py` | double-buffered cell grid emitting only the runs that changed |
+| `term/input.py` | raw mode, and a pure parser from escape sequences to named keys |
+| `term/widgets.py` | panels, tables, sparklines, gauges, tabs, scroll state |
+| `term/app.py` | event loop, worker pool, resize handling |
+| `term/boot.py` | terminal initialisation — and putting it back |
+
+An idle frame costs **zero bytes**: the screen diffs the back buffer against what is
+actually on the terminal and emits one cursor move per changed run. That is the difference
+between a dashboard that is usable over SSH and one that is not.
+
+The layering is strict — `ansi` knows about bytes, `screen` about cells, `widgets` about
+rectangles, `app` about events — and nothing in the subpackage imports anything from
+`alchem_link` except the inert palette, so it can be read and reused on its own.
+
+### Testable without a terminal
+
+Panels render to a list of `(text, style)` lines; the app paints a window onto that list.
+Scrolling and clipping are one slice on one list, and every renderer is a pure function —
+so `tests/test_dashboard.py` exercises all fifteen panels in their loading, empty and
+error states without a terminal in sight. That matters more here than usual: a dashboard
+that crashes takes the whole screen with it.
+
+### Standalone binaries
+
+No Python needed on the target machine, and nothing to collect — the package has no
+dependencies to bundle:
 
 ```bash
 pip install pyinstaller
-pyinstaller alchem-link-ui.spec
+pyinstaller alchem-link.spec        # the CLI
+pyinstaller alchem-link-ui.spec     # the dashboard
 ```
 
-The palette lives in `alchem_link/theme.py`, the single source for both the Textual
-stylesheet and the inline Rich markup; `tests/test_theme.py` fails if a panel starts
-hardcoding its own colours.
+A binary launched by double-click lands in a fresh console with no `TERM` at all, which is
+where colour detection has the fewest hints and where theming matters most. `boot` detects
+the frozen case and themes it anyway.
+
+### The palette
+
+`alchem_link/theme.py` is the single source: an inert table of hex values and semantic
+`Style` roles, with no escape sequences in it. `ansi` encodes a role for whatever depth is
+available; `render` uses the same roles for line output; the web build under
+`web/lib/alchem/` mirrors the same values.
+
+`tests/test_theme.py` fails the build if any render module hardcodes a colour, if a role
+paints on an undefined surface, or if the three status colours collapse into each other
+once quantised to 256 or 16 colours — which is how a "harmless" palette tweak stops a
+STALE badge from being distinguishable on a bare console.
+
+```bash
+alchem-link theme     # the palette, and what this terminal negotiated
+```
 
 ## Web build
 
@@ -369,13 +611,25 @@ both drop straight into a CI gate.
 python -m unittest discover -s tests
 ```
 
-214 cases, all offline. The RPC transport is stubbed at the single-attempt boundary so
-the real retry policy stays under test, and every TUI panel is rendered in its loading,
-error and empty states.
+479 cases, all offline — no test in this suite reads a chain.
+
+That is a design constraint rather than a convenience. `analytics` and `simulate` compute
+numbers people size positions and write guards against, and a number that can only be
+checked against a live chain cannot be checked at all. The RPC transport is stubbed at the
+single-attempt boundary so the real retry policy stays under test; every dashboard panel is
+rendered in its loading, error and empty states; and the terminal engine is exercised
+against an in-memory screen, including the cases that are invisible until they are
+catastrophic — a diff that reports "nothing changed" when something did, a wide character
+that shifts every cell after it by one column, and an escape sequence emitted at a terminal
+that would render it as literal digits.
 
 ## Requirements
 
-Python 3.10 or later. The TUI needs a terminal with 256-colour support.
+Python 3.10 or later. Nothing else.
+
+The dashboard wants a terminal, but does not require much of one: it negotiates down to
+256 colours, to the basic sixteen, and to no colour at all, and every command works
+unstyled through a pipe.
 
 ## License
 

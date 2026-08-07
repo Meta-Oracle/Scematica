@@ -25,6 +25,7 @@ from .abi import (
     SELECTOR_DESCRIPTION,
     SELECTOR_LATEST_ROUND_DATA,
 )
+from .errors import ProtocolError, TransportError
 from .networks import DEFAULT_NETWORK, Endpoint, resolve_endpoint
 
 DEFAULT_TIMEOUT = 15.0
@@ -35,20 +36,22 @@ DEFAULT_RETRIES = 2
 MAX_BATCH_SIZE = 100
 
 
-class RpcError(RuntimeError):
-    """A JSON-RPC level error — the node answered, and the answer was an error."""
+class RpcError(ProtocolError, RuntimeError):
+    """A JSON-RPC level error — the node answered, and the answer was an error.
+
+    Kept as a distinct name because it predates :mod:`alchem_link.errors` and is what
+    every existing ``except`` clause in the wild names. It is now a
+    :class:`~alchem_link.errors.ProtocolError`, so ``except AlchemLinkError`` catches it,
+    and still a ``RuntimeError``, so nothing that caught it before stops working.
+    """
 
 
-class RpcTransportError(RuntimeError):
+class RpcTransportError(TransportError, RuntimeError):
     """The node could not be reached, or did not answer in time.
 
     ``retryable`` is False for failures that cannot improve on a second attempt —
     a 4xx other than 429, for instance. Retrying those just burns rate limit.
     """
-
-    def __init__(self, message: str, retryable: bool = True) -> None:
-        super().__init__(message)
-        self.retryable = retryable
 
 
 @dataclass

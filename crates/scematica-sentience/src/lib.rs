@@ -61,9 +61,11 @@ pub mod growth_model;
 pub mod master_equation;
 pub mod provenance;
 pub mod axioms;
+pub mod overlay;
 
 pub use types::*;
 pub use sentience::SentienceIndex;
 pub use cognitive_state::CognitiveState;
 pub use master_equation::{IntegratedCognition, MasterEquation};
 pub use cognitive_loop::CognitiveLoop;
+pub use overlay::{Overlay, OverlayTurn, CognitiveReadout, LlmClient, Gate};

@@ -19,6 +19,7 @@ from .master_equation import IntegratedCognition, MasterEquation
 from .cognitive_loop import CognitiveLoop, CycleOutput
 from .cognitive_state import CognitiveState
 from .growth_model import GrowthModel
+from .overlay import Overlay, CognitiveReadout, StdlibOpenAIClient, LLMClient
 
 __all__ = [
     "Bounded", "Confidence", "Provenance", "Observation", "LearningRate",
@@ -26,4 +27,5 @@ __all__ = [
     "RationalityInputs", "LogicInputs", "EthicsInputs", "ActionEvaluation",
     "SentienceIndex", "IntegratedCognition", "MasterEquation",
     "CognitiveLoop", "CycleOutput", "CognitiveState", "GrowthModel",
+    "Overlay", "CognitiveReadout", "StdlibOpenAIClient", "LLMClient",
 ]

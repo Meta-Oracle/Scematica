@@ -1,26 +1,11 @@
+"""Kept for import compatibility.
+
+``build_package_blueprint`` now lives in :mod:`alchem_link.integration`, next to the map
+it embeds. This re-export means ``from alchem_link.core import build_package_blueprint``
+keeps working for anyone who wrote it that way.
+"""
 from __future__ import annotations
 
-from typing import Dict, Any
+from .integration import build_integration_map, build_package_blueprint
 
-
-def build_package_blueprint() -> Dict[str, Any]:
-    """Create the initial blueprint for the Alchemy x Chainlink developer package."""
-    return {
-        "project": "Alchemy x Chainlink Developer Package",
-        "alchemy": {
-            "focus": "Developer workflows, RPC abstractions, and API orchestration",
-            "goal": "Surface reliable onchain integrations for builders",
-        },
-        "chainlink": {
-            "focus": "Oracle patterns, data feeds, and hybrid smart contract logic",
-            "goal": "Enable secure cross-chain and off-chain composability",
-        },
-        "synergy": {
-            "developer_package": "A unified toolkit for reverse-engineering, integration, and experimentation",
-            "next_steps": [
-                "Map Alchemy APIs to Chainlink primitives",
-                "Document integration patterns for smart contract developers",
-                "Create starter examples and reference implementations",
-            ],
-        },
-    }
+__all__ = ["build_package_blueprint", "build_integration_map"]

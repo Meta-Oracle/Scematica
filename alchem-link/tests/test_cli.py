@@ -23,14 +23,15 @@ class CLITests(unittest.TestCase):
     def test_blueprint_command(self):
         result = _run("blueprint")
         self.assertEqual(result.returncode, 0)
-        self.assertIn('"project"', result.stdout)
-        self.assertIn("Alchemy x Chainlink Developer Package", result.stdout)
+        self.assertIn('"coverage"', result.stdout)
+        self.assertIn("Alchem-Link", result.stdout)
 
-    def test_list_command(self):
-        result = _run("list")
+    def test_no_argument_prints_the_command_overview(self):
+        result = _run()
         self.assertEqual(result.returncode, 0)
         self.assertIn("blueprint", result.stdout)
         self.assertIn("integration", result.stdout)
+        self.assertIn("audit", result.stdout)
 
     def test_recipes_command_all(self):
         result = _run("recipes")
@@ -86,12 +87,43 @@ class OfflineLiveCommandTests(unittest.TestCase):
         result = _run("price")
         self.assertEqual(result.returncode, 2)
 
-    def test_list_separates_live_from_reference(self):
-        result = _run("list")
+    def test_overview_separates_live_from_reference(self):
+        result = _run()
         self.assertEqual(result.returncode, 0)
         self.assertIn("price", result.stdout)
         self.assertIn("doctor", result.stdout)
         self.assertIn("ALCHEMY_API_KEY", result.stdout)
+
+    def test_generate_emits_a_consumer_without_touching_the_network(self):
+        """Codegen reads the registry only, so it works with no connectivity."""
+        result = _run("generate", "ETH/USD", "-n", "ethereum")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("contract EthUsdConsumer", result.stdout)
+        self.assertIn("StalePrice", result.stdout)
+        self.assertIn("0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419", result.stdout)
+
+    def test_generated_l2_consumer_includes_the_sequencer_gate(self):
+        result = _run("generate", "ETH/USD", "-n", "base")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("SequencerDown", result.stdout)
+        self.assertIn("GRACE_PERIOD", result.stdout)
+
+    def test_generated_l1_consumer_omits_the_sequencer_gate(self):
+        result = _run("generate", "ETH/USD", "-n", "ethereum")
+        self.assertNotIn("SequencerDown", result.stdout)
+
+    def test_generate_typescript(self):
+        result = _run("generate", "ETH/USD", "--lang", "typescript")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("export async function readEthUsd", result.stdout)
+
+    def test_unknown_pair_is_a_usage_error(self):
+        result = _run("price", "NOPE/USD", "-n", "ethereum")
+        self.assertEqual(result.returncode, 2)
+
+    def test_unknown_command_is_rejected(self):
+        result = _run("teleport")
+        self.assertNotEqual(result.returncode, 0)
 
     def test_version_flag(self):
         result = _run("--version")

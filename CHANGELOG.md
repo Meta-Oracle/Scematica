@@ -2,6 +2,103 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## What's New in v1.15.0
+
+### One version for the bot stack
+
+`scematica-nn` had drifted to 1.14.0 while the rest of the stack sat at 1.13.0, then took
+changes (`equations.rs`) *after* 1.14.0 was already on crates.io — so it could not
+republish under its own number, and the README's version table disagreed with the
+manifests. Every `scematica-*` crate now inherits `[workspace.package] version`, which is
+**1.15.0**; `scematica-nn` and `scematica-suite` no longer pin their own. A crate cannot
+drift ahead of the stack again without editing one line that moves all of them.
+
+1.13.0 and 1.14.0 were never published as a complete stack, so no downstream release is
+skipped. `web/package.json` — the single source for the web dashboard and the Android
+artifact's `versionName`/`versionCode` — moves to 1.15.0 with it. The ScemaDEX SDK family
+(`scemadex-sdk` 0.3.0, `scemadex-mcp`/`scemadex-settle` 0.1.2) is unchanged since its last
+publish and keeps versioning independently below 1.0.
+
+### Collapse detection: dispersion, not magnitude
+
+The DQ\* veto guard tested whether the bearish Q exceeded the best buy Q by a relative
+margin. On 2026-08-05 the net returned `SellPartial` at Q\* ≈ 26.5 against a best-buy Q of
+≈ 13.5 for **25 consecutive pools** and blocked every buy. The guard read that as maximum
+conviction — and on its own terms it was, because a policy collapsed onto one action
+produces a large, stable gap on *every* input. A margin test passes trivially against a
+constant function.
+
+Magnitude cannot distinguish conviction from collapse; only dispersion can. `equations.rs`
+in `scematica-nn` makes the Scematica equations running instrumentation, supplying the
+intelligence ratio `I = Var_Σ[Q*] / E_Σ[Q*]²` — a squared coefficient of variation over a
+32-sample window, below `1e-4` (≈1% relative spread) meaning the valuations do not depend
+on the pool. The sniper now carries an `EquationMonitor` alongside the agent: past a veto
+streak the veto degrades to size-down rather than holding the gate shut, so a
+non-discriminating net keeps training and keeps its sizing influence but cannot silently
+kill the edge. The equation terms publish next to the agent snapshot, so a collapsed
+policy is visible on the dashboard instead of only in the log.
+
+Statements in [EQUATIONS.md](EQUATIONS.md); derivations and the collapse case study in
+[EQUATIONS-ANALYSIS.md](EQUATIONS-ANALYSIS.md).
+
+### alchem-link v0.4.0 — from a reader to an oracle auditor
+
+v0.3.0 could read a price and tell you whether it was stale. The failure modes that
+actually cost protocols money all *return successfully*, and none of them were covered.
+
+**Keccak-256, in-package.** The old package hardcoded four function selectors because
+`hashlib` ships SHA3-256, whose padding differs. `keccak.py` implements the real thing in
+~100 lines of integer arithmetic, so selectors are now **computed**, pinned in tests
+against the standard vectors *and* the four constants that had been verified live. That
+unlocked a full ABI codec — `address`/`uint<N>`/`int<N>`/`bytes<N>`/`bytes`/`string`,
+dynamic arrays and tuples, including the `(address,bool,bytes)[]` that
+`Multicall3.aggregate3` needs — plus EIP-55 checksumming and revert decoding.
+
+**Batched reads.** Multicall3 with a JSON-RPC-batch fallback and a sequential fallback
+below that. Ethereum's 16 feeds went from 48 HTTP round trips (~20s) to **2 (607ms)**, and
+the report says which tier ran: only Multicall3 is block-atomic, without which comparing
+two feeds compares two different moments.
+
+**`audit` — the consumer-safety lint.** Stale rounds, non-positive answers, incomplete
+rounds, carried-over answers (`answeredInRound < roundId`), description/decimals
+mismatches, and `BOUNDED_ANSWER` — the LUNA failure mode, where a feed pinned against its
+`minAnswer` circuit breaker keeps returning the floor, fresh and well-formed and orders of
+magnitude wrong. Seeing it requires resolving the proxy and reading bounds off the
+implementation, which `inspect` now does.
+
+**L2 sequencer gating.** Three uptime feeds, each verified as
+`L2 Sequencer Uptime Status Feed`, with Chainlink's grace period applied — the second
+check almost everyone omits, which reopens a protocol exactly during the post-outage queue
+flush it was written to survive.
+
+**Measured heartbeats.** The registry declared 3600s for every feed, inherited from
+mainnet. `cadence.py` walks round history and separates heartbeat-triggered publishes from
+deviation-triggered ones, recovering both parameters. The real values: **Polygon ~60s**,
+Optimism/Base 1200s, Arbitrum USDC 300s. A 3600s staleness check on Polygon would not fire
+until the feed had been dead for an hour. It also refuses to guess — a window with no quiet
+period reports the heartbeat as *not observed* rather than inventing one from where the
+window happened to end.
+
+**Cross-chain divergence.** The same pair on every chain that carries it, in basis points,
+with stale legs excluded from consensus and outliers attributed. Testnets are excluded
+outright: Sepolia's feeds carry unrelated data and were showing up as the widest
+"divergence" in every early run.
+
+**Registry: 18 → 66 feeds, 6 → 11 networks** (adds Avalanche, BNB, Gnosis, Scroll, Linea).
+Every address verified against its own `description()`; the check caught the Gnosis address
+commonly labelled "xDAI/USD" reporting `DAI / USD`. Two candidate CCIP routers had no code
+and were dropped.
+
+**Also:** `generate` emits a consumer contract with every audited check wired in and the
+per-chain measured heartbeat baked into `MAX_AGE`; `gas` prices EIP-1559 tiers in USD
+through the chain's own Chainlink feed; `ccip` verifies routers as `Router 1.2.0` and
+probes lanes via `isChainSupported`; `holdings` values a portfolio keylessly; `watch`
+streams rounds as JSON Lines. The four prose-dict reference modules now report what the
+package actually does and what the current endpoint can actually reach.
+
+CLI moved to real subcommands. `textual` became an optional extra (`alchem-link[tui]`), so
+the zero-dependency claim is now true at install time. Tests: **76 → 214**, all offline.
+
 ## What's New in v1.13.0
 
 ### Web dashboard — real data without a bot

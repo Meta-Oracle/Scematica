@@ -49,6 +49,8 @@ cd web ; npm run check:parity                # TS pool scorer vs pool_scorer.rs 
 # alchem-link (Python, outside the cargo workspace)
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m unittest discover -s tests
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli doctor
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli verify -n base   # registry vs chain
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli audit -n arbitrum # consumer-safety lint
 
 # Lint / format
 cargo clippy --workspace --all-targets
@@ -102,10 +104,16 @@ crates/
   agent-playground/     ScemaDEX agent playground / experimentation
                         (published as `scema-agent-playground`). Bin: `playground`
 alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
-                        developer toolkit: live Chainlink feed reads with staleness
-                        detection, RPC diagnostics, and the integration reference.
-                        Stdlib-only except the Textual TUI. Bins: `alchem-link`,
-                        `alchem-link-ui`. Tests: `python -m unittest discover -s tests`
+                        developer toolkit: oracle consumer-safety auditing, measured
+                        feed cadence, cross-chain divergence, Multicall3-batched reads,
+                        EIP-1559 gas priced in USD, CCIP lane verification, and consumer
+                        codegen. 66 verified feeds across 11 networks.
+                        **Stdlib-only** — including a bundled Keccak-256 (`keccak.py`),
+                        because hashlib ships SHA3-256 and the padding differs, so
+                        function selectors are computed rather than stored. `textual` is
+                        an optional extra (`alchem-link[tui]`), not a dependency.
+                        Bins: `alchem-link`, `alchem-link-ui`.
+                        Tests: `python -m unittest discover -s tests` (214, all offline)
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -149,6 +157,12 @@ palette change moves both. Three constraints:
 - `lib/alchem/` is a **port of the Python package**; Python stays authoritative. When
   `feeds.py` or `networks.py` changes, change the TS table too — `/api/alchem/verify`
   is what catches the two drifting, because it asks the chain rather than either table.
+  Heartbeats are **measured per feed per chain** (Polygon ~60s, Base/OP 1200s, mainnet
+  3600s), never a shared 3600 default, and `heartbeatMeasured: false` marks a
+  conservative bound rather than a measurement. Staleness applies
+  `STALENESS_TOLERANCE` (15%) on top, because real publish ceilings run a percent or two
+  over the configured interval and a feed that flickers STALE every cycle trains people
+  to ignore the flag.
 - `lib/alchem/endpoint.ts` is **server-only** (it reads `ALCHEMY_API_KEY` and throws if
   imported in a browser). Client components import `networks.ts`, which is a pure table.
 - **No simulation branch.** Unlike the sniper endpoints, these routes read a chain or

@@ -1,6 +1,6 @@
 'use client'
 
-import { fmtAge, fmtPrice, heartbeatProgress, shortAddress, STATUS_BADGE, STATUS_TEXT } from '@/lib/alchem/format'
+import { fmtAge, fmtHeartbeat, fmtPrice, heartbeatProgress, shortAddress, STATUS_BADGE, STATUS_TEXT } from '@/lib/alchem/format'
 import { useAlchemFeeds } from '@/lib/alchem/queries'
 
 // The live half of alchem-link: every registered Chainlink feed on one network, with the
@@ -89,8 +89,16 @@ export function FeedBoard({ network }: { network: string }) {
                   <span className={`text-[0.65rem] ${STATUS_TEXT[r.status]}`}>
                     {fmtAge(r.ageSecs)} ago
                   </span>
-                  <span className="text-alchem-dim text-[0.6rem]">
-                    heartbeat {r.heartbeatSecs}s
+                  <span
+                    className="text-alchem-dim text-[0.6rem]"
+                    title={
+                      r.heartbeatMeasured
+                        ? `Measured from this feed's round history: ${r.heartbeatSecs}s`
+                        : `Conservative bound — no quiet period was observed in sampling, so the heartbeat is at least ${r.heartbeatSecs}s`
+                    }
+                  >
+                    heartbeat {fmtHeartbeat(r.heartbeatSecs)}
+                    {r.heartbeatMeasured ? '' : '*'}
                   </span>
                   <a
                     href={`${data.explorer}/address/${r.address}`}

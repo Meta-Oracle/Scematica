@@ -4,14 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alchem-link"
-version = "0.3.0"
-description = "Alchemy x Chainlink developer toolkit — live Chainlink feed reads, RPC diagnostics, and integration reference"
+version = "0.4.0"
+description = "Alchemy x Chainlink developer toolkit — oracle consumer-safety auditing, measured feed cadence, cross-chain divergence, and batched chain reads with zero dependencies"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["textual>=0.61.0"]
+# No runtime dependencies. The library and CLI are standard library only — including
+# Keccak-256, which is implemented in-package because hashlib ships SHA3-256 and the
+# padding differs. Only the TUI needs anything, and it is an extra.
+dependencies = []
 authors = [{ name = "meta-oracle" }]
-keywords = ["alchemy", "chainlink", "web3", "solana", "oracle", "rpc", "defi"]
+keywords = ["alchemy", "chainlink", "web3", "oracle", "rpc", "defi", "ethereum", "price-feed", "keccak", "multicall", "security"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -21,7 +24,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries",
     "Topic :: Office/Business :: Financial",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3.13",
 ]
+
+[project.optional-dependencies]
+tui = ["textual>=0.61.0"]
 
 [project.urls]
 Homepage = "https://github.com/Meta-Oracle/Scematica"
@@ -36,7 +44,7 @@ where = ["src"]
 
 [project.scripts]
 alchem-link = "alchem_link.cli:main"
-alchem-link-ui = "alchem_link.tui:launch"
+alchem-link-ui = "alchem_link.ui:launch"
 
 [tool.pytest.ini_options]
 addopts = "-p no:anchorpy"

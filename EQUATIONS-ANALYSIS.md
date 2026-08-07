@@ -4,7 +4,7 @@ Companion to [`EQUATIONS.md`](./EQUATIONS.md), which carries the statements alon
 This document derives them, applies the consistency residual to a real fault, and reports
 the measured constants behind every number.
 
-Version 1.13.0 · constants measured 2026-08-06
+Version 1.15.0 · constants measured 2026-08-06
 
 ---
 

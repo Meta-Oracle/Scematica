@@ -16,7 +16,20 @@ export function fmtPrice(value: number): string {
 export function fmtAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`
+}
+
+/**
+ * Heartbeats span 60s to 86400s across the registry, so raw seconds are unreadable —
+ * "86400s" is a day. Mirrors `_fmt_secs` in the Python CLI.
+ */
+export function fmtHeartbeat(seconds: number): string {
+  if (!seconds) return '?'
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`
+  if (seconds % 60 === 0) return `${seconds / 60}m`
+  return `${seconds}s`
 }
 
 /** Status → text colour. Mirrors STATUS_COLOUR in `alchem_link/theme.py`. */

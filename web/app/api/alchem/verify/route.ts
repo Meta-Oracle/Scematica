@@ -87,13 +87,19 @@ export async function GET(request: NextRequest) {
         pair: f.pair,
         address: f.address,
         // Whitespace differs between registries ("ETH / USD" vs "ETH/USD"); the pair
-        // identity is what must match, not the formatting.
-        ok: normalise(reading.description) === normalise(f.pair),
+        // identity is what must match, not the formatting. Decimals are part of the
+        // check too — a consumer that hardcodes 1e8 against an 18-decimal feed is off
+        // by ten orders of magnitude, and the registry is what it trusted.
+        ok:
+          normalise(reading.description) === normalise(f.pair) &&
+          reading.decimals === f.decimals,
         description: reading.description,
         decimals: reading.decimals,
         declaredDecimals: f.decimals,
         price: reading.price,
         status: reading.status,
+        heartbeatSecs: f.heartbeatSecs,
+        heartbeatMeasured: f.heartbeatMeasured,
       }
     } catch (err) {
       return {

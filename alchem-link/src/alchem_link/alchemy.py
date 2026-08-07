@@ -1,16 +1,11 @@
+"""Kept for import compatibility.
+
+``summarize_alchemy_capabilities`` used to return a hardcoded dict of prose. It now
+probes the endpoint you are actually pointed at and reports which Enhanced APIs that key
+can reach, so it lives in :mod:`alchem_link.enhanced` beside the calls it describes.
+"""
 from __future__ import annotations
 
-from typing import Dict, Any
+from .enhanced import summarize_alchemy_capabilities
 
-
-def summarize_alchemy_capabilities() -> Dict[str, Any]:
-    """Summarize the core Alchemy developer capabilities relevant to this package."""
-    return {
-        "rpc": "High-throughput node access for transaction submission and chain state reads",
-        "websocket": "Real-time event subscriptions for application and monitoring workflows",
-        "apis": [
-            "Enhanced APIs for token, NFT, and transaction intelligence",
-            "Debug and trace endpoints for smarter development and incident handling",
-        ],
-        "developer_value": "Makes blockchain integration feel practical, observable, and fast to iterate on",
-    }
+__all__ = ["summarize_alchemy_capabilities"]

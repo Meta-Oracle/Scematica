@@ -1,6 +1,6 @@
 [package]
 name = "scematica-nn"
-version = "1.14.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

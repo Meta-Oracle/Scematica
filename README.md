@@ -1,4 +1,4 @@
-# Scematica v1.13.0
+# Scematica v1.15.0
 
 **CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump**
 
@@ -78,27 +78,35 @@ The installed `dashboard` automatically finds an installed `sniper` on `PATH`.
 
 ### Versioning
 
-The crates version independently; the bot stack shares major **1.x**, while the
-SDK and playground are pre-1.0.
+The bot stack moves as one version, set once in `[workspace.package]` — every
+`scematica-*` crate inherits it, so a crate cannot quietly drift ahead of the
+rest again. The ScemaDEX SDK family and the playground version independently and
+are still pre-1.0.
+
+> `scematica-nn` sat at 1.14.0 while the rest of the stack was 1.13.0, then took
+> changes after that version was already on crates.io — it could not republish
+> under its own number. Folding it onto the workspace version at **1.15.0**
+> clears both problems at once. 1.13.0 and 1.14.0 were never published as a
+> complete stack, so nothing downstream is skipped.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.13.0 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.13.0 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.13.0 | `sniper`, `backtest` | bin + lib |
-| `scematica-arb` | 1.13.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
-| `scematica-protocol` | 1.13.0 | `protocol` | bin + lib |
-| `scematica-ai` | 1.13.0 | — | library |
-| `scematica-executor` | 1.13.0 | — | library |
-| `scematica-core` | 1.13.0 | — | library |
-| `scematica-nn` | 1.14.0 | `scema-ddqn` | bin + lib |
+| `scematica-suite` | 1.15.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.15.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.15.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-arb` | 1.15.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.15.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.15.0 | — | library |
+| `scematica-executor` | 1.15.0 | — | library |
+| `scematica-core` | 1.15.0 | — | library |
+| `scematica-nn` | 1.15.0 | `scema-ddqn` | bin + lib |
 | `scemadex-sdk` | 0.3.0 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
 | `scemadex-mcp` | 0.1.2 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
 | `scemadex-settle` | 0.1.2 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
-sourced from `web/package.json` (**1.13.0**). The mobile build reads it at build time to
+sourced from `web/package.json` (**1.15.0**). The mobile build reads it at build time to
 set the app's `versionName`/`versionCode` and names the artifact **`scematica-v<version>.apk`**
 — bump `web/package.json` to version the app. See [docs/mobile-app.md](docs/mobile-app.md).
 
@@ -110,7 +118,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.13.0) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.15.0) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

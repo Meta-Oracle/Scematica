@@ -27,6 +27,13 @@ class Network:
     #: Keyless fallback so `alchem-link price ETH/USD` works with zero setup.
     public_rpc: str
     explorer: str
+    #: Testnet feeds carry test data from a separate node set. They must never be mixed
+    #: into a cross-chain price comparison with mainnets — the numbers are unrelated, and
+    #: averaging them in produces a consensus that describes nothing.
+    testnet: bool = False
+    #: Optimistic/ZK rollups need a sequencer-uptime check alongside any price read.
+    #: See :mod:`alchem_link.sequencer`.
+    layer2: bool = False
 
     def alchemy_url(self, api_key: str) -> str:
         return f"https://{self.alchemy_subdomain}.g.alchemy.com/v2/{api_key}"
@@ -50,6 +57,7 @@ NETWORKS: Dict[str, Network] = {
         alchemy_subdomain="eth-sepolia",
         public_rpc="https://ethereum-sepolia-rpc.publicnode.com",
         explorer="https://sepolia.etherscan.io",
+        testnet=True,
     ),
     "base": Network(
         key="base",
@@ -59,6 +67,7 @@ NETWORKS: Dict[str, Network] = {
         alchemy_subdomain="base-mainnet",
         public_rpc="https://base-rpc.publicnode.com",
         explorer="https://basescan.org",
+        layer2=True,
     ),
     "arbitrum": Network(
         key="arbitrum",
@@ -68,6 +77,7 @@ NETWORKS: Dict[str, Network] = {
         alchemy_subdomain="arb-mainnet",
         public_rpc="https://arbitrum-one-rpc.publicnode.com",
         explorer="https://arbiscan.io",
+        layer2=True,
     ),
     "optimism": Network(
         key="optimism",
@@ -77,6 +87,7 @@ NETWORKS: Dict[str, Network] = {
         alchemy_subdomain="opt-mainnet",
         public_rpc="https://optimism-rpc.publicnode.com",
         explorer="https://optimistic.etherscan.io",
+        layer2=True,
     ),
     "polygon": Network(
         key="polygon",
@@ -86,6 +97,53 @@ NETWORKS: Dict[str, Network] = {
         alchemy_subdomain="polygon-mainnet",
         public_rpc="https://polygon-bor-rpc.publicnode.com",
         explorer="https://polygonscan.com",
+    ),
+    "avalanche": Network(
+        key="avalanche",
+        label="Avalanche C-Chain",
+        chain_id=43114,
+        native_symbol="AVAX",
+        alchemy_subdomain="avax-mainnet",
+        public_rpc="https://avalanche-c-chain-rpc.publicnode.com",
+        explorer="https://snowtrace.io",
+    ),
+    "bnb": Network(
+        key="bnb",
+        label="BNB Smart Chain",
+        chain_id=56,
+        native_symbol="BNB",
+        alchemy_subdomain="bnb-mainnet",
+        public_rpc="https://bsc-rpc.publicnode.com",
+        explorer="https://bscscan.com",
+    ),
+    "gnosis": Network(
+        key="gnosis",
+        label="Gnosis Chain",
+        chain_id=100,
+        native_symbol="xDAI",
+        alchemy_subdomain="gnosis-mainnet",
+        public_rpc="https://gnosis-rpc.publicnode.com",
+        explorer="https://gnosisscan.io",
+    ),
+    "scroll": Network(
+        key="scroll",
+        label="Scroll",
+        chain_id=534352,
+        native_symbol="ETH",
+        alchemy_subdomain="scroll-mainnet",
+        public_rpc="https://scroll-rpc.publicnode.com",
+        explorer="https://scrollscan.com",
+        layer2=True,
+    ),
+    "linea": Network(
+        key="linea",
+        label="Linea",
+        chain_id=59144,
+        native_symbol="ETH",
+        alchemy_subdomain="linea-mainnet",
+        public_rpc="https://linea-rpc.publicnode.com",
+        explorer="https://lineascan.build",
+        layer2=True,
     ),
 }
 

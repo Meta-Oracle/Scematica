@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from alchem_link.feeds import (
+    STALENESS_TOLERANCE,
     DEFAULT_HEARTBEAT_SECS,
     FEEDS,
     Feed,
@@ -97,8 +98,8 @@ class DecodeReadingTests(unittest.TestCase):
         self.assertFalse(reading.stale)
         self.assertEqual(reading.status, "FRESH")
 
-    def test_stale_once_past_heartbeat(self):
-        beyond = UPDATED_AT + DEFAULT_HEARTBEAT_SECS + 1
+    def test_stale_once_past_heartbeat_plus_tolerance(self):
+        beyond = UPDATED_AT + self.feed.stale_after_secs + 1
         reading = decode_reading(self.feed, "ethereum", RAW_ETH_USD, now=beyond)
         self.assertTrue(reading.stale)
         self.assertEqual(reading.status, "STALE")
@@ -107,6 +108,24 @@ class DecodeReadingTests(unittest.TestCase):
         edge = UPDATED_AT + DEFAULT_HEARTBEAT_SECS
         reading = decode_reading(self.feed, "ethereum", RAW_ETH_USD, now=edge)
         self.assertFalse(reading.stale)
+
+    def test_tolerance_absorbs_a_slightly_overdue_publish(self):
+        """A feed a few percent past its nominal heartbeat is healthy, not stale.
+
+        Measured ceilings run over the configured value — mainnet ETH/USD was observed
+        at 3684s against a 3600s setting — because publishes are triggered by block
+        timestamps. Without slack every feed flickers STALE at the top of its cycle.
+        """
+        slightly_over = UPDATED_AT + DEFAULT_HEARTBEAT_SECS + 90
+        reading = decode_reading(self.feed, "ethereum", RAW_ETH_USD, now=slightly_over)
+        self.assertFalse(reading.stale)
+        self.assertGreater(reading.age_secs, self.feed.heartbeat_secs)
+
+    def test_stale_after_secs_applies_the_tolerance(self):
+        self.assertEqual(
+            self.feed.stale_after_secs,
+            int(self.feed.heartbeat_secs * (1 + STALENESS_TOLERANCE)),
+        )
 
     def test_future_timestamp_clamps_age_to_zero(self):
         reading = decode_reading(self.feed, "ethereum", RAW_ETH_USD, now=UPDATED_AT - 500)

@@ -161,14 +161,68 @@ class RpcClientTests(unittest.TestCase):
         self.assertEqual(client.chain_id(), 137)
         self.assertEqual(client.gas_price_wei(), 1_000_000_000)
 
-    def test_read_aggregator_issues_three_calls(self):
+    def test_read_aggregator_batches_three_calls_into_one_post(self):
+        """The three aggregator reads now share a single HTTP round trip."""
         client = StubClient(
             endpoint(),
-            [{"result": "0xaa"}, {"result": "0xbb"}, {"result": "0xcc"}],
+            [[
+                {"id": 1, "result": "0xaa"},
+                {"id": 2, "result": "0xbb"},
+                {"id": 3, "result": "0xcc"},
+            ]],
         )
         raw = client.read_aggregator("0x" + "11" * 20)
         self.assertEqual(set(raw), {"latest_round_data", "decimals", "description"})
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(raw["latest_round_data"], "0xaa")
+        # One POST carrying three JSON-RPC requests, not three POSTs.
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(len(client.calls[0]), 3)
+
+    def test_batch_pairs_responses_by_id_not_position(self):
+        """Providers may answer out of order; pairing by position would mismatch."""
+        client = StubClient(
+            endpoint(),
+            [[
+                {"id": 3, "result": "0xthree"},
+                {"id": 1, "result": "0xone"},
+                {"id": 2, "result": "0xtwo"},
+            ]],
+        )
+        outcomes = client.batch([("eth_call", []), ("eth_call", []), ("eth_call", [])])
+        self.assertEqual([o.result for o in outcomes], ["0xone", "0xtwo", "0xthree"])
+
+    def test_batch_reports_per_request_errors_without_failing_the_rest(self):
+        client = StubClient(
+            endpoint(),
+            [[
+                {"id": 1, "result": "0xok"},
+                {"id": 2, "error": {"code": -32000, "message": "execution reverted"}},
+            ]],
+        )
+        outcomes = client.batch([("eth_call", []), ("eth_call", [])])
+        self.assertTrue(outcomes[0].ok)
+        self.assertFalse(outcomes[1].ok)
+        self.assertIn("execution reverted", outcomes[1].error)
+
+    def test_batch_falls_back_when_provider_returns_a_single_object(self):
+        """Some endpoints do not honour batch payloads; degrade instead of crashing."""
+        client = StubClient(
+            endpoint(),
+            [
+                {"error": {"code": -32600, "message": "batch not supported"}},
+                {"id": 2, "result": "0xone"},
+                {"id": 3, "result": "0xtwo"},
+            ],
+        )
+        outcomes = client.batch([("eth_call", []), ("eth_call", [])])
+        self.assertEqual([o.result for o in outcomes], ["0xone", "0xtwo"])
+
+    def test_stats_count_batched_reads_separately(self):
+        client = StubClient(endpoint(), [[{"id": 1, "result": "0x1"}, {"id": 2, "result": "0x2"}]])
+        client.batch([("eth_call", []), ("eth_call", [])])
+        self.assertEqual(client.stats.requests, 2)
+        self.assertEqual(client.stats.http_posts, 1)
+        self.assertEqual(client.stats.as_dict()["round_trips_saved"], 1)
 
 
 class GweiTests(unittest.TestCase):

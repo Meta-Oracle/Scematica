@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "check:parity": "node --experimental-strip-types scripts/check-parity.mjs",
+    "scylar:assets": "node scripts/scylar-assets.mjs",
     "mobile:export": "node scripts/mobile-export.mjs",
     "mobile:sync": "npm run mobile:export && cap sync android",
     "mobile:open": "cap open android",
@@ -40,6 +41,7 @@
     "@types/react-dom": "18.2.25",
     "autoprefixer": "^10.0.1",
     "postcss": "^8",
+    "sharp": "^0.35.3",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
   },

@@ -44,6 +44,27 @@ const config: Config = {
         'alchem-green':   '#2ee6a0',
         'alchem-amber':   '#ffb340',
         'alchem-red':     '#ff5c78',
+
+        // ── scylar-terminal ────────────────────────────────────────────────
+        // A third product on the same site, so a third identity: violet on
+        // near-black, against alchem's blue and the sniper's red. These values
+        // are sampled from the character art in `scylar-terminal/
+        // scylar-expressions/` — the portrait sits inside the page, so a
+        // palette that fights it reads as two designs stacked. If the art is
+        // ever regenerated, resample rather than guessing.
+        'scylar-black':   '#05030c',
+        'scylar-surface': '#0c0818',
+        'scylar-hi':      '#150e28',
+        'scylar-border':  '#3a1f6b',
+        'scylar-border-hi':'#5c34a3',
+        'scylar-violet':  '#a970ff',
+        'scylar-violet-hi':'#c9a3ff',
+        'scylar-violet-dim':'#6f45b8',
+        'scylar-text':    '#ded3f0',
+        'scylar-muted':   '#a08cc4',
+        'scylar-dim':     '#6b5a8e',
+        'scylar-green':   '#2ee6a0',
+        'scylar-red':     '#ff5c78',
       },
       fontFamily: {
         mono: ['Space Mono', 'JetBrains Mono', 'Fira Code', 'monospace'],

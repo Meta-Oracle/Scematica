@@ -68,7 +68,7 @@ export default function Home() {
             <span className="text-scema-red-hi">DEEP Q*™ NEURAL ENGINE</span>
           </div>
           <div className="flex items-center gap-3 ml-auto">
-            {/* Sister tool on the same site — its own product, hence its own palette. */}
+            {/* Sister tools on the same site — each its own product, hence its own palette. */}
             <Link
               href="/alchem-link"
               className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-alchem-border
@@ -76,6 +76,14 @@ export default function Home() {
                          hover:shadow-blue-sm transition-all text-xs tracking-widest"
             >
               ◈ ALCHEM-LINK
+            </Link>
+            <Link
+              href="/scylar-terminal"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-scylar-border
+                         text-scylar-violet hover:border-scylar-violet hover:text-scylar-violet-hi
+                         transition-all text-xs tracking-widest"
+            >
+              ◈ SCYLAR
             </Link>
             <HealthBadge />
             <TradeFee />

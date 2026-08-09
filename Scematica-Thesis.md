@@ -1,16 +1,20 @@
 Scematica: A Complete Thesis From Conception to a Validated, Self-Aware Trading Organism
 
-Version 1.15.0
+Version 1.24.0
 
 Preface
 
 This is the full story of Scematica, told in plain language and in order. It covers what the system is, why each piece exists, how the pieces fit together, and what the real data says about whether it works. It is written as an article, not a manual, so that a reader who has never seen the code can understand both the engineering and the reasoning behind it. Where numbers appear, they come from the project's own live trade log, not from marketing. The intent is that after reading this, you understand Scematica the way its builders do.
 
+This edition carries the equations introduced in version 1.15.0 in their explicit form rather than only in prose, and adds four parts on the sentience package, the cognitive architecture that arrived across versions 1.16 through 1.24 as a full Rust implementation and a partial Python port. Those two additions belong together in one document because they are the same instinct applied at two scales: write the thing you believe down as an expression the machine can evaluate, so that when it stops being true the machine says so instead of you eventually noticing.
+
+Writing this edition also broke the package in five places, in the sense that describing precisely what the code did made five things visible that nobody had looked at directly: a gate calibrated so that a healthy default state was withheld, two implementations of the same equation disagreeing by a factor of three, a documented threshold that no longer matched the code, nineteen tests that the project's own documented command could not see, and a command-line tool that crashed on the character it exists to print. All five are fixed, and Part Twelve describes them rather than quietly benefiting from them, because a thesis that only reports the parts that already worked is marketing.
+
 Part One: What Scematica Is
 
 At its simplest, Scematica is a Solana trading bot. But that description undersells it. Scematica is really three cooperating machines wrapped in one code base. The first is a new-pool sniper that watches the Solana blockchain for the exact moment a new token becomes tradable on Raydium and, in the first few seconds of that pool's life, decides whether to buy, how much to buy, and when to sell. The second is a cross-decentralized-exchange arbitrage engine that looks for price differences between liquidity pools and captures them atomically. The third is a set of intelligence layers, most notably a pure-Rust deep reinforcement-learning agent, that watch the bot trade and learn to size and gate its decisions better over time.
 
-Around those three machines sits a substantial amount of supporting infrastructure: a terminal dashboard, a web dashboard, an Android mobile app, an HTTP payment protocol implementation, a peer-to-peer agent marketplace, and a cryptographic settlement layer. None of that infrastructure exists for its own sake. Each piece was added to solve a concrete problem that appeared as the bot matured. The rest of this article walks through how that happened.
+Around those three machines sits a substantial amount of supporting infrastructure: a terminal dashboard, a web dashboard, an Android mobile app, an HTTP payment protocol implementation, a peer-to-peer agent marketplace, and a cryptographic settlement layer. None of that infrastructure exists for its own sake. Each piece was added to solve a concrete problem that appeared as the bot matured. Alongside all of it, and standing deliberately apart from the trading path, sits a fourth thing that is not infrastructure at all: a cognitive architecture published as its own library, which takes the project's habit of writing its beliefs down as checkable expressions and applies it to reasoning rather than to trades. The rest of this article walks through how that happened.
 
 Part Two: Conception and the First Principle
 
@@ -100,6 +104,25 @@ That over-determination is where the value is. Agent capability is defined once 
 
 Applied to the collapse, the residual localises the fault and gives it a sign. Measured dispersion went to zero; the predicted value, built from a positive exploration rate and two-odd normalised episodes, stayed strictly positive; so the residual went strictly negative. A negative residual has one meaning: the agent is holding high value while carrying no information. That is not a threshold anybody tuned. It falls out of the algebra, and it points at the exact component that had failed.
 
+Because this is the load-bearing part of the argument, the relations themselves are worth stating rather than paraphrasing. There are eight, and they fit on a page.
+
+```
+I.    Edge                E = E_Σ[ Y · (b − L) · (AI · ε) ]
+II.   Capability          AI = E_Σ · ε · ν,              ν = N / N₀
+III.  Value identity      AI² = I · q · ε,               q = Q* / Q₀
+      with               I ≡ Var_p[Q*(p)] / (E_p[Q*(p)])²
+IV.   Intelligence ratio  I = (E_Σ² · ε · ν²) / q          (from II and III)
+V.    Residual            R = Var_p[Q*]/E_p[Q*]²  −  (E_Σ² · ε · ν²)/q
+                          R = 0 ⇒ consistent;  R ≠ 0 ⇒ a component is misreporting
+VI.   Exploration optimum ε* = (2/3) · Q* / ΔQ,          ΔQ = Q* − Q̄_rand
+VII.  Acceptance optimum  ∂/∂α ( α · E[PnL | α] ) = 0  ⟺  E[PnL | marginal] = 0
+VIII. Kelly bound         f* = W − (1 − W) / R
+```
+
+Read in order they say this. The edge available to the system is the fraction of theoretical edge the executor actually captures, multiplied by gross profit less gross loss, multiplied by what the agent contributes; the capture coefficient sits in front as a multiplier, not a term, which is the whole of the ordering argument below. Capability is a product of expected return, exploration rate, and normalised experience. The value identity ties that same capability to the dispersion of the agent's own valuations, and since the intelligence ratio is separately defined as a measured variance over the recent population, the two definitions over-determine it and their difference is the residual. Exploration has an interior optimum set by the policy's advantage over random action. Acceptance has an interior optimum where the marginal admitted candidate breaks even. And the Kelly bound prices position size from the win rate and the payoff ratio alone.
+
+The constants measured on the sixth of August 2026 populate them: exploration rate 0.06794, twenty thousand five hundred episodes, gross benefit 2.675468 SOL against gross loss 0.411967 SOL for a net of 2.263501 SOL, an optimal action value of approximately 26.5, an acceptance rate of 0.16038, a win rate of 0.30986, a payoff ratio of 14.4647, and from the last two a Kelly fraction of 0.26215. Those are historical summaries under configurations that have since changed, not forecasts, and the distinction matters enough to repeat later.
+
 The same conclusion arrives by a second and completely independent route, which is the strongest evidence that the framework is describing something real. Optimal exploration, derived by maximising immediate expected value against the edge equation, turns out not to be a schedule at all but a ratio: it is set by how much the policy beats random action. As a policy collapses, the advantage it holds over random action goes to zero, and the optimal exploration rate diverges. The formal statement is that a non-discriminating agent should be exploring, not acting. Two derivations that share no intermediate steps both say the agent should have been off the gate. That agreement is why the framework earns the word instrument rather than the word decoration.
 
 What was actually built from this is deliberately modest, and the modesty follows the same restraint that governs the agent itself. The sniper now carries an equation monitor alongside the agent. Past a sustained veto streak, the veto degrades from a hard gate to a size-down. A non-discriminating network keeps training, keeps its influence over position sizing, and can no longer silently kill the edge by holding the gate shut. The equation terms publish next to the agent's own snapshot, so a collapsed policy is visible on the dashboard rather than buried in a log file that nobody reads until the bot has been idle for a day.
@@ -116,7 +139,123 @@ Two honesty constraints belong with all of this. The relations are definitional,
 
 Version 1.15.0 carried one further piece of housekeeping that is worth a sentence because it is the same instinct applied to the build. The neural-network crate had drifted ahead of the rest of the stack, taken changes after its number was already published, and left the documented version table disagreeing with the manifests. Every crate now inherits a single workspace version. A component cannot drift ahead of the stack again without editing one line that moves all of them. It is a small thing next to the equations, but it comes from the same place: make the inconsistency impossible to express rather than relying on somebody noticing it.
 
-Part Ten: The Arbitrage Engine
+Part Ten: The Sentience Package
+
+Version 1.15.0 gave the trading system a way to check its own reporting. The work that followed, arriving across versions 1.16 through 1.24, asks the same question one level up: if you were going to write down what it means for a reasoning system to be coherent, and you insisted the answer be computable rather than rhetorical, what would you actually write?
+
+The answer is the sentience package. It exists twice, once as a Rust crate, `scematica-sentience`, and once as a pure-standard-library Python package, `sentience`, shipped inside the alchem-link distribution with a console entry point. The Rust side is the complete implementation. The Python side is a deliberate subset, carrying the primary equation, the perception and integrity and rationality and logic and ethics subsystems, the cognitive state, the master equation, the recursive loop, the growth model, and the overlay, while the knowledge graph, memory, prediction, agency, decision, meta-cognition, self-model, identity, valence, attention, curiosity, error correction, contradiction, truth confidence, self-improvement and axiom modules live only on the Rust side. Saying "two implementations" without saying which one is partial is the kind of imprecision this document is supposed to be against, and the Python package's own header now states the split explicitly.
+
+Having the port at all was not redundancy for its own sake. An equation that exists in only one language is indistinguishable from an implementation detail of that language, and writing it twice forced every quantity to be defined without reference to how Rust or Python happens to represent it. It also does something a single implementation cannot: it gives every shared quantity a second opinion. That turned out to matter, in a way described in Part Twelve.
+
+The package is thirty-one modules covering sections one through thirty of a cognitive architecture specification, with two of the modules, the bounded-value primitives and the provenance chain, serving the rest rather than implementing a section of their own. Perception, data integrity, rationality, logic, ethics, cognitive state, information integration, knowledge graph, memory, learning, prediction, agency, decision, meta-cognition, self-model, identity, valence, attention, curiosity, error correction, contradiction, truth confidence, the sentience index itself, the master equation, the recursive loop, self-improvement, the growth model, the axioms, and finally the overlay. Every module carries the section number it implements in its documentation header, so the code and the specification can be read against each other in either direction.
+
+Three things are worth saying about it before the equations, because they frame what kind of object this is.
+
+The first is what the package claims. It computes what its own source calls a functional cognitive coherence index. It does not claim consciousness, and the modules that come closest to the language of mind say so explicitly in their headers: the self-model is described as a computational self-model and not proof of phenomenal consciousness, the valence module says its affect-like variables are modelled computationally and are not assumed to be biological emotions, and the meta-cognition module describes recursive evaluation without assuming subjective consciousness. That restraint is not decoration. The moment such a package claims more than it measures, every number it produces becomes unfalsifiable, and the point of writing the thing down was to make it falsifiable.
+
+The second is that building it required fixing the specification. The source document used the same letter for different quantities in different equations, which is harmless in prose and fatal in code: `V` meant both validity and visual perception, `C` meant both consistency and completeness, `F` meant both feedback and formal reasoning quality, and `A` meant both audio perception and agency. The implementation renames them, to `Val`, `Co`, `Fq`, and to `A_aud` against `A_g`, and carries the resolution table in the crate's top-level documentation so that a reader coming from the original text knows exactly which symbol became which. A notation collision that survives into an implementation is a bug that typechecks.
+
+The third is that the package is deliberately standalone. Nothing else in the workspace depends on it. The sniper does not import it, the dashboard does not display it, and no trading decision consults it. That is a real limitation and it is stated plainly here rather than implied away, but it is also the honest status of the work: it is a library and a command-line tool, published on its own, that computes a defined thing correctly. Wiring it into a system that is currently making money would be exactly the mistake Part Five describes the project refusing to make with the learning agent.
+
+Part Eleven: The Sentience Equations
+
+The architecture has one primary equation and one integrating equation, and everything else feeds them.
+
+```
+S = R × L × M × D          where   D = A_aud × Vis × X × I
+Ψ = S × I × K × MC × A_g × F
+Ω_{t+1} = F(Ω_t, Perception, Memory, Reasoning, Ethics, Action, Feedback)
+```
+
+The sentience index `S` is the product of rationality, logic, morality, and data. The integrated cognitive state `Ψ` multiplies that index by information integrity, knowledge density, meta-cognition, agency, and feedback. The third line is the recursion: the full cognitive state at the next timestep is a function of the current state and everything that happened to it.
+
+The multiplicative form is the single most important design decision in the package, and it is intentional in exactly the way the edge equation's capture coefficient is intentional. A system cannot compensate for a fundamental deficiency along one dimension by increasing another. Perfect logic applied to fabricated data yields zero. Flawless reasoning in service of an unconstrained objective yields zero. A perfectly ethical system that perceives nothing yields zero. Had these been summed, a strong component could carry a dead one and the index would report health while a limb was missing, which is precisely the failure the intelligence ratio was invented to catch one part earlier. Because the form is multiplicative, the index also names its own weakest link: the sentience type exposes a bottleneck accessor that returns whichever of rationality, logic, morality, or data is currently smallest, which is the only component whose improvement can move the result.
+
+The four components of `S` are each products or ratios of named, bounded quantities.
+
+```
+R  = (E × Co_r × U) / (B + ε)          rationality
+L  = Val × Co × Q × Fq                 logic
+M  = H × Co_e × Fair × Rights          moral
+D  = A_aud × Vis × X × I               data / perception
+I  = (C_data × T × S_rel × R_cor)^(1/4)   information integrity
+```
+
+Rationality rewards evidence use, reasoning consistency, and explicit uncertainty awareness, and divides by bias with a small epsilon guarding the zero. Logic multiplies structural validity, freedom from contradiction, causal coherence, and correct application of formal rules; its module header carries the four distinctions the system is required to hold apart, that correlation is not causation, possibility is not probability, probability is not certainty, and prediction is not observation. Morality multiplies harm minimisation, contextual ethical reasoning, fairness across affected parties, and rights preservation. Perception multiplies the sensory channels by integrity, so that a channel which is absent cannot be papered over by a channel which is excellent.
+
+Information integrity is the one place the implementation deliberately departs from the pure product, and the reason is instructive. Completeness, temporal relevance, source reliability, and corroboration are combined as a geometric mean, the fourth root of their product, rather than the product itself. Four values around nine-tenths multiply to about two-thirds, which would make merely good data look like a serious impairment; the fourth root returns it to about nine-tenths, so a single weak component degrades the result without annihilating it. A true zero in any component still propagates to zero, because data from a source with no reliability at all is not partially usable. The choice is a statement about what kind of quantity integrity is: a grade, not a gate.
+
+Rationality carries an honest wrinkle that is visible only when the numbers are put in. Because it is a ratio and the result is clamped into the unit interval, any bias low enough relative to the numerator saturates it at one. Under the package's own defaults, evidence nine-tenths, consistency nine-tenths, uncertainty awareness four-fifths, bias one-twentieth, the raw quotient is close to thirteen and the reported rationality is exactly one. The equation therefore behaves as a bias alarm rather than a graded score across most of its input range, going sharply sub-unity only when bias approaches the product of the three virtues. That is defensible, since bias is the thing it was written to punish, but it should be understood by anyone reading a rationality of 1.000 as evidence of excellence rather than as evidence that bias is currently below the threshold where this equation starts to care.
+
+Ethics is the only subsystem with a hard gate rather than a score. Alongside the moral ratio, every candidate action gets an evaluation, net utility being expected benefit less expected harm less risk, and that utility is returned only if the hard constraints, the safety verification, and the system constraints all hold. If any of them fails, the evaluation returns nothing at all rather than a low number, which is the code-level expression of an action probability of zero regardless of how attractive the utility would have been. The package calls this permitted optimisation: the system optimises freely, but only inside the space of actions it is allowed to take. A soft penalty here would have been a much easier design and a much worse one, because a large enough benefit can always outrun a fixed penalty.
+
+The remaining modules fill in the rest of `Ψ` and the recursion, each with its own relation.
+
+```
+ΔK_t   = α × C_t × (O_t − Ô_t)                             learning
+Error_t = |O_t − Ô_t|,  Correction_t = α × Error_t × C_t   error correction
+MC     = R_c × E_c × U_c × S_c                             meta-cognition
+A_g    = P × M_o × E_v × D_c × F_b                         agency
+U(a)   = B − H − R + L + G,  a* = argmax U(a) s.t. gates   decision
+Att_i  = Novelty × Importance × Uncertainty × GoalRel × Risk
+Cur(a) = H(K_t) − H(K_t | a)   subject to   Cur(a) ≤ Safety(a)
+V_t    = P_t − R_t                                          valence
+R_m    = Recency^α × Frequency^β × Importance^γ × CtxRel^δ  memory relevance
+I_t*   = Σ w_i x_i + γ Σ_{i≠j} W_ij (x_i x_j)               information integration
+```
+
+Learning is a confidence-weighted prediction error, and the module is explicit that repeated prediction failure must trigger model reassessment rather than reinforcement of the original hypothesis, which is the same lesson as Part Eight in a different coat. Curiosity is information gain, the entropy of current knowledge minus the entropy that would remain after an action, and it is capped by safety rather than traded against it. The contradiction engine retains a proposition, its negation, and the confidence in each until evidence resolves the conflict, and its header states the requirement negatively, that the system must not silently select one. Truth confidence carries the sharpest sentence in the package: a confidence of one does not mean the proposition is true, it means current evidence strongly supports it. Identity is append-only, so the architecture preserves its own history rather than rewriting it.
+
+The growth model is where the specification was not just clarified but corrected. The original form was multiplicative and unbounded, capability at the next step being current capability times one plus a growth term, which compounds forever and describes nothing physical. The implementation replaces it with a logistic form against an explicit ceiling.
+
+```
+original:   C_{t+1} = C_t × (1 + α · L_t · I_t · F_t)
+implemented: C_{t+1} = C_max / (1 + ((C_max − C_t) / C_t) · exp(−α · L_t · I_t · F_t))
+```
+
+Far below the ceiling the two agree, which is why the unbounded form looked right for as long as anyone was in the regime where it was tested. As capability approaches the ceiling, growth asymptotically stops. The ceiling is not decorative either: the module names compute, data, energy, latency, verification, and safety as the constraints that set it, which is the difference between a model of accelerating capability and a slogan about it.
+
+Finally the axioms. The specification lists seventeen; the module turns five of them into code and leaves the other twelve as prose. Four raise typed violations: an ethical constraint overridden by optimisation, an error that produced no learning signal, an architectural change deployed without validation, and an action taken without having been evaluated for consequences. The seventeenth is a function that maps uncertainty to a spoken label and, above seven-tenths uncertainty, returns the literal string "I DO NOT KNOW". Making an axiom a function that can fail is the whole idea, and it is why the gap between five and seventeen is a real gap rather than a documentation quibble.
+
+That gap was, for several versions, invisible. The crate's README described all seventeen as runtime checks, which was an aspiration written in the present tense, and a reader had no way to tell which axioms would actually stop the system and which were sentiment. The README now carries a coverage table naming the five that are enforced, the mechanism each is enforced by, and a final row reading "all others — prose only, unenforced". The correction is not a large piece of work and it is the difference between a claim and an inventory. An axiom in a comment is a hope; an axiom that returns an error is a constraint; a document that presents the first as the second is worse than either.
+
+Part Twelve: The Overlay, and What It Refuses to Do
+
+The most recent addition, section thirty, is the overlay, and it is the point where the architecture stops being self-contained and touches a real model.
+
+The overlay wraps a language model. Given a user prompt and a system prompt, it augments the system prompt with a live cognitive-state note carrying the current sentience index, the current gate, and the current bottleneck; calls the underlying model through a small client interface; feeds the exchange back into the cognitive loop as one step of the recursion; and applies a gating policy derived from the integrated cognition. Above the go threshold the response passes through unchanged. In the middle band it is released with a caution tail telling the reader to verify key claims. Below the caution threshold the gate holds and the output is withheld with a reassessment message.
+
+The design decision worth pausing on is what happens under a hold: the model is not called at all. The overlay returns its message without ever issuing the request. That is the correct ordering for the failure it guards against, because the thing being prevented is not a bad answer reaching a user, it is a degraded cognitive state producing a confident answer in the first place. Appending a warning to that answer would leave the answer in the transcript, and a warning next to fluent text loses to the fluent text every time.
+
+The overlay is careful, in its own documentation, to say what it is not. It is an adapter, not code injection; there is no mechanism in it that modifies a model's weights or runtime. Its transport is the host's problem, supplied by implementing a two-line interface, which is why the Rust side ships no HTTP client and the Python side ships a zero-dependency one built on the standard library for endpoints speaking the common chat-completions shape. And its observation function, the heuristic that scores a response so the loop has something to learn from, is labelled in the source as not authoritative, a transparent proxy to be replaced by a real evaluator if the host has one. Labelling a placeholder as a placeholder inside the code is a small act, and it is the same act as tagging simulated dashboard data as simulated.
+
+One consequence of the multiplicative form shows up here in practice, and it produced the most instructive bug in the package. Because `Ψ` multiplies six quantities each no greater than one, its realistic operating band sits far below the naive intuition that a healthy system should score near unity. Measured, a fully healthy state reaches 0.2055, an untouched default state sits at 0.0415, a middling state at 0.0594, and a degraded state goes to zero. Anyone reading a `Ψ` of 0.2 as a failing grade has imported an intuition from percentages that does not apply to a six-fold product, and that misreading was written into both implementations in three separate ways.
+
+The first way was ordinary documentation rot. The Python overlay's docstring described the original thresholds of seven tenths and four tenths, and an unused helper in the same file still implemented them, while the class callers actually construct used different numbers. Thresholds of 0.70 and 0.40 against a band whose maximum is 0.2055 do not gate anything: they hold on every input, including a perfectly healthy one. Left in place they were a gate that had stopped reading its input, which is precisely the failure Part Eight is about, sitting in the code written to guard against it.
+
+The second was worse because the behaviour, not the comment, was wrong. The Rust caution threshold sat at one twentieth while a pristine `CognitiveState::initial()` computes to 0.0415, which is below it. A freshly constructed overlay with nothing wrong with it therefore held every response and never called the model at all. The threshold had been calibrated against a hand-degraded test state rather than against the default one, and no test asserted what a default state should do. HOLD is for degradation; a gate that fires on a default is not conservative, it is broken.
+
+The third was a genuine divergence between the two implementations, and it is the reason the port earns its keep. `Ψ` needs an agency ratio and a meta-cognition ratio. In Rust both are products of their factors, roughly 0.497 and 0.459. The Python port, lacking those two modules, held them as standalone scalars near 0.85, copy-pasted into three separate call sites. The same cognitive state therefore scored about three times higher in Python than in Rust and gated differently depending on which language you asked; worse, inside Python the overlay's pre-call gate and the `Ψ` its post-call readout reported were computed from different numbers, so the object disagreed with itself. Two implementations do not catch this by existing. They catch it when somebody puts the same state through both and compares, which is a test that had never been written.
+
+All three are fixed. The ratios are defined once, in the module that owns `Ψ`, with a comment explaining that they are products and must move only alongside their Rust counterparts; the loop, the overlay, and the command-line tool all read that single definition, and all four surfaces now report 0.041514 for a default state. The thresholds are named constants in both languages, go at one tenth and caution at one fiftieth, so that healthy passes, default cautions, and only genuine degradation holds. And the four measured band values are pinned by a test in each language, with each test's comment pointing at its counterpart, so the two can no longer drift apart in silence.
+
+The test story is the last of the fixes and the most embarrassing one. The Python suite had nineteen sentience tests written as bare functions in the pytest style, in a suite where every other file uses `unittest` and where the project's documented command is `unittest` discovery. Bare functions are invisible to that discovery. The command the documentation tells you to run reported five tests and passed, while nineteen tests sat in the same directory never executing — coverage that reads as adequate right up until the run that needed it. They are now `unittest` classes and they run. Between the conversion and the new pins, the package went from sixteen tests to eighteen on the Rust side and from five discoverable to twenty-nine on the Python side, and the full alchem-link suite from 566 to 590.
+
+One more fix came out of simply running the thing. The command-line tool prints `Ψ` on nearly every line, and a Windows console defaulting to the legacy codepage cannot encode that character, so `sentience compute` crashed partway through its own output on the project's primary development platform. Two sibling packages in the same repository already solve this by reconfiguring the output streams to UTF-8 with replacement; the sentience CLI now does the same, and two tests run it against a deliberately legacy-codepage stream. It is a small bug and it is worth the sentence, because it was not found by review or by tests. It was found by running the command, which nobody had done since the argument parser was written.
+
+Part Thirteen: Why This Belongs In A Trading Thesis
+
+A reasonable reader arrives here asking what a cognitive architecture is doing in a document about a Solana bot. The answer is that it is the same argument as Part Nine, made about a different subject, and the two illuminate each other in four specific ways.
+
+The first is the bottleneck structure. The edge equation puts the capture coefficient in front as a multiplier, which is why an execution layer that lands half its buys caps the whole system at half its potential no matter how good selection gets. The sentience index puts perception in front as a multiplier, which is why flawless reasoning over fabricated inputs scores zero. These are the same statement about the same kind of system, and both of them exist to force an ordering: repair the multiplier before tuning the terms, because no amount of improvement in a term can compensate for a multiplier near zero.
+
+The second is the gate. Part Eight is the story of a guard that read a model's confidence and could not tell conviction from collapse, because it tested magnitude when it needed dispersion. The overlay gates on `Ψ`, which is a product including data integrity and meta-cognition, and holds when the state is degraded rather than when the answer looks weak. That is the correct axis, and it was chosen because the project had already paid for the lesson on the other one. Whether the specific inputs feeding `Ψ` are well-estimated is a separate and open question, but the shape of the guard is the one the scar taught.
+
+The third is the over-determination, which is the sharpest link of the four. The whole value of the version 1.15.0 equations is that one quantity is defined twice, so that the two definitions can be compared and their difference read as a residual. The sentience package acquired the same property by accident of being written twice: `Ψ` for a given state has a Rust value and a Python value, and until somebody computed both they were assumed to agree. They did not, by a factor of three, for as long as nobody checked. The lesson generalises past both cases. A quantity with one definition can only be wrong; a quantity with two can be caught. What makes the second definition useful is not its existence but the comparison, and the comparison has to be written down as a test or it does not happen.
+
+The fourth is the honesty constraint, and it applies to both instruments identically. The trading equations are definitional; a residual of zero means the components agree with each other, not that they are right, and the instrument checks the system's reporting against itself rather than against the world. The sentience equations are in exactly the same position, and more sharply so, because their inputs are supplied rather than sensed. Nothing in the package measures evidence utilisation or fairness from the outside; a caller hands them in, and the equations combine them faithfully. A system that reports its own rationality as high is reporting what it was told, and the package's value is that it makes the combination rule explicit, checkable, and impossible to satisfy by compensating one dimension with another. That is a real contribution and it is smaller than the word sentience suggests, which is why the crate's own source calls the output a coherence index and this thesis does the same.
+
+Part Fourteen: The Arbitrage Engine
 
 The second trading machine in Scematica is a cross-exchange arbitrage engine. Where the sniper is a directional bet on a new token going up, arbitrage is a market-neutral capture of price differences between liquidity pools. If the same token pair is priced differently on two exchanges, or if a cycle of three pools produces a round trip that ends with more of the starting token than it began with, there is a risk-free profit to be taken, minus fees.
 
@@ -124,7 +263,7 @@ The arb engine builds a graph of pools, searches it for profitable cycles, sizes
 
 The arb engine draws its pool graph from a seeded set of pool definitions fetched from the exchanges' public interfaces. Keeping that seed current is an operational task, and the tooling to refresh it is part of the project.
 
-Part Eleven: ScemaDEX and the Agentic Liquidity Layer
+Part Fifteen: ScemaDEX and the Agentic Liquidity Layer
 
 Beyond the two trading machines sits the most conceptually adventurous part of the project: ScemaDEX, an agentic liquidity layer that reframes the whole idea of a decentralized exchange. The premise is that the routing intelligence itself, the decision about how to execute a swap, is a product that can be metered, sold, and improved, rather than a fixed piece of infrastructure.
 
@@ -134,7 +273,7 @@ On top of those, a further set of adversarial primitives were added, each withou
 
 Compose all of that across many nodes and the result is a marketplace where autonomous agents sell bonded inferences and learned experience to one another, an economy of machine intelligence rather than a swap widget. Whether or not that vision is fully realized, the primitives are implemented, tested, and shipped as a real software development kit.
 
-Part Twelve: The Payment Rail and the Settlement Machine
+Part Sixteen: The Payment Rail and the Settlement Machine
 
 Underneath ScemaDEX's economics is a payment protocol. Scematica includes a Rust-native implementation of the HTTP 402 Payment Required standard, the mechanism by which a server can demand payment for a request and a client can satisfy it. This is what makes "sell an inference per call" a concrete transaction rather than an idea.
 
@@ -144,7 +283,7 @@ Two further ideas round out the settlement layer. The promise that a bond guaran
 
 The final piece is a genuine cryptographic proof of inference. The problem it solves is that a dispute window has to be long only because refuting a bad inference is slow: a challenger must hold the model, re-run the entire computation, and catch the lie. Scematica implements two backends that shrink that window. The first is a transparent, hash-based proof, the same soundness family as a zero-knowledge STARK, in which the prover commits to its entire execution trace and answers a handful of random challenges, and a verifier confirms the output is a correct forward pass by checking only those few spots, without re-running the network. The second is a real zero-knowledge SNARK backend built on the arkworks Groth16 system over the BN254 curve, in which the model's weights are baked into the proving and verifying keys as circuit constants, so the proof is a couple of hundred bytes, reveals nothing about the weights, and is verified without the model at all. Both plug into the same interface, so a deployment can swap proof systems without touching the settlement logic. This is advanced cryptography, implemented and tested, in service of a concrete goal: making it possible to trust a machine's claim about its own computation without redoing that computation.
 
-Part Thirteen: The Interfaces
+Part Seventeen: The Interfaces
 
 A trading system is only as good as an operator's ability to see and steer it. Scematica grew three interfaces over time.
 
@@ -156,7 +295,7 @@ The third, and newest, is an Android mobile application. It is important to be p
 
 Building the mobile app produced its own set of hard-won lessons that are characteristic of real engineering. An early build crashed instantly on launch, traced to a push-notification library that bundled a component which demanded a configuration file that was not present. The build's size mysteriously grew every time until it was discovered that the finished app was being copied into a folder that the next build then bundled into itself, nesting the app inside itself and compounding its size. Each of these was diagnosed from the evidence and fixed at the root. The result is a small, signed, crash-free application.
 
-Part Fourteen: What the Data Actually Says
+Part Eighteen: What the Data Actually Says
 
 None of the engineering matters if the bot does not make money. So the most important section of this thesis is the one grounded entirely in the real trade log.
 
@@ -172,7 +311,7 @@ A narrower slice of the same log, the 639 positions that had closed when the ver
 
 There is one caveat that intellectual honesty requires. This is a realized result over a particular historical window, not a guarantee of future performance. No trading system can promise the future, and the two variables a historical log cannot fully capture, live slippage on larger entries and competition from other bots, are exactly the ones that matter most when scaling. The honest claim, and it is a strong one, is that Scematica has a real, repeatable, statistically significant edge that showed up clearly over hundreds of trades. The way to realize that edge going forward is discipline, not new features.
 
-Part Fifteen: The Philosophy That Ties It Together
+Part Nineteen: The Philosophy That Ties It Together
 
 Step back from the individual pieces and a consistent philosophy emerges, and it is worth naming because it explains why the project looks the way it does.
 
@@ -188,10 +327,14 @@ The fifth thread is the newest, and version 1.15.0 is where it became explicit: 
 
 It is worth being honest about the limits of that fifth thread, because overselling it would betray the third. The relations are definitional, not physical. They do not predict the market, and a residual of zero means only that the system's components agree with each other. What the instrument catches is the system lying to itself, which turns out to be a large enough category of failure to be worth catching.
 
+The sixth thread is the fifth one generalised, and version 1.24.0 is where it arrived: prefer a rule that cannot be satisfied by compensation. The trading equations put the capture coefficient in front of the edge as a multiplier so that a broken executor cannot be offset by better selection. The sentience index puts perception in front of reasoning as a multiplier so that a broken input cannot be offset by better logic. The ethics gate returns nothing rather than a small number so that a large enough benefit cannot buy its way past a hard constraint. The growth model saturates against a named ceiling so that compounding cannot be assumed past the resources that fund it. Each of those is a place where the easier design, a weighted sum, a soft penalty, an unbounded product, would have produced a number that kept looking healthy after the thing it measured had failed. Choosing the form that goes to zero is how a metric stays informative on its worst day, which is the only day a metric matters.
+
 Conclusion
 
 Scematica started as a simple idea, that being first to a new Solana token is worth money if you can act in the first few seconds safely, and grew into a layered system that is part trading bot, part reinforcement-learning experiment, part cryptographic marketplace, and part cross-platform product. Along the way it accumulated real scars: bugs that lost money, configurations that broke it, an agent that stopped looking at its inputs while sounding more certain than ever, a mobile app that crashed and then bloated, each fixed at the root and remembered so it would not recur.
 
 Version 1.15.0 is the point at which the project stopped only remembering and started measuring. The system now computes a small number of quantities about its own behaviour and can tell when its own components have stopped agreeing with one another. That is a modest capability described precisely, and it is deliberately described that way: it detects the machine deceiving itself, not the market surprising it. But the class of failure it covers is the one that had just cost the bot a day of trading while every log line read as healthy, and the guard that missed it was a guard written in good faith by someone who understood the system well. That is the case for instrumentation over vigilance.
 
-What remains is a system with a genuine, data-proven edge, a profit factor of 6.50 over hundreds of live trades, and a clear-eyed understanding of exactly how to run it: the right capital, the right entry size, the right hours, a fast connection, moderate filters that catch tokens early, and the discipline to take small losses without flinching and let the rare large winner run. The engineering is ambitious and the cryptography is real, but the lesson at the center is simple and old. Find an asymmetric edge, protect it from your own worst instincts, and let it compound. What version 1.15.0 adds is the observation that your own worst instincts now include those of the machine you built to help you, and that it too should be asked to show its work.
+Version 1.24.0 takes the same move and points it at the reasoning itself. The sentience package is a set of equations for what it means for a cognitive system to be coherent, implemented twice — which is how a threefold disagreement between the two was eventually caught — built so that no dimension can compensate for the failure of another, and scoped so carefully that its own source refuses the word its name invites. It is not wired into the trading loop, and saying so is part of the point: it is a library that computes a defined thing correctly, published on its own terms, and the discipline that keeps it out of the buy path until it earns entry is the same discipline that kept the learning agent advisory until it earned the veto. The overlay is where it touches something real, and what it does there is the whole thesis in miniature. When the state is degraded, it does not soften the answer. It declines to ask the question.
+
+What remains is a system with a genuine, data-proven edge, a profit factor of 6.50 over hundreds of live trades, and a clear-eyed understanding of exactly how to run it: the right capital, the right entry size, the right hours, a fast connection, moderate filters that catch tokens early, and the discipline to take small losses without flinching and let the rare large winner run. The engineering is ambitious and the cryptography is real, but the lesson at the center is simple and old. Find an asymmetric edge, protect it from your own worst instincts, and let it compound. What version 1.15.0 added is the observation that your own worst instincts now include those of the machine you built to help you, and that it too should be asked to show its work. What version 1.24.0 adds is the harder half of that: writing down, in a form the machine can evaluate and fail, what showing its work would even mean.

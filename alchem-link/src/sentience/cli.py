@@ -2,12 +2,31 @@
 from __future__ import annotations
 import argparse
 import sys
+
+
+def _configure_output() -> None:
+    """Make stdout/stderr survive non-ASCII on a legacy Windows codepage.
+
+    Every line this CLI prints carries Ψ, and a console defaulting to cp1252 raises
+    ``UnicodeEncodeError`` on it — so `sentience compute` crashed halfway through its
+    own output on the project's primary platform. Mirrors `alchem_nn.cli` and
+    `alchem_link.term.boot`; kept local because this package deliberately imports
+    nothing from `alchem_link`.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
 from . import (
     CognitiveLoop, CognitiveState, GrowthModel,
     Perception, RationalityInputs, LogicInputs, EthicsInputs,
     SentienceIndex, MasterEquation, Bounded,
 )
 from .types import Observation
+from .master_equation import DEFAULT_AGENCY_RATIO, DEFAULT_META_RATIO
 
 
 def cmd_compute(args: argparse.Namespace) -> None:
@@ -58,6 +77,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def main(argv=None) -> None:
+    _configure_output()
     parser = argparse.ArgumentParser(prog="sentience",
         description="Singularity Cognitive Architecture — compute S and Ψ")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -69,7 +89,8 @@ def main(argv=None) -> None:
         ("--validity", 0.9), ("--causal", 0.85), ("--formal", 0.85),
         ("--harm", 0.95), ("--contextual", 0.85), ("--fairness", 0.9), ("--rights", 0.95),
         ("--audio", 1.0), ("--visual", 1.0), ("--sensory", 1.0), ("--integrity", 1.0),
-        ("--agency", 0.85), ("--meta", 0.80), ("--knowledge", 0.5), ("--feedback", 0.9),
+        ("--agency", DEFAULT_AGENCY_RATIO), ("--meta", DEFAULT_META_RATIO),
+        ("--knowledge", 0.5), ("--feedback", 0.9),
     ]:
         cp.add_argument(name, type=float, default=default)
     cp.set_defaults(func=cmd_compute)

@@ -7,9 +7,19 @@ modifies an LLM's weights or runtime. What it does:
   2. Calls the underlying LLM client.
   3. Feeds the exchange back into the CognitiveLoop (one Ω_{t+1} step).
   4. Applies a gating policy derived from the integrated cognition Ψ:
-        GO       Ψ >= 0.70  -> pass through unchanged
-        CAUTION  0.40 <= Ψ < 0.70 -> append a Verify note
-        HOLD     Ψ < 0.40   -> withhold output, return a reassessment message
+        GO       Ψ >= go_threshold            -> pass through unchanged
+        CAUTION  caution <= Ψ < go            -> append a Verify note
+        HOLD     Ψ < caution_threshold        -> withhold output, return a
+                                                reassessment message
+
+     The default thresholds are 0.10 (GO) and 0.02 (CAUTION), calibrated to the
+     *measured* operating band of Ψ and identical to the Rust implementation's.
+     Because Ψ is a product of six quantities in [0,1] it compresses toward zero:
+     a fully healthy state reaches ~0.205, a pristine ``CognitiveState.initial()``
+     sits at ~0.0415, and a degraded state goes to ~0. Thresholds carried over
+     from a percentage intuition (0.70 / 0.40) HOLD on every input including
+     healthy ones — a gate that has stopped reading its input — and a CAUTION
+     threshold above 0.0415 holds a state with nothing wrong with it.
   5. Returns the (possibly gated / annotated) response plus a CognitiveReadout.
 
 The LLM transport is pluggable. ``StdlibOpenAIClient`` is provided as a
@@ -26,7 +36,9 @@ from typing import List, Optional, Protocol, runtime_checkable
 from .types import Bounded, Observation
 from .cognitive_state import CognitiveState
 from .cognitive_loop import CognitiveLoop
-from .master_equation import MasterEquation
+from .master_equation import (
+    MasterEquation, DEFAULT_AGENCY_RATIO, DEFAULT_META_RATIO,
+)
 from .sentience import SentienceIndex
 
 
@@ -61,12 +73,9 @@ class OverlayTurn:
     effective_system: str = ""
 
 
-def _gate_from_psi(psi: float) -> str:
-    if psi >= 0.70:
-        return "GO"
-    if psi >= 0.40:
-        return "CAUTION"
-    return "HOLD"
+# Gate thresholds — see the module docstring for the measured band they come from.
+DEFAULT_GO_THRESHOLD = 0.10
+DEFAULT_CAUTION_THRESHOLD = 0.02
 
 
 class StdlibOpenAIClient:
@@ -116,7 +125,7 @@ class Overlay:
     state:
         Optional seed CognitiveState. Defaults to ``CognitiveState.initial()``.
     go_threshold / caution_threshold:
-        Ψ cutoffs for the gating policy.
+        Ψ cutoffs for the gating policy. Defaults match the Rust implementation.
     annotate_prompt:
         When True (default), the system prompt is augmented with the live
         cognitive-state note each turn (the "overlay").
@@ -126,8 +135,8 @@ class Overlay:
         self,
         client: LLMClient,
         state: Optional[CognitiveState] = None,
-        go_threshold: float = 0.18,
-        caution_threshold: float = 0.10,
+        go_threshold: float = DEFAULT_GO_THRESHOLD,
+        caution_threshold: float = DEFAULT_CAUTION_THRESHOLD,
         annotate_prompt: bool = True,
     ) -> None:
         self.client = client
@@ -184,8 +193,8 @@ class Overlay:
             self.loop.state.logic,
             self.loop.state.ethics,
             self.loop.state.perception,
-            agency_ratio=0.85,
-            meta_ratio=0.80,
+            agency_ratio=DEFAULT_AGENCY_RATIO,
+            meta_ratio=DEFAULT_META_RATIO,
             knowledge_density=self.loop.state.knowledge_density.value,
             feedback=0.9,
         )

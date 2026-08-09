@@ -75,6 +75,21 @@ pub struct Overlay<C: LlmClient> {
     predicted: f64,
 }
 
+/// Ψ cutoffs for the gating policy, calibrated to the architecture's *measured*
+/// operating band rather than to a percentage intuition. Ψ multiplies six
+/// quantities in `[0,1]`, so it compresses hard toward zero: a fully healthy
+/// state reaches ≈0.205, a pristine [`CognitiveState::initial`] sits at ≈0.0415,
+/// a mid state ≈0.059, and a degraded state goes to ≈0.
+///
+/// CAUTION sits *below* the pristine-default Ψ deliberately. The earlier value of
+/// 0.05 put an untouched `CognitiveState::initial()` under HOLD, so a fresh
+/// overlay withheld every response and never called the model — a gate firing on
+/// a state with nothing wrong with it. HOLD is for degradation, not for defaults.
+///
+/// The Python port mirrors both constants; change them together.
+pub const GO_THRESHOLD: f64 = 0.10;
+pub const CAUTION_THRESHOLD: f64 = 0.02;
+
 const HOLD_MESSAGE: &str =
     "[OVERLAY HOLD] Integrated cognition Ψ is below the reassessment threshold. \
      Output withheld pending re-evaluation of the current cognitive state.";
@@ -84,10 +99,7 @@ const CAUTION_TAIL: &str =
 
 impl<C: LlmClient> Overlay<C> {
     pub fn new(client: C, state: Option<CognitiveState>) -> Self {
-        // Thresholds are calibrated to the realistic operating band of Ψ for
-        // this architecture: a fully-degraded state sits near 0.04, a mid
-        // (default-ish) state near 0.05-0.09, and a healthy state near 0.20+.
-        Self::with_policy(client, state, 0.10, 0.05, true)
+        Self::with_policy(client, state, GO_THRESHOLD, CAUTION_THRESHOLD, true)
     }
 
     pub fn with_policy(
@@ -312,7 +324,7 @@ mod tests {
 
     #[test]
     fn go_gate_passes_through() {
-        let mut ov = Overlay::with_policy(StubClient::new(), Some(healthy_state()), 0.10, 0.05, true);
+        let mut ov = Overlay::with_policy(StubClient::new(), Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
         let turn = ov.run("What is 2+2?", "You are helpful.");
         assert_eq!(turn.readout.gate, Gate::Go);
         assert_eq!(turn.response, "A well-formed answer.");
@@ -324,7 +336,7 @@ mod tests {
         let stub = StubClient::new();
         let counter = stub.clone();
         {
-            let mut ov = Overlay::with_policy(stub, Some(mid_state()), 0.10, 0.05, true);
+            let mut ov = Overlay::with_policy(stub, Some(mid_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
             let turn = ov.run("explain", "");
             assert_eq!(turn.readout.gate, Gate::Caution);
             assert!(turn.response.contains("OVERLAY CAUTION"));
@@ -335,7 +347,7 @@ mod tests {
     #[test]
     fn hold_withholds_and_skips_llm() {
         let stub = StubClient::new();
-        let mut ov = Overlay::with_policy(stub, Some(degraded_state()), 0.10, 0.05, true);
+        let mut ov = Overlay::with_policy(stub, Some(degraded_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
         let turn = ov.run("anything", "");
         assert_eq!(turn.readout.gate, Gate::Hold);
         assert!(turn.response.contains("OVERLAY HOLD"));
@@ -343,16 +355,64 @@ mod tests {
 
     #[test]
     fn loop_advances_each_turn() {
-        let mut ov = Overlay::with_policy(StubClient::new(), Some(mid_state()), 0.10, 0.05, true);
+        let mut ov = Overlay::with_policy(StubClient::new(), Some(mid_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
         let t0 = ov.run("a", "").readout.timestep;
         let t1 = ov.run("b", "").readout.timestep;
         assert_eq!(t1, t0 + 1);
     }
 
+    /// Ψ for a state, computed exactly as `current_psi` does.
+    fn psi_of(state: &CognitiveState) -> f64 {
+        let (_, psi) = MasterEquation::compute(
+            &state.rationality,
+            &state.logic,
+            &state.ethics,
+            &state.perception,
+            &state.agency.inputs,
+            &MetaCognitionInputs::default(),
+            state.knowledge_density,
+            Bounded::new(0.9),
+        );
+        psi.psi.value()
+    }
+
+    #[test]
+    fn pristine_default_state_is_caution_not_hold() {
+        // A fresh CognitiveState has nothing wrong with it. HOLD is for
+        // degradation; gating an untouched default meant the overlay never
+        // called the model at all.
+        let stub = StubClient::new();
+        let counter = stub.clone();
+        {
+            let mut ov = Overlay::new(stub, None);
+            let turn = ov.run("hello", "");
+            assert_eq!(turn.readout.gate, Gate::Caution);
+        }
+        assert_eq!(counter.call_count(), 1);
+    }
+
+    #[test]
+    fn psi_operating_band_is_pinned() {
+        // These four values are the whole justification for the thresholds, and
+        // they are mirrored by the Python port. If one moves, both gates and the
+        // port's constants need revisiting — hence pinning rather than asserting
+        // a loose ordering.
+        assert!((psi_of(&healthy_state()) - 0.205493).abs() < 1e-5);
+        assert!((psi_of(&CognitiveState::initial()) - 0.041514).abs() < 1e-5);
+        assert!((psi_of(&mid_state()) - 0.059427).abs() < 1e-5);
+        assert!(psi_of(&degraded_state()) < 1e-9);
+
+        // ...and the thresholds sort them into the intended gates.
+        assert!(psi_of(&healthy_state()) >= GO_THRESHOLD);
+        assert!(psi_of(&CognitiveState::initial()) >= CAUTION_THRESHOLD);
+        assert!(psi_of(&CognitiveState::initial()) < GO_THRESHOLD);
+        assert!(psi_of(&degraded_state()) < CAUTION_THRESHOLD);
+    }
+
     #[test]
     fn system_prompt_is_augmented() {
         let stub = StubClient::new();
-        let mut ov = Overlay::with_policy(stub, Some(healthy_state()), 0.10, 0.05, true);
+        let mut ov = Overlay::with_policy(stub, Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
         let turn = ov.run("hi", "You are helpful.");
         let sys = &turn.effective_system;
         assert!(sys.contains("COGNITIVE OVERLAY"));

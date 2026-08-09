@@ -1,0 +1,25 @@
+Scematica: A Complete Thesis From Conception to a Validated, Self-Aware Trading Organism
+
+Version 1.24.0
+
+Preface
+
+This is the full story of Scematica, told in plain language and in order. It covers what the system is, why each piece exists, how the pieces fit together, and what the real data says about whether it works. It is written as an article, not a manual, so that a reader who has never seen the code can understand both the engineering and the reasoning behind it. Where numbers appear, they come from the project's own live trade log, not from marketing. The intent is that after reading this, you understand Scematica the way its builders do.
+
+This edition carries the equations introduced in version 1.15.0 in their explicit form rather than only in prose, and adds four parts on the sentience package, the cognitive architecture that arrived across versions 1.16 through 1.24 as a full Rust implementation and a partial Python port. Those two additions belong together in one document because they are the same instinct applied at two scales: write the thing you believe down as an expression the machine can evaluate, so that when it stops being true the machine says so instead of you eventually noticing.
+
+Writing this edition also broke the package in five places, in the sense that describing precisely what the code did made five things visible that nobody had looked at directly: a gate calibrated so that a healthy default state was withheld, two implementations of the same equation disagreeing by a factor of three, a documented threshold that no longer matched the code, nineteen tests that the project's own documented command could not see, and a command-line tool that crashed on the character it exists to print. All five are fixed, and Part Twelve describes them rather than quietly benefiting from them, because a thesis that only reports the parts that already worked is marketing.
+
+Part One: What Scematica Is
+
+At its simplest, Scematica is a Solana trading bot. But that description undersells it. Scematica is really three cooperating machines wrapped in one code base. The first is a new-pool sniper that watches the Solana blockchain for the exact moment a new token becomes tradable on Raydium and, in the first few seconds of that pool's life, decides whether to buy, how much to buy, and when to sell. The second is a cross-decentralized-exchange arbitrage engine that looks for price differences between liquidity pools and captures them atomically. The third is a set of intelligence layers, most notably a pure-Rust deep reinforcement-learning agent, that watch the bot trade and learn to size and gate its decisions better over time.
+
+Around those three machines sits a substantial amount of supporting infrastructure: a terminal dashboard, a web dashboard, an Android mobile app, an HTTP payment protocol implementation, a peer-to-peer agent marketplace, and a cryptographic settlement layer. None of that infrastructure exists for its own sake. Each piece was added to solve a concrete problem that appeared as the bot matured. Alongside all of it, and standing deliberately apart from the trading path, sits a fourth thing that is not infrastructure at all: a cognitive architecture published as its own library, which takes the project's habit of writing its beliefs down as checkable expressions and applies it to reasoning rather than to trades. The rest of this article walks through how that happened.
+
+Part Two: Conception and the First Principle
+
+Scematica began from a single observation about Solana memecoin trading. When a new token launches and its liquidity pool is created on a decentralized exchange, there is a very short window, often only seconds, in which the price behavior is most exploitable. Being early is everything. A human cannot react in that window. A bot can, but only if it is watching the right event stream, can evaluate a token's safety and quality almost instantly, and can submit a transaction with the right priority fee before the crowd.
+
+That observation set the first principle that governs the entire code base to this day: speed and selectivity are in tension, and the money lives in resolving that tension correctly. If the bot is too slow, it arrives after the move. If it is too selective, it filters out everything and never trades, or worse, it only lets through tokens that are already at their peak. Almost every design decision in Scematica is, at bottom, an attempt to sit at the right point on that trade-off.
+
+The project was built in Rust for reasons that follow directly from the first principle. Rust gives predictable, low-latency execution without a garbage collector pausing the program at the wrong microsecond, and it produces a single native binary that can be deployed close to a fast RPC node. The whole system targets Solana mainnet and is gated behind a token: to run the bot you must hold 250,000 of the project's own SCEMA token. That gate is both an access-control mechanism and an alignment mechanism, tying the people who use the tool to the token that represents it.

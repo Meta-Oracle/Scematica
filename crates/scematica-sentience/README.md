@@ -42,7 +42,25 @@ S_t  = R_t × L_t × M_t × (A_aud_t × Vis_t × X_t × I_t)
 | `self_improvement` | §25 | Validation pipeline for arch changes |
 | `growth_model` | §26 | Logistic saturation model |
 | `provenance` | §4 | ProvenanceChain |
-| `axioms` | §28 | 17 axioms as runtime checks |
+| `axioms` | §28 | 5 of the 17 axioms as runtime checks (see below) |
+
+## Axiom coverage
+
+The specification lists 17 axioms. Five are enforced in code; the other twelve are
+documented but **not** checked at runtime, and this table is the honest inventory
+rather than the aspirational one.
+
+| Axiom | Enforcement |
+|---|---|
+| 6 — every action evaluated for consequences | `require_action_evaluated` → `AxiomViolation` |
+| 7 — ethics not overridable by optimisation | `require_ethical_gate` → `AxiomViolation` |
+| 8 — every error yields a learning signal | `AxiomViolation::ErrorWithoutLearning` |
+| 14 — no architectural change without validation | `require_validation` → `AxiomViolation` |
+| 17 — say "I do not know" when evidence is thin | `epistemic_label` |
+| all others | prose only — unenforced |
+
+An axiom in a comment is a hope; an axiom that returns an error is a constraint.
+Adding a check here is the way to move a row.
 
 ## Quick start
 

@@ -1,4 +1,10 @@
-//! §28  Core Axioms — enforced as runtime checks.
+//! §28  Core Axioms — the subset that is enforced as runtime checks.
+//!
+//! The specification lists seventeen axioms. Five are enforced here — 6, 7, 8, 14
+//! and 17. The remaining twelve exist as prose in the specification and are **not**
+//! checked at runtime; nothing in this module or elsewhere in the crate detects
+//! their violation. That gap is stated rather than implied, because an axiom
+//! nobody checks is indistinguishable from an axiom nobody holds.
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from .types import Bounded, Observation
 from .cognitive_state import CognitiveState
 from .sentience import SentienceIndex
-from .master_equation import MasterEquation
+from .master_equation import (
+    MasterEquation, DEFAULT_AGENCY_RATIO, DEFAULT_META_RATIO,
+)
 
 
 @dataclass
@@ -44,7 +46,7 @@ class CognitiveLoop:
         sentience, psi = MasterEquation.compute(
             self.state.rationality, self.state.logic,
             self.state.ethics, self.state.perception,
-            agency_ratio=0.85, meta_ratio=0.80,
+            agency_ratio=DEFAULT_AGENCY_RATIO, meta_ratio=DEFAULT_META_RATIO,
             knowledge_density=self.knowledge,
             feedback=max(0.0, min(1.0, feedback)),
         )

@@ -14,7 +14,7 @@ scematica-suite = "1"
 ```
 
 ```rust
-use scematica_suite::{core, executor, protocol, ai, nn, sniper, dashboard, scemadex};
+use scematica_suite::{core, executor, protocol, ai, nn, sniper, dashboard, scemadex, sentience};
 
 let agent = nn::DQNAgent::default();
 let dex = scemadex::reference_client();
@@ -30,6 +30,10 @@ let dex = scemadex::reference_client();
 | `sniper` | `scematica-sniper` | new-pool sniper engine |
 | `dashboard` | `scematica-dashboard` | ratatui monitoring TUI |
 | `scemadex` | `scemadex-sdk` | agentic-liquidity SDK |
+| `sentience` | `scematica-sentience` | Ψ/Ω cognitive architecture + LLM gating overlay |
+
+Every re-export except `sentience` also ships a binary; `sentience` is a library
+only, so it has no launcher subcommand.
 
 ## As a launcher
 

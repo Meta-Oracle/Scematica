@@ -412,10 +412,33 @@ mod tests {
     #[test]
     fn system_prompt_is_augmented() {
         let stub = StubClient::new();
-        let mut ov = Overlay::with_policy(stub, Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
-        let turn = ov.run("hi", "You are helpful.");
+        let sent = stub.clone();
+        let turn = {
+            let mut ov = Overlay::with_policy(stub, Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, true);
+            ov.run("hi", "You are helpful.")
+        };
         let sys = &turn.effective_system;
         assert!(sys.contains("COGNITIVE OVERLAY"));
         assert!(sys.contains("You are helpful."));
+
+        // `effective_system` is documented as the prompt *actually sent*. Assert
+        // against what the client received, not just what we reported back — a
+        // transparency field that drifts from the real call is worse than none.
+        assert_eq!(sent.last_system(), *sys);
+    }
+
+    #[test]
+    fn annotation_off_sends_caller_prompt_verbatim() {
+        // annotate_prompt=false must leave the host's prompt untouched: the
+        // overlay still gates, but it stops editing what the model is told.
+        let stub = StubClient::new();
+        let sent = stub.clone();
+        let turn = {
+            let mut ov = Overlay::with_policy(stub, Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, false);
+            ov.run("hi", "You are helpful.")
+        };
+        assert_eq!(turn.effective_system, "You are helpful.");
+        assert_eq!(sent.last_system(), "You are helpful.");
+        assert!(!sent.last_system().contains("COGNITIVE OVERLAY"));
     }
 }

@@ -102,6 +102,15 @@ crates/
   scemadex-mcp/         MCP (Model Context Protocol) server bridging LLM agents to
                         the ScemaDEX rail over the relay. Bin: `scemadex-mcp`
   sdk-dashboard/        ScemaDEX SDK TUI over the bond pipeline. Bin: `sdk-dashboard`
+  scematica-sentience/  Singularity Cognitive Architecture as a computable library:
+                        Ψ/Ω master equations, ethics gating, knowledge graph,
+                        meta-cognition, and an LLM `overlay` that gates a model's
+                        output on integrated cognition (GO/CAUTION/HOLD). Library
+                        only — no binary, so the `scematica` launcher has no
+                        `sentience` subcommand. Re-exported by `scematica-suite`
+                        as `sentience`; nothing in the *runtime* path (sniper,
+                        dashboard, ai) depends on it yet, so gating live LLM calls
+                        on Ψ remains a separate wiring step.
   scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
                         launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
@@ -117,7 +126,7 @@ alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
                         padding differs, so function selectors are computed rather than
                         stored; and including `term/`, the in-package terminal system
                         (see below). Bins: `alchem-link`, `alchem-link-ui`.
-                        Tests: `python -m unittest discover -s tests` (561, all offline)
+                        Tests: `python -m unittest discover -s tests` (590, all offline)
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -305,7 +314,8 @@ Independent breakers in `crates/scematica-sniper/src/`. Each can be toggled in `
 - Primary dev environment is **Windows + PowerShell**. Code paths handle Windows specifics: `tasklist` for process liveness (sniper `main.rs`), `NotifyIcon` for desktop toasts (avoid WinRT — use `System.Windows.Forms.NotifyIcon` with stderr nulled to keep log panel clean).
 - WSL UNC keypath paths are supported in `[wallet] keypair_path` (`\\wsl$\Ubuntu\home\...`).
 - The sniper writes a PID lockfile (`scematica-sniper.lock`) and refuses to start if a live process is already running — two snipers on the same Helius WebSocket rate-limit each other into uselessness.
-- Release profile is heavy: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `overflow-checks = true`. First release build is slow; `target/` reaches 5-10 GB — run `cargo clean` periodically.
+- Release profile is heavy: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `overflow-checks = true`. First release build is slow; `target/` reaches 5-10 GB fresh but **accretes without bound** across incremental debug+release builds — it was measured at 43 GB / 79k files before a clean. Run `cargo clean` when free space gets tight: a full disk surfaces as Windows `error 112` inside unrelated crates ("failed to write file... incremental"), which reads like a compile failure and is not one.
+- The repo lives under **OneDrive**. `.gitignore` covers `target/`, `*.log` and `*.apk`, but OneDrive does not read `.gitignore` — exclude `target/` in OneDrive settings or it will try to sync tens of GB of build artifacts.
 
 ## Token Gate
 

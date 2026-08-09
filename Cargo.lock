@@ -4614,6 +4614,7 @@ dependencies = [
  "scematica-executor",
  "scematica-nn",
  "scematica-protocol",
+ "scematica-sentience",
  "scematica-sniper",
 ]
 

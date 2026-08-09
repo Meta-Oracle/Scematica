@@ -1,8 +1,8 @@
 //! # scematica-suite
 //!
 //! The Scematica **meta-crate**: a single dependency that re-exports the entire
-//! Solana sniper + cross-DEX arb + AI + Deep Q\* + x402 + ScemaDEX stack, so
-//! downstream code can pull the whole thing with one line:
+//! Solana sniper + cross-DEX arb + AI + Deep Q\* + x402 + ScemaDEX + cognitive
+//! stack, so downstream code can pull the whole thing with one line:
 //!
 //! ```toml
 //! scematica-suite = "1"
@@ -39,6 +39,10 @@ pub use scematica_sniper as sniper;
 pub use scematica_dashboard as dashboard;
 #[doc(inline)]
 pub use scemadex_sdk as scemadex;
+/// Cognitive architecture — library only; it ships no binary, so the `scematica`
+/// launcher has no `sentience` subcommand to dispatch to.
+#[doc(inline)]
+pub use scematica_sentience as sentience;
 
 /// The version of the suite meta-crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

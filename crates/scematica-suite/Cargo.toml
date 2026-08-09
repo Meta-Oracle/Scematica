@@ -26,3 +26,6 @@ scematica-nn = { version = "1.15.0", path = "../scematica-nn", default-features 
 scematica-sniper = { version = "1.15.0", path = "../scematica-sniper" }
 scematica-dashboard = { version = "1.15.0", path = "../scematica-dashboard" }
 scemadex-sdk = { version = "0.3.0", path = "../scemadex-sdk", default-features = false }
+# First published at the workspace version — unlike its siblings there is no
+# earlier release for a wider `^` range to point at.
+scematica-sentience = { version = "1.24.0", path = "../scematica-sentience" }

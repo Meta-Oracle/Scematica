@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "check:parity": "node --experimental-strip-types scripts/check-parity.mjs",
+    "check:scylar": "node --experimental-strip-types scripts/check-scylar.mjs",
     "scylar:assets": "node scripts/scylar-assets.mjs",
     "mobile:export": "node scripts/mobile-export.mjs",
     "mobile:sync": "npm run mobile:export && cap sync android",

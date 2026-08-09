@@ -281,8 +281,9 @@ body:has(.alchem-root)::after {
   --s-hi:        #150e28;
   --s-border:    #3a1f6b;
   --s-border-hi: #5c34a3;
-  --s-violet:    #a970ff;
-  --s-violet-hi: #c9a3ff;
+  --s-violet:     #a970ff;
+  --s-violet-hi:  #c9a3ff;
+  --s-violet-dim: #6f45b8;
   --s-text:      #ded3f0;
   --s-muted:     #a08cc4;
   --s-dim:       #6b5a8e;
@@ -338,13 +339,69 @@ body:has(.scylar-root)::after {
   content: '';
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
   box-shadow: inset 0 0 60px 12px rgba(5, 3, 12, 0.75);
+}
+
+/* Rim light, driven by the `--s-glow` the avatar sets from `presenceFor`.
+   Inset rather than an outer halo on purpose: the portrait sits inside a panel with
+   `overflow-hidden`, so anything spreading outward is clipped and the glow would simply
+   not appear. Painted above the vignette so brightening actually reads. */
+.scylar-portrait::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 34px 4px rgba(169, 112, 255, calc(var(--s-glow, 0.16) * 0.55)),
+    inset 0 0 90px 22px rgba(92, 52, 163, calc(var(--s-glow, 0.16) * 0.4));
+  transition: box-shadow 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Breathing. Applied to the outer element while the inline presence transform lives on
+   `.scylar-portrait-body` inside it — a CSS animation and an inline style on the same
+   property fight, and the animation wins, which would silently cancel every pose change.
+   Two elements let the slow idle drift and the deliberate lean-in compose instead.
+   Runs in every phase so leaving a phase never snaps the transform back mid-cycle. */
+.scylar-portrait {
+  animation: scylarBreath 6.5s ease-in-out infinite;
+}
+
+@keyframes scylarBreath {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%      { transform: translateY(-3px) scale(1.006); }
 }
 
 .scylar-caret {
   background: var(--s-violet);
   animation: blink 1s step-end infinite;
+}
+
+/* Code, inline and block. Half of what Scylar is asked about is Rust or TypeScript, so
+   these are load-bearing rather than decoration. Both sit a shade above the panel: the
+   surface is already near-black and a darker code well would read as a hole. */
+.scylar-inline-code {
+  background: var(--s-hi);
+  border: 1px solid rgba(58, 31, 107, 0.7);
+  color: var(--s-violet-hi);
+  padding: 0.05rem 0.3rem;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.scylar-code {
+  background: var(--s-hi);
+  border: 1px solid var(--s-border);
+  border-left: 2px solid var(--s-violet-dim);
+}
+
+/* The block scrolls; the page must not. A long unbroken line in a snippet is otherwise
+   the one thing that widens the whole conversation column. */
+.scylar-code pre {
+  max-width: 100%;
 }
 
 .scylar-think-dot {
@@ -362,6 +419,8 @@ body:has(.scylar-root)::after {
 @media (prefers-reduced-motion: reduce) {
   .scylar-think-dot { animation: none; opacity: 0.6; }
   .scylar-caret     { animation: none; }
+  .scylar-portrait  { animation: none; }
+  .scylar-portrait::before { transition: none; }
 }
 
 .scylar-root ::-webkit-scrollbar-track { background: var(--s-black); }

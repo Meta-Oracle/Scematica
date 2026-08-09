@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { buildBriefing, contextSystemMessage } from '@/lib/scylar/context'
 import {
   SCYLAR_SYSTEM_PROMPT,
   configuredProviders,
@@ -88,6 +89,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: 'No messages to answer.' }, { status: 400 })
   }
 
+  // Optional live-state block. Opt-in per request rather than always-on: it costs a
+  // round trip and a few hundred tokens on every turn, and most questions ("explain
+  // fractional Kelly") do not need it. See lib/scylar/context.ts.
+  const wantContext = (body as { context?: unknown })?.context === true
+  const briefing = wantContext
+    ? await buildBriefing(request.nextUrl.origin)
+    : { source: 'unavailable' as const, text: null }
+  const contextBlock = contextSystemMessage(briefing)
+
+  const systemTurns = [
+    { role: 'system' as const, content: SCYLAR_SYSTEM_PROMPT },
+    // Appended after the persona so the state block is the most recent instruction —
+    // the position models weight most heavily.
+    ...(contextBlock ? [{ role: 'system' as const, content: contextBlock }] : []),
+  ]
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
@@ -104,7 +121,7 @@ export async function POST(request: NextRequest) {
         stream: true,
         temperature: 0.75,
         max_tokens: 900,
-        messages: [{ role: 'system', content: SCYLAR_SYSTEM_PROMPT }, ...history],
+        messages: [...systemTurns, ...history],
       }),
       signal: controller.signal,
     })
@@ -177,6 +194,10 @@ export async function POST(request: NextRequest) {
       Connection: 'keep-alive',
       'X-Scylar-Provider': provider.id,
       'X-Scylar-Model': provider.model,
+      // What she was actually given. The UI badges this per turn rather than trusting
+      // the toggle: asking for context and silently getting none is the failure worth
+      // showing, because her answer will look identical either way.
+      'X-Scylar-Context': wantContext ? briefing.source : 'off',
     },
   })
 }

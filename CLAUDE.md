@@ -182,6 +182,33 @@ palette change moves both. Three constraints:
   report the error. A fabricated price would defeat the entire point of a staleness
   verdict, and unreadable feeds render as failure rows rather than being dropped.
 
+**`/scylar-terminal` is the third product on the same site** — an avatar chat terminal
+(`components/scylar/`, `lib/scylar/`, `app/api/scylar/`) with its own violet palette
+(`scylar-*` tokens + `.scylar-root`). It runs on whichever free LLM tier has a key, Groq
+first for latency. Four constraints:
+
+- **Provider keys are server-side, always.** `lib/scylar/provider.ts` and
+  `portrait.ts` throw if imported in a browser (runtime guard, matching
+  `lib/alchem/endpoint.ts` — the `server-only` package is not a dependency). The chat
+  route also **strips client-supplied `system` turns**: without that, a public endpoint
+  with a key behind it is someone else's free LLM proxy.
+- **No fabrication, same as everywhere else.** No provider → 503. No image backend →
+  501. The portrait route never hands back a sprite dressed as a generation.
+- **The avatar is three flat sprites and a state machine.** `lib/scylar/expressions.ts`
+  is pure — `spriteFor` picks the frame, `presenceFor` the pose. Two animation speeds
+  that must not be merged: the flap is fast and cyclic, presence is slow and one-shot,
+  and `FLAP_CROSSFADE_MS` must stay under `FLAP_PERIOD_MS` or both sprites sit
+  permanently half-lit. Breathing is CSS on the outer element because a CSS animation
+  and an inline transform on the same property fight, and the animation wins.
+- **Live bot state is opt-in and labelled.** `lib/scylar/context.ts` calls the site's own
+  `/api/*` (so live-vs-simulated is decided once, in `[...slug]/route.ts`) and tags the
+  block `SIMULATED` when it is. The per-turn badge in the UI is the real guarantee — the
+  prompt instruction is a mitigation, and it was ignored entirely until it was phrased as
+  a required output token rather than a description.
+
+`npm run check:scylar` pins the pure logic (expressions, markdown, commands, session).
+Run it after touching any of those four modules.
+
 ## Architecture: alchem-link terminal system (`term/`)
 
 As of v0.23.0 the terminal UI is in-package — Textual is gone, and there is no `[tui]`

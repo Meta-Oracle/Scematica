@@ -29,21 +29,47 @@ export type AvatarPhase =
  * Mouth-flap period. `idle` is closed-mouth and `talking` is open-mouth, so alternating
  * them is a two-frame flap — the same trick VTuber overlays use.
  *
- * 110ms/frame ≈ 9 flaps/sec. Faster reads as chattering rather than speech; slower
- * reads as a stutter. True viseme lip-sync is not reachable with three flat images and
- * no alpha — that needs a layered mouth set or a Live2D rig.
+ * 180ms ≈ 5.5 flaps/sec, deliberately slower than the 9/sec this started at. At speech
+ * rate the two frames blur into a single indistinct mouth; at this rate each open and
+ * close is individually visible, which is what makes the flap read as *her* speaking
+ * rather than as an image flickering. True viseme lip-sync is not reachable with three
+ * flat images and no alpha — that needs a layered mouth set or a Live2D rig.
  */
-export const FLAP_PERIOD_MS = 110
-
-/** How long the `joyous` reaction holds before decaying back to idle. */
-export const REACTION_HOLD_MS = 2600
+export const FLAP_PERIOD_MS = 180
 
 /**
- * Crossfade duration between sprites. The three images share pose, lighting and
- * framing, so a fade reads as one character changing expression; a hard cut reads as
- * three different pictures. Long enough to be seen, short enough not to lag the flap.
+ * Fraction of each flap cycle spent open-mouthed.
+ *
+ * Not 0.5. An even split reads as a metronome; weighting toward open gives the flap the
+ * shape of a syllable — a quick close between held vowels — and is the other half of
+ * why the slower period reads as pronounced rather than sluggish.
  */
-export const CROSSFADE_MS = 150
+export const FLAP_OPEN_RATIO = 0.58
+
+/** How long the `joyous` reaction holds before decaying back to idle. */
+export const REACTION_HOLD_MS = 4200
+
+/**
+ * Crossfade for the mouth flap.
+ *
+ * Must stay well under `FLAP_PERIOD_MS`: a fade longer than the period never finishes
+ * before it reverses, leaving both sprites permanently half-lit — a blur, not a flap.
+ * 85ms of the 180ms cycle fades, the remainder holds, so each frame is actually seen.
+ */
+export const FLAP_CROSSFADE_MS = 85
+
+/**
+ * Crossfade for a change of mood (idle ↔ joyous).
+ *
+ * Much slower than the flap on purpose. The three images share pose, lighting and
+ * framing, so a long dissolve reads as one face changing its mind; a hard cut reads as
+ * three different pictures. This one is not inside a repeating cycle, so it can take
+ * the time the flap cannot.
+ */
+export const EXPRESSION_CROSSFADE_MS = 420
+
+/** How long the body settles into a new pose. Slow enough to be felt as a movement. */
+export const PRESENCE_EASE_MS = 620
 
 /**
  * The sprite to display for a phase. Pure — same input, same output, no clock reads.
@@ -61,11 +87,58 @@ export function spriteFor(phase: AvatarPhase): Expression {
     case 'thinking':
       return 'idle'
 
-    case 'streaming':
-      return Math.floor(phase.elapsedMs / FLAP_PERIOD_MS) % 2 === 0 ? 'talking' : 'idle'
+    case 'streaming': {
+      const t = (phase.elapsedMs % FLAP_PERIOD_MS) / FLAP_PERIOD_MS
+      return t < FLAP_OPEN_RATIO ? 'talking' : 'idle'
+    }
 
     case 'settled':
       return phase.positive && phase.sinceMs < REACTION_HOLD_MS ? 'joyous' : 'idle'
+  }
+}
+
+/**
+ * How the whole portrait carries itself, independent of which sprite is showing.
+ *
+ * The sprite set can only change her face. Everything else that sells a reaction —
+ * leaning in to answer, drawing back to think, the glow lifting when she's pleased —
+ * has to come from the container, because there is no second pose to swap to. Splitting
+ * it out this way means the flap stays a fast two-frame cycle while the *body* moves on
+ * a much slower curve, which is what stops "more pronounced" from becoming "twitchier".
+ */
+export interface Presence {
+  /** Container scale. Small numbers: past ~1.06 the framing visibly crops. */
+  scale: number
+  /** Vertical offset in CSS px. Negative is up, toward the viewer. */
+  lift: number
+  /** Rim-glow strength, 0..1. Drives opacity of the violet halo, not a colour. */
+  glow: number
+}
+
+const PRESENCE: Record<'idle' | 'thinking' | 'streaming' | 'reacting', Presence> = {
+  // Resting. Not zero glow — she is powered on, just not addressed.
+  idle: { scale: 1, lift: 0, glow: 0.16 },
+  // Withdrawn a fraction. Reads as consideration, and gives the lean-in something to
+  // move away from: streaming from a neutral pose is half the travel.
+  thinking: { scale: 0.985, lift: 3, glow: 0.34 },
+  streaming: { scale: 1.028, lift: -5, glow: 0.62 },
+  reacting: { scale: 1.055, lift: -9, glow: 1 },
+}
+
+/** Pure — the presence for a phase. Same input, same output, no clock reads. */
+export function presenceFor(phase: AvatarPhase): Presence {
+  switch (phase.kind) {
+    case 'idle':
+      return PRESENCE.idle
+    case 'thinking':
+      return PRESENCE.thinking
+    case 'streaming':
+      return PRESENCE.streaming
+    case 'settled':
+      // Decays with the sprite, so the body and the face finish reacting together.
+      return phase.positive && phase.sinceMs < REACTION_HOLD_MS
+        ? PRESENCE.reacting
+        : PRESENCE.idle
   }
 }
 

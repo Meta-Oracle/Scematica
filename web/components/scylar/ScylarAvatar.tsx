@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
-  CROSSFADE_MS,
   EXPRESSIONS,
+  EXPRESSION_CROSSFADE_MS,
+  FLAP_CROSSFADE_MS,
+  PRESENCE_EASE_MS,
   REACTION_HOLD_MS,
   type AvatarPhase,
   type Expression,
+  presenceFor,
   spriteFor,
   spriteSrc,
 } from '@/lib/scylar/expressions'
@@ -16,9 +19,15 @@ import {
 // never swapped by changing `src`.
 //
 // That is the whole trick: a `src` swap on a 200 KB image shows a blank frame while the
-// browser fetches and decodes, which at 9 flaps/second is a strobe. Stacked layers make
+// browser fetches and decodes, which at speech rate is a strobe. Stacked layers make
 // every sprite decoded and resident before the first flap, and the transition becomes a
 // GPU-composited opacity change that never touches layout.
+//
+// Two animations run at different speeds and must not be merged. The *flap* is fast and
+// cyclic (which sprite). The *presence* — scale, lift, glow — is slow and one-shot (how
+// she carries herself). Driving both off one duration is what makes an avatar look
+// either twitchy or sedated; see `presenceFor` for why the split lives in the state
+// machine rather than here.
 
 interface Props {
   phase: AvatarPhase
@@ -27,19 +36,23 @@ interface Props {
 }
 
 export function ScylarAvatar({ phase, size = 420 }: Props) {
-  const [flapTick, setFlapTick] = useState(0)
+  const [flapSprite, setFlapSprite] = useState<Expression>('idle')
   const [settledFor, setSettledFor] = useState(0)
   const reduceMotion = usePrefersReducedMotion()
 
   // Drive the mouth flap from rAF while streaming. Timers stop the moment streaming
   // ends, so an idle page runs no animation loop at all.
+  //
+  // The loop stores the *sprite*, not the elapsed time. Elapsed time changes every
+  // frame and would re-render at 60Hz for a value that only changes ~11 times a second;
+  // storing the derived string lets React bail out on the frames where nothing moved.
   const streaming = phase.kind === 'streaming'
   useEffect(() => {
     if (!streaming || reduceMotion) return
     let raf = 0
     const start = performance.now()
     const loop = (now: number) => {
-      setFlapTick(now - start)
+      setFlapSprite(spriteFor({ kind: 'streaming', elapsedMs: now - start }))
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
@@ -71,50 +84,87 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
     }
     switch (phase.kind) {
       case 'streaming':
-        return spriteFor({ kind: 'streaming', elapsedMs: flapTick })
+        return flapSprite
       case 'settled':
         return spriteFor({ kind: 'settled', positive: phase.positive, sinceMs: settledFor })
       default:
         return spriteFor(phase)
     }
-  }, [phase, flapTick, settledFor, reduceMotion])
+  }, [phase, flapSprite, settledFor, reduceMotion])
+
+  const presence = useMemo(
+    () =>
+      presenceFor(
+        phase.kind === 'settled'
+          ? { kind: 'settled', positive: phase.positive, sinceMs: settledFor }
+          : phase,
+      ),
+    [phase, settledFor],
+  )
+
+  // Fast inside the flap cycle, slow for a change of mood. Using the slow duration
+  // during streaming would leave both sprites permanently half-lit.
+  const fadeMs = reduceMotion ? 0 : streaming ? FLAP_CROSSFADE_MS : EXPRESSION_CROSSFADE_MS
 
   return (
     <div
       className="scylar-portrait relative select-none"
-      style={{ width: size, height: size }}
       data-phase={phase.kind}
       data-expression={active}
+      // `--s-glow` is read by `.scylar-portrait::before` for the halo. Passing it as a
+      // variable keeps the glow's colour and falloff a CSS concern; this component only
+      // states how strongly she is lit.
+      style={
+        {
+          width: size,
+          height: size,
+          '--s-glow': reduceMotion ? 0.2 : presence.glow,
+        } as React.CSSProperties
+      }
     >
-      {EXPRESSIONS.map((expression) => (
-        <img
-          key={expression}
-          src={spriteSrc(expression, 512)}
-          srcSet={`${spriteSrc(expression, 512)} 1x, ${spriteSrc(expression, 1024)} 2x`}
-          alt={expression === active ? `Scylar, ${expression}` : ''}
-          // Only the visible layer is announced; the other two are decorative duplicates
-          // of the same character and would be read out as repeated images.
-          aria-hidden={expression !== active}
-          draggable={false}
-          width={size}
-          height={size}
-          className="absolute inset-0 h-full w-full object-cover"
-          style={{
-            opacity: expression === active ? 1 : 0,
-            transition: `opacity ${reduceMotion ? 0 : CROSSFADE_MS}ms linear`,
-          }}
-        />
-      ))}
+      {/* Separate element from the glow host so the transform does not also scale the
+          halo's blur radius, which would make the glow pump with every pose change. */}
+      <div
+        className="scylar-portrait-body absolute inset-0"
+        style={{
+          transform: `translateY(${reduceMotion ? 0 : presence.lift}px) scale(${
+            reduceMotion ? 1 : presence.scale
+          })`,
+          transition: reduceMotion
+            ? 'none'
+            : `transform ${PRESENCE_EASE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+        }}
+      >
+        {EXPRESSIONS.map((expression) => (
+          <img
+            key={expression}
+            src={spriteSrc(expression, 512)}
+            srcSet={`${spriteSrc(expression, 512)} 1x, ${spriteSrc(expression, 1024)} 2x`}
+            alt={expression === active ? `Scylar, ${expression}` : ''}
+            // Only the visible layer is announced; the other two are decorative
+            // duplicates of the same character and would be read out as repeated images.
+            aria-hidden={expression !== active}
+            draggable={false}
+            width={size}
+            height={size}
+            className="absolute inset-0 h-full w-full object-cover"
+            style={{
+              opacity: expression === active ? 1 : 0,
+              transition: `opacity ${fadeMs}ms ease-in-out`,
+            }}
+          />
+        ))}
+      </div>
 
       {/* Thinking indicator. She holds a closed mouth while waiting on the model, so
           without this the UI looks frozen between send and first token. */}
       {phase.kind === 'thinking' && (
-        <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
+        <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 gap-1.5">
           {[0, 1, 2].map((i) => (
             <span
               key={i}
               className="scylar-think-dot h-1.5 w-1.5 rounded-full"
-              style={{ animationDelay: `${i * 160}ms` }}
+              style={{ animationDelay: `${i * 200}ms` }}
             />
           ))}
         </div>

@@ -13,6 +13,8 @@
 //! GET  /api/tournament                scematica-nn-tournament.json (DQ* agent tournament)
 //! GET  /api/intelligence              combined NN/decision/tx snapshot
 //! GET  /api/health                    sniper liveness (lock file + process)
+//! GET  /api/sentience                 cognitive gate — is this API's data trustworthy?
+//! POST /api/sentience/observe         { "text": "..." }  feed a response back (ungated)
 //! GET  /api/controls                  full control state snapshot
 //! POST /api/controls/sell-mode        { "enabled": bool }
 //! POST /api/controls/dump-mode        { "enabled": bool }
@@ -37,6 +39,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use scematica_sentience as sentience;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -44,6 +47,8 @@ use std::{
     io::{BufRead, BufReader, Seek, SeekFrom},
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
@@ -332,6 +337,158 @@ fn read_last_n_lines(path: &str, n: usize) -> Vec<String> {
 }
 
 // ── control GET ───────────────────────────────────────────────────────────────
+
+// ── cognitive gate ────────────────────────────────────────────────────────────
+//
+// `GET /api/sentience` answers one question: **can anything reading this API be trusted
+// to describe the bot right now?**
+//
+// It exists because of a failure this API cannot otherwise report. Every read endpoint
+// serves the state files, and a state file is served identically whether the sniper
+// wrote it four seconds ago or four hours ago before it died. `/api/health` reports the
+// lock file, which says "a process was here", not "these numbers are current". So a
+// consumer — the web dashboard, the mobile app, Scylar — can present hours-old figures
+// as live with nothing anywhere in the response contradicting it.
+//
+// The mapping below is where the judgement is, so it is written out rather than tuned
+// into opaque constants:
+//
+//   perception.integrity   how fresh the metrics file is. The sniper rewrites it every
+//                          5s, so staleness is a direct measure of whether these numbers
+//                          describe now. This is the dominant term, and deliberately so.
+//   perception.sensory     how many of the core state files exist and parse at all.
+//   logic.consistency      whether liveness and freshness agree. A lock file claiming a
+//                          live sniper over a stale metrics file is a contradiction, and
+//                          contradiction is precisely what should lower confidence.
+//   rationality.evidence   whether there is any history to reason from.
+//
+// **Everything not measured is 1.0, not 0.5 or 0.9.** Ψ is a product of ratios, so an
+// unmeasured dimension scored below 1.0 is a standing tax on the index: a completely
+// healthy bot then lands in CAUTION, the badge shows on every answer, and a warning
+// nobody can ever clear is a warning people learn to ignore — the same reason the
+// alchem-link staleness check carries a tolerance instead of flickering every cycle.
+// 1.0 here means "not a limiting factor", which is the honest reading of a dimension
+// this gate has no instrument for. Only measured degradation moves the verdict.
+//
+// The gate is advisory. It returns a verdict; it does not block any other endpoint.
+
+/// Metrics are rewritten every 5s by the sniper. Fresher than this is fully trusted.
+const FRESH_SECS: f64 = 30.0;
+/// Past this the file describes a session that is over, whatever the lock file says.
+const STALE_SECS: f64 = 600.0;
+
+/// Overlay state, persisted across requests so the cognitive loop can actually advance.
+static OVERLAY: OnceLock<Mutex<sentience::Overlay<sentience::NoClient>>> = OnceLock::new();
+
+fn overlay() -> &'static Mutex<sentience::Overlay<sentience::NoClient>> {
+    OVERLAY.get_or_init(|| Mutex::new(sentience::Overlay::new(sentience::NoClient, None)))
+}
+
+/// Seconds since a file was last written, or `None` if it is missing/unreadable.
+fn age_secs(path: &str) -> Option<f64> {
+    let meta = fs::metadata(artifact_path(path)).ok()?;
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some((now.as_secs_f64() - modified.as_secs_f64()).max(0.0))
+}
+
+/// 1.0 while fresh, decaying linearly to 0.0 at `STALE_SECS`. Missing reads as 0.
+fn freshness(path: &str) -> f64 {
+    match age_secs(path) {
+        None => 0.0,
+        Some(age) if age <= FRESH_SECS => 1.0,
+        Some(age) if age >= STALE_SECS => 0.0,
+        Some(age) => 1.0 - (age - FRESH_SECS) / (STALE_SECS - FRESH_SECS),
+    }
+}
+
+async fn sentience_handler() -> impl IntoResponse {
+    use sentience::{
+        cognitive_state::CognitiveState, ethics::EthicsInputs, logic::LogicInputs,
+        perception::Perception, rationality::RationalityInputs, types::Bounded,
+    };
+
+    let metrics_fresh = freshness(METRICS_FILE);
+    let (sniper_running, _) = check_sniper_liveness();
+
+    let core = [METRICS_FILE, FILTER_STATS_FILE, NN_STATS_FILE, POSITIONS_FILE];
+    let present = core.iter().filter(|f| age_secs(f).is_some()).count() as f64;
+    let sensory = present / core.len() as f64;
+
+    // The contradiction that matters: a lock file saying the sniper is alive while its
+    // own metrics have gone cold. Either the process is wedged or the lock is stale;
+    // either way nothing downstream should speak confidently about "current" state.
+    let consistency = if sniper_running { metrics_fresh } else { 1.0 - metrics_fresh * 0.5 };
+
+    let has_history = age_secs(TRADES_FILE).is_some() || age_secs(POOL_DECISIONS_FILE).is_some();
+    let evidence = if has_history { 1.0 } else { 0.4 };
+
+    let mut state = CognitiveState::initial();
+    state.perception = Perception::new(
+        // Audio and visual are 1.0, not 0.0, and the difference is the whole gate.
+        // `Perception::data_ratio` is a *product* — D = A×V×X×I — so a channel scored 0
+        // annihilates D, pins Ψ at exactly 0, and makes HOLD the permanent verdict no
+        // matter how healthy the bot is. 1.0 is the crate's own `Default`, and it reads
+        // "this channel is not a limiting factor", which is the true statement about a
+        // sense a headless trading bot does not have. Scoring it 0 would claim the bot
+        // is blind rather than that sight is irrelevant to it.
+        1.0,
+        1.0,
+        sensory,
+        metrics_fresh,
+    );
+    // Measured terms carry the signal; the rest are neutral (see the note above on why
+    // they are 1.0 and not a "modest" 0.9).
+    state.rationality = RationalityInputs::new(evidence, consistency, 1.0, 0.0);
+    state.logic = LogicInputs::new(1.0, consistency, 1.0, 1.0);
+    state.ethics = EthicsInputs::new(1.0, 1.0, 1.0, 1.0);
+    state.knowledge_density = Bounded::new(sensory.max(0.1));
+
+    let readout = {
+        let mut ov = overlay().lock().unwrap_or_else(|e| e.into_inner());
+        ov.set_state(state);
+        ov.assess()
+    };
+
+    Json(json!({
+        "gate": readout.gate.as_str(),
+        "psi": readout.psi,
+        "sentience": readout.sentience,
+        "bottleneck": readout.bottleneck,
+        "note": readout.note,
+        "reassessment": readout.reassessment,
+        // The measurements behind the verdict. A gate whose inputs are not visible is an
+        // oracle, and nobody can debug an oracle.
+        "inputs": {
+            "metrics_age_secs": age_secs(METRICS_FILE),
+            "metrics_freshness": metrics_fresh,
+            "sniper_running": sniper_running,
+            "state_files_present": present as u64,
+            "state_files_expected": core.len() as u64,
+            "consistency": consistency,
+            "has_history": has_history,
+        },
+    }))
+}
+
+/// Feed a generated response back so the loop advances. Body: `{ "text": "..." }`.
+///
+/// Ungated deliberately, unlike the control POSTs: this writes no file and changes
+/// nothing the sniper reads. The worst an unauthenticated caller achieves is nudging an
+/// advisory index that is recomputed from measured file freshness on the very next read.
+async fn sentience_observe_handler(Json(body): Json<Value>) -> impl IntoResponse {
+    let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let readout = {
+        let mut ov = overlay().lock().unwrap_or_else(|e| e.into_inner());
+        ov.record(text)
+    };
+    Json(json!({
+        "gate": readout.gate.as_str(),
+        "psi": readout.psi,
+        "timestep": readout.timestep,
+        "reassessment": readout.reassessment,
+    }))
+}
 
 async fn controls_get_handler() -> impl IntoResponse {
     let sell = read_json_file(SELL_MODE_FILE);
@@ -1020,6 +1177,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/tournament", get(tournament_handler))
         .route("/api/intelligence", get(intelligence_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/sentience", get(sentience_handler))
+        .route("/api/sentience/observe", post(sentience_observe_handler))
         .route("/api/controls", get(controls_get_handler))
         .merge(gated)
         .layer(cors);

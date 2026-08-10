@@ -14,6 +14,11 @@
 // risk — but a wrong *shape* would throw during render and blank the page, which is why
 // every field is checked rather than cast.
 
+export interface ToolUse {
+  name: string
+  ok: boolean
+}
+
 export interface Turn {
   role: 'user' | 'assistant'
   content: string
@@ -21,10 +26,15 @@ export interface Turn {
   done?: boolean
   /** What state the answer was actually given — `live`, `simulation`, `off`, … */
   context?: string
+  /** Read-only tools she called for this answer, in the order they ran. */
+  tools?: ToolUse[]
+  /** Cognitive gate in force for this answer — `go`, `caution`, or absent. */
+  gate?: string
 }
 
 const KEY = 'scylar.transcript.v1'
 const CONTEXT_KEY = 'scylar.context.v1'
+const VOICE_KEY = 'scylar.voice.v1'
 
 /**
  * Turns kept across reloads.
@@ -38,6 +48,12 @@ export const MAX_STORED_TURNS = 60
 /** Per-turn cap. One runaway response should not fill the origin's storage quota. */
 const MAX_TURN_CHARS = 24_000
 
+function isToolUse(v: unknown): v is ToolUse {
+  if (!v || typeof v !== 'object') return false
+  const t = v as Record<string, unknown>
+  return typeof t.name === 'string' && typeof t.ok === 'boolean'
+}
+
 function isTurn(v: unknown): v is Turn {
   if (!v || typeof v !== 'object') return false
   const t = v as Record<string, unknown>
@@ -45,7 +61,9 @@ function isTurn(v: unknown): v is Turn {
     (t.role === 'user' || t.role === 'assistant') &&
     typeof t.content === 'string' &&
     (t.done === undefined || typeof t.done === 'boolean') &&
-    (t.context === undefined || typeof t.context === 'string')
+    (t.context === undefined || typeof t.context === 'string') &&
+    (t.gate === undefined || typeof t.gate === 'string') &&
+    (t.tools === undefined || (Array.isArray(t.tools) && t.tools.every(isToolUse)))
   )
 }
 
@@ -118,6 +136,31 @@ export function saveContextPref(enabled: boolean): void {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(CONTEXT_KEY, enabled ? '1' : '0')
+  } catch {
+    /* storage disabled */
+  }
+}
+
+/**
+ * Voice toggle. Defaults **off**, unlike context.
+ *
+ * Audio that starts by itself on page load is hostile — the operator may be on a call,
+ * or have the tab open next to a trading terminal. Opting in is a keystroke; opting out
+ * after being startled is a scramble for the mute key.
+ */
+export function loadVoicePref(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(VOICE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveVoicePref(enabled: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(VOICE_KEY, enabled ? '1' : '0')
   } catch {
     /* storage disabled */
   }

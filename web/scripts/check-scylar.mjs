@@ -23,9 +23,18 @@ import {
   spriteSrc,
 } from '../lib/scylar/expressions.ts'
 import { parseInline, parseMarkdown } from '../lib/scylar/markdown.ts'
+import {
+  estimateWordMs,
+  pickVoice,
+  speakableText,
+  splitForSpeech,
+  wordAt,
+} from '../lib/scylar/speech.ts'
 import { parseCommand } from '../lib/scylar/commands.ts'
 import { deserialise, serialise } from '../lib/scylar/session.ts'
 import { contextSystemMessage } from '../lib/scylar/context.ts'
+import { TOOLS, runTool, toolDefinitions } from '../lib/scylar/tools.ts'
+import { cautionInstruction, holdExplanation, readGate } from '../lib/scylar/gate.ts'
 
 let failed = 0
 const check = (name, ok) => {
@@ -90,6 +99,67 @@ check('apology is not positive', readsPositive("Sorry — I can't reach the bot.
 check('every expression has a 512 and 1024 asset path',
   EXPRESSIONS.every((e) => spriteSrc(e, 512).endsWith(`${e}-512.webp`) &&
                             spriteSrc(e, 1024).endsWith(`${e}-1024.webp`)))
+
+// Voicing is one open-close per word, sized to that word — not a free-running cycle.
+const voice = (since, wordMs) => spriteFor({ kind: 'voicing', sinceWordMs: since, wordMs })
+check('mouth opens on a word', voice(0, 300) === 'talking')
+check('mouth closes before the word ends', voice(299, 300) === 'idle')
+check('a long word holds the mouth open longer than a short one',
+  voice(200, 500) === 'talking' && voice(200, 220) === 'idle')
+check('voicing carries the speaking pose',
+  presenceFor({ kind: 'voicing', sinceWordMs: 0, wordMs: 300 }).lift === pStream.lift)
+
+console.log('\n── speech ────────────────────────────────────────────────')
+
+// Reading punctuation aloud is what makes a synthetic voice sound broken.
+const spoken = speakableText('Use **bold** and `code` and [docs](https://x.dev) here.')
+check('emphasis markers are not spoken', !spoken.includes('**'))
+check('backticks are not spoken', !spoken.includes('`'))
+check('a link keeps its label', spoken.includes('docs'))
+check('a link URL is not read aloud', !spoken.includes('https'))
+
+// A skipped code block is announced, not silently dropped — otherwise the spoken answer
+// has a hole the listener cannot account for.
+const withCode = speakableText('Here:\n\n```rust\nfn main() {}\n```\n\nDone.')
+check('a code block becomes a spoken stand-in', /rust code block/.test(withCode))
+check('code contents are not read out', !withCode.includes('fn main'))
+check('an unterminated code block is still handled',
+  /code block/.test(speakableText('```ts\nconst x = 1')))
+check('headings lose their hashes', !speakableText('### Commands').includes('#'))
+
+// Chrome goes silent after ~15s of one utterance and reports nothing, so chunking is a
+// correctness requirement rather than a nicety.
+const long = splitForSpeech('One. Two. ' + 'word '.repeat(200) + 'End.')
+check('long text is split', long.length > 1)
+check('every chunk stays under the utterance cap', long.every((c) => c.length <= 200))
+check('no chunk is empty', long.every((c) => c.trim().length > 0))
+check('short text stays one chunk', splitForSpeech('Just this.').length === 1)
+check('empty text produces no chunks', splitForSpeech('   ').length === 0)
+// A single sentence longer than the cap has no boundary to split on and must still break.
+check('an unpunctuated run is still broken up',
+  splitForSpeech('x'.repeat(900)).every((c) => c.length <= 200))
+
+check('word duration grows with length',
+  estimateWordMs('a') < estimateWordMs('extraordinarily'))
+check('word duration is clamped at both ends', (() => {
+  const all = ['a', 'the', 'antidisestablishmentarianism', 'x'.repeat(80)]
+  return all.every((w) => estimateWordMs(w) >= 130 && estimateWordMs(w) <= 620)
+})())
+check('a faster rate shortens a word', estimateWordMs('trading', 2) < estimateWordMs('trading', 1))
+check('wordAt reads the word at an offset', wordAt('the pool score', 4) === 'pool')
+check('wordAt handles the final word', wordAt('the pool score', 9) === 'score')
+check('wordAt is safe past the end', wordAt('short', 99) === '')
+
+check('no voices yields no choice', pickVoice([]) === null)
+check('an English voice is preferred', (() => {
+  const v = pickVoice([
+    { name: 'Robot', lang: 'de-DE', default: true },
+    { name: 'Aria', lang: 'en-US', default: false },
+  ])
+  return v.name === 'Aria'
+})())
+check('a non-English list still yields a voice',
+  pickVoice([{ name: 'Robot', lang: 'de-DE', default: true }]).name === 'Robot')
 
 console.log('\n── markdown ──────────────────────────────────────────────')
 
@@ -193,6 +263,90 @@ check('live briefing is labelled LIVE', liveMsg.includes('(LIVE)'))
 check('live briefing does not claim simulation', !/SIMULATION ENGINE/.test(liveMsg))
 check('no briefing yields no system message',
   contextSystemMessage({ source: 'unavailable', text: null }) === null)
+
+console.log('\n── tools ─────────────────────────────────────────────────')
+
+// The security property, asserted rather than assumed: a model chooses a name, never a
+// URL. If a tool ever grows a caller-supplied path this is the check that fails.
+check('every tool hard-codes its own path',
+  TOOLS.every((t) => typeof t.path === 'string' && t.path.length > 0 && !t.path.includes('..')))
+check('no tool targets a control route',
+  TOOLS.every((t) => !t.path.startsWith('controls/') && t.path !== 'push'))
+check('tool names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length)
+check('definitions are OpenAI-shaped',
+  toolDefinitions().every((d) => d.type === 'function' && d.function.name && d.function.parameters))
+
+// Models routinely ask for 500 rows. The clamp is what keeps one greedy call from
+// eating the whole context window.
+const decisions = TOOLS.find((t) => t.name === 'get_pool_decisions')
+check('an over-large limit is clamped', Number(decisions.query({ limit: 500 }).limit) <= 40)
+check('a zero limit is raised to at least 1', Number(decisions.query({ limit: 0 }).limit) >= 1)
+check('a nonsense limit falls back to a default',
+  Number.isFinite(Number(decisions.query({ limit: 'lots' }).limit)))
+check('a missing limit still yields a query', Number(decisions.query({}).limit) > 0)
+
+// Shaping is what keeps a tool result affordable — the raw decision rows carry ~20
+// fields each, most of them irrelevant to any question worth asking.
+const shaped = decisions.shape({
+  decisions: [{ mint: 'abc', reason: 'fibonacci_gate', pool_score: 47, utc_hour: 3, social_count: 0 }],
+})
+check('shaping keeps the fields that answer questions',
+  shaped[0].mint === 'abc' && shaped[0].reason === 'fibonacci_gate')
+check('shaping drops the fields that do not', shaped[0].utc_hour === undefined)
+
+// An invented tool name must recover the turn, not end it.
+const bogus = await runTool('http://127.0.0.1:1', 'get_everything', '{}')
+check('an unknown tool is refused', bogus.ok === false)
+check('an unknown tool names the real ones', bogus.content.includes('get_pool_decisions'))
+
+// An unreachable bot is information, not an exception.
+const unreachable = await runTool('http://127.0.0.1:1', 'get_controls', '{}')
+check('an unreachable API returns a message, not a throw',
+  unreachable.ok === false && /could not reach/i.test(unreachable.content))
+
+console.log('\n── cognitive gate ────────────────────────────────────────')
+
+// A HOLD has to explain the thing that is actually wrong. "Ψ is below threshold" is
+// true and useless; "your sniper stopped writing metrics an hour ago" is actionable.
+const wedged = holdExplanation({
+  verdict: 'hold', psi: 0, sentience: 0.4, bottleneck: 'logic', note: '',
+  inputs: { metrics_age_secs: 7200, sniper_running: true, state_files_present: 4 },
+})
+check('a wedged sniper is named as such', /wedged|stale/i.test(wedged))
+check('the explanation gives the age in minutes', wedged.includes('120 minute'))
+
+const stopped = holdExplanation({
+  verdict: 'hold', psi: 0, sentience: 0.4, bottleneck: 'logic', note: '',
+  inputs: { metrics_age_secs: 3600, sniper_running: false, state_files_present: 4 },
+})
+check('a stopped sniper is described as a finished session', /finished session/i.test(stopped))
+// Pluralisation: 61s is the narrow window where the singular branch is reachable.
+check('one minute is not written as "1 minutes"',
+  holdExplanation({
+    verdict: 'hold', psi: 0, sentience: 0, bottleneck: 'logic', note: '',
+    inputs: { metrics_age_secs: 61, sniper_running: false, state_files_present: 4 },
+  }).includes('1 minute old'))
+
+check('missing state files get their own explanation',
+  /not readable|nothing to answer/i.test(holdExplanation({
+    verdict: 'hold', psi: 0, sentience: 0, bottleneck: 'perception', note: '',
+    inputs: { state_files_present: 0 },
+  })))
+check('an unexplained hold still names the bottleneck',
+  holdExplanation({
+    verdict: 'hold', psi: 0, sentience: 0, bottleneck: 'rationality', note: '', inputs: {},
+  }).includes('rationality'))
+
+const caution = cautionInstruction({
+  verdict: 'caution', psi: 0.0819, sentience: 0.4, bottleneck: 'perception', note: '', inputs: {},
+})
+check('a caution instruction carries Ψ', caution.includes('0.082'))
+check('a caution instruction names the bottleneck', caution.includes('perception'))
+
+// Absent is not the same as HOLD: a deploy with no bot, or an API too old to have the
+// endpoint, must stay fully usable rather than refuse every question.
+check('an unreachable gate is no opinion, not a refusal',
+  (await readGate('http://127.0.0.1:1')) === null)
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)
 process.exit(failed === 0 ? 0 : 1)

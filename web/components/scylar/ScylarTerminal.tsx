@@ -5,15 +5,19 @@ import Link from 'next/link'
 
 import { ScylarAvatar } from './ScylarAvatar'
 import { ScylarMessage } from './ScylarMessage'
+import { useSpeech } from './useSpeech'
 import { helpText, parseCommand } from '@/lib/scylar/commands'
 import { type AvatarPhase, readsPositive } from '@/lib/scylar/expressions'
 import {
+  type ToolUse,
   type Turn,
   clearTranscript,
   loadContextPref,
   loadTranscript,
+  loadVoicePref,
   saveContextPref,
   saveTranscript,
+  saveVoicePref,
 } from '@/lib/scylar/session'
 
 // The Scylar terminal: portrait on the left, conversation on the right.
@@ -41,8 +45,14 @@ export function ScylarTerminal() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<ProviderStatus | null>(null)
   const [useContext, setUseContext] = useState(true)
+  const [useVoice, setUseVoice] = useState(false)
   const [hydrated, setHydrated] = useState(false)
-  const busy = phase.kind === 'thinking' || phase.kind === 'streaming'
+  const speech = useSpeech(useVoice)
+
+  // Speaking counts as busy. Letting the next message go out while she is mid-sentence
+  // leaves two answers overlapping in the same voice, which is unintelligible.
+  const busy =
+    phase.kind === 'thinking' || phase.kind === 'streaming' || phase.kind === 'voicing'
 
   const logRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -54,6 +64,7 @@ export function ScylarTerminal() {
   useEffect(() => {
     setTurns(loadTranscript())
     setUseContext(loadContextPref(true))
+    setUseVoice(loadVoicePref())
     setHydrated(true)
   }, [])
 
@@ -64,6 +75,28 @@ export function ScylarTerminal() {
   useEffect(() => {
     if (hydrated) saveContextPref(useContext)
   }, [useContext, hydrated])
+
+  useEffect(() => {
+    if (hydrated) saveVoicePref(useVoice)
+  }, [useVoice, hydrated])
+
+  // Speech owns the phase while it is talking. Each word boundary pushes a new phase
+  // object, which is what restarts the avatar's per-word mouth cycle; `word.seq` is in
+  // the dependency list precisely so an identical duration twice running still counts
+  // as a new word.
+  useEffect(() => {
+    if (speech.speaking && speech.word) {
+      setPhase({ kind: 'voicing', sinceWordMs: 0, wordMs: speech.word.wordMs })
+    }
+  }, [speech.speaking, speech.word])
+
+  // When she stops speaking, hand the phase back — reacting if the answer warranted it.
+  const lastSpoken = useRef<string | null>(null)
+  useEffect(() => {
+    if (speech.speaking || phase.kind !== 'voicing') return
+    const text = lastSpoken.current ?? ''
+    setPhase({ kind: 'settled', positive: readsPositive(text), sinceMs: 0 })
+  }, [speech.speaking, phase.kind])
 
   // Probe the provider once so a missing key surfaces immediately, rather than after
   // someone types their first message and waits on a 503.
@@ -138,6 +171,13 @@ export function ScylarTerminal() {
         const decoder = new TextDecoder()
         let buffer = ''
         let assembled = ''
+        let tools: ToolUse[] = []
+        let gate: string | undefined
+        // Set by a mid-stream `scylar.error` frame. Tracked separately from the `error`
+        // state because the generic "empty response" fallback below must not overwrite
+        // it — a rate-limit message is the one fact worth showing, and losing it behind
+        // "the model returned nothing" is how a diagnosable failure becomes a mystery.
+        let streamError: string | null = null
 
         for (;;) {
           const { done, value } = await reader.read()
@@ -156,15 +196,34 @@ export function ScylarTerminal() {
             if (!payload || payload === '[DONE]') continue
 
             try {
-              const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content
+              const frame = JSON.parse(payload)
+
+              // Out-of-band frame: tool activity, or a mid-stream provider failure. It
+              // carries no `choices`, so a parser that only reads deltas skips it.
+              const notice = frame?.scylar
+              if (notice) {
+                if (Array.isArray(notice.tools)) tools = [...tools, ...notice.tools]
+                if (typeof notice.gate === 'string') gate = notice.gate
+                if (typeof notice.error === 'string') {
+                  streamError = notice.error
+                  setError(notice.error)
+                }
+              }
+
+              const delta = frame?.choices?.[0]?.delta?.content
               if (typeof delta === 'string' && delta) {
                 assembled += delta
+              }
+
+              if (notice || (typeof delta === 'string' && delta)) {
                 setTurns((t) => {
                   const next = [...t]
                   next[next.length - 1] = {
                     role: 'assistant',
                     content: assembled,
                     context: contextUsed,
+                    tools,
+                    gate,
                   }
                   return next
                 })
@@ -178,21 +237,38 @@ export function ScylarTerminal() {
 
         setTurns((t) => {
           const next = [...t]
+          // Nothing said and nothing read: drop the placeholder rather than leave an
+          // empty SCYLAR bubble, which reads as a rendering bug. If tools did run, the
+          // bubble stays — the badges are a record of what she got through before the
+          // failure, and that is worth more than tidiness.
+          if (!assembled.trim() && tools.length === 0) return next.slice(0, -1)
           next[next.length - 1] = {
             role: 'assistant',
             content: assembled,
             done: true,
             context: contextUsed,
+            tools,
+            gate,
           }
           return next
         })
 
         if (assembled.trim()) {
-          setPhase({ kind: 'settled', positive: readsPositive(assembled), sinceMs: 0 })
+          if (useVoice && speech.supported) {
+            lastSpoken.current = assembled
+            speech.speak(assembled)
+            // Provisional: the first word boundary replaces this. Set here rather than
+            // waiting so the mouth does not sit shut through the engine's start-up
+            // latency, which on a cold voice list is a noticeable half-second.
+            setPhase({ kind: 'voicing', sinceWordMs: 0, wordMs: 280 })
+          } else {
+            setPhase({ kind: 'settled', positive: readsPositive(assembled), sinceMs: 0 })
+          }
         } else {
           // Upstream closed without emitting anything — a silent empty turn looks like a
-          // UI bug, so say what happened.
-          setError('The model returned an empty response.')
+          // UI bug, so say what happened. Unless the stream already said something more
+          // specific, in which case that stands.
+          if (!streamError) setError('The model returned an empty response.')
           setPhase({ kind: 'idle' })
         }
       } catch (err) {
@@ -203,7 +279,7 @@ export function ScylarTerminal() {
         abortRef.current = null
       }
     },
-    [turns],
+    [turns, useVoice, speech],
   )
 
   const submit = useCallback(
@@ -271,8 +347,9 @@ export function ScylarTerminal() {
   const stop = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
+    speech.cancel()
     setPhase({ kind: 'idle' })
-  }, [])
+  }, [speech])
 
   // Escape stops a stream from anywhere on the page — the STOP button is across the
   // panel from where your hands already are.
@@ -329,7 +406,8 @@ export function ScylarTerminal() {
           </div>
           <p className="text-center text-[0.65rem] tracking-widest text-scylar-dim">
             {phase.kind === 'thinking' && 'THINKING'}
-            {phase.kind === 'streaming' && 'SPEAKING'}
+            {phase.kind === 'streaming' && 'WRITING'}
+            {phase.kind === 'voicing' && 'SPEAKING'}
             {phase.kind === 'settled' && 'IDLE'}
             {phase.kind === 'idle' && (turns.length ? 'IDLE' : 'AWAITING INPUT')}
           </p>
@@ -349,6 +427,21 @@ export function ScylarTerminal() {
                   >
                     {contextBadge.label}
                   </span>
+                )}
+                {/* Rendered only where it can work. A toggle that silently does nothing
+                    is worse than an absent one — you cannot tell it from a broken voice. */}
+                {speech.supported && (
+                  <button
+                    onClick={() => setUseVoice((v) => !v)}
+                    title="Speak answers aloud, with the mouth driven by real speech timing"
+                    className={`text-[0.6rem] tracking-widest transition-colors ${
+                      useVoice
+                        ? 'text-scylar-violet hover:text-scylar-violet-hi'
+                        : 'text-scylar-dim hover:text-scylar-muted'
+                    }`}
+                  >
+                    VOICE {useVoice ? 'ON' : 'OFF'}
+                  </button>
                 )}
                 <button
                   onClick={() => setUseContext((v) => !v)}
@@ -432,7 +525,38 @@ export function ScylarTerminal() {
                         NO STATE
                       </span>
                     )}
+                    {/* Only CAUTION is shown. GO is the ordinary case, and badging it
+                        would make the two look equally worth reading. */}
+                    {turn.role === 'assistant' && turn.gate === 'caution' && (
+                      <span
+                        className="text-scylar-red"
+                        title="Ψ below the GO threshold — bot state is partial or going stale"
+                      >
+                        Ψ CAUTION
+                      </span>
+                    )}
                   </div>
+
+                  {/* What she actually read. An answer sourced from the decisions log
+                      and one sourced from nothing look identical in prose; only one of
+                      them can be checked against the bot. */}
+                  {turn.role === 'assistant' && turn.tools && turn.tools.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pb-0.5">
+                      {turn.tools.map((t, j) => (
+                        <span
+                          key={j}
+                          title={t.ok ? 'Read successfully' : 'The call failed; she was told so'}
+                          className={`border px-1.5 py-px text-[0.55rem] tracking-widest ${
+                            t.ok
+                              ? 'border-scylar-border text-scylar-muted'
+                              : 'border-scylar-red/40 text-scylar-red'
+                          }`}
+                        >
+                          {t.name.replace(/^get_/, '').replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
                   {turn.role === 'assistant' ? (
                     <div className="min-w-0">

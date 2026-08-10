@@ -14,6 +14,11 @@
 //!
 //! Transport is the host's responsibility: implement [`LlmClient`] however you
 //! like (reqwest, an existing client, a mock in tests).
+//!
+//! A host that cannot hand its transport over — anything streaming, anything in another
+//! language — uses the split form instead: [`Overlay::assess`] before generating,
+//! [`Overlay::record`] with whatever came back. Same gate, same loop, one call the
+//! overlay never makes. Build it with [`NoClient`].
 
 use crate::{
     cognitive_loop::{CognitiveLoop, CycleOutput},
@@ -26,6 +31,19 @@ use crate::{
 pub trait LlmClient {
     /// Returns the model's text response, or an error string.
     fn complete(&self, system: &str, user: &str) -> Result<String, String>;
+}
+
+/// An [`LlmClient`] that never runs, for hosts that own their own transport.
+///
+/// Use with [`Overlay::assess`] / [`Overlay::record`]. Calling [`Overlay::run`] on an
+/// overlay built with this returns the client-failure path rather than panicking — the
+/// mistake is recoverable and worth reporting, not worth aborting a process over.
+pub struct NoClient;
+
+impl LlmClient for NoClient {
+    fn complete(&self, _system: &str, _user: &str) -> Result<String, String> {
+        Err("NoClient: this overlay does not own an LLM transport; use assess()/record()".into())
+    }
 }
 
 /// Per-turn cognitive state, surfaced to callers (and to the LLM).
@@ -176,6 +194,64 @@ impl<C: LlmClient> Overlay<C> {
         }
     }
 
+    /// Assess before generating, without calling the client or advancing the loop.
+    ///
+    /// `run` assumes the overlay owns the LLM transport. Most hosts do not: a streaming
+    /// HTTP endpoint, a batch job, or another language's client already has its own call
+    /// and cannot hand it over without losing streaming. Splitting the turn into
+    /// `assess` → *host generates* → [`record`] makes the gate usable by those hosts,
+    /// which is the difference between this crate being a library and being a demo.
+    ///
+    /// Pair every `assess` with a `record` of whatever the host produced; skipping the
+    /// second half leaves the loop frozen and the gate constant.
+    pub fn assess(&self) -> CognitiveReadout {
+        let psi = self.current_psi();
+        let gate = self.gate(psi);
+        let note = self.annotation(&gate);
+        self.readout(psi, gate, gate == Gate::Hold, &note)
+    }
+
+    /// The system prompt a host should send, given its own prompt and an assessment.
+    ///
+    /// Separate from `assess` so a host can decide *not* to annotate — the annotation is
+    /// visible to the model and changes its output, so it is a policy choice rather than
+    /// a detail of measurement.
+    pub fn effective_system(&self, system_prompt: &str, readout: &CognitiveReadout) -> String {
+        if !self.annotate_prompt {
+            return system_prompt.to_string();
+        }
+        let mut out = system_prompt.to_string();
+        if !system_prompt.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&readout.note);
+        out
+    }
+
+    /// Feed back a response the host generated itself, advancing the cognitive loop.
+    ///
+    /// This is the half that makes Ψ move. Without it `assess` returns the same value
+    /// forever and the gate is decoration.
+    pub fn record(&mut self, response: &str) -> CognitiveReadout {
+        let observed = self.observe(response);
+        let predicted_now = observed.value;
+        let out: CycleOutput = self.loop_.step(observed, self.predicted, 0.9);
+        self.predicted = predicted_now;
+
+        let psi = out.psi.value();
+        let gate = self.gate(psi);
+        let note = self.annotation(&gate);
+        self.readout(psi, gate, out.reassessment_triggered, &note)
+    }
+
+    /// Replace the cognitive state, keeping thresholds and policy.
+    ///
+    /// For hosts whose state is measured from the outside world each cycle rather than
+    /// evolved purely internally — a monitor scoring its own data integrity, say.
+    pub fn set_state(&mut self, state: CognitiveState) {
+        self.loop_.state = state;
+    }
+
     fn current_psi(&self) -> f64 {
         let st = &self.loop_.state;
         let (_, psi) = MasterEquation::compute(
@@ -320,6 +396,95 @@ mod tests {
         st.logic = LogicInputs::new(0.0, 0.0, 0.0, 0.0);
         st.ethics = EthicsInputs::new(0.0, 0.0, 0.0, 0.0);
         st
+    }
+
+    // ── split form: assess -> host generates -> record ────────────────────────────
+    //
+    // The path a host with its own transport takes. These assert the two halves add up
+    // to what `run` does on its own, because the moment they diverge the gate means one
+    // thing in-process and something else over HTTP.
+
+    #[test]
+    fn assess_agrees_with_run_on_the_gate() {
+        let healthy = Overlay::new(NoClient, Some(healthy_state())).assess();
+        let mid = Overlay::new(NoClient, Some(mid_state())).assess();
+        let degraded = Overlay::new(NoClient, Some(degraded_state())).assess();
+
+        assert_eq!(healthy.gate, Gate::Go);
+        assert_eq!(mid.gate, Gate::Caution);
+        assert_eq!(degraded.gate, Gate::Hold);
+
+        // Same states through the owning-transport path must land on the same gates.
+        let mut owned = Overlay::new(StubClient::new(), Some(degraded_state()));
+        assert_eq!(owned.run("hi", "sys").readout.gate, Gate::Hold);
+    }
+
+    #[test]
+    fn assess_does_not_call_the_client_or_advance_the_loop() {
+        let stub = StubClient::new();
+        let seen = stub.clone();
+        let ov = Overlay::new(stub, Some(healthy_state()));
+
+        let first = ov.assess();
+        let second = ov.assess();
+
+        assert_eq!(seen.call_count(), 0, "assess must never generate");
+        // Assessment is a measurement, not a step: repeating it cannot change the answer,
+        // or a host that assesses twice before generating would gate on a moving target.
+        assert_eq!(first.timestep, second.timestep);
+        assert_eq!(first.gate, second.gate);
+    }
+
+    #[test]
+    fn record_advances_the_loop() {
+        let mut ov = Overlay::new(NoClient, Some(healthy_state()));
+        let before = ov.assess();
+        let after = ov.record("A well-formed answer from the host's own client.");
+
+        // Without this the gate is decoration: assess would return the same value for
+        // the life of the process.
+        assert!(after.timestep > before.timestep);
+    }
+
+    #[test]
+    fn effective_system_matches_the_owning_path() {
+        let stub = StubClient::new();
+        let sent = stub.clone();
+        let mut owned = Overlay::new(stub, Some(healthy_state()));
+        let turn = owned.run("hi", "You are helpful.");
+
+        let split = Overlay::new(NoClient, Some(healthy_state()));
+        let readout = split.assess();
+        let effective = split.effective_system("You are helpful.", &readout);
+
+        assert_eq!(effective, turn.effective_system);
+        assert_eq!(effective, sent.last_system());
+    }
+
+    #[test]
+    fn annotation_can_be_declined_by_the_host() {
+        let ov = Overlay::with_policy(NoClient, Some(healthy_state()), GO_THRESHOLD, CAUTION_THRESHOLD, false);
+        let readout = ov.assess();
+        assert_eq!(ov.effective_system("You are helpful.", &readout), "You are helpful.");
+        // The readout still carries the note even when the prompt does not — a host may
+        // want to show the operator a gate it chose not to tell the model about.
+        assert!(readout.note.contains("COGNITIVE OVERLAY"));
+    }
+
+    #[test]
+    fn no_client_reports_rather_than_panics() {
+        let mut ov = Overlay::new(NoClient, Some(healthy_state()));
+        let turn = ov.run("hi", "sys");
+        assert!(turn.response.contains("OVERLAY ERROR"));
+        assert!(turn.response.contains("NoClient"));
+    }
+
+    #[test]
+    fn set_state_moves_the_gate() {
+        let mut ov = Overlay::new(NoClient, Some(healthy_state()));
+        assert_eq!(ov.assess().gate, Gate::Go);
+        ov.set_state(degraded_state());
+        assert_eq!(ov.assess().gate, Gate::Hold);
     }
 
     #[test]

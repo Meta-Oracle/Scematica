@@ -59,6 +59,25 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
     return () => cancelAnimationFrame(raf)
   }, [streaming, reduceMotion])
 
+  // Speech-driven mouth. One open-close per word, restarted on each boundary — the
+  // terminal pushes a new phase object per word, so `phase` in the dependency list *is*
+  // the word change. Depending on the object identity is deliberate here and wrong for
+  // the timer flap above, which must not restart on every render.
+  useEffect(() => {
+    if (phase.kind !== 'voicing' || reduceMotion) return
+    const { wordMs, sinceWordMs } = phase
+    let raf = 0
+    const start = performance.now()
+    const loop = (now: number) => {
+      setFlapSprite(
+        spriteFor({ kind: 'voicing', sinceWordMs: sinceWordMs + (now - start), wordMs }),
+      )
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [phase, reduceMotion])
+
   // Decay the reaction back to idle. One timeout, not a loop — the only thing that
   // changes at the end of the hold is a single boolean.
   const settled = phase.kind === 'settled'
@@ -78,12 +97,13 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
     // Reduced motion: keep the expression meaningful but hold it still. She still
     // reacts and still opens her mouth to speak — she just doesn't flap.
     if (reduceMotion) {
-      if (phase.kind === 'streaming') return 'talking'
+      if (phase.kind === 'streaming' || phase.kind === 'voicing') return 'talking'
       if (phase.kind === 'settled') return phase.positive && settledFor === 0 ? 'joyous' : 'idle'
       return 'idle'
     }
     switch (phase.kind) {
       case 'streaming':
+      case 'voicing':
         return flapSprite
       case 'settled':
         return spriteFor({ kind: 'settled', positive: phase.positive, sinceMs: settledFor })
@@ -103,8 +123,13 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
   )
 
   // Fast inside the flap cycle, slow for a change of mood. Using the slow duration
-  // during streaming would leave both sprites permanently half-lit.
-  const fadeMs = reduceMotion ? 0 : streaming ? FLAP_CROSSFADE_MS : EXPRESSION_CROSSFADE_MS
+  // while the mouth is cycling would leave both sprites permanently half-lit.
+  const fadeMs =
+    reduceMotion
+      ? 0
+      : streaming || phase.kind === 'voicing'
+        ? FLAP_CROSSFADE_MS
+        : EXPRESSION_CROSSFADE_MS
 
   return (
     <div

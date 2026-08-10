@@ -68,4 +68,4 @@ pub use sentience::SentienceIndex;
 pub use cognitive_state::CognitiveState;
 pub use master_equation::{IntegratedCognition, MasterEquation};
 pub use cognitive_loop::CognitiveLoop;
-pub use overlay::{Overlay, OverlayTurn, CognitiveReadout, LlmClient, Gate};
+pub use overlay::{Overlay, OverlayTurn, CognitiveReadout, LlmClient, NoClient, Gate};

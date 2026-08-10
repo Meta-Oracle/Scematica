@@ -4382,6 +4382,7 @@ dependencies = [
  "axum 0.7.9",
  "jsonwebtoken",
  "reqwest",
+ "scematica-sentience",
  "serde",
  "serde_json",
  "tokio",

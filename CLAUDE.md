@@ -205,9 +205,34 @@ first for latency. Four constraints:
   block `SIMULATED` when it is. The per-turn badge in the UI is the real guarantee — the
   prompt instruction is a mitigation, and it was ignored entirely until it was phrased as
   a required output token rather than a description.
+- **Tools: the model picks a name, never a URL.** `lib/scylar/tools.ts` hard-codes a path
+  per tool, so no model output reaches an endpoint that is not on the list — the same
+  reasoning as `lib/alchem/endpoint.ts` refusing a caller-supplied RPC URL. All GETs, no
+  control routes. Row counts are clamped (models ask for 500) and repeated identical calls
+  within a turn are answered from cache, because llama-3.3-70b re-calls rather than
+  answers when it finds a result thin, and each round is a whole request against a 30/min
+  tier.
+- **Voice drives the mouth, not the other way round.** `FLAP_PERIOD_MS` is the fallback;
+  when `useSpeech` is active, `SpeechSynthesis` word boundaries produce one open-close per
+  word (`voicing` phase). Chrome silently stops after ~15s of a single utterance, so
+  `splitForSpeech` is a correctness requirement; `onend` is unreliable, so the watchdog
+  polling `speechSynthesis.speaking` is what stops a missed event from locking the UI.
+- **The Ψ gate measures staleness, not mood.** `GET /api/sentience` (Rust, backed by
+  `scematica-sentience`) answers "can anything reading this API describe the bot right
+  now?" — every read endpoint serves a state file identically whether it was written 4
+  seconds or 4 hours ago, and `/api/health` only reports that a process *was* here. HOLD
+  returns 409 and does not call the model; a warned model still writes a confident
+  paragraph of stale numbers. Two traps, both hit during implementation: `Perception`'s
+  data ratio is a **product**, so an unmeasured channel scored 0 pins Ψ at 0 and jams the
+  gate shut forever — unmeasured dimensions are 1.0 ("not a limiting factor"), and only
+  measured degradation moves the verdict, or a healthy bot sits in permanent CAUTION and
+  the badge becomes noise.
 
-`npm run check:scylar` pins the pure logic (expressions, markdown, commands, session).
-Run it after touching any of those four modules.
+`npm run check:scylar` pins the pure logic (expressions, speech, markdown, commands,
+session, tools, gate). Run it after touching any of those modules.
+
+Rebuilding `api.exe` on Windows fails with `Access is denied (os error 5)` while the API
+is running — stop it first. Cargo reports this as a build error, not a lock error.
 
 ## Architecture: alchem-link terminal system (`term/`)
 

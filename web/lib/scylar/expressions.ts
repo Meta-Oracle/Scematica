@@ -22,6 +22,12 @@ export type AvatarPhase =
   | { kind: 'thinking' }
   /** Tokens arriving; `elapsedMs` drives the mouth flap. */
   | { kind: 'streaming'; elapsedMs: number }
+  /**
+   * Speaking aloud. The mouth is driven by real speech-synthesis word boundaries rather
+   * than a timer: `wordMs` is the predicted length of the word that started `sinceWordMs`
+   * ago. Callers push a fresh phase on each boundary; see `components/scylar/useSpeech.ts`.
+   */
+  | { kind: 'voicing'; sinceWordMs: number; wordMs: number }
   /** Response finished; `positive` decides whether she reacts. */
   | { kind: 'settled'; positive: boolean; sinceMs: number }
 
@@ -92,6 +98,13 @@ export function spriteFor(phase: AvatarPhase): Expression {
       return t < FLAP_OPEN_RATIO ? 'talking' : 'idle'
     }
 
+    // One open-close per word, sized to that word — not a cycle. The mouth stays shut
+    // between words, which is what makes speech read as speech: the pauses carry as much
+    // as the movement does. Reusing FLAP_OPEN_RATIO keeps the shape of a syllable
+    // consistent with the timer-driven flap, so the two never look like different mouths.
+    case 'voicing':
+      return phase.sinceWordMs < phase.wordMs * FLAP_OPEN_RATIO ? 'talking' : 'idle'
+
     case 'settled':
       return phase.positive && phase.sinceMs < REACTION_HOLD_MS ? 'joyous' : 'idle'
   }
@@ -133,6 +146,10 @@ export function presenceFor(phase: AvatarPhase): Presence {
     case 'thinking':
       return PRESENCE.thinking
     case 'streaming':
+    // Speaking out loud carries the same posture as speaking in text — she is addressing
+    // you either way, and switching pose when the audio toggle flips would be a tell that
+    // the two are different code paths.
+    case 'voicing':
       return PRESENCE.streaming
     case 'settled':
       // Decays with the sprite, so the body and the face finish reacting together.

@@ -121,23 +121,90 @@ export function speechSupported(): boolean {
 }
 
 /**
- * Pick a voice.
+ * Known female English voice names, by first name.
  *
- * Preference order is deliberate but shallow: an English voice that is not the platform
- * default robot, if one exists. There is no reliable, stable way to identify a
- * good-sounding voice across platforms — the list differs per OS, per browser, and is
- * often empty on first call — so this degrades to "whatever is available" rather than
- * pretending to a judgement it cannot make.
+ * `SpeechSynthesisVoice` exposes `name`, `lang`, `voiceURI`, `localService` and
+ * `default` — and no gender field at all. Since Scylar is a specific character rather
+ * than a generic reader, the only way to honour that is a name table. It is matched on
+ * whole tokens, never substrings: voice names are long strings like "Microsoft Zira
+ * Desktop - English (United States)", and substring matching on three-letter names finds
+ * them inside unrelated words.
+ *
+ * Covers Windows SAPI and the newer Online (Natural) set, macOS/iOS, and Chrome/Android.
+ * Unknown platforms fall through to the heuristics below rather than guessing.
+ */
+const FEMALE_VOICE_NAMES = new Set([
+  // Windows — SAPI
+  'zira', 'eva', 'hazel', 'susan', 'linda',
+  // Windows — Online (Natural)
+  'aria', 'ava', 'emma', 'jenny', 'michelle', 'monica', 'nova', 'sara', 'sarah',
+  'ana', 'amber', 'ashley', 'cora', 'elizabeth', 'jane', 'nancy', 'sonia', 'libby',
+  'maisie', 'natasha', 'clara', 'molly', 'luna', 'aideen', 'yan',
+  // macOS / iOS
+  'samantha', 'victoria', 'karen', 'moira', 'tessa', 'fiona', 'allison', 'zoe',
+  'nicky', 'kathy', 'serena', 'martha', 'catherine', 'shelley', 'sandy',
+])
+
+/** Markers for the higher-quality synthesis engines, used only as a tiebreak. */
+const QUALITY_MARKERS = ['natural', 'neural', 'online', 'premium', 'enhanced']
+
+function tokens(name: string): string[] {
+  return name.toLowerCase().split(/[^a-z]+/).filter(Boolean)
+}
+
+function isFemale(v: SpeechSynthesisVoice): boolean {
+  const t = tokens(v.name)
+  // Some Android and Chrome voices say so outright ("English United States female").
+  if (t.includes('female')) return true
+  if (t.includes('male')) return false
+  return t.some((word) => FEMALE_VOICE_NAMES.has(word))
+}
+
+function hasQuality(v: SpeechSynthesisVoice): boolean {
+  const lower = v.name.toLowerCase()
+  return QUALITY_MARKERS.some((m) => lower.includes(m))
+}
+
+/**
+ * Pick a voice for Scylar.
+ *
+ * **Gender is the primary key, quality only a tiebreak**, and the order matters more
+ * than it looks. Ranking quality first — which is what this did originally — picks
+ * "Microsoft Andrew Online (Natural)" over "Microsoft Zira" on a stock Windows install,
+ * because Edge lists the male natural voice and `natural` matched before any name did.
+ * The result was a male voice for a character who is not one, which no amount of good
+ * synthesis makes right.
+ *
+ * Everything degrades: an unknown platform with no recognisable female voice falls back
+ * to the platform default rather than refusing to speak.
  */
 export function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
   if (!voices.length) return null
   const english = voices.filter((v) => v.lang?.toLowerCase().startsWith('en'))
   const pool = english.length ? english : voices
 
-  const preferred = ['natural', 'neural', 'zira', 'aria', 'samantha', 'google']
-  for (const name of preferred) {
-    const hit = pool.find((v) => v.name.toLowerCase().includes(name))
-    if (hit) return hit
+  const female = pool.filter(isFemale)
+  if (female.length) {
+    return female.find(hasQuality) ?? female.find((v) => v.default) ?? female[0]
   }
-  return pool.find((v) => v.default) ?? pool[0]
+
+  // No voice we can identify as female. Prefer quality, then the default — and the
+  // caller can tell the operator that gender selection failed, via `pickedFemaleVoice`.
+  return pool.find(hasQuality) ?? pool.find((v) => v.default) ?? pool[0]
 }
+
+/** Whether the chosen voice was actually identifiable as female. */
+export function pickedFemaleVoice(voice: SpeechSynthesisVoice | null): boolean {
+  return voice ? isFemale(voice) : false
+}
+
+/**
+ * Delivery: stern rather than bright.
+ *
+ * Pitch does the work — below 1.0 it drops the register, and a raised pitch is what made
+ * the first pass read as chirpy. The slight slow-down is the other half: sternness is
+ * measured, not clipped. These are the only two levers `SpeechSynthesisUtterance`
+ * offers; anything more comes from her word choice, which is the persona's job.
+ */
+export const VOICE_PITCH = 0.85
+export const VOICE_RATE = 0.97

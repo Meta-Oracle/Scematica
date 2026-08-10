@@ -244,12 +244,25 @@ impl<C: LlmClient> Overlay<C> {
         self.readout(psi, gate, out.reassessment_triggered, &note)
     }
 
-    /// Replace the cognitive state, keeping thresholds and policy.
+    /// Replace the cognitive state wholesale, keeping thresholds and policy.
     ///
-    /// For hosts whose state is measured from the outside world each cycle rather than
-    /// evolved purely internally — a monitor scoring its own data integrity, say.
+    /// Note what this discards: the timestep, the evolved sentience index, and every
+    /// effect [`record`](Self::record) has had. A host that measures *some* dimensions
+    /// from the outside world each cycle wants [`state_mut`](Self::state_mut) instead —
+    /// overwriting only what it measures — or the two halves of the loop cancel each
+    /// other out and Ψ never learns anything.
     pub fn set_state(&mut self, state: CognitiveState) {
         self.loop_.state = state;
+    }
+
+    /// The current cognitive state.
+    pub fn state(&self) -> &CognitiveState {
+        &self.loop_.state
+    }
+
+    /// Mutable access, for hosts that measure part of the state and evolve the rest.
+    pub fn state_mut(&mut self) -> &mut CognitiveState {
+        &mut self.loop_.state
     }
 
     fn current_psi(&self) -> f64 {

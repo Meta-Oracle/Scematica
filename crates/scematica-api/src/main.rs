@@ -404,8 +404,8 @@ fn freshness(path: &str) -> f64 {
 
 async fn sentience_handler() -> impl IntoResponse {
     use sentience::{
-        cognitive_state::CognitiveState, ethics::EthicsInputs, logic::LogicInputs,
-        perception::Perception, rationality::RationalityInputs, types::Bounded,
+        ethics::EthicsInputs, logic::LogicInputs, perception::Perception,
+        rationality::RationalityInputs, types::Bounded,
     };
 
     let metrics_fresh = freshness(METRICS_FILE);
@@ -423,8 +423,7 @@ async fn sentience_handler() -> impl IntoResponse {
     let has_history = age_secs(TRADES_FILE).is_some() || age_secs(POOL_DECISIONS_FILE).is_some();
     let evidence = if has_history { 1.0 } else { 0.4 };
 
-    let mut state = CognitiveState::initial();
-    state.perception = Perception::new(
+    let perception = Perception::new(
         // Audio and visual are 1.0, not 0.0, and the difference is the whole gate.
         // `Perception::data_ratio` is a *product* — D = A×V×X×I — so a channel scored 0
         // annihilates D, pins Ψ at exactly 0, and makes HOLD the permanent verdict no
@@ -437,16 +436,23 @@ async fn sentience_handler() -> impl IntoResponse {
         sensory,
         metrics_fresh,
     );
-    // Measured terms carry the signal; the rest are neutral (see the note above on why
-    // they are 1.0 and not a "modest" 0.9).
-    state.rationality = RationalityInputs::new(evidence, consistency, 1.0, 0.0);
-    state.logic = LogicInputs::new(1.0, consistency, 1.0, 1.0);
-    state.ethics = EthicsInputs::new(1.0, 1.0, 1.0, 1.0);
-    state.knowledge_density = Bounded::new(sensory.max(0.1));
-
     let readout = {
         let mut ov = overlay().lock().unwrap_or_else(|e| e.into_inner());
-        ov.set_state(state);
+
+        // Overwrite only what is measured, and leave the rest of the state to evolve.
+        //
+        // Replacing the whole state here — which is what this did first — silently
+        // undoes `/api/sentience/observe`: the loop steps, then the very next gate read
+        // throws the result away along with the timestep. The two halves cancelled and
+        // the feedback loop was decorative. Measured terms carry the signal; the rest
+        // are neutral (see the note above on why they are 1.0 and not a "modest" 0.9).
+        let st = ov.state_mut();
+        st.perception = perception;
+        st.rationality = RationalityInputs::new(evidence, consistency, 1.0, 0.0);
+        st.logic = LogicInputs::new(1.0, consistency, 1.0, 1.0);
+        st.ethics = EthicsInputs::new(1.0, 1.0, 1.0, 1.0);
+        st.knowledge_density = Bounded::new(sensory.max(0.1));
+
         ov.assess()
     };
 

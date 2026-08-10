@@ -433,7 +433,16 @@ export function ScylarTerminal() {
                 {speech.supported && (
                   <button
                     onClick={() => setUseVoice((v) => !v)}
-                    title="Speak answers aloud, with the mouth driven by real speech timing"
+                    // The voice name is in the tooltip because the installed list varies
+                    // by OS, browser and connectivity — when the pick is wrong, this is
+                    // the only way to know which voice to blame.
+                    title={
+                      speech.voiceName
+                        ? `Speak answers aloud — voice: ${speech.voiceName}${
+                            speech.voiceIsFemale ? '' : ' (could not confirm a female voice)'
+                          }`
+                        : 'Speak answers aloud, with the mouth driven by real speech timing'
+                    }
                     className={`text-[0.6rem] tracking-widest transition-colors ${
                       useVoice
                         ? 'text-scylar-violet hover:text-scylar-violet-hi'
@@ -442,6 +451,15 @@ export function ScylarTerminal() {
                   >
                     VOICE {useVoice ? 'ON' : 'OFF'}
                   </button>
+                )}
+                {/* Only when it failed. A correct pick needs no announcement. */}
+                {speech.supported && useVoice && speech.voiceName && !speech.voiceIsFemale && (
+                  <span
+                    className="text-[0.6rem] tracking-widest text-scylar-red"
+                    title={`Picked "${speech.voiceName}" — no female English voice was recognised on this machine.`}
+                  >
+                    VOICE?
+                  </span>
                 )}
                 <button
                   onClick={() => setUseContext((v) => !v)}

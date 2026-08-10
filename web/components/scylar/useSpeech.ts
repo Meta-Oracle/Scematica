@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
+  VOICE_PITCH,
+  VOICE_RATE,
   estimateWordMs,
   pickVoice,
+  pickedFemaleVoice,
   speakableText,
   speechSupported,
   splitForSpeech,
@@ -30,6 +33,16 @@ export interface Speech {
   speaking: boolean
   /** Latest word boundary, or null when not speaking. */
   word: SpeechWord | null
+  /**
+   * The voice actually chosen, and whether it could be identified as female.
+   *
+   * Surfaced rather than kept internal because the installed voice list differs per OS,
+   * per browser, and per whether the machine is online — so voice selection is the one
+   * part of this that cannot be verified anywhere but the operator's own machine. When
+   * it picks wrong, the name is the only thing that makes it diagnosable.
+   */
+  voiceName: string | null
+  voiceIsFemale: boolean
   speak: (markdown: string) => void
   cancel: () => void
 }
@@ -38,6 +51,8 @@ export function useSpeech(enabled: boolean): Speech {
   const [supported, setSupported] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [word, setWord] = useState<SpeechWord | null>(null)
+  const [voiceName, setVoiceName] = useState<string | null>(null)
+  const [voiceIsFemale, setVoiceIsFemale] = useState(false)
 
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const seqRef = useRef(0)
@@ -53,7 +68,10 @@ export function useSpeech(enabled: boolean): Speech {
     // The voice list is frequently empty on first read and populated asynchronously, so
     // this has to run on the event as well as immediately.
     const load = () => {
-      voiceRef.current = pickVoice(window.speechSynthesis.getVoices())
+      const picked = pickVoice(window.speechSynthesis.getVoices())
+      voiceRef.current = picked
+      setVoiceName(picked?.name ?? null)
+      setVoiceIsFemale(pickedFemaleVoice(picked))
     }
     load()
     window.speechSynthesis.addEventListener('voiceschanged', load)
@@ -114,8 +132,8 @@ export function useSpeech(enabled: boolean): Speech {
       chunks.forEach((chunk, i) => {
         const u = new SpeechSynthesisUtterance(chunk)
         if (voiceRef.current) u.voice = voiceRef.current
-        u.rate = 1.02
-        u.pitch = 1.05
+        u.rate = VOICE_RATE
+        u.pitch = VOICE_PITCH
 
         u.onboundary = (e) => {
           // Some engines fire boundaries for punctuation and sentences too. Only word
@@ -150,5 +168,5 @@ export function useSpeech(enabled: boolean): Speech {
     [enabled],
   )
 
-  return { supported, speaking, word, speak, cancel }
+  return { supported, speaking, word, voiceName, voiceIsFemale, speak, cancel }
 }

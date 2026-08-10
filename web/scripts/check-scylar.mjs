@@ -24,8 +24,11 @@ import {
 } from '../lib/scylar/expressions.ts'
 import { parseInline, parseMarkdown } from '../lib/scylar/markdown.ts'
 import {
+  VOICE_PITCH,
+  VOICE_RATE,
   estimateWordMs,
   pickVoice,
+  pickedFemaleVoice,
   speakableText,
   splitForSpeech,
   wordAt,
@@ -153,13 +156,59 @@ check('wordAt is safe past the end', wordAt('short', 99) === '')
 check('no voices yields no choice', pickVoice([]) === null)
 check('an English voice is preferred', (() => {
   const v = pickVoice([
-    { name: 'Robot', lang: 'de-DE', default: true },
-    { name: 'Aria', lang: 'en-US', default: false },
+    { name: 'Sprecher', lang: 'de-DE', default: true },
+    { name: 'Microsoft Aria Online (Natural) - English (United States)', lang: 'en-US', default: false },
   ])
-  return v.name === 'Aria'
+  return v.name.includes('Aria')
 })())
 check('a non-English list still yields a voice',
-  pickVoice([{ name: 'Robot', lang: 'de-DE', default: true }]).name === 'Robot')
+  pickVoice([{ name: 'Sprecher', lang: 'de-DE', default: true }]).name === 'Sprecher')
+
+// The exact regression. A stock Windows + Edge list: quality-first ranking picked the
+// male natural voice over Zira, because "natural" matched before any name did.
+const windowsEdge = [
+  { name: 'Microsoft David Desktop - English (United States)', lang: 'en-US', default: true },
+  { name: 'Microsoft Zira Desktop - English (United States)', lang: 'en-US', default: false },
+  { name: 'Microsoft Andrew Online (Natural) - English (United States)', lang: 'en-US', default: false },
+]
+check('a female voice beats a higher-quality male one',
+  pickVoice(windowsEdge).name.includes('Zira'))
+check('the default voice does not win by being the default',
+  !pickVoice(windowsEdge).name.includes('David'))
+
+// Quality is still the tiebreak — among female voices only.
+check('quality decides between two female voices',
+  pickVoice([
+    { name: 'Microsoft Zira Desktop - English (United States)', lang: 'en-US', default: true },
+    { name: 'Microsoft Emma Online (Natural) - English (United States)', lang: 'en-US', default: false },
+  ]).name.includes('Emma'))
+
+check('macOS names are recognised',
+  pickVoice([
+    { name: 'Daniel', lang: 'en-GB', default: true },
+    { name: 'Samantha', lang: 'en-US', default: false },
+  ]).name === 'Samantha')
+check('an explicit "female" label is honoured',
+  pickVoice([
+    { name: 'English (United States) male', lang: 'en-US', default: true },
+    { name: 'English (United States) female', lang: 'en-US', default: false },
+  ]).name.endsWith('female'))
+// "male" is a substring of "female"; a naive check gets this exactly backwards.
+check('"female" is not read as "male"',
+  pickedFemaleVoice({ name: 'English (United States) female', lang: 'en-US' }) === true)
+
+// Whole tokens, not substrings: "Ava" inside "Avalon", "Ana" inside "Anatoly".
+check('a name is matched as a whole word',
+  pickedFemaleVoice({ name: 'Microsoft Avalon Desktop', lang: 'en-US' }) === false)
+
+// Degrading is mandatory — an unrecognised list must still speak, and must say it could
+// not confirm the choice rather than silently sounding wrong.
+const unknown = pickVoice([{ name: 'Voice 1', lang: 'en-US', default: true }])
+check('an unrecognised list still yields a voice', unknown.name === 'Voice 1')
+check('an unconfirmed pick is reported as such', pickedFemaleVoice(unknown) === false)
+
+check('delivery is pitched below neutral', VOICE_PITCH < 1)
+check('delivery is measured rather than clipped', VOICE_RATE < 1 && VOICE_RATE > 0.9)
 
 console.log('\n── markdown ──────────────────────────────────────────────')
 

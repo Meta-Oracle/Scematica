@@ -217,6 +217,11 @@ first for latency. Four constraints:
   word (`voicing` phase). Chrome silently stops after ~15s of a single utterance, so
   `splitForSpeech` is a correctness requirement; `onend` is unreliable, so the watchdog
   polling `speechSynthesis.speaking` is what stops a missed event from locking the UI.
+  `pickVoice` ranks **gender before quality** — `SpeechSynthesisVoice` has no gender
+  field, so it matches a name table on whole tokens, and ranking quality first picks
+  "Andrew Online (Natural)" over "Zira" on stock Windows + Edge. The chosen voice name is
+  surfaced in the UI because the installed list varies by OS, browser and connectivity;
+  it is the only way a wrong pick is diagnosable off the operator's machine.
 - **The Ψ gate measures staleness, not mood.** `GET /api/sentience` (Rust, backed by
   `scematica-sentience`) answers "can anything reading this API describe the bot right
   now?" — every read endpoint serves a state file identically whether it was written 4
@@ -226,7 +231,11 @@ first for latency. Four constraints:
   data ratio is a **product**, so an unmeasured channel scored 0 pins Ψ at 0 and jams the
   gate shut forever — unmeasured dimensions are 1.0 ("not a limiting factor"), and only
   measured degradation moves the verdict, or a healthy bot sits in permanent CAUTION and
-  the badge becomes noise.
+  the badge becomes noise. The handler overwrites only the measured fields via
+  `state_mut`; calling `set_state` there replaces the timestep and sentience index too,
+  which silently cancels every `/api/sentience/observe` on the next gate read. Ψ stays a
+  pure function of measured data integrity by design — a run of coherent answers must
+  not be able to talk the gate into trusting stale numbers.
 
 `npm run check:scylar` pins the pure logic (expressions, speech, markdown, commands,
 session, tools, gate). Run it after touching any of those modules.

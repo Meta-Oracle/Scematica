@@ -303,11 +303,66 @@ body:has(.scylar-root)::after {
   );
 }
 
+/* The chassis backdrop: a perspective floor grid, faint enough to read as depth rather
+   than as decoration. Fixed rather than scrolling — the terminal is a fixed-height
+   device, so a backdrop that moved would contradict the frame it sits in. */
+.scylar-root::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(transparent 0 62%, rgba(169, 112, 255, 0.05) 100%),
+    repeating-linear-gradient(
+      to right,
+      rgba(169, 112, 255, 0.045) 0 1px,
+      transparent 1px 68px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(169, 112, 255, 0.045) 0 1px,
+      transparent 1px 68px
+    );
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 45%, #000 100%);
+}
+
+/* Everything above the grid. Without this the panels paint behind it and the grid
+   crosses her face. */
+.scylar-root > * {
+  position: relative;
+  z-index: 1;
+}
+
 .scylar-panel {
-  background: var(--s-surface);
+  /* Translucent, so the floor grid reads *through* the glass instead of being covered by
+     it. This is most of what separates "a dark panel" from "a projected surface". */
+  background: color-mix(in srgb, var(--s-surface) 82%, transparent);
+  backdrop-filter: blur(2px);
   border: 1px solid var(--s-border);
   border-top-color: var(--s-border-hi);
   position: relative;
+}
+
+/* Corner brackets. Four ticks rather than a continuous frame: an unclosed bracket reads
+   as an instrument's alignment marks, a closed one just reads as a thicker border.
+   Painted with gradients on a single pseudo-element so no extra DOM is needed. */
+.scylar-panel::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    linear-gradient(var(--s-violet), var(--s-violet)) 0 0 / 1px 12px no-repeat,
+    linear-gradient(90deg, var(--s-violet), var(--s-violet)) 0 0 / 12px 1px no-repeat,
+    linear-gradient(var(--s-violet), var(--s-violet)) 100% 0 / 1px 12px no-repeat,
+    linear-gradient(90deg, var(--s-violet), var(--s-violet)) 100% 0 / 12px 1px no-repeat,
+    linear-gradient(var(--s-violet), var(--s-violet)) 0 100% / 1px 12px no-repeat,
+    linear-gradient(90deg, var(--s-violet), var(--s-violet)) 0 100% / 12px 1px no-repeat,
+    linear-gradient(var(--s-violet), var(--s-violet)) 100% 100% / 1px 12px no-repeat,
+    linear-gradient(90deg, var(--s-violet), var(--s-violet)) 100% 100% / 12px 1px no-repeat;
+  opacity: 0.55;
 }
 
 .scylar-panel-header {
@@ -374,6 +429,122 @@ body:has(.scylar-root)::after {
   50%      { transform: translateY(-3px) scale(1.006); }
 }
 
+/* ── the projection ───────────────────────────────────────────────────────────
+   Scanlines, interlace sweep and chromatic fringe, stacked on one element above the
+   sprites. Opacity and background-position only: `.scylar-portrait` already animates
+   `transform` for breathing and `.scylar-portrait-body` carries the inline presence
+   transform, so a third animation touching transform would fight both. */
+.scylar-holo {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background:
+    /* interlace sweep — one bright band travelling down the projection */
+    linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(201, 163, 255, 0.09) 45%,
+      rgba(201, 163, 255, 0.14) 50%,
+      rgba(201, 163, 255, 0.09) 55%,
+      transparent 100%
+    ),
+    /* scanlines — 3px pitch, the coarsest that still reads as lines and not as noise.
+       Alpha kept low: at 0.32 they stopped reading as a projection artefact and started
+       reading as damage, with her face behind a venetian blind. The line is where you
+       still see them on flat colour but stop noticing them on her face. */
+    repeating-linear-gradient(
+      to bottom,
+      rgba(5, 3, 12, 0.2) 0 1px,
+      transparent 1px 3px
+    );
+  background-size: 100% 220%, 100% 3px;
+  background-repeat: no-repeat, repeat;
+  animation: scylarSweep 7s linear infinite, scylarFlicker 4.2s steps(1, end) infinite;
+  /* Chromatic fringe. Two inset shadows on opposing edges in cyan and magenta cost one
+     paint, where an actual RGB split would mean mounting the sprite set three times. */
+  box-shadow:
+    inset 2px 0 10px -6px rgba(0, 229, 255, 0.5),
+    inset -2px 0 10px -6px rgba(255, 92, 200, 0.42);
+  /* No `mix-blend-mode: screen` here. Screen lightens toward white, which cancels the
+     dark scanline bands this layer exists to draw — the two were fighting, and the
+     scanlines were only winning by being turned up far too high to compensate. */
+}
+
+@keyframes scylarSweep {
+  0%   { background-position: 0 -120%, 0 0; }
+  100% { background-position: 0 220%, 0 0; }
+}
+
+/* Deliberately tiny. A hologram that flickers visibly reads as broken hardware; this is
+   meant to register only when you are not looking straight at it. */
+@keyframes scylarFlicker {
+  0%, 96%, 100% { opacity: 1; }
+  97%           { opacity: 0.86; }
+  98%           { opacity: 1; }
+  99%           { opacity: 0.92; }
+}
+
+/* The emitter. A light cone rising from the plinth into the panel above — the single
+   strongest cue that the portrait is *projected* rather than framed, because it implies
+   a source outside the image. Sits behind the panel via a negative z-index on a
+   positioned parent. */
+.scylar-stage {
+  position: relative;
+}
+
+.scylar-stage::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -0.35rem;
+  width: min(92%, 420px);
+  height: 46%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: -1;
+  background: linear-gradient(
+    to top,
+    rgba(169, 112, 255, 0.24),
+    rgba(169, 112, 255, 0.06) 55%,
+    transparent 100%
+  );
+  /* Wider at the top than the base: a beam spreading away from its emitter. */
+  clip-path: polygon(38% 100%, 62% 100%, 100% 0, 0 0);
+  filter: blur(9px);
+  animation: scylarBeam 5.5s ease-in-out infinite;
+}
+
+@keyframes scylarBeam {
+  0%, 100% { opacity: 0.75; }
+  50%      { opacity: 1; }
+}
+
+/* The plinth line the beam rises from. */
+.scylar-readout {
+  position: relative;
+  padding-top: 0.5rem;
+}
+
+.scylar-readout::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: min(70%, 300px);
+  height: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--s-violet) 30%,
+    var(--s-violet-hi) 50%,
+    var(--s-violet) 70%,
+    transparent
+  );
+  box-shadow: 0 0 12px rgba(169, 112, 255, 0.65);
+}
+
 .scylar-caret {
   background: var(--s-violet);
   animation: blink 1s step-end infinite;
@@ -421,6 +592,11 @@ body:has(.scylar-root)::after {
   .scylar-caret     { animation: none; }
   .scylar-portrait  { animation: none; }
   .scylar-portrait::before { transition: none; }
+  /* The projection keeps its scanlines and fringe — those are static texture and are
+     most of the holographic read. Only the moving parts stop: the travelling sweep, the
+     flicker and the beam's pulse. */
+  .scylar-holo { animation: none; }
+  .scylar-stage::before { animation: none; }
 }
 
 .scylar-root ::-webkit-scrollbar-track { background: var(--s-black); }

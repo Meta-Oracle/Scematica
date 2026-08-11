@@ -368,7 +368,13 @@ export function ScylarTerminal() {
   const contextBadge = badgeFor(turns)
 
   return (
-    <div className="scylar-root flex min-h-screen flex-col">
+    // A device, not a document: the viewport is the chassis and only the transcript
+    // scrolls inside it. Previously the page itself scrolled, which made the portrait's
+    // `lg:sticky` a no-op (there was nothing to stick against) and, below `lg`, scrolled
+    // her off the top entirely — the projection wandering out of its own projector.
+    // `100dvh` rather than `100vh` because mobile browsers shrink the visual viewport
+    // when the URL bar retracts, and `vh` does not follow it.
+    <div className="scylar-root flex h-[100dvh] flex-col overflow-hidden">
       <header className="border-b border-scylar-border px-4 py-3">
         <div className="mx-auto flex max-w-[1400px] items-center gap-3">
           <div className="flex flex-col leading-tight">
@@ -403,12 +409,15 @@ export function ScylarTerminal() {
         </div>
       </header>
 
-      <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col gap-4 px-3 py-4 lg:flex-row">
-        <section className="flex flex-col items-center gap-3 lg:sticky lg:top-4 lg:self-start">
-          <div className="scylar-panel overflow-hidden">
+      {/* `min-h-0` on every link of the flex chain. Without it a flex child refuses to
+          shrink below its content and the inner `overflow-y-auto` never engages — the
+          transcript grows instead of scrolling and pushes the composer off the chassis. */}
+      <main className="mx-auto flex w-full min-h-0 max-w-[1400px] flex-1 flex-col gap-4 px-3 py-4 lg:flex-row">
+        <section className="scylar-stage flex w-full max-w-[420px] shrink-0 flex-col items-center gap-3 self-center lg:self-start">
+          <div className="scylar-panel scylar-projector overflow-hidden">
             <ScylarAvatar phase={phase} size={420} portraits={portraits} />
           </div>
-          <p className="text-center text-[0.65rem] tracking-widest text-scylar-dim">
+          <p className="scylar-readout text-center text-[0.65rem] tracking-widest text-scylar-dim">
             {phase.kind === 'thinking' && 'THINKING'}
             {phase.kind === 'streaming' && 'WRITING'}
             {phase.kind === 'voicing' && 'SPEAKING'}
@@ -417,8 +426,8 @@ export function ScylarTerminal() {
           </p>
         </section>
 
-        <section className="flex min-w-0 flex-1 flex-col">
-          <div className="scylar-panel flex min-h-[420px] flex-1 flex-col">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="scylar-panel flex min-h-0 flex-1 flex-col">
             <div className="scylar-panel-header">
               CONVERSATION
               <span className="ml-auto flex items-center gap-3 normal-case tracking-normal">
@@ -489,7 +498,7 @@ export function ScylarTerminal() {
 
             <div
               ref={logRef}
-              className="flex-1 space-y-4 overflow-y-auto p-4"
+              className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4"
               // Streaming text is announced as it settles rather than per token; `polite`
               // so it never interrupts what a screen reader is already saying.
               aria-live="polite"

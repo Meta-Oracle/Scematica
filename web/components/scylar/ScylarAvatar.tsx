@@ -149,10 +149,19 @@ export function ScylarAvatar({ phase, size = 420, portraits }: Props) {
       // `--s-glow` is read by `.scylar-portrait::before` for the halo. Passing it as a
       // variable keeps the glow's colour and falloff a CSS concern; this component only
       // states how strongly she is lit.
+      // `size` is the natural width; `max-width: 100%` lets it give way on a narrow
+      // chassis, and `aspect-ratio` keeps it square as it does.
+      //
+      // Not `width: 100%; max-width: size` — that collapses. This sits in a shrink-to-fit
+      // flex column, so the column sizes to its content while the content asks for a
+      // percentage of the column: circular, resolved as zero, and the portrait vanishes
+      // into a 130px sliver.
       style={
         {
           width: size,
-          height: size,
+          maxWidth: '100%',
+          height: 'auto',
+          aspectRatio: '1 / 1',
           '--s-glow': reduceMotion ? 0.2 : presence.glow,
         } as React.CSSProperties
       }
@@ -200,6 +209,13 @@ export function ScylarAvatar({ phase, size = 420, portraits }: Props) {
           )
         })}
       </div>
+
+      {/* The projection artefacts: scanlines, the interlace sweep, and the chromatic
+          fringe. A real element rather than a third pseudo-element because
+          `.scylar-portrait` has already spent `::before` on the rim light and `::after`
+          on the vignette — and because this layer must sit *above* the cross-fading
+          sprites while those two bracket them. */}
+      <div className="scylar-holo" aria-hidden />
 
       {/* Thinking indicator. She holds a closed mouth while waiting on the model, so
           without this the UI looks frozen between send and first token. */}

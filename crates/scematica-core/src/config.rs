@@ -62,6 +62,13 @@ pub struct WalletConfig {
     pub keypair_path: String,
 }
 
+/// For fields whose safe default is `true`. `#[serde(default)]` on the struct falls back
+/// to `Default::default()` for a missing bool, which is `false` — silently disabling a
+/// safety feature for every existing `config.toml`.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SniperConfig {
@@ -146,11 +153,27 @@ pub struct SniperConfig {
     /// Pause buying if wallet drops this % below all-time-high balance (0.0 = disabled)
     pub ath_drawdown_pct: f64,
 
+    // (see `coherence_breaker` below — `#[serde(default)]` on the struct yields `false`
+    // for a missing bool, so a field that must default to *on* needs its own fn)
+
     // ── Grief-loss circuit breaker ────────────────────────────────────────────
     /// Sliding window size in seconds for grief-loss calculation
     pub grief_loss_window_secs: u64,
     /// Halt buying if losses in the window exceed this SOL amount (0.0 = disabled)
     pub grief_loss_limit_sol: f64,
+
+    // ── Coherence (epistemic) circuit breaker ─────────────────────────────────
+    /// Halt buying when the filter pipeline is passing pools it could not verify.
+    ///
+    /// RPC-bound filters fail open on timeout, so a degraded node turns the pipeline
+    /// into a pass-through that still reports "passed". This breaker measures the
+    /// fraction of checks that actually resolved and stops buys when it collapses.
+    /// Unlike the other breakers it halts *before* losses rather than after them.
+    ///
+    /// Defaults on: a safety breaker that ships disabled protects nobody. It needs a
+    /// minimum sample before it will trip, so it cannot fire at startup.
+    #[serde(default = "default_true")]
+    pub coherence_breaker: bool,
 
     // ── Pump.fun trending monitor ─────────────────────────────────────────────
     /// Enable the PumpPortal WebSocket trending monitor.
@@ -746,6 +769,7 @@ impl Default for SniperConfig {
             ath_drawdown_pct: 0.0,
             grief_loss_window_secs: 300,
             grief_loss_limit_sol: 0.0,
+            coherence_breaker: true,
             time_of_day_weighting: false,
             profit_extraction_threshold_sol: 0.0,
             profit_extraction_pct: 0.0,

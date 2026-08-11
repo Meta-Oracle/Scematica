@@ -127,6 +127,17 @@ alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
                         stored; and including `term/`, the in-package terminal system
                         (see below). Bins: `alchem-link`, `alchem-link-ui`.
                         Tests: `python -m unittest discover -s tests` (590, all offline)
+scema-botchain/         BOT Chain (EVM, chain 677) port. **Own cargo workspace, in the
+                        root `exclude` list** — an EVM stack needs reqwest 0.12/rustls
+                        0.23, exactly what the pin comments say cannot coexist with
+                        solana-sdk's curve25519-dalek 3. Two lockfiles make the conflict
+                        moot; one resurrects it. Nothing in there may depend on a crate
+                        pulling solana-sdk (`scematica-nn`, `-sentience`, `scemadex-sdk`
+                        are safe; `scematica-core` and its dependents are not).
+                        The Solana bot is unaffected and stays authoritative.
+                        Bins: `botchain-probe`. See scema-botchain/README.md — it records
+                        the measured pool-creation flow, which as of Aug 2026 is ~2 events
+                        in 8 days and therefore does not yet support a sniper.
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -236,6 +247,19 @@ first for latency. Four constraints:
   which silently cancels every `/api/sentience/observe` on the next gate read. Ψ stays a
   pure function of measured data integrity by design — a run of coherent answers must
   not be able to talk the gate into trusting stale numbers.
+
+- **Counterfactual replay and calibration are honest about what they cannot know**, and
+  that asymmetry is the design, not a limitation to paper over. `replay.rs` re-applies
+  thresholds to what the pipeline *measured* (the decision log), so **tightening** yields
+  an exact PnL delta — those pools were really traded — while **loosening** admits pools
+  nobody bought, for which no outcome exists and none is estimated. `calibration.rs`
+  scores her past claims the same way: bullish calls resolve against realised PnL,
+  bearish calls almost never resolve because the bot avoided those pools, and unresolved
+  claims are counted rather than scored. Claims are scoped to the *sentence* naming the
+  mint, never the whole message, or a paragraph mentioning four mints manufactures four
+  opinions she never held. Do not build replay on `scematica_sniper::Backtester` —
+  `static_filter_check` returns `false` outright whenever `min_pool_size > 0` or any
+  RPC-bound filter is on, so it answers "nothing would pass" under any real config.
 
 `npm run check:scylar` pins the pure logic (expressions, speech, markdown, commands,
 session, tools, gate). Run it after touching any of those modules.
@@ -369,6 +393,20 @@ Independent breakers in `crates/scematica-sniper/src/`. Each can be toggled in `
 - `pool_scorer.rs` — 0-100 predictive score from pool age + quote vault; rejects below `min_pool_score`
 - `reputation.rs` — EMA-blended deployer rug history; rejects deployers > `max_deployer_rugs_24h`
 - `multi_rpc.rs` — latency-ranked round-robin failover across `extra_rpc_endpoints`
+- `coherence.rs` — **epistemic** breaker: halts buys when the filter pipeline is passing
+  pools it could not verify. Every other breaker here fires on money, and therefore
+  after the damage; this one fires on the condition that precedes it. RPC-bound filters
+  fail open on timeout, so a degraded node turns the pipeline into a pass-through that
+  still reports "passed" — past some fraction of unresolved checks the safety checks the
+  operator believes are running are silently not running. Instrumented in the two shared
+  RPC retry helpers in `filters.rs`, not at each fail-open site, so a new filter is
+  counted by construction. Process-global because the PID lockfile already guarantees
+  one sniper per machine. Ψ comes from `scematica-sentience`, the same equation as
+  `/api/sentience` — one definition, not two. **Buys only**: a degraded feed must never
+  stop you closing existing risk. Needs `MIN_SAMPLES` before it can trip, so it cannot
+  fire at startup when it knows least. `coherence_breaker` in config, default **on**
+  (via `default_true()` — `#[serde(default)]` yields `false` for a missing bool, which
+  would silently disable a safety feature for every existing config.toml).
 
 ## Platform Notes
 

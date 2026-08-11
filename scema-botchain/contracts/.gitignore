@@ -1,0 +1,19 @@
+# Build output
+out/
+cache/
+lib/
+
+# Secrets — a committed .env is a compromised deployer key
+.env
+.env.local
+*.key
+keystore/
+
+# Foundry writes simulation artifacts here; only real broadcasts are worth keeping
+broadcast/*/*/dry-run/
+broadcast/**/dry-run/
+
+# `forge install` adds lib/ as a git submodule and stages it. Ignoring the path is not
+# enough once it is in the index — it needs `git rm -r --cached lib` as well.
+lib/
+foundry.lock

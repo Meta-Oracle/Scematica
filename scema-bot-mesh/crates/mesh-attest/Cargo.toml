@@ -1,0 +1,15 @@
+[package]
+name = "mesh-attest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tamper-evident attestation of a trading agent's decisions, anchored on BOT Chain."
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+mesh-runtime = { path = "../mesh-runtime" }
+tiny-keccak = { workspace = true }
+# Allowed here, unlike mesh-core: this crate is not on the deterministic inference path
+# that third parties must reimplement, so its dependency surface is not a spec burden.
+serde = { workspace = true }
+serde_json = { workspace = true }

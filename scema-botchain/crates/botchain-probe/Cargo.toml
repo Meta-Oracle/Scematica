@@ -1,0 +1,16 @@
+[package]
+name = "botchain-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Measure BOT Chain reachability and new-pair flow before porting the sniper."
+
+[[bin]]
+name = "botchain-probe"
+path = "src/main.rs"
+
+[dependencies]
+botchain-core = { path = "../botchain-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

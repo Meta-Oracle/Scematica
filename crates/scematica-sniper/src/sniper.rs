@@ -415,6 +415,10 @@ impl Sniper {
         let live_params = Arc::new(RwLock::new(LiveParams::from_config(&config)));
 
         // Construct new safety/sizing modules from config
+        // Install the epistemic breaker before any filter runs, so its counters cover the
+        // whole session. Instrumentation lives in the shared RPC helpers in filters.rs.
+        crate::coherence::init(config.coherence_breaker);
+
         let grief_breaker = if config.grief_loss_limit_sol > 0.0 {
             Some(Arc::new(GriefBreaker::new(
                 config.grief_loss_window_secs,
@@ -906,6 +910,10 @@ impl Sniper {
     pub async fn handle_event(&self, event: ListenerEvent) {
         match event {
             ListenerEvent::NewPool(pool) => {
+                // Feed liveness for the coherence breaker. Recorded on arrival, before
+                // any filtering, so a silent listener is distinguishable from a listener
+                // whose pools are all being rejected.
+                crate::coherence::record_pool_seen();
                 self.on_new_pool(pool).await;
             }
             ListenerEvent::WalletUpdate {
@@ -1026,6 +1034,30 @@ impl Sniper {
             if loss_sol >= self.config.daily_loss_limit_sol {
                 warn!(mint = %pool.base_mint, loss_sol, "Daily loss limit reached — skipping buy");
                 self.write_pool_decision_minimal(&pool, "ignored", "risk", "daily_loss_limit");
+                return;
+            }
+        }
+
+        // ── Coherence (epistemic) circuit breaker ──────────────────────────────
+        //
+        // Placed with the other breakers but measuring something none of them do: not
+        // "am I losing money" but "can I currently believe my own filter results". RPC
+        // checks fail open, so a degraded node makes the pipeline report passes it never
+        // verified — and buying on those is buying unfiltered while believing otherwise.
+        //
+        // Buys only. A stale feed is never a reason to stop selling.
+        {
+            let coherence = crate::coherence::evaluate();
+            if coherence.should_halt() {
+                warn!(
+                    mint = %pool.base_mint,
+                    psi = %format!("{:.4}", coherence.psi),
+                    resolution_rate = %format!("{:.0}%", coherence.resolution_rate * 100.0),
+                    resolved = coherence.resolved,
+                    unresolved = coherence.unresolved,
+                    "Coherence breaker tripped — {}", coherence.reason()
+                );
+                self.write_pool_decision_minimal(&pool, "ignored", "risk", "coherence_breaker");
                 return;
             }
         }

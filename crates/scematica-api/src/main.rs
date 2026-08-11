@@ -15,6 +15,8 @@
 //! GET  /api/health                    sniper liveness (lock file + process)
 //! GET  /api/sentience                 cognitive gate — is this API's data trustworthy?
 //! POST /api/sentience/observe         { "text": "..." }  feed a response back (ungated)
+//! POST /api/replay                    counterfactual thresholds over the decision log
+//! GET  /api/calibration               how often Scylar's past calls were right
 //! GET  /api/controls                  full control state snapshot
 //! POST /api/controls/sell-mode        { "enabled": bool }
 //! POST /api/controls/dump-mode        { "enabled": bool }
@@ -39,6 +41,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
+mod calibration;
+mod replay;
+
 use scematica_sentience as sentience;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -74,6 +79,9 @@ const RATE_MODE_FILE: &str = "scematica-rate-mode.json";
 const MOON_CHASE_FILE: &str = "scematica-moon-chase.json";
 const BUILDER_MODE_FILE: &str = "scematica-builder-mode.json";
 const HIGH_SPEED_FILE: &str = "scematica-highspeed-mode.json";
+/// Append-only log of Scylar's claims about specific mints, scored by `calibration.rs`.
+/// Written by this API only; nothing in the trading path reads it.
+const SCYLAR_CLAIMS_FILE: &str = "scematica-scylar-claims.jsonl";
 
 // ── query params ──────────────────────────────────────────────────────────────
 
@@ -162,6 +170,24 @@ fn atomic_write(path: &str, value: &Value) -> bool {
 
 fn file_exists(path: &str) -> bool {
     artifact_path(path).exists()
+}
+
+/// Append one JSON object as a line.
+///
+/// Not the `.tmp` + rename dance the state files use — that convention exists so a
+/// reader never sees a half-written *snapshot*. This is an append-only log where a torn
+/// final line costs one record, and `read_last_jsonl_values` already skips lines that
+/// fail to parse.
+fn append_jsonl(path: &str, value: &Value) -> bool {
+    use std::io::Write;
+    let path = artifact_path(path);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => writeln!(f, "{value}").is_ok(),
+        Err(_) => false,
+    }
 }
 
 fn read_last_jsonl_values(path: &str, limit: usize) -> Vec<Value> {
@@ -479,11 +505,24 @@ async fn sentience_handler() -> impl IntoResponse {
 
 /// Feed a generated response back so the loop advances. Body: `{ "text": "..." }`.
 ///
-/// Ungated deliberately, unlike the control POSTs: this writes no file and changes
-/// nothing the sniper reads. The worst an unauthenticated caller achieves is nudging an
-/// advisory index that is recomputed from measured file freshness on the very next read.
+/// Also files any claims the answer made about specific mints, so they can be scored
+/// later against what those mints actually did (see `calibration.rs`).
+///
+/// Ungated deliberately, unlike the control POSTs: it nudges an advisory index that is
+/// recomputed from measured file freshness on the next read, and appends to a file
+/// nothing in the trading path reads. It cannot influence a trade.
 async fn sentience_observe_handler(Json(body): Json<Value>) -> impl IntoResponse {
     let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("");
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let claims = calibration::extract_claims(text, now);
+    for claim in &claims {
+        append_jsonl(SCYLAR_CLAIMS_FILE, &json!(claim));
+    }
+
     let readout = {
         let mut ov = overlay().lock().unwrap_or_else(|e| e.into_inner());
         ov.record(text)
@@ -493,7 +532,41 @@ async fn sentience_observe_handler(Json(body): Json<Value>) -> impl IntoResponse
         "psi": readout.psi,
         "timestep": readout.timestep,
         "reassessment": readout.reassessment,
+        "claims_filed": claims.len(),
     }))
+}
+
+/// Claims read for a calibration score.
+const CALIBRATION_MAX_CLAIMS: usize = 2_000;
+
+/// `GET /api/calibration` — how often her calls have been right.
+async fn calibration_handler() -> impl IntoResponse {
+    let claims: Vec<calibration::Claim> = read_last_jsonl_values(SCYLAR_CLAIMS_FILE, CALIBRATION_MAX_CLAIMS)
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+
+    let pnl = replay::realised_pnl_by_mint(&read_last_jsonl_values(TRADES_FILE, CALIBRATION_MAX_CLAIMS));
+    Json(json!({ "calibration": calibration::score(&claims, &pnl) }))
+}
+
+/// Decisions read for a replay. The log is append-only and can be very long; this bounds
+/// the work a single unauthenticated request can ask for.
+const REPLAY_MAX_DECISIONS: usize = 4_000;
+
+/// `POST /api/replay` — re-apply thresholds to what the pipeline actually measured.
+///
+/// Ungated for the same reason as `/api/sentience`: it reads two files and writes
+/// nothing. Bounded by `REPLAY_MAX_DECISIONS` so the compute per request is capped.
+async fn replay_handler(Json(query): Json<replay::ReplayQuery>) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(REPLAY_MAX_DECISIONS).min(REPLAY_MAX_DECISIONS);
+
+    let raw = read_last_jsonl_values(POOL_DECISIONS_FILE, limit);
+    let decisions = replay::parse_decisions(&raw);
+    let pnl = replay::realised_pnl_by_mint(&read_last_jsonl_values(TRADES_FILE, REPLAY_MAX_DECISIONS));
+
+    let outcome = replay::replay(&decisions, &pnl, &query);
+    Json(json!({ "query_applied": !query.is_empty(), "outcome": outcome }))
 }
 
 async fn controls_get_handler() -> impl IntoResponse {
@@ -1185,6 +1258,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(health_handler))
         .route("/api/sentience", get(sentience_handler))
         .route("/api/sentience/observe", post(sentience_observe_handler))
+        .route("/api/replay", post(replay_handler))
+        .route("/api/calibration", get(calibration_handler))
         .route("/api/controls", get(controls_get_handler))
         .merge(gated)
         .layer(cors);

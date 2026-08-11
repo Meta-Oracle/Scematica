@@ -21,6 +21,10 @@ path = "src/bin/backtest.rs"
 
 [dependencies]
 scematica-core = { version = "1.15.0", path = "../scematica-core" }
+# Coherence breaker (src/coherence.rs) — shares one definition of Ψ with the API's
+# /api/sentience gate. Pure computation: serde/chrono/uuid only, no solana-sdk, no
+# network, so it cannot widen this crate's dependency tree.
+scematica-sentience = { version = "1.24.0", path = "../scematica-sentience" }
 scematica-ai = { version = "1.15.0", path = "../scematica-ai" }
 scematica-executor = { version = "1.15.0", path = "../scematica-executor" }
 scematica-nn = { version = "1.15.0", path = "../scematica-nn", default-features = false }

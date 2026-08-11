@@ -320,7 +320,19 @@ console.log('\n── tools ─────────────────�
 check('every tool hard-codes its own path',
   TOOLS.every((t) => typeof t.path === 'string' && t.path.length > 0 && !t.path.includes('..')))
 check('no tool targets a control route',
-  TOOLS.every((t) => !t.path.startsWith('controls/') && t.path !== 'push'))
+  TOOLS.every((t) => !t.path.startsWith('controls/') && !t.path.startsWith('push')))
+// POST is allowed only for endpoints that compute and return. "Read-only" has to be a
+// property of the list, not of the verb, or the first POST tool quietly widens it.
+check('only the computing endpoint may POST',
+  TOOLS.filter((t) => t.method === 'POST').every((t) => t.path === 'replay'))
+check('a POST tool builds its body from arguments, never passes them through',
+  TOOLS.filter((t) => t.method === 'POST').every((t) => typeof t.body === 'function'))
+// The model supplies numbers; anything non-numeric must vanish rather than reach the API.
+check('non-numeric replay arguments are dropped', (() => {
+  const replayTool = TOOLS.find((t) => t.name === 'run_counterfactual')
+  const body = replayTool.body({ min_pool_score: 'sixty', max_pool_age_secs: 30 })
+  return body.min_pool_score === undefined && body.max_pool_age_secs === 30
+})())
 check('tool names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length)
 check('definitions are OpenAI-shaped',
   toolDefinitions().every((d) => d.type === 'function' && d.function.name && d.function.parameters))

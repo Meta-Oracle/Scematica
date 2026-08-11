@@ -65,6 +65,25 @@ const config: Config = {
         'scylar-dim':     '#6b5a8e',
         'scylar-green':   '#2ee6a0',
         'scylar-red':     '#ff5c78',
+
+        // ── botchain ────────────────────────────────────────────────────────
+        // Fourth product, fourth identity: amber on near-black, against the
+        // sniper's red, alchem's blue and scylar's violet. Picked to be
+        // distinguishable at a glance rather than sampled from brand assets —
+        // if BOT Chain publishes a palette, resample these rather than guess.
+        'botchain-black':   '#0a0703',
+        'botchain-surface': '#161009',
+        'botchain-hi':      '#241a0d',
+        'botchain-border':  '#5c421a',
+        'botchain-border-hi':'#8a6526',
+        'botchain-amber':   '#f0a437',
+        'botchain-amber-hi':'#ffc46b',
+        'botchain-amber-dim':'#a8742a',
+        'botchain-text':    '#f0e4d2',
+        'botchain-muted':   '#c4a882',
+        'botchain-dim':     '#8e765a',
+        'botchain-green':   '#3ddc97',
+        'botchain-red':     '#ff6b5c',
       },
       fontFamily: {
         mono: ['Space Mono', 'JetBrains Mono', 'Fira Code', 'monospace'],

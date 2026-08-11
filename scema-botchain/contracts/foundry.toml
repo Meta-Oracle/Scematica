@@ -1,0 +1,44 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+
+solc_version = "0.8.24"
+
+# Verified against chain 677, not assumed: the latest block carries `withdrawalsRoot`
+# (Shanghai) and `blobGasUsed`/`excessBlobGas` (Cancun), so PUSH0 is supported.
+#
+# This is the classic footgun on BSC-derived chains. solc 0.8.20+ targets Shanghai and
+# emits PUSH0; a fork that predates it accepts the deployment transaction and then the
+# contract reverts on every call, which reads like a bug in your code rather than an EVM
+# mismatch. Shanghai rather than Cancun because nothing here needs TSTORE or MCOPY, and
+# the narrower target keeps the same bytecode portable to other BSC forks.
+evm_version = "shanghai"
+
+optimizer = true
+optimizer_runs = 200
+
+# Deployments are real money. Fail the build on warnings rather than shipping past them.
+deny = "warnings"
+
+[profile.default.fuzz]
+runs = 512
+
+[rpc_endpoints]
+# Never hard-code an RPC with credentials in it. `BOTCHAIN_RPC_URL` falls back to the
+# public node; a private endpoint stays in the environment.
+botchain = "${BOTCHAIN_RPC_URL}"
+botchain_testnet = "${BOTCHAIN_TESTNET_RPC_URL}"
+
+# Source verification goes to Blockscout, not Etherscan. Blockscout ignores the API key
+# but forge requires the field to be present, hence the placeholder.
+[etherscan]
+botchain = { key = "blockscout", url = "https://scan.botchain.ai/api", chain = 677 }
+botchain_testnet = { key = "blockscout", url = "https://scan.bohr.life/api", chain = 968 }
+
+[fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = true

@@ -426,3 +426,62 @@ body:has(.scylar-root)::after {
 .scylar-root ::-webkit-scrollbar-track { background: var(--s-black); }
 .scylar-root ::-webkit-scrollbar-thumb { background: var(--s-border); }
 .scylar-root ::-webkit-scrollbar-thumb:hover { background: var(--s-border-hi); }
+
+/* ── botchain ─────────────────────────────────────────────────────────────
+   Fourth product, fourth palette. Mirrors the `botchain-*` tokens in
+   tailwind.config.ts; a change to one is a change to the other. */
+.botchain-root {
+  --b-black:     #0a0703;
+  --b-surface:   #161009;
+  --b-hi:        #241a0d;
+  --b-border:    #5c421a;
+  --b-border-hi: #8a6526;
+  --b-amber:     #f0a437;
+  --b-amber-hi:  #ffc46b;
+  --b-text:      #f0e4d2;
+  --b-dim:       #8e765a;
+
+  background: var(--b-black);
+  color: var(--b-text);
+  min-height: 100vh;
+}
+
+/* Retint the site-wide scan bar from underneath, as the other products do —
+   `:has()` is the only way a descendant can reach a body pseudo-element. */
+body:has(.botchain-root)::after {
+  background: linear-gradient(transparent 0%, rgba(240, 164, 55, 0.02) 50%, transparent 100%);
+}
+
+.botchain-panel {
+  background: var(--b-surface);
+  border: 1px solid var(--b-border);
+  border-top-color: var(--b-border-hi);
+  position: relative;
+}
+
+.botchain-panel-header {
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--b-amber);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--b-border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.botchain-panel-header::before {
+  content: '⬢';
+  color: var(--b-amber-hi);
+  font-size: 0.55rem;
+}
+
+.glow-amber {
+  color: var(--b-amber-hi);
+  text-shadow: 0 0 8px rgba(240, 164, 55, 0.5), 0 0 20px rgba(138, 101, 38, 0.35);
+}
+
+.botchain-root ::-webkit-scrollbar-track { background: var(--b-black); }
+.botchain-root ::-webkit-scrollbar-thumb { background: var(--b-border); }
+.botchain-root ::-webkit-scrollbar-thumb:hover { background: var(--b-border-hi); }

@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/botchain-core",
+    "crates/botchain-probe",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# ── Why this is a separate workspace ──────────────────────────────────────────
+#
+# Not organisational tidiness — a hard dependency constraint. The root workspace pins
+# `reqwest` to 0.11 because 0.12 pulls rustls 0.23, which needs `zeroize >= 1.7`, which
+# conflicts with the `curve25519-dalek 3` that `solana-sdk`'s ed25519-dalek requires
+# (capped at < 1.4). Every current EVM stack wants reqwest 0.12 / rustls 0.23.
+#
+# One workspace means one lockfile means one resolved `zeroize`, and there is no version
+# that satisfies both trees. Two workspaces means two lockfiles and the question never
+# arises. This is also why `scema-botchain` is in the root `exclude` list.
+#
+# The rule that follows: **nothing in here may depend on a crate that pulls solana-sdk.**
+# The chain-agnostic crates (`scematica-nn`, `scematica-sentience`, `scemadex-sdk`) are
+# safe to reach for by path when the time comes; `scematica-core` and everything rooted
+# on it are not.
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

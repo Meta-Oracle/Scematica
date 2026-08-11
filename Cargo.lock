@@ -4586,6 +4586,7 @@ dependencies = [
  "scematica-core",
  "scematica-executor",
  "scematica-nn",
+ "scematica-sentience",
  "serde",
  "serde_json",
  "solana-account-decoder",

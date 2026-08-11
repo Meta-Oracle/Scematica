@@ -29,10 +29,25 @@ export interface ToolSpec {
   parameters: Record<string, unknown>
   /** Fixed path under `/api`. Never derived from model output. */
   path: string
+  /**
+   * HTTP method. `POST` is allowed only for endpoints that compute and return —
+   * `/api/replay` reads two files and writes nothing. No tool may reach a control route;
+   * `check-scylar.mjs` asserts that, because "read-only" is a property of the *list*,
+   * not of the verb.
+   */
+  method?: 'GET' | 'POST'
   /** Query string built from validated arguments. */
   query?: (args: Record<string, unknown>) => Record<string, string>
+  /** JSON body built from validated arguments, for POST tools. */
+  body?: (args: Record<string, unknown>) => Record<string, unknown>
   /** Trim a raw payload down to the fields worth spending tokens on. */
   shape?: (data: unknown) => unknown
+}
+
+/** A finite number, or `undefined` so the field is omitted rather than sent as null. */
+function numOrUndef(v: unknown): number | undefined {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
 }
 
 /** Clamp a model-supplied count into range. Models routinely ask for 500. */
@@ -148,6 +163,46 @@ export const TOOLS: ToolSpec[] = [
     path: 'tournament',
   },
   {
+    name: 'run_counterfactual',
+    description:
+      'Re-apply different filter thresholds to the pools the bot actually measured, and ' +
+      'report what would have changed. Use for "should I loosen/tighten X", "was that ' +
+      'threshold worth it", or any tuning question. ' +
+      'CRITICAL when reporting the result: tightening removes pools that were really ' +
+      'traded, so excluded_realised_pnl_sol is EXACT. Loosening admits pools nobody ' +
+      'bought, so there is NO outcome for them and you must not estimate one — compare ' +
+      'admitted_avg_* against winner_avg_* and say the return is unknown.',
+    parameters: {
+      type: 'object',
+      properties: {
+        min_pool_score: { type: 'number', description: 'Proposed minimum pool score (0-100).' },
+        min_pool_size_sol: { type: 'number', description: 'Proposed minimum pool size in SOL.' },
+        max_pool_age_secs: { type: 'number', description: 'Proposed maximum pool age in seconds.' },
+        min_buy_pressure_ratio: { type: 'number', description: 'Proposed minimum buy-pressure ratio.' },
+      },
+    },
+    path: 'replay',
+    method: 'POST',
+    body: (a) => ({
+      min_pool_score: numOrUndef(a.min_pool_score),
+      min_pool_size_sol: numOrUndef(a.min_pool_size_sol),
+      max_pool_age_secs: numOrUndef(a.max_pool_age_secs),
+      min_buy_pressure_ratio: numOrUndef(a.min_buy_pressure_ratio),
+    }),
+  },
+  {
+    name: 'get_calibration',
+    description:
+      'Your own track record: how often your past calls about specific mints turned out ' +
+      'right, scored against realised trade PnL. Use when asked how reliable you are, ' +
+      'or before making a confident call. ' +
+      'CRITICAL: bullish_accuracy covers only calls that resolved. Bearish calls are ' +
+      'almost all unresolved — the bot avoided those pools, so nothing confirms you were ' +
+      'right. Never present unresolved claims as a clean record.',
+    parameters: { type: 'object', properties: {} },
+    path: 'calibration',
+  },
+  {
     name: 'get_controls',
     description:
       'Current control state: rate mode, TP/SL, multiplier, sell/dump mode, high-speed ' +
@@ -203,12 +258,21 @@ export async function runTool(
   }
 
   const qs = spec.query ? '?' + new URLSearchParams(spec.query(args)).toString() : ''
+  const method = spec.method ?? 'GET'
 
   try {
     const res = await fetch(`${origin}/api/${spec.path}${qs}`, {
-      headers: { Accept: 'application/json' },
+      method,
+      headers:
+        method === 'POST'
+          ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+          : { Accept: 'application/json' },
+      // The body is built here from validated arguments — the model never supplies raw
+      // JSON that reaches an endpoint.
+      body: method === 'POST' ? JSON.stringify(spec.body ? spec.body(args) : {}) : undefined,
       cache: 'no-store',
-      signal: AbortSignal.timeout(4_000),
+      // Replay reads thousands of decision rows; the read tools answer from one file.
+      signal: AbortSignal.timeout(method === 'POST' ? 8_000 : 4_000),
     })
     if (!res.ok) {
       return { name, ok: false, content: `The bot API returned ${res.status} for ${spec.path}.` }

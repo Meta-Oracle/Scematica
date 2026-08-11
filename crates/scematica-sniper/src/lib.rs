@@ -2,6 +2,7 @@ pub mod alerts;
 pub mod ath_tracker;
 pub mod backtester;
 pub mod cache;
+pub mod coherence;
 pub mod day_weight;
 pub mod dexscreener;
 pub mod executor;

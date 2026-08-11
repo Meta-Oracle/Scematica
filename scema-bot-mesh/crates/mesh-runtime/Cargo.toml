@@ -1,0 +1,10 @@
+[package]
+name = "mesh-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Game-facing runtime for the BOT Chain neural mesh: agents, claim batching, and the .mesh weight format."
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+tiny-keccak = { workspace = true }

@@ -109,6 +109,18 @@ async fn get_account_retried(
     pubkey: &Pubkey,
     retries: u32,
 ) -> Option<Account> {
+    // Instrumented here rather than at each fail-open site: every RPC-bound filter goes
+    // through this helper, so the coherence breaker counts a new filter automatically.
+    let observed = get_account_retried_inner(rpc, pubkey, retries).await;
+    crate::coherence::record_check(observed.is_some());
+    observed
+}
+
+async fn get_account_retried_inner(
+    rpc: &Arc<RpcClient>,
+    pubkey: &Pubkey,
+    retries: u32,
+) -> Option<Account> {
     for attempt in 0..retries {
         let result = tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
@@ -144,6 +156,16 @@ async fn get_account_retried(
 /// Fetch a token account balance with up to `retries` attempts on 429.
 /// Each attempt is capped at RPC_CALL_TIMEOUT_SECS.
 async fn get_token_balance_retried(
+    rpc: &Arc<RpcClient>,
+    pubkey: &Pubkey,
+    retries: u32,
+) -> Option<u64> {
+    let observed = get_token_balance_retried_inner(rpc, pubkey, retries).await;
+    crate::coherence::record_check(observed.is_some());
+    observed
+}
+
+async fn get_token_balance_retried_inner(
     rpc: &Arc<RpcClient>,
     pubkey: &Pubkey,
     retries: u32,

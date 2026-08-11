@@ -1,0 +1,14 @@
+[package]
+name = "botchain-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared core for the BOT Chain (chain 677) port of Scematica: networks, JSON-RPC with endpoint failover."
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

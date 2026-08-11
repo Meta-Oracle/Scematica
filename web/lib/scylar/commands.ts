@@ -23,6 +23,8 @@ export const COMMANDS: CommandSpec[] = [
   { name: '/positions', help: 'Walk through every open position.' },
   { name: '/filters', help: 'Explain what the filter pipeline is rejecting and why.' },
   { name: '/nn', help: 'Report on the Deep Q* agent — training, ε, whether it is gating.' },
+  { name: '/tune', help: 'Replay your thresholds against real decisions and say what to change.' },
+  { name: '/record', help: 'Score her own past calls against what actually happened.' },
   { name: '/context', args: 'on|off', help: 'Attach live bot state to each message.' },
   { name: '/retry', help: 'Send the last message again.' },
   { name: '/clear', help: 'Wipe the transcript and start a new session.' },
@@ -55,6 +57,17 @@ const ASKS: Record<string, string> = {
     'Report on the Deep Q* agent from the state block: training steps, epsilon, replay ' +
     'size, average loss, and whether it is gating buys yet. Say what stage of training ' +
     'that puts it at.',
+  '/tune':
+    'Use run_counterfactual to test whether my current min_pool_score is set well. Try ' +
+    'one tighter value and one looser value, and report what each would have changed. ' +
+    'Be explicit that tightening has an exact PnL figure because those pools were really ' +
+    'traded, and that loosening has no outcome data at all — compare the admitted pools ' +
+    'against the winner profile instead of estimating a return. End with a recommendation ' +
+    'and say how confident it is.',
+  '/record':
+    'Use get_calibration and report honestly on how reliable you have been. Give the ' +
+    'resolved accuracy, say how many claims are unresolved and why, and do not treat ' +
+    'unresolved warnings as if they were correct.',
 }
 
 export function parseCommand(input: string): Command {

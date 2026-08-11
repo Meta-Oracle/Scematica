@@ -78,6 +78,14 @@ export default function Home() {
               ◈ ALCHEM-LINK
             </Link>
             <Link
+              href="/botchain"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-botchain-border
+                         text-botchain-amber hover:border-botchain-amber hover:text-botchain-amber-hi
+                         transition-all text-xs tracking-widest"
+            >
+              ⬢ BOT CHAIN
+            </Link>
+            <Link
               href="/scylar-terminal"
               className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-scylar-border
                          text-scylar-violet hover:border-scylar-violet hover:text-scylar-violet-hi

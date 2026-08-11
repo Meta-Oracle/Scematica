@@ -1,0 +1,13 @@
+[package]
+name = "mesh-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic fixed-point neural inference with keccak256 commitments, for the BOT Chain neural mesh."
+
+[dependencies]
+# The only dependency, and it earns its place: keccak256 is what Solidity's `keccak256`
+# computes, so a commitment made here is checkable by a contract without shipping a hash
+# implementation on-chain. Nothing else in the inference path may add a dependency —
+# every one is something a reimplementer has to match bit for bit.
+tiny-keccak = { workspace = true }

@@ -25,6 +25,16 @@ members = [
 exclude = [
     "programs/scematica-swap",
     "programs/scemadex-escrow",
+    # The BOT Chain port. Its own workspace, and it must stay that way: an EVM stack
+    # needs reqwest 0.12 / rustls 0.23, which is precisely the combination the pin
+    # comments below say cannot coexist with solana-sdk's curve25519-dalek 3. One
+    # lockfile for both trees resurrects that conflict; two lockfiles make it a
+    # non-issue. See scema-botchain/README.md.
+    "scema-botchain",
+    # The BOT Chain neural mesh. Own workspace for the same lockfile reason, plus a
+    # second one: its inference path is a spec others reimplement, so it is kept
+    # dependency-minimal on purpose. See scema-bot-mesh/README.md.
+    "scema-bot-mesh",
 ]
 resolver = "2"
 

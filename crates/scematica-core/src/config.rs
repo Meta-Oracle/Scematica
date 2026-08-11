@@ -1198,11 +1198,35 @@ impl Default for ExecutionConfig {
     }
 }
 
+/// An environment variable's value, or `None` if it is unset **or blank**.
+///
+/// A blank `RPC_ENDPOINT=` in a `.env` is someone commenting a line out badly; treating
+/// it as an override would replace a working endpoint with the empty string and fail at
+/// connect time with an error naming the URL rather than the config.
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 impl BotConfig {
-    /// Load config from a TOML file
+    /// Load config from a TOML file.
+    ///
+    /// `RPC_ENDPOINT` / `RPC_WS_ENDPOINT` — from the environment or a local `.env` —
+    /// override `[rpc]` when set. The endpoint URL carries the provider API key as a
+    /// query parameter, so the key belongs in the gitignored `.env` and not in
+    /// `config.toml`, which was committed with a live key once already. Applied here
+    /// rather than only in [`Self::from_env`] because `--config <path>` calls this
+    /// directly, and an override that depends on which flag you passed is not an
+    /// override.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        dotenv::dotenv().ok();
         let content = std::fs::read_to_string(path)?;
-        let config: BotConfig = toml::from_str(&content)?;
+        let mut config: BotConfig = toml::from_str(&content)?;
+        if let Some(endpoint) = non_empty_env("RPC_ENDPOINT") {
+            config.rpc.endpoint = endpoint;
+        }
+        if let Some(ws_endpoint) = non_empty_env("RPC_WS_ENDPOINT") {
+            config.rpc.ws_endpoint = ws_endpoint;
+        }
         Ok(config)
     }
 
@@ -1216,8 +1240,16 @@ impl BotConfig {
             return Self::from_file(config_path);
         }
 
+        let mut rpc = RpcConfig::default();
+        if let Some(endpoint) = non_empty_env("RPC_ENDPOINT") {
+            rpc.endpoint = endpoint;
+        }
+        if let Some(ws_endpoint) = non_empty_env("RPC_WS_ENDPOINT") {
+            rpc.ws_endpoint = ws_endpoint;
+        }
+
         Ok(Self {
-            rpc: RpcConfig::default(),
+            rpc,
             wallet: WalletConfig {
                 keypair_path: std::env::var("KEYPAIR_PATH")
                     .unwrap_or_else(|_| "~/.config/solana/id.json".into()),

@@ -9,7 +9,7 @@ Lead with the single most impressive new capability. One sentence, no jargon dum
 
 Template: {{Product}} {{Version}} ships {{headline feature}} — {{why it matters in five words}}.
 
-Example: Scematica 1.11.1 ships the Adversarial Layer — the first market where AI inferences are bonded, doubted, and slashed.
+Example: Scematica 1.25.0 ships the epistemic layer — the bot now stops trading when it cannot verify what it is trading on.
 
 
 What's New
@@ -101,11 +101,11 @@ Channel-Specific Cuts
 
 Trim the above to fit each venue. Same facts, different length.
 
-For an X or Twitter thread opener: Scematica 1.11.1 is live. We shipped the Adversarial Layer — the first market where an AI's inferences are bonded, doubted, and slashed. Then a thread. Close the first post with cargo install scemadex-sdk then scemadex.
+For an X or Twitter thread opener: Scematica 1.25.0 is live. Every trading bot halts after it loses money. This one halts before — when its own safety checks stop resolving, it stops buying. Then a thread. Close the first post with cargo install scematica-suite then scematica dashboard --demo.
 
-For a short Discord or Telegram post: Scematica 1.11.1, the Adversarial Layer, is live. The Counter-Market lets you bet against agent bonds. The Scar Market is un-fakeable failure data. Plus Experience Royalties and Bonded Teaching. Try it with cargo install scematica-suite then scematica dashboard --demo.
+For a short Discord or Telegram post: Scematica 1.25.0 is live. The coherence breaker halts buys when RPC-bound filters stop resolving, so a degraded node can no longer turn the filter pipeline into a pass-through that still reports "passed". The Psi gate does the same for the API: stale state returns 409 instead of a confident paragraph of old numbers. Plus counterfactual replay and the Scylar terminal. Try it with cargo install scematica-suite then scematica dashboard --demo.
 
-For a one-paragraph blurb in a newsletter or DM: Scematica is a Rust Solana sniper and cross-DEX arbitrage bot with a Deep Q-Star agent, wrapped by ScemaDEX — an agentic-liquidity layer where routing intelligence is sold per call and backed by slashable conviction bonds. The new Adversarial Layer adds the other side of that economy: stake against an agent's promise, trade verified failure data, and earn royalties on the experience it learns from. Eight crates are live on crates.io today. Install with cargo install scematica-suite.
+For a one-paragraph blurb in a newsletter or DM: Scematica is a Rust Solana sniper and cross-DEX arbitrage bot with a Deep Q-Star agent, wrapped by ScemaDEX — an agentic-liquidity layer where routing intelligence is sold per call and backed by slashable conviction bonds. The new epistemic layer adds something rarer than another signal: the system now knows when it does not know. Safety filters that time out fail open by necessity, so a slow RPC node silently turns the pipeline into a pass-through — the coherence breaker detects exactly that and stops buying, and the replay endpoint refuses to estimate returns for pools nobody actually bought. The whole stack is live on crates.io today (see the version table in the README for the current crate list). Install with cargo install scematica-suite.
 
 
 Pre-Send Checklist

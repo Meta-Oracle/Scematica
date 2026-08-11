@@ -1,4 +1,4 @@
-# Scematica v1.15.0
+# Scematica v1.25.0
 
 **CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump**
 
@@ -83,30 +83,34 @@ The bot stack moves as one version, set once in `[workspace.package]` — every
 rest again. The ScemaDEX SDK family and the playground version independently and
 are still pre-1.0.
 
-> `scematica-nn` sat at 1.14.0 while the rest of the stack was 1.13.0, then took
-> changes after that version was already on crates.io — it could not republish
-> under its own number. Folding it onto the workspace version at **1.15.0**
-> clears both problems at once. 1.13.0 and 1.14.0 were never published as a
-> complete stack, so nothing downstream is skipped.
+> **Why 1.25.0 and not 1.16.0.** The workspace number jumped 1.15.0 → 1.24.0 in one
+> commit and then kept taking features without moving again — the sentience crate, the
+> coherence breaker, replay, calibration, the Scylar terminal, the BOT Chain port and the
+> neural mesh all landed after that bump. Nine intermediate minors were never cut and
+> nothing describes them, so v1.25.0 folds the whole span into one release rather than
+> inventing a history for numbers that never shipped. Internal crate dependencies had
+> also drifted, still pinning `1.15.0` against crates that had moved to 1.24.0 — caret
+> semver hid it, so the build never complained while the manifests said something false.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.15.0 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.15.0 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.15.0 | `sniper`, `backtest` | bin + lib |
-| `scematica-arb` | 1.15.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
-| `scematica-protocol` | 1.15.0 | `protocol` | bin + lib |
-| `scematica-ai` | 1.15.0 | — | library |
-| `scematica-executor` | 1.15.0 | — | library |
-| `scematica-core` | 1.15.0 | — | library |
-| `scematica-nn` | 1.15.0 | `scema-ddqn` | bin + lib |
+| `scematica-suite` | 1.25.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.25.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.25.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-arb` | 1.25.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.25.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.25.0 | — | library |
+| `scematica-executor` | 1.25.0 | — | library |
+| `scematica-core` | 1.25.0 | — | library |
+| `scematica-nn` | 1.25.0 | `scema-ddqn` | bin + lib |
+| `scematica-sentience` | 1.25.0 | — | library (Ψ/Ω cognitive gate; no binary) |
 | `scemadex-sdk` | 0.3.0 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
 | `scemadex-mcp` | 0.1.2 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
 | `scemadex-settle` | 0.1.2 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.0 | `playground` | bin |
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
-sourced from `web/package.json` (**1.15.0**). The mobile build reads it at build time to
+sourced from `web/package.json` (**1.25.0**). The mobile build reads it at build time to
 set the app's `versionName`/`versionCode` and names the artifact **`scematica-v<version>.apk`**
 — bump `web/package.json` to version the app. See [docs/mobile-app.md](docs/mobile-app.md).
 
@@ -118,7 +122,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.15.0) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.25.0) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

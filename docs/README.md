@@ -75,9 +75,37 @@ those as point-in-time references, not always current to the latest release.
   wired, config knobs and defaults, monitoring, tuning, and troubleshooting.
   (Consolidates the five earlier companion docs.)
 
+## Cognition, epistemics & the newer subsystems
+- [`../crates/scematica-sentience/README.md`](../crates/scematica-sentience/README.md) —
+  the Singularity Cognitive Architecture as 29 computable modules: Ψ/Ω master equations,
+  ethics gating, knowledge graph, meta-cognition, and the LLM overlay. Library only.
+- **The Ψ gate** — `GET /api/sentience`. What it measures is *staleness and contradiction*,
+  not mood: every read endpoint serves its state file identically whether it was written
+  4 seconds or 4 hours ago, so a live-looking briefing can describe a session that ended
+  overnight. HOLD returns 409 and the model is not called. [WHITEPAPER.md §22](WHITEPAPER.md).
+- **The coherence breaker** — `crates/scematica-sniper/src/coherence.rs`. The one breaker
+  that fires *before* the loss: RPC-bound filters fail open, so a degraded node silently
+  turns the pipeline into a pass-through that still reports "passed".
+  [WHITEPAPER.md §12.7](WHITEPAPER.md).
+- **Replay & calibration** — `POST /api/replay`, `GET /api/calibration`. Tightening a
+  threshold gives an exact PnL delta; loosening admits pools with no outcome and
+  deliberately gets no number. [WHITEPAPER.md §23](WHITEPAPER.md).
+
+## Cross-chain (BOT Chain)
+- [`../scema-botchain/README.md`](../scema-botchain/README.md) — the EVM (chain 677) port,
+  its own cargo workspace by dependency necessity, and the measurement that **cancelled the
+  sniper**: 2 pool creations in ~8 days. Contracts are deployed and tested; the Solana bot
+  stays authoritative.
+- [`../scema-bot-mesh/README.md`](../scema-bot-mesh/README.md) — verifiable neural
+  inference: Q16.16 fixed-point so a challenger's re-run produces the same bits, committed
+  on chain in 32 bytes and slashable via `ScemaBondEscrow`.
+
 ## Architecture & vision
-- [WHITEPAPER.md](WHITEPAPER.md) — system architecture and design.
-- [ROADMAP.md](ROADMAP.md) — Q1 2026 → Q1 2027 plan.
+- [WHITEPAPER.md](WHITEPAPER.md) — system architecture and design. **Stamped
+  `workspace v1.25.0 · verified against source 2026-08-11`.**
+- [ROADMAP.md](ROADMAP.md) — Q1 2026 → Q2 2027. Both a plan and a **record**: every
+  milestone from the original 2026 plan carries a DELIVERED / PARTIAL / NOT STARTED /
+  DROPPED verdict against the actual codebase.
 
 ## Release articles
 Plain-text, publication-ready write-ups of what shipped in each release. Newest first.
@@ -91,6 +119,24 @@ Plain-text, publication-ready write-ups of what shipped in each release. Newest 
 - [article-v1.12.0.txt](article-v1.12.0.txt) · [article-v1.12.0-fibonacci.txt](article-v1.12.0-fibonacci.txt)
   — the v1.12.0 release and the Fibonacci recovery system.
 - [article-alchem-link-v0.2.0.txt](article-alchem-link-v0.2.0.txt) — the alchem-link TUI.
+
+## Web products (`web/`)
+One standalone Next.js app hosting three products that share a codebase and nothing else —
+each has its own palette and its own data rules. Architecture notes live in
+[`../CLAUDE.md`](../CLAUDE.md) and [WHITEPAPER.md §24](WHITEPAPER.md).
+- **`/` — the sniper dashboard.** Proxies a live `scematica-api` when `RUST_API_URL`
+  resolves, otherwise falls back to a self-contained simulation that is *always* labelled:
+  `simulated: true`, an `X-Scematica-Source: simulation` header, a permanent banner, and
+  control POSTs that return 503 rather than faking success.
+- **`/alchem-link`** — the web build of the Python oracle toolkit. **No simulation branch
+  at all**: these routes read a chain or report the error, because a fabricated price would
+  defeat the point of a staleness verdict.
+- **`/scylar-terminal`** — an avatar chat terminal over live bot state, gated by Ψ. Provider
+  keys are server-side and client-supplied `system` turns are stripped; the model picks a
+  tool *name*, never a URL.
+
+Checks: `npm run check:parity` (TS pool scorer vs the Rust fixtures) and
+`npm run check:scylar` (expressions, speech, markdown, commands, session, tools, gate).
 
 ## Reports
 - [PROFITABILITY_REPORT.md](PROFITABILITY_REPORT.md) — live-data profitability analysis,

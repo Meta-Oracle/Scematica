@@ -13,9 +13,17 @@
 
 [rpc]
 # Get a free/paid key at https://helius.dev (or any Solana RPC provider).
-# Replace YOUR_HELIUS_API_KEY with your actual key in BOTH lines.
-endpoint = "https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY"
-ws_endpoint = "wss://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY"
+#
+# Put the keyed URL in a local `.env` rather than here:
+#
+#     RPC_ENDPOINT=https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY
+#     RPC_WS_ENDPOINT=wss://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY
+#
+# Both override these values when set, and `.env` is gitignored while a `config.toml`
+# copied from this file is easy to commit by accident — which is how a live key reached
+# this repo's history once already.
+endpoint = "https://api.mainnet-beta.solana.com"
+ws_endpoint = "wss://api.mainnet-beta.solana.com"
 commitment = "confirmed"
 
 [wallet]

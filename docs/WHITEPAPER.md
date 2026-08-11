@@ -1,6 +1,6 @@
 # SCEMATICA: Autonomous AI Trading Infrastructure for Solana
 
-### Technical Whitepaper — workspace v1.11.0 · verified against source 2026-06-05
+### Technical Whitepaper — workspace v1.25.0 · verified against source 2026-08-11
 
 **Contract Address:** `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`  
 **Token:** $SCEMA (Token-2022, Solana Mainnet)  
@@ -10,7 +10,11 @@
 
 ## Abstract
 
-Scematica is a full-stack autonomous trading infrastructure for the Solana blockchain, combining high-frequency token sniping, cross-DEX arbitrage, reinforcement learning via a Dueling Deep Q* agent, multi-agent AI strategy analysis, and a real-time terminal dashboard — all implemented in pure Rust. The system targets Raydium AMM V4 new-pool events and executes decisions in sub-second latency from pool detection to signed transaction. Access is gated behind a 250,000 $SCEMA token balance, aligning operator incentives with the protocol's token economics. This document provides a comprehensive technical description of the architecture, algorithms, risk management framework, and the mathematical foundations underlying Scematica's profit-maximization strategies.
+Scematica is a full-stack autonomous trading infrastructure for the Solana blockchain, combining high-frequency token sniping, cross-DEX arbitrage, reinforcement learning via a Dueling Deep Q* agent, multi-agent AI strategy analysis, and a real-time terminal dashboard — all implemented in pure Rust. The system targets Raydium AMM V4 new-pool events and executes decisions in sub-second latency from pool detection to signed transaction. Access is gated behind a 250,000 $SCEMA token balance, aligning operator incentives with the protocol's token economics.
+
+A second theme runs through the later sections and is, by this version, as load-bearing as the trading logic: **the system is built to know when it does not know.** RPC-bound filters fail open by necessity, which means a degraded node can silently turn the filter pipeline into a pass-through that still reports success. The coherence breaker (§12.7) and the Ψ cognitive gate (§22) detect that condition and halt on it; the counterfactual replay endpoint (§23) refuses to price outcomes it has no evidence for; the web layer (§24) labels every simulated value rather than letting it render as a live result; and the BOT Chain port (§25) was measured and then deliberately stopped short of a sniper because the chain produced two pool creations in eight days. A number nobody can check is treated throughout as worse than no number.
+
+This document provides a comprehensive technical description of the architecture, algorithms, risk management framework, and the mathematical foundations underlying Scematica's profit-maximization strategies.
 
 ---
 
@@ -37,7 +41,11 @@ Scematica is a full-stack autonomous trading infrastructure for the Solana block
 19. [Performance Characteristics](#19-performance-characteristics)
 20. [Security Model](#20-security-model)
 21. [Token Economics](#21-token-economics)
-22. [Roadmap](#22-roadmap)
+22. [Cognitive Architecture and the Ψ Gate](#22-cognitive-architecture-and-the-ψ-gate)
+23. [Counterfactual Replay and Calibration](#23-counterfactual-replay-and-calibration)
+24. [Web Interfaces and the Product Surface](#24-web-interfaces-and-the-product-surface)
+25. [Cross-Chain Expansion: BOT Chain and the Neural Mesh](#25-cross-chain-expansion-bot-chain-and-the-neural-mesh)
+26. [Roadmap](#26-roadmap)
 
 ---
 
@@ -123,16 +131,27 @@ The DQ* reinforcement learning agent (`scematica-nn`) is implemented from scratc
 | `scematica-sniper` | Pool listener, filter pipeline, sniper logic, backtester |
 | `scematica-arb` | Cross-DEX arbitrage graph search (Raydium/Orca/Meteora) |
 | `scematica-executor` | Multi-DEX swap instruction builders, Jupiter integration |
-| `scematica-ai` | LLM agents (Groq/xAI): Chat, Strategy, Risk, Debate, Report |
+| `scematica-ai` | LLM agents (Anthropic/Groq/OpenRouter/Cerebras): Chat, Strategy, Risk, Debate, Report |
 | `scematica-nn` | Pure-Rust Dueling Deep Q* agent — no external ML dependencies |
+| `scematica-sentience` | Singularity Cognitive Architecture as a computable library: Ψ/Ω master equations, ethics gating, knowledge graph, meta-cognition, LLM overlay. Library only — no binary |
 | `scematica-dashboard` | Ratatui TUI — 6 tabs, real-time metrics, config, AI chat |
-| `scematica-api` | HTTP API backing the `web/` Next.js dashboard |
+| `scematica-api` | HTTP API backing the `web/` Next.js dashboard; also hosts the Ψ gate, counterfactual replay and calibration endpoints |
 | `scematica-protocol` | Rust-native x402 HTTP/402 payment protocol server (facilitator) |
 | `scemadex-sdk` | Published agentic-liquidity SDK: intents, Conviction-Routing bonds, inference/experience mesh (no `solana-sdk` by default) |
 | `scemadex-settle` | Open devnet reference settler — moves devnet USDC on bond slash |
 | `scemadex-integrations` | Bot-side ScemaDEX wiring: x402 bond engine, Jupiter route policy, file signal source (`publish = false`) |
 | `scemadex-relay` | Peer-mesh + signal-oracle HTTP server (`scemadex-relay` bin) |
+| `scemadex-mcp` | MCP server bridging LLM agents to the ScemaDEX rail over the relay |
 | `sdk-dashboard` | ScemaDEX SDK TUI over the bond pipeline (`sdk-dashboard` bin) |
+| `scematica-suite` | Umbrella meta-crate: re-exports every component + the `scematica` launcher |
+
+**Trees outside the cargo workspace.** Three components version and build independently:
+
+| Tree | Why it is separate |
+|------|--------------------|
+| `alchem-link/` | Python, stdlib-only. An Alchemy × Chainlink oracle-safety toolkit — a second product, not a bot module |
+| `scema-botchain/` | EVM (chain 677) port. Its own workspace **by necessity**: an EVM stack needs `reqwest 0.12`/`rustls 0.23`, exactly what cannot coexist with `solana-sdk`'s `curve25519-dalek 3` (Appendix B). Two lockfiles make the conflict moot; one resurrects it |
+| `scema-bot-mesh/` | Verifiable neural inference for BOT Chain. Separate for the same lockfile reason, plus deliberate dependency minimalism — its inference path is a spec others reimplement |
 
 ---
 
@@ -523,7 +542,12 @@ moon_chase = (p < 0.25)           (auto moon-chase in first quarter)
 
 ## 12. Risk Management Framework
 
-Scematica implements six independent risk breakers. Each can halt buying independently; all must be cleared for the buy gate to open. This defense-in-depth approach prevents any single point of failure from causing runaway losses.
+Scematica implements seven independent risk breakers. Each can halt buying independently; all must be cleared for the buy gate to open. This defense-in-depth approach prevents any single point of failure from causing runaway losses.
+
+Six of the seven fire on **money** — drawdown, a loss window, a win rate, a score, a
+reputation, a duplicate. All of them are therefore reactive: by the time they trip, the
+capital is already gone. The seventh (§12.8) fires on the *epistemic* precondition instead,
+and is described last because it is best understood against the others.
 
 ### 12.1 ATH Drawdown Guard
 
@@ -568,7 +592,50 @@ recently_bought: Arc<DashMap<Pubkey, std::time::Instant>>
 
 Prevents duplicate buys on the same mint within 5 minutes. This catches the common pattern of Helius WebSocket reconnect events re-broadcasting recent pool creation messages, which could cause the bot to open multiple positions on the same token.
 
-### 12.7 Emergency Controls
+### 12.7 Coherence Breaker — Halting on Ignorance Rather Than Loss
+
+Every RPC-bound filter in the pipeline is capped at `RPC_CALL_TIMEOUT_SECS` (3s) and **fails
+open**. When a node is slow or erroring, `check_mint_renounced`, `check_freezable` and
+`check_burned` return `pass()` because they *could not look* — not because they looked and
+approved. For a single pool that is the correct trade-off: dropping every candidate on a
+node hiccup forfeits the edge entirely.
+
+It is the wrong state in which to keep trading. Past some fraction of unresolved checks the
+pipeline is no longer a filter at all — it is a pass-through wearing a filter's name, and
+the safety checks the operator believes are running are silently not running. Critically,
+the pipeline still reports every one of those pools as "passed", so nothing in the existing
+telemetry distinguishes a verified pass from an unverified one.
+
+`coherence.rs` measures the distinction directly:
+
+```
+resolution_rate = resolved / (resolved + failed_open)     over a 120s sliding window
+Ψ               = master_equation(Perception(resolution_rate, feed_age), …)
+if Gate(Ψ) == HOLD: HALT BUYS
+```
+
+Ψ comes from `scematica-sentience` — the same master equation behind `GET /api/sentience`
+(§22), so there is one definition of coherence across the system rather than two.
+
+Four design constraints, each with a concrete failure behind it:
+
+- **Instrumented in the two shared RPC retry helpers in `filters.rs`**, not at each
+  fail-open site. A newly added filter is therefore counted by construction, rather than
+  depending on its author remembering to register.
+- **`MIN_SAMPLES = 20` before any verdict.** A cold start has resolved 0 of 0 checks, which
+  is not evidence of a problem. A breaker that trips on an empty sample fires hardest
+  exactly when it knows least.
+- **`FEED_STALL_SECS = 180`.** A listener producing no pools is stalled whatever the RPC
+  health looks like.
+- **Buys only — never wired into the sell path.** A degraded feed is a reason to stop
+  opening new risk and never a reason to stop closing existing risk. A breaker that trapped
+  positions during an RPC brownout would be strictly worse than no breaker.
+
+Configured by `coherence_breaker` in `config.toml`, default **on** via a `default_true()`
+serde helper. A bare `#[serde(default)]` yields `false` for a missing bool, which would have
+silently disabled a safety feature for every `config.toml` written before the field existed.
+
+### 12.8 Emergency Controls
 
 | Control | Trigger | Effect |
 |---------|---------|--------|
@@ -912,6 +979,8 @@ The `rename` syscall is atomic on all POSIX filesystems and Windows NTFS — the
 | `scematica-positions.json` | Sniper | Dashboard | Every 1s |
 | `pool-cache.json` | Sniper, pool-seeder | Sniper | On pool discovery |
 | `scematica-deployer-reputation.json` | Reputation ledger | Filters | After each trade |
+| `scematica-pool-decisions.jsonl` | Sniper | Replay endpoint (§23) | Every pool evaluation |
+| `scematica-sniper.lock` | Sniper | Sniper | Single-instance PID guard |
 
 ---
 
@@ -992,7 +1061,7 @@ WSL UNC paths (`\\wsl$\Ubuntu\...`) are supported for keypairs stored in WSL fil
 The bot accepts no incoming network connections (excluding the x402 protocol server, which is separately deployed). All outbound connections are:
 - Solana RPC (HTTPS/WSS) — authenticated by RPC provider API key
 - CoinGecko price API — read-only, unauthenticated
-- Groq/xAI AI APIs — authenticated by API key
+- Anthropic / Groq / OpenRouter / Cerebras AI APIs — authenticated by API key, server-side only
 - Telegram/Discord webhooks — write-only, authenticated by bot token
 
 ### 20.3 Config File Trust
@@ -1029,32 +1098,290 @@ SCEMA uses the Token-2022 program rather than the legacy SPL Token program. All 
 
 ---
 
-## 22. Roadmap
+## 22. Cognitive Architecture and the Ψ Gate
 
-### Shipped since the v1.4.0 baseline
+### 22.1 What the Equation Is For
 
-- **DQ\* buy gate — live.** The agent gates real entries once `train_steps ≥ 10,000`
-  (a step-count gate, not `ε < 0.3`): `BuyAggressive` → 1.5× sizing, a strong
-  bearish lean vetoes the buy (`NN_VETO_REL_MARGIN = 0.15`), weaker leans downgrade
-  to 0.5×. See §14 / `DQ_STAR_AGENT.md` §16.
-- **ScemaDEX agentic-liquidity layer.** Intents, Conviction-Routing bonds, the
-  inference/experience `PeerMarket` mesh, and x402 interop with the Dexter SDK
-  (§16.4) — realising much of the v2.0 "agent marketplace" vision early. The
-  `scematica-swap` Anchor program has a prebuilt artifact and a devnet deploy path
-  (`programs/scematica-swap/DEPLOY_DEVNET.md`).
+`crates/scematica-sentience` implements the Singularity Cognitive Architecture as 29
+computable modules — perception, data integrity, rationality, logic, ethics, knowledge
+graph, memory, learning, prediction, agency, meta-cognition, self-model, identity, valence,
+attention, curiosity, error correction, contradiction and truth confidence — converging on:
 
-### v1.5.0+ — Planned
+```
+S_t     = R_t × L_t × M_t × D_t                    sentience index
+Ψ_t     = S_t × I_t × K_t × MC_t × A_g,t × F_t     integrated cognition
+Ω_{t+1} = F(Ω_t, Perception, Memory, Reasoning, Ethics, Action, Feedback)
+```
 
-- **On-chain Anchor program (mainnet)**: Deploy `scematica-swap` for atomic multi-hop swaps, eliminating the two-transaction WSOL wrapping overhead and reducing buy latency by ~50ms.
-- **USD display**: Live CoinGecko SOL/USD price feed integrated into all dashboard panels — header, metrics, Sell Mode and Dump Mode banners.
-- **Multi-wallet support**: Pool funds across multiple wallets to exceed per-wallet position limits without manual management.
+Five of the architecture's seventeen axioms are enforced as runtime checks rather than
+documented as principles.
 
-### v2.0.0 — Long-Term Vision
+The name invites the assumption that this is decorative. It is not, and the reason is
+narrow and concrete: **Ψ measures staleness and contradiction, not mood.** Every read
+endpoint in `scematica-api` serves its state file identically whether that file was written
+four seconds ago or four hours ago, and `/api/health` reports only that a process *was*
+here. Without a gate, a live-looking briefing can describe a session that ended overnight.
 
-- **Full DQ* gating**: Agent controls all entry decisions; rule-based filters serve as pre-filtering only
-- **Cross-chain expansion**: Extend the architecture to EVM chains (Base, Arbitrum) using the same filter/executor/RL framework
-- **Agent marketplace**: Publish DQ* agent checkpoints for community evaluation and tournament scoring via the x402 protocol
-- **On-chain SCEMA staking**: Stake SCEMA to receive a share of protocol fee revenue from x402 API payments
+### 22.2 The Gate
+
+`GET /api/sentience` returns a verdict over three bands:
+
+| Verdict | Meaning | Behaviour |
+|---------|---------|-----------|
+| **GO** | Data is fresh and internally consistent | Answer normally |
+| **CAUTION** | Measured degradation | Answer, but the model is told its footing is weak |
+| **HOLD** | State cannot be trusted to describe now | **HTTP 409; the model is not called** |
+
+HOLD does not warn the model and proceed. It refuses, because a warned model still writes a
+confident paragraph of stale numbers — the warning changes the prose and not the numbers.
+
+Absent is distinct from HOLD. A deployment with no bot, or an older API without the
+endpoint, returns `null` — "no opinion" — and the caller proceeds fully functional. A
+missing gate must never be read as a failing one.
+
+### 22.3 Two Failure Modes That Shaped the Implementation
+
+Both were hit during development, and both would have rendered the gate useless in opposite
+directions:
+
+**Perception's data ratio is a product.** A single unmeasured channel scored 0 pins Ψ at 0
+and jams the gate permanently shut. Unmeasured dimensions therefore evaluate to **1.0** —
+"not a limiting factor" — so that only *measured* degradation moves the verdict. The
+alternative is a healthy bot sitting in permanent CAUTION, which trains operators to ignore
+the badge and is indistinguishable from having no gate.
+
+**The handler must overwrite only measured fields, via `state_mut`.** Calling `set_state`
+there also replaces the timestep and the sentience index, which silently cancels every
+`/api/sentience/observe` on the very next gate read.
+
+### 22.4 Why Ψ Cannot Be Talked Upward
+
+Ψ is a pure function of measured data integrity by design. Coherent, confident answers do
+not raise it. This is deliberate: a gate that a fluent model could argue with would fail in
+precisely the case it exists to catch, since a model reasoning over stale numbers produces
+*more* internally consistent output, not less. The only input that moves Ψ is measurement.
+
+The same equation drives the coherence breaker (§12.7) — one definition across the system.
+
+---
+
+## 23. Counterfactual Replay and Calibration
+
+### 23.1 The Asymmetry of Evidence
+
+`POST /api/replay` answers "what if the thresholds had been different?" against what the
+pipeline **actually measured**. Every evaluated pool is written to
+`scematica-pool-decisions.jsonl` with the values that decided it — `pool_score`,
+`pool_size_sol`, `pool_age_secs`, `buy_pressure_ratio` — so re-applying a threshold requires
+no RPC and no simulation.
+
+The result is deliberately asymmetric, and the asymmetry is the design:
+
+| Direction | What it admits | What can be reported |
+|-----------|----------------|----------------------|
+| **Tightening** | Excludes pools that *were* taken | **Exact** PnL delta — real trades, real realised SOL |
+| **Loosening** | Admits pools that were rejected | Count and measured distribution only — **no return figure** |
+
+Nobody bought the rejected pools, so nothing recorded what they would have done. That is
+not a gap to fill with an estimate; it is the shape of the evidence. Inventing an expected
+value for the loosening case is the single most tempting move available here and would make
+every answer built on it worthless — the same failure the simulation banner in `web/` exists
+to prevent.
+
+### 23.2 Why Not the Backtester
+
+Replay is deliberately **not** built on `scematica_sniper::Backtester`. That path replays
+`BacktestPool` records through `static_filter_check`, which returns `false` outright
+whenever `min_pool_size > 0` or any RPC-bound filter is enabled, and never inspects
+`pool_score` at all. Under any realistic configuration it answers "nothing would pass" — a
+confident number that means nothing. The decision log has no such problem, because the
+measurement already happened.
+
+### 23.3 Calibration
+
+`GET /api/calibration` exploits a property this domain has and most assistant deployments do
+not: **ground truth arrives automatically, minutes later.** The assistant says a pool looks
+strong; `scematica-trades.jsonl` records what it did. "Of the 40 pools I called strong, 12
+rugged" is a measurable fact rather than a stylistic impression.
+
+Two limits are load-bearing:
+
+- **Claims are scoped to the sentence naming the mint**, never to the whole message. A
+  paragraph mentioning four mints does not hold four opinions; attributing the message's
+  overall sentiment to each would manufacture claims that were never made and then score
+  against them.
+- **Only claims with an outcome are scored.** Bullish calls resolve against realised PnL.
+  Bearish calls usually cannot — nobody buys what the assistant warns against, so nothing
+  records whether the warning was right. Unresolved claims are **counted, not scored**.
+  Closing that gap with an estimate is how a calibration number becomes flattery.
+
+---
+
+## 24. Web Interfaces and the Product Surface
+
+`web/` is a standalone Next.js application hosting three distinct products that share a
+codebase and nothing else — each has its own palette and its own data rules.
+
+### 24.1 The Sniper Dashboard
+
+`app/api/[...slug]/route.ts` proxies a reachable `scematica-api` when `RUST_API_URL`
+resolves, and otherwise falls back to a self-contained simulation in `web/lib/sim/` —
+including a real Dueling Double-DQN (`lib/sim/dqstar.ts`) mirroring `scematica-nn`.
+
+The labelling rules are absolute. Simulated responses carry `simulated: true` and an
+`X-Scematica-Source: simulation` header, surface a permanent SIMULATION banner, and control
+POSTs return **503 rather than faking success**. Simulated PnL must never render as live
+results.
+
+Three data-sourcing rules that are easy to break:
+
+1. **One timer per endpoint.** Panels subscribe through `lib/store.ts` / `lib/queries.ts`.
+   Polling is refcounted so a hidden panel stops fetching; a panel adding its own
+   `setInterval` silently undoes that.
+2. **Discovery prefers a live bot, falls back to the real public feed, and never invents
+   data.** There is no third branch.
+3. **The TypeScript pool scorer is a port, not a second brain.** Rust stays authoritative;
+   every filter declares `parity: 'port' | 'approx'`, and `npm run check:parity` pins the
+   Rust unit-test cases.
+
+### 24.2 alchem-link
+
+An Alchemy × Chainlink oracle developer toolkit, and a second product rather than a sniper
+panel. It reads live Chainlink aggregators with **no simulation branch at all** — these
+routes read a chain or report the error, because a fabricated price would defeat the entire
+point of a staleness verdict.
+
+Heartbeats are **measured per feed per chain** (Polygon ~60s, Base/OP 1200s, mainnet 3600s),
+never a shared default, with a 15% staleness tolerance on top: real publish ceilings run a
+percent or two over the configured interval, and a feed that flickers STALE every cycle
+trains people to ignore the flag. `lib/alchem/` is a port of the authoritative Python
+package; `/api/alchem/verify` catches the two drifting by asking the chain rather than
+either table.
+
+### 24.3 Scylar Terminal
+
+An avatar chat terminal over live bot state, gated by Ψ (§22). Its constraints follow the
+same logic as the rest of the system:
+
+- **Provider keys are server-side, always**, and the chat route **strips client-supplied
+  `system` turns**. Without that, a public endpoint with a key behind it is someone else's
+  free LLM proxy.
+- **The model picks a tool name, never a URL.** `lib/scylar/tools.ts` hard-codes a path per
+  tool — all GETs, no control routes — so no model output can reach an endpoint that is not
+  on the list. Row counts are clamped and repeated identical calls within a turn are served
+  from cache.
+- **Live bot state is opt-in and labelled**, tagged `SIMULATED` when it is. The per-turn
+  badge is the guarantee; the prompt instruction is only a mitigation, and it was ignored
+  entirely until phrased as a required output token rather than a description.
+
+`npm run check:scylar` pins the pure logic: expressions, speech, markdown, commands,
+session, tools and gate.
+
+---
+
+## 25. Cross-Chain Expansion: BOT Chain and the Neural Mesh
+
+### 25.1 Why a Separate Workspace Is Mandatory
+
+`scema-botchain/` ports the architecture to BOT Chain (EVM, chain **677**) and lives in the
+root workspace's `exclude` list — not for tidiness, but because every current EVM stack
+requires `reqwest 0.12` / `rustls 0.23`, which is exactly the combination Appendix B
+documents as irreconcilable with `solana-sdk`'s `curve25519-dalek 3`. One workspace means
+one lockfile means one resolved `zeroize`, and no version satisfies both trees.
+
+The rule that follows: nothing in that tree may depend on a crate pulling `solana-sdk`. The
+chain-agnostic crates (`scematica-nn`, `scematica-sentience`, `scemadex-sdk`) are safe;
+`scematica-core` and everything rooted on it are not.
+
+### 25.2 The Measurement That Cancelled the Sniper
+
+Before porting a sniper, the question is whether there is anything to snipe. `botchain-probe`
+read the chain rather than the documentation (August 2026):
+
+| Window | V3-style factory | CA factory |
+|---|---|---|
+| 20,000 blocks (~3.7 h) | 0 | 0 |
+| 200,000 blocks (~1.5 d) | 0 | 0 |
+| 1,000,000 blocks (~7.7 d) | **2** | 0 |
+
+Two pool creations in roughly eight days, against a Solana side whose PF 6.50 edge exists
+precisely because Raydium produces continuous new-pool flow. Supporting reads: 0.29% network
+utilisation; ~119k tx/day of which a large share is the per-block `BOTValidatorSet.deposit`
+(Parlia system activity, not users); 2 swaps in a 50-transaction sample; four tokens with
+real holders followed by a tail of 2-to-6-holder test deployments. Consensus is Parlia PoSA
+— a BSC fork.
+
+**No sniper is scheduled for BOT Chain.** The Solidity contracts (`BotchainPriceFeed`,
+`ScemaArbExecutor`, `ScemaBondEscrow`, `BotchainNNMesh`) are deployed and tested on 677 so
+the port is ready if flow arrives, and the probe re-runs the measurement on demand. This is
+a research result acted upon, not a shelved feature.
+
+### 25.3 Verifiable Inference — Determinism Before Cryptography
+
+`scema-bot-mesh/` makes an agent's decisions checkable by a party that did not run them,
+including by a contract. Weights are far too large for on-chain storage, but a keccak256
+hash of them is 32 bytes and so is a hash of an inference: the agent commits 32 bytes, a
+challenger holding the weights re-runs the forward pass, disagreement is provable, and the
+bond behind the claim is slashable via `ScemaBondEscrow`.
+
+Commit-and-challenge is old. The reason it is rarely applied to neural inference is that the
+challenger's re-run must produce **the same bits**, and floating point does not cooperate:
+Solidity cannot represent an `f32` at all, transcendentals are libm implementations rather
+than IEEE operations, and JavaScript has no `f32`. The foundation is therefore Q16.16
+integer arithmetic, with implementation details promoted to specification:
+
+| Decision | Why it is normative |
+|---|---|
+| Round-half-**away-from-zero** | Symmetric: `(-x)·y == -(x·y)` exactly, so a sign flip cannot change a magnitude |
+| Division, **not `>>`** | An arithmetic shift floors toward −∞ and breaks that symmetry — a real bug here, caught by `multiplication_is_symmetric_under_sign` |
+| Fixed summation order, widened accumulator | A SIMD reimplementation that reassociates a sum is a consensus break, not a speedup |
+| Ties → lowest index | An unspecified tie is a divergent action, and a divergent action is a divergent game state |
+| Saturate, never wrap | A wrapped activation silently becomes its own negation |
+
+`FRAC_BITS`, parameter ordering and domain tags are bound into the hash, so a future change
+produces a visibly different commitment rather than a silently incompatible one.
+
+---
+
+## 26. Roadmap
+
+The full quarter-by-quarter record — including a verdict of DELIVERED / PARTIAL / NOT
+STARTED / DROPPED against every milestone from the original 2026 plan — is in
+[ROADMAP.md](ROADMAP.md). Summarised here:
+
+### Delivered since the v1.11.0 whitepaper baseline
+
+- **Epistemic risk management.** The coherence breaker (§12.7) and the Ψ gate (§22) — the
+  first breakers in the system that fire before the loss rather than after it.
+- **Counterfactual replay and calibration** (§23), both explicit about what they cannot know.
+- **Three-product web surface** (§24): sniper dashboard, alchem-link, Scylar Terminal.
+- **Cross-chain expansion** (§25) — the v2.0 milestone, reached and then *paused on its own
+  measurement*, which is the outcome the original bullet did not contemplate.
+- **USD display.** Live CoinGecko SOL/USD across dashboard panels — previously listed as
+  planned, shipped in `scematica-dashboard`.
+- **Agent marketplace substrate.** ScemaDEX intents, Conviction-Routing bonds and the
+  `PeerMarket` inference/experience mesh (§16.4).
+
+### Near-term
+
+- **Multi-wallet support** — pool funds across wallets. Still the largest unbuilt trading
+  feature, carried since Q2 2026.
+- **Wire the Ψ gate into the live trading path.** It currently gates the API and the
+  coherence breaker; the sniper's own LLM calls do not yet depend on it. A known wiring gap,
+  stated as one.
+- **`scematica-swap` mainnet deploy.** The arb engine runs **program-less** today (atomic
+  revert + final-hop `min_out`), so this is a latency optimisation rather than a
+  prerequisite.
+- **Automated treasury balancing** across open positions.
+
+### Longer-term
+
+- **External security audit**, covering the executor, the wallet path, the x402 facilitator
+  and the relay. Sequenced *before* staking, not after.
+- **Strategy marketplace** on the ScemaDEX bonded-teaching primitives, with DQ\* checkpoints
+  published for x402-gated tournament scoring.
+- **On-chain SCEMA staking** for a share of x402 protocol fee revenue.
+- **Community governance systems.**
 
 ---
 
@@ -1077,7 +1404,13 @@ All parameters are set in `config.toml` and support live hot-reload via `scemati
 | `velocity_decay_drop_threshold` | 1.5 | Recent velocity must be < previous / 1.5 to trigger |
 | `price_check_interval_ms` | 500 | Sell monitor tick interval (Phase 2) |
 | `kelly_fraction_multiplier` | 0.25 | Kelly fraction (quarter-Kelly for uncertainty) |
-| `ath_drawdown_pct` | 15.0 | Session ATH drawdown tolerance before buy pause |
+| `ath_drawdown_pct` | 0.0 (disabled) | Session ATH drawdown tolerance before buy pause. The shipped `config.toml` sets **20.0** |
+| `min_pool_score` | 35.0 | Minimum predictive pool score (0–100); 0 disables the scorer gate. The shipped `config.toml` sets **65** — 92 passed only pools still visibly pumping, i.e. parabolic tops |
+| `coherence_breaker` | `true` | Epistemic breaker (§12.7). Defaults **on** via `default_true()` — a bare `#[serde(default)]` would yield `false` and silently disable it for every pre-existing `config.toml` |
+
+Values in this table are the **`Default` impl in `crates/scematica-core/src/config.rs`**,
+which is what a missing field resolves to. Where the shipped `config.toml` deliberately
+differs, both are given.
 
 ---
 

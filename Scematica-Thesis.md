@@ -1,6 +1,6 @@
 Scematica: A Complete Thesis From Conception to a Validated, Self-Aware Trading Organism
 
-Version 1.24.0
+Version 1.25.0
 
 Preface
 

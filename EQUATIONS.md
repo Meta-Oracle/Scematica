@@ -3,7 +3,7 @@
 **Statements only.** Derivations, the collapse case study, and the measured constants live
 in [`EQUATIONS-ANALYSIS.md`](./EQUATIONS-ANALYSIS.md).
 
-Version 1.15.0 · constants measured 2026-08-06
+Version 1.25.0 · constants measured 2026-08-06
 
 ---
 

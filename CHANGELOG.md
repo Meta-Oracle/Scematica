@@ -2,9 +2,195 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
-## Unreleased
+## What's New in v1.25.0
+
+### One version again — 1.16 through 1.24 were never a release
+
+The workspace number moved 1.15.0 → 1.24.0 in a single commit and then kept taking
+features without moving again: the sentience crate, the coherence breaker,
+counterfactual replay, calibration, the Scylar terminal, the BOT Chain port and the
+neural mesh all landed *after* that bump. Nine intermediate minors were never cut, and
+nothing describes them, so this release folds the whole span into **1.25.0** rather than
+inventing a history for numbers that never shipped.
+
+The drift was not only in the headline. `web/package.json` — the single source for the
+web dashboard and the Android artifact's `versionName`/`versionCode` — was still on
+1.15.0, and every internal crate dependency still pinned `version = "1.15.0"` against
+crates that had moved to 1.24.0. Caret semver hid it (1.24.0 satisfies `^1.15.0`), so the
+build never complained while the manifests said something false. Both are now on 1.25.0,
+and `alchem_link.__version__` — which the CLI, the shell banner and the dashboard title
+all read — is reconciled with the `0.23.24` that `pyproject.toml` and the built wheel
+already carried.
+
+The ScemaDEX SDK family (`scemadex-sdk` 0.3.0, `scemadex-mcp` / `scemadex-settle` 0.1.2)
+is unchanged since its last publish and keeps versioning independently below 1.0.
+`scema-botchain` and `scema-bot-mesh` are separate workspaces at 0.1.0 and version on
+their own track.
+
+### scematica-sentience — the cognitive architecture as a library
+
+The Singularity Cognitive Architecture, previously prose, is now computable Rust: 29
+modules from `perception` and `data_integrity` through `knowledge_graph`,
+`meta_cognition`, `contradiction` and `truth_confidence`, converging on two equations —
+`S_t = R×L×M×D` and `Ψ_t = S×I×K×MC×A_g×F` — plus the `Ω_{t+1}` recursive step. Five of
+the seventeen axioms are enforced as runtime checks rather than documentation.
+
+It is a **library only**, with no binary, so the `scematica` launcher gains no
+subcommand. Nothing on the sniper's trading path depends on it for LLM gating yet; the
+`overlay` module gates a model's output on integrated cognition (GO / CAUTION / HOLD) and
+is consumed by the API and the coherence breaker, described below.
+
+### The Ψ gate measures staleness, not mood
+
+`GET /api/sentience` answers one question: can anything reading this API describe the bot
+*right now*? It matters because every read endpoint serves its state file identically
+whether that file was written four seconds or four hours ago, and `/api/health` only
+reports that a process was once here — so a live-looking briefing can describe a session
+that ended overnight. **HOLD returns 409 and the model is never called**, because a warned
+model still writes a confident paragraph of stale numbers.
+
+Two failure modes were hit building it, both of which would have made the badge worthless:
+
+- `Perception`'s data ratio is a **product**, so a single unmeasured channel scored 0 pins
+  Ψ at 0 and jams the gate shut permanently. Unmeasured dimensions are 1.0 — "not a
+  limiting factor" — and only *measured* degradation moves the verdict. Otherwise a
+  healthy bot sits in permanent CAUTION and operators learn to ignore the flag.
+- The handler must overwrite only measured fields via `state_mut`. Calling `set_state`
+  there also replaces the timestep and sentience index, which silently cancels every
+  `/api/sentience/observe` on the very next gate read.
+
+Ψ stays a pure function of measured data integrity by design: a run of coherent answers
+must not be able to talk the gate into trusting stale numbers.
+
+### Coherence breaker — the first breaker that fires before the damage
+
+Every other breaker in `scematica-sniper` halts on money — `ath_tracker` on drawdown,
+`grief_breaker` on a loss window, `kelly` on win rate — and therefore all of them fire
+*after* the loss. `coherence.rs` fires on the condition that precedes it.
+
+RPC-bound filters are capped at `RPC_CALL_TIMEOUT_SECS` and **fail open**: when a node is
+slow, `check_mint_renounced`, `check_freezable` and `check_burned` return `pass()` because
+they could not look, not because they looked and approved. That is right for one pool and
+wrong as a state to keep trading in — past some fraction of unresolved checks the pipeline
+is a pass-through wearing a filter's name, and the safety checks the operator believes are
+running are silently not running. The breaker counts resolved-versus-failed-open over a
+120s window, feeds the ratio to the same `scematica-sentience` master equation the API
+gate uses, and stops buying on HOLD. One definition of Ψ across the system, not two.
+
+Instrumented in the two shared RPC retry helpers in `filters.rs` rather than at each
+fail-open site, so a newly added filter is counted by construction. Requires
+`MIN_SAMPLES = 20` before it can return a verdict — a cold start has resolved 0 of 0
+checks, and a breaker that trips on an empty sample fires hardest exactly when it knows
+least. Deliberately **not** wired into the sell path: a degraded feed is a reason to stop
+opening risk, never a reason to stop closing it. `coherence_breaker` in `config.toml`,
+default **on** via `default_true()`, because `#[serde(default)]` yields `false` for a
+missing bool and would have silently disabled a safety feature for every existing config.
+
+### Counterfactual replay — exact where evidence exists, silent where it does not
+
+`POST /api/replay` re-applies proposed thresholds to what the pipeline actually
+*measured*. Every evaluated pool is already written to `scematica-pool-decisions.jsonl`
+with the values that decided it, so a threshold change needs no RPC and no simulation.
+
+The asymmetry is the design, not a shortcoming to paper over. Outcomes exist for pools
+that were **taken** and do not exist for pools that were **rejected** — nobody bought
+them, so nothing recorded what they would have done. **Tightening** therefore yields an
+*exact* PnL delta against real realised SOL; **loosening** admits pools with no outcome,
+and the endpoint reports how many and their measured distribution while refusing to put a
+return on them. Inventing an expected value there is the most tempting move available and
+would make every answer built on it worthless.
+
+This is deliberately **not** built on `scematica_sniper::Backtester`, whose
+`static_filter_check` returns `false` outright whenever `min_pool_size > 0` or any
+RPC-bound filter is enabled and never looks at `pool_score` at all — under any realistic
+config it answers "nothing would pass", which is a confident number that means nothing.
+
+### Calibration — scoring the assistant against what the mints did
+
+`GET /api/calibration` exploits an unusual property: ground truth arrives automatically,
+minutes later. Scylar says a pool looks strong; `scematica-trades.jsonl` records what it
+did. "Of the 40 pools I called strong, 12 rugged" is a fact about her rather than a tone.
+
+Two limits are load-bearing. Claims are scoped to the **sentence** naming the mint, never
+the whole message — a paragraph mentioning four mints does not hold four opinions, and
+attributing the message's overall sentiment to each would manufacture claims she never
+made and then score her on them. And only claims with an outcome are scored: bullish calls
+resolve against realised PnL, bearish calls usually cannot because nobody buys what she
+warns against. That gap is counted and reported, never closed with an estimate — scoring
+an assistant on outcomes it caused *not* to happen is how a calibration number becomes
+flattery.
+
+### Scylar Terminal — the third product on the site
+
+An avatar chat terminal at `/scylar-terminal`, with its own violet palette beside the
+sniper's black-and-red and alchem-link's black-and-blue. It runs on whichever free LLM
+tier has a key, Groq first for latency. The constraints that shaped it:
+
+- **Provider keys are server-side, always**, and the chat route **strips client-supplied
+  `system` turns** — without that, a public endpoint with a key behind it is someone
+  else's free LLM proxy.
+- **The model picks a tool name, never a URL.** `lib/scylar/tools.ts` hard-codes a path
+  per tool, all GETs, no control routes — the same reasoning as alchem-link refusing a
+  caller-supplied RPC URL. Row counts are clamped (models ask for 500) and repeated
+  identical calls within a turn are answered from cache, because llama-3.3-70b re-calls
+  rather than answers when a result looks thin and each round is a whole request against
+  a 30/min tier.
+- **Live bot state is opt-in and labelled**, tagged `SIMULATED` when it is. The per-turn
+  badge is the real guarantee; the prompt instruction is a mitigation, and it was ignored
+  entirely until phrased as a required output token rather than a description.
+- **Voice drives the mouth.** `SpeechSynthesis` word boundaries produce one open-close per
+  word. Chrome silently stops after ~15s of a single utterance, making `splitForSpeech` a
+  correctness requirement, and `onend` is unreliable, so a watchdog polling
+  `speechSynthesis.speaking` is what stops a missed event locking the UI. `pickVoice`
+  ranks **gender before quality** — `SpeechSynthesisVoice` has no gender field, so ranking
+  quality first picks "Andrew Online (Natural)" over "Zira" on stock Windows + Edge.
+
+`npm run check:scylar` pins the pure logic — expressions, speech, markdown, commands,
+session, tools and gate.
+
+### BOT Chain — measured before ported
+
+`scema-botchain` is the EVM (chain **677**) port, in its own cargo workspace and in the
+root `exclude` list. Not tidiness: every current EVM stack wants reqwest 0.12 / rustls
+0.23, which is exactly the combination the root pin comments say cannot coexist with
+`solana-sdk`'s `curve25519-dalek 3`. One lockfile resurrects the conflict; two make it a
+non-issue. The rule that follows is that nothing in there may depend on a crate pulling
+`solana-sdk` — `scematica-nn`, `scematica-sentience` and `scemadex-sdk` are safe;
+`scematica-core` and its dependents are not.
+
+**The port stops short of a sniper, on evidence.** `botchain-probe` read the chain rather
+than the documentation and found **2 pool creations in ~8 days** (0 in 200k blocks, 2 in
+1M), 0.29% network utilisation, 2 swaps in a 50-transaction sample, and a token list of
+four real tokens followed by 2-to-6-holder test deployments. Consensus is Parlia PoSA — a
+BSC fork. There is nothing to snipe yet, and the README records the measurement so the
+conclusion can be re-checked rather than believed. Solidity contracts
+(`BotchainPriceFeed`, `ScemaArbExecutor`, `ScemaBondEscrow`, `BotchainNNMesh`) are
+deployed and tested on 677. **The Solana bot is unaffected and stays authoritative.**
+
+### scema-bot-mesh — inference someone else can check
+
+A neural mesh whose decisions are verifiable by a party that did not run them, including
+by a contract on chain 677. Weights are too large for on-chain storage, but a keccak256
+hash of them is 32 bytes and so is a hash of an inference — so an agent commits 32 bytes,
+any challenger holding the weights re-runs the forward pass, disagreement is provable, and
+the bond behind the claim is slashable via `ScemaBondEscrow`.
+
+Commit-and-challenge is old; the reason it is rarely applied to neural inference is that
+the challenger's re-run must produce **the same bits**, and floating point does not
+cooperate — Solidity cannot represent an `f32` at all, transcendentals are libm
+implementations rather than IEEE operations, and JavaScript has no `f32`. So the
+foundation is Q16.16 integer arithmetic with the usual implementation details promoted to
+specification: round-half-away-from-zero (so `(-x)·y == -(x·y)` exactly), division rather
+than `>>` (an arithmetic shift floors toward −∞ and breaks that symmetry — a real bug here,
+caught by `multiplication_is_symmetric_under_sign`), fixed summation order, ties to lowest
+index, and saturating rather than wrapping arithmetic. `FRAC_BITS`, parameter ordering and
+domain tags are bound into the hash, so a future change produces a visibly different
+commitment instead of a silently incompatible one.
 
 ### alchem-link v0.23.0 — the shell becomes a coding agent
+
+*The 0.23 series shipped through **0.23.24**, which is the current published patch level.
+The three sections below describe what 0.23.0 introduced.*
 
 The chat agent could read chains and nothing else. It can now work in a directory: 28
 tools covering file reads, writes and edits, directory creation and search, project
@@ -46,9 +232,9 @@ them made.
 The approval prompt leads with the verb and the path rather than the tool name, and `v`
 shows the unified diff — approving a write you have not seen is a keystroke, not consent.
 Grants are session-scoped and never written to disk. New shell verbs: `:workspace`,
-`:trust`, `:changes`, `:diff`. Tests: **479 → 561**, still all offline;
-`test_agent_workspace.py` is the security suite and most of its cases assert that
-something does *not* happen.
+`:trust`, `:changes`, `:diff`. Tests: **479 → 561** at 0.23.0 and **590** as of 0.23.24,
+still all offline; `test_agent_workspace.py` is the security suite and most of its cases
+assert that something does *not* happen.
 
 ### alchem-link v0.23.0 — the terminal system moves in-package
 

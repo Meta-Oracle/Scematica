@@ -12,9 +12,10 @@ import { UiModeProvider } from '@/lib/UiModeContext'
 // Import wallet adapter CSS
 import '@solana/wallet-adapter-react-ui/styles.css'
 
-const RPC_ENDPOINT =
-  process.env.NEXT_PUBLIC_RPC_ENDPOINT ||
-  'https://mainnet.helius-rpc.com/?api-key=b1d54eff-a0db-4e72-84da-61def55d5d55'
+// No hardcoded fallback. This is a client component, so whatever lands here is inlined
+// into the browser bundle and served to every visitor — a key written here is published,
+// not merely committed. Unset falls back to the public cluster endpoint below.
+const RPC_ENDPOINT = process.env.NEXT_PUBLIC_RPC_ENDPOINT
 
 export function WalletProviderWrapper({ children }: { children: React.ReactNode }) {
   const network = WalletAdapterNetwork.Mainnet

@@ -12,8 +12,8 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
-scematica-core = { version = "1.15.0", path = "../scematica-core" }
-scematica-protocol = { version = "1.15.0", path = "../scematica-protocol" }
+scematica-core = { version = "1.25.0", path = "../scematica-core" }
+scematica-protocol = { version = "1.25.0", path = "../scematica-protocol" }
 solana-sdk.workspace = true
 
 tokio.workspace = true

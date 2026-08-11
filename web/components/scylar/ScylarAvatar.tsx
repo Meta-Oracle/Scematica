@@ -33,9 +33,19 @@ interface Props {
   phase: AvatarPhase
   /** Rendered width in CSS pixels. The 1024 asset covers 2x displays via srcSet. */
   size?: number
+  /**
+   * Generated portraits to use in place of the sprites, per expression.
+   *
+   * A *source* override and nothing more: the state machine still chooses which
+   * expression is showing and how she is posed, and a missing entry falls back to the
+   * sprite for that expression. Keeping generation out of the timing path is what stops
+   * a network call that takes seconds from being able to stutter a 90ms mouth flap. See
+   * `lib/scylar/usePortraits.ts`.
+   */
+  portraits?: Partial<Record<Expression, string>>
 }
 
-export function ScylarAvatar({ phase, size = 420 }: Props) {
+export function ScylarAvatar({ phase, size = 420, portraits }: Props) {
   const [flapSprite, setFlapSprite] = useState<Expression>('idle')
   const [settledFor, setSettledFor] = useState(0)
   const reduceMotion = usePrefersReducedMotion()
@@ -160,11 +170,20 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
             : `transform ${PRESENCE_EASE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
         }}
       >
-        {EXPRESSIONS.map((expression) => (
+        {EXPRESSIONS.map((expression) => {
+          // A generated portrait is a single object URL with no 2x variant, so `srcSet`
+          // is dropped rather than pointed at the sprite — mixing the two would let the
+          // browser pick the sprite on a high-DPI screen and quietly undo the override.
+          const generated = portraits?.[expression]
+          return (
           <img
             key={expression}
-            src={spriteSrc(expression, 512)}
-            srcSet={`${spriteSrc(expression, 512)} 1x, ${spriteSrc(expression, 1024)} 2x`}
+            src={generated ?? spriteSrc(expression, 512)}
+            srcSet={
+              generated
+                ? undefined
+                : `${spriteSrc(expression, 512)} 1x, ${spriteSrc(expression, 1024)} 2x`
+            }
             alt={expression === active ? `Scylar, ${expression}` : ''}
             // Only the visible layer is announced; the other two are decorative
             // duplicates of the same character and would be read out as repeated images.
@@ -178,7 +197,8 @@ export function ScylarAvatar({ phase, size = 420 }: Props) {
               transition: `opacity ${fadeMs}ms ease-in-out`,
             }}
           />
-        ))}
+          )
+        })}
       </div>
 
       {/* Thinking indicator. She holds a closed mouth while waiting on the model, so

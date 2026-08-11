@@ -37,7 +37,12 @@ import { parseCommand } from '../lib/scylar/commands.ts'
 import { deserialise, serialise } from '../lib/scylar/session.ts'
 import { contextSystemMessage } from '../lib/scylar/context.ts'
 import { TOOLS, runTool, toolDefinitions } from '../lib/scylar/tools.ts'
-import { cautionInstruction, holdExplanation, readGate } from '../lib/scylar/gate.ts'
+import {
+  cautionInstruction,
+  holdExplanation,
+  holdInstruction,
+  readGate,
+} from '../lib/scylar/gate.ts'
 
 let failed = 0
 const check = (name, ok) => {
@@ -397,6 +402,29 @@ check('an unexplained hold still names the bottleneck',
   holdExplanation({
     verdict: 'hold', psi: 0, sentience: 0, bottleneck: 'rationality', note: '', inputs: {},
   }).includes('rationality'))
+
+// A HOLD no longer ends the turn — the state block is withheld and she is told why, so
+// she can report the fault instead of the terminal going dark during it. These pin the
+// four things that instruction has to do, because getting any one wrong reintroduces the
+// failure the gate exists to prevent (or the uselessness the 409 caused).
+const heldWedged = holdInstruction({
+  verdict: 'hold', psi: 0, sentience: 0.4, bottleneck: 'logic', note: '',
+  inputs: { metrics_age_secs: 59105, sniper_running: true, state_files_present: 4 },
+})
+check('a hold instruction carries the diagnosis, not just the verdict',
+  /wedged|stale/i.test(heldWedged) && heldWedged.includes('985 minute'))
+check('a hold instruction says she has no data at all',
+  /no bot data|no SCEMATICA STATE block/i.test(heldWedged))
+check('a hold instruction forbids citing figures',
+  /cite no figure|do not cite/i.test(heldWedged))
+// Without this she treats HOLD as a blanket refusal and stops answering questions that
+// never needed the bot — which is the 409's failure mode reintroduced in prose.
+check('a hold instruction still permits non-bot questions',
+  /answer normally/i.test(heldWedged))
+// The stale-history trap: the block is gone, but earlier turns in the conversation still
+// contain figures, and quoting those back is indistinguishable from having live data.
+check('a hold instruction rules out reusing figures from earlier turns',
+  /earlier in this conversation|previous turn/i.test(heldWedged))
 
 const caution = cautionInstruction({
   verdict: 'caution', psi: 0.0819, sentience: 0.4, bottleneck: 'perception', note: '', inputs: {},

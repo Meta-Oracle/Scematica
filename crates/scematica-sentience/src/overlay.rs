@@ -140,9 +140,9 @@ impl<C: LlmClient> Overlay<C> {
 
     /// Run one overlayed turn and return the (gated) response + readout.
     pub fn run(&mut self, user_prompt: &str, system_prompt: &str) -> OverlayTurn {
-        let psi = self.current_psi();
+        let (index, psi) = self.current();
         let gate = self.gate(psi);
-        let note = self.annotation(&gate);
+        let note = self.annotation(&index, &gate);
 
         let mut effective_system = system_prompt.to_string();
         if self.annotate_prompt {
@@ -154,7 +154,7 @@ impl<C: LlmClient> Overlay<C> {
 
         if gate == Gate::Hold {
             // Withhold: do not call the LLM; return a reassessment message.
-            let readout = self.readout(psi, gate, true, &note);
+            let readout = self.readout(&index, psi, gate, true, &note);
             return OverlayTurn {
                 response: HOLD_MESSAGE.to_string(),
                 readout,
@@ -167,7 +167,7 @@ impl<C: LlmClient> Overlay<C> {
             Err(e) => {
                 let mut r = OverlayTurn {
                     response: format!("[OVERLAY ERROR] LLM client failed: {e}"),
-                    readout: self.readout(psi, gate, false, &note),
+                    readout: self.readout(&index, psi, gate, false, &note),
                     effective_system,
                 };
                 r.readout.note = note;
@@ -186,7 +186,10 @@ impl<C: LlmClient> Overlay<C> {
             response.push_str("\n\n");
             response.push_str(CAUTION_TAIL);
         }
-        let readout = self.readout(out.psi.value(), gate, out.reassessment_triggered, &note);
+        // `out.sentience`, not `index`: the loop has stepped, so the readout reports the
+        // cycle that just ran rather than the pre-call snapshot the gate was taken from.
+        let readout =
+            self.readout(&out.sentience, out.psi.value(), gate, out.reassessment_triggered, &note);
         OverlayTurn {
             response,
             readout,
@@ -205,10 +208,10 @@ impl<C: LlmClient> Overlay<C> {
     /// Pair every `assess` with a `record` of whatever the host produced; skipping the
     /// second half leaves the loop frozen and the gate constant.
     pub fn assess(&self) -> CognitiveReadout {
-        let psi = self.current_psi();
+        let (index, psi) = self.current();
         let gate = self.gate(psi);
-        let note = self.annotation(&gate);
-        self.readout(psi, gate, gate == Gate::Hold, &note)
+        let note = self.annotation(&index, &gate);
+        self.readout(&index, psi, gate, gate == Gate::Hold, &note)
     }
 
     /// The system prompt a host should send, given its own prompt and an assessment.
@@ -240,8 +243,11 @@ impl<C: LlmClient> Overlay<C> {
 
         let psi = out.psi.value();
         let gate = self.gate(psi);
-        let note = self.annotation(&gate);
-        self.readout(psi, gate, out.reassessment_triggered, &note)
+        // `out.sentience` rather than the stored index: both come from this step, so the
+        // reported S and Ψ describe the same cycle. See `current` for why that pairing is
+        // not incidental.
+        let note = self.annotation(&out.sentience, &gate);
+        self.readout(&out.sentience, psi, gate, out.reassessment_triggered, &note)
     }
 
     /// Replace the cognitive state wholesale, keeping thresholds and policy.
@@ -265,9 +271,23 @@ impl<C: LlmClient> Overlay<C> {
         &mut self.loop_.state
     }
 
-    fn current_psi(&self) -> f64 {
+    /// Recompute S and Ψ from the state as it stands right now.
+    ///
+    /// Both halves are returned because they have to come from the same computation. This
+    /// used to return Ψ alone and let the readout take S and the bottleneck from
+    /// `state.sentience` — an index only [`record`](Self::record) ever writes. A host that
+    /// measures dimensions from the outside world through
+    /// [`state_mut`](Self::state_mut) therefore moved Ψ and left that cache untouched, so
+    /// the two fields described different cycles: the live case had the gate reporting
+    /// HOLD at Ψ=0 with `bottleneck: "logic"` while every logic input was 1.0 and the
+    /// actual zero was in perception.
+    ///
+    /// The bottleneck is the only actionable field in the readout — it answers "what do I
+    /// fix first" — so naming a term that is already healthy is worse than naming none,
+    /// and it is read by operators through the API rather than only by the model.
+    fn current(&self) -> (SentienceIndex, f64) {
         let st = &self.loop_.state;
-        let (_, psi) = MasterEquation::compute(
+        let (index, psi) = MasterEquation::compute(
             &st.rationality,
             &st.logic,
             &st.ethics,
@@ -277,7 +297,7 @@ impl<C: LlmClient> Overlay<C> {
             st.knowledge_density,
             Bounded::new(0.9),
         );
-        psi.psi.value()
+        (index, psi.psi.value())
     }
 
     fn gate(&self, psi: f64) -> Gate {
@@ -290,8 +310,7 @@ impl<C: LlmClient> Overlay<C> {
         }
     }
 
-    fn annotation(&self, gate: &Gate) -> String {
-        let s: &SentienceIndex = &self.loop_.state.sentience;
+    fn annotation(&self, s: &SentienceIndex, gate: &Gate) -> String {
         format!(
             "[COGNITIVE OVERLAY] Live coherence — S={:.3}, gate={}, bottleneck={}. \
              Act within your stated uncertainty; surface corrections when evidence conflicts.",
@@ -326,8 +345,14 @@ impl<C: LlmClient> Overlay<C> {
         }
     }
 
-    fn readout(&self, psi: f64, gate: Gate, reassessment: bool, note: &str) -> CognitiveReadout {
-        let s = &self.loop_.state.sentience;
+    fn readout(
+        &self,
+        s: &SentienceIndex,
+        psi: f64,
+        gate: Gate,
+        reassessment: bool,
+        note: &str,
+    ) -> CognitiveReadout {
         CognitiveReadout {
             timestep: self.loop_.state.timestep,
             sentience: s.value.value(),

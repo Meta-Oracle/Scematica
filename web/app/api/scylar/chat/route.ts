@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { buildBriefing, contextSystemMessage } from '@/lib/scylar/context'
-import { cautionInstruction, holdExplanation, readGate, recordAnswer } from '@/lib/scylar/gate'
+import { cautionInstruction, holdInstruction, readGate, recordAnswer } from '@/lib/scylar/gate'
 import {
   SCYLAR_SYSTEM_PROMPT,
   configuredProviders,
@@ -123,60 +123,55 @@ export async function POST(request: NextRequest) {
   const briefing = wantContext
     ? await buildBriefing(request.nextUrl.origin)
     : { source: 'unavailable' as const, text: null }
-  const contextBlock = contextSystemMessage(briefing)
-
-  // Tools are offered only alongside context. Without a reachable bot every call would
-  // come back "could not reach the API", which teaches the model to stop trying and
-  // wastes a round doing it.
-  const useTools = wantContext && briefing.source !== 'unavailable'
 
   // The cognitive gate, from scematica-sentience via the Rust API. Only consulted when
   // she is about to speak from bot state — a question about Kelly sizing does not become
   // untrustworthy because the sniper's metrics went stale.
   const gate = wantContext ? await readGate(request.nextUrl.origin) : null
+  const held = gate?.verdict === 'hold'
 
-  if (gate?.verdict === 'hold') {
-    // Refusing to answer is the entire point of a HOLD, so this must not fall through to
-    // the model with a warning attached: a warned model still produces a confident
-    // paragraph of numbers, and the numbers are the problem.
-    return NextResponse.json(
-      {
-        ok: false,
-        gate: 'hold',
-        error: 'Holding — bot state is not trustworthy right now.',
-        detail: holdExplanation(gate),
-        psi: gate.psi,
-        bottleneck: gate.bottleneck,
-        hint: 'Turn CONTEXT off to ask something that does not depend on live bot state.',
-      },
-      { status: 409 },
+  // A HOLD removes the data, not the turn. See `holdInstruction` for why the 409 that
+  // used to live here was the wrong shape of enforcement.
+  const contextBlock = held ? null : contextSystemMessage(briefing)
+
+  // Tools are offered only alongside context. Without a reachable bot every call would
+  // come back "could not reach the API", which teaches the model to stop trying and
+  // wastes a round doing it. On HOLD they are off for a stronger reason: they read the
+  // very files the gate has just declared untrustworthy, so leaving them on would hand
+  // back through the side door exactly what withholding the block took away.
+  const useTools = wantContext && briefing.source !== 'unavailable' && !held
+
+  // One system message, not five.
+  //
+  // Llama 3.x's chat template is trained on a single system turn; consecutive ones are
+  // out of distribution, and everything here lands in front of up to 20 turns of history.
+  // Measured against llama-3.3-70b with a real state block and eight turns of history:
+  // four separate system messages recovered the session PnL 5/5 and the agent's
+  // train-step count 4/5, concatenated into one both were 5/5. A small margin, but free,
+  // and the failure it removes is the model silently ignoring the block rather than
+  // saying it cannot see one.
+  const systemParts: string[] = [SCYLAR_SYSTEM_PROMPT]
+  if (contextBlock) systemParts.push(contextBlock)
+  if (held && gate) {
+    systemParts.push(holdInstruction(gate))
+  } else {
+    // The overlay's own annotation, verbatim from the Rust readout — the same string
+    // `Overlay::effective_system` would have prepended if it owned the transport.
+    if (gate?.note) systemParts.push(gate.note)
+    if (gate?.verdict === 'caution') systemParts.push(cautionInstruction(gate))
+  }
+  if (useTools) {
+    systemParts.push(
+      'You can call read-only tools for anything the state block does not cover: ' +
+        `${TOOLS.map((t) => t.name).join(', ')}. Call one when the question needs ` +
+        'per-pool, per-trade or per-transaction detail. Do not call one for general ' +
+        'questions about trading or code. You cannot change the bot — there is no ' +
+        'tool that writes.',
     )
   }
 
   const messages: Record<string, unknown>[] = [
-    { role: 'system', content: SCYLAR_SYSTEM_PROMPT },
-    // Appended after the persona so the state block is the most recent instruction —
-    // the position models weight most heavily.
-    ...(contextBlock ? [{ role: 'system', content: contextBlock }] : []),
-    // The overlay's own annotation, verbatim from the Rust readout — the same string
-    // `Overlay::effective_system` would have prepended if it owned the transport.
-    ...(gate?.note ? [{ role: 'system', content: gate.note }] : []),
-    ...(gate?.verdict === 'caution'
-      ? [{ role: 'system', content: cautionInstruction(gate) }]
-      : []),
-    ...(useTools
-      ? [
-          {
-            role: 'system',
-            content:
-              'You can call read-only tools for anything the state block does not cover: ' +
-              `${TOOLS.map((t) => t.name).join(', ')}. Call one when the question needs ` +
-              'per-pool, per-trade or per-transaction detail. Do not call one for general ' +
-              'questions about trading or code. You cannot change the bot — there is no ' +
-              'tool that writes.',
-          },
-        ]
-      : []),
+    { role: 'system', content: systemParts.join('\n\n') },
     ...history,
   ]
 
@@ -370,8 +365,11 @@ export async function POST(request: NextRequest) {
       'X-Scylar-Model': provider.model,
       // What she was actually given. The UI badges this per turn rather than trusting
       // the toggle: asking for context and silently getting none is the failure worth
-      // showing, because her answer will look identical either way.
-      'X-Scylar-Context': wantContext ? briefing.source : 'off',
+      // showing, because her answer will look identical either way. `held` is its own
+      // value rather than reusing the briefing's source — the briefing may have read
+      // perfectly well and been withheld, and badging that turn LIVE would be a lie of
+      // exactly the kind this header exists to prevent.
+      'X-Scylar-Context': !wantContext ? 'off' : held ? 'held' : briefing.source,
       'X-Scylar-Tools': useTools ? 'on' : 'off',
       'X-Scylar-Gate': gate?.verdict ?? 'off',
     },

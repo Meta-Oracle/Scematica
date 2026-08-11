@@ -822,6 +822,27 @@ async fn health_handler() -> Json<HealthResponse> {
     })
 }
 
+/// Process image the lock file's PID must belong to for the sniper to count as alive.
+///
+/// Checked because a PID alone does not identify a process — see below.
+#[cfg(target_os = "windows")]
+const SNIPER_IMAGE: &str = "sniper.exe";
+#[cfg(not(target_os = "windows"))]
+const SNIPER_IMAGE: &str = "sniper";
+
+/// Is the sniper named in the lock file actually running?
+///
+/// **The PID must be matched together with the process image.** A PID is not an identity:
+/// the OS reuses it as soon as the process exits, so a stale lock file plus an unrelated
+/// process that inherited the number reads as a healthy sniper. This is not theoretical —
+/// it was found in the wild with lock PID 25952 belonging to `python.exe` hours after the
+/// sniper had exited, and it propagated a long way:
+///
+///   `sniper_running: true` + cold metrics → `consistency = 0` in `sentience_handler` →
+///   Ψ = 0 (it is a product) → permanent HOLD → Scylar's chat route 409s every turn.
+///
+/// A false negative here is cheap: the operator sees "stopped" and restarts. A false
+/// positive is what jams the gate, so the check is written to fail toward "not running".
 fn check_sniper_liveness() -> (bool, Option<u32>) {
     let Ok(content) = fs::read_to_string(artifact_path(LOCK_FILE)) else {
         return (false, None);
@@ -833,23 +854,35 @@ fn check_sniper_liveness() -> (bool, Option<u32>) {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
+        // Both filters, ANDed by tasklist. On no match it prints "INFO: No tasks are
+        // running which match the specified criteria." — which contains neither the
+        // image name nor the PID, so requiring both is what makes the negative case
+        // unambiguous rather than relying on parsing that sentence.
         let out = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .args([
+                "/FI",
+                &format!("PID eq {}", pid),
+                "/FI",
+                &format!("IMAGENAME eq {}", SNIPER_IMAGE),
+                "/NH",
+            ])
             .output();
         if let Ok(o) = out {
-            return (
-                String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
-                Some(pid),
-            );
+            let stdout = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
+            let alive = stdout.contains(SNIPER_IMAGE) && stdout.contains(&pid.to_string());
+            return (alive, Some(pid));
         }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        return (
-            std::path::Path::new(&format!("/proc/{}", pid)).exists(),
-            Some(pid),
-        );
+        // `/proc/<pid>` existing has the same PID-reuse hole, so confirm the image too.
+        // `comm` is truncated to 15 chars by the kernel; `sniper` is well inside that.
+        let alive = fs::read_to_string(format!("/proc/{}/comm", pid))
+            .map(|c| c.trim() == SNIPER_IMAGE)
+            .unwrap_or(false);
+        return (alive, Some(pid));
     }
+    #[cfg(target_os = "windows")]
     (false, None)
 }
 

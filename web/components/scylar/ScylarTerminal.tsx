@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 
+import { usePortraits } from '@/lib/scylar/usePortraits'
 import { ScylarAvatar } from './ScylarAvatar'
 import { ScylarMessage } from './ScylarMessage'
 import { useSpeech } from './useSpeech'
@@ -45,6 +46,9 @@ export function ScylarTerminal() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<ProviderStatus | null>(null)
   const [useContext, setUseContext] = useState(true)
+  // Generated portraits, if a ComfyUI backend is configured and reachable. Returns `{}`
+  // otherwise and the avatar keeps its sprites — nothing here is on the chat path.
+  const portraits = usePortraits()
   const [useVoice, setUseVoice] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const speech = useSpeech(useVoice)
@@ -402,7 +406,7 @@ export function ScylarTerminal() {
       <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col gap-4 px-3 py-4 lg:flex-row">
         <section className="flex flex-col items-center gap-3 lg:sticky lg:top-4 lg:self-start">
           <div className="scylar-panel overflow-hidden">
-            <ScylarAvatar phase={phase} size={420} />
+            <ScylarAvatar phase={phase} size={420} portraits={portraits} />
           </div>
           <p className="text-center text-[0.65rem] tracking-widest text-scylar-dim">
             {phase.kind === 'thinking' && 'THINKING'}
@@ -543,6 +547,17 @@ export function ScylarTerminal() {
                         NO STATE
                       </span>
                     )}
+                    {/* Distinct from NO STATE: the bot answered, and the gate withheld
+                        what it said. Collapsing the two would hide the difference
+                        between "nothing is there" and "what is there is not true". */}
+                    {turn.role === 'assistant' && turn.context === 'held' && (
+                      <span
+                        className="text-scylar-red"
+                        title="Ψ HOLD — bot state is stale or self-contradictory, so it was withheld from her"
+                      >
+                        STATE HELD
+                      </span>
+                    )}
                     {/* Only CAUTION is shown. GO is the ordinary case, and badging it
                         would make the two look equally worth reading. */}
                     {turn.role === 'assistant' && turn.gate === 'caution' && (
@@ -668,6 +683,15 @@ function badgeFor(turns: Turn[]): { label: string; tone: 'warn' | 'muted'; title
       label: 'NO BOT',
       tone: 'warn',
       title: 'Context was requested but nothing answered on /api.',
+    }
+  }
+  if (last.context === 'held') {
+    return {
+      label: 'STATE HELD',
+      tone: 'warn',
+      title:
+        'The cognitive gate returned HOLD, so the state block was withheld from her — ' +
+        'the bot state on disk is stale or self-contradictory. She answered without it.',
     }
   }
   return null

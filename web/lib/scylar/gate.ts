@@ -101,6 +101,37 @@ export function holdExplanation(gate: GateReadout): string {
   return `Bot state is not trustworthy enough to answer from right now (bottleneck: ${gate.bottleneck}).`
 }
 
+/**
+ * What replaces the state block on a HOLD.
+ *
+ * HOLD used to end the turn with a 409 before the model ran. It no longer does, and the
+ * distinction is worth being precise about: the rule being enforced is *no stale figure
+ * ever reaches the model*, not *do not speak*. Withholding the block enforces that
+ * completely — there is nothing left to misreport — while refusing outright enforced it
+ * by going dark during the exact fault the terminal exists to explain. "The lock says
+ * running but it has not written metrics in 985 minutes" is the most useful sentence
+ * available in that state, and the old path could not produce it.
+ *
+ * Phrased as an absence rather than a warning, because she genuinely has nothing this
+ * turn — no block, no tools. A warning implies data she is being asked to distrust, which
+ * is the framing that produces a confident paragraph with a hedge bolted on the front.
+ */
+export function holdInstruction(gate: GateReadout): string {
+  return [
+    '[COGNITIVE GATE: HOLD] You have no bot data this turn. No SCEMATICA STATE block was',
+    'attached and no tools are available to you, because the state on disk cannot be',
+    'trusted right now:',
+    '',
+    holdExplanation(gate),
+    '',
+    'If the question touches the bot at all, say that plainly in your own words and give',
+    'the reason above. Cite no figure for PnL, positions, trades, filters or the agent —',
+    'you have none, and any number earlier in this conversation is from a previous turn',
+    'and is now stale. Questions that do not depend on live bot state — trading concepts,',
+    'the Scematica codebase, anything general — answer normally.',
+  ].join('\n')
+}
+
 /** The extra instruction a CAUTION verdict adds to the system prompt. */
 export function cautionInstruction(gate: GateReadout): string {
   return [

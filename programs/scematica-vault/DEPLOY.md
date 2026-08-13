@@ -15,44 +15,59 @@ a stranger checks all three without trusting you.
 
 ## 0. Prerequisites
 
-```bash
-solana --version          # 1.18.x, matching the program's solana-program pin
-anchor --version          # 0.29.x, matching Cargo.toml
+```powershell
+solana --version          # 1.18.26 — matches the program's solana-program pin
 solana config get         # confirm the cluster you think you're on
 ```
 
-Neither tool ships with this repo. On Windows, install via WSL or use the Solana
-release installer; `anchor` comes from `avm`.
+The `anchor` CLI is **not** required and is not installed here. `anchor build` is
+`cargo build-sbf` plus IDL generation, and nothing in this repo consumes the IDL —
+`web/lib/escrow/program.ts` decodes the account bytes directly. Skipping Anchor also
+skips a version mismatch: `Anchor.toml` and `Cargo.toml` must agree, and they did not.
+
+On Windows, install the toolchain with the Solana release installer:
+
+```powershell
+curl.exe -sSL -o solana-install-init.exe `
+  https://github.com/solana-labs/solana/releases/download/v1.18.26/solana-install-init-x86_64-pc-windows-msvc.exe
+./solana-install-init.exe v1.18.26
+[Environment]::SetEnvironmentVariable('HOME', $env:USERPROFILE, 'User')   # required
+```
+
+That last line is not optional: `cargo-build-sbf` aborts with `Can't get home directory
+path` because Windows sets `USERPROFILE` rather than `HOME`.
 
 ---
 
 ## 1. Build
 
-```bash
-cd programs/scemadex-vault
-anchor build
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scemadex-vault
 ```
 
-Record the build hash — it is what a third party reproduces to prove the deployed
-bytecode matches this source:
+Use that script rather than calling `cargo-build-sbf` yourself. It checks one thing the
+raw tool will not: **`cargo-build-sbf` reports an SBF stack-frame overflow and then exits
+0**, emitting a `.so` that deploys cleanly and dies at runtime. This program hit exactly
+that — `InitializeVault::try_accounts` came in at 5072 bytes against the hard 4096-byte
+limit, meaning no vault could ever have been created. It is now under the limit via two
+changes that must not be casually reverted:
 
-```bash
-sha256sum target/deploy/scemadex_vault.so
-```
+- every account in `InitializeVault` is `Box`ed (heap, not stack), and
+- `opt-level = 2` is pinned in `Cargo.toml` — the *only* value that fits. See the
+  measured table in that file; both 3 and 1 overflow, and `"z"` + LTO is worst of all.
 
-## 2. Set the program ID
+The script prints the sha256 — that is what a third party reproduces to prove the
+deployed bytecode matches this source.
 
-The `declare_id!` in `lib.rs` is a placeholder and **will not work as-is**. Generate the
-real keypair, put its pubkey in the source, and rebuild:
+## 2. Program ID
 
-```bash
-solana-keygen new -o target/deploy/scemadex_vault-keypair.json
-solana address -k target/deploy/scemadex_vault-keypair.json     # -> <PROGRAM_ID>
-# paste <PROGRAM_ID> into declare_id!(...) in src/lib.rs, then:
-anchor build
-```
+Already assigned: **`A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW`**, declared in
+`src/lib.rs` and registered in `Anchor.toml`. It replaced `Fg6PaFpo…`, the stock Anchor
+example key, which on mainnet is an occupied non-program account.
 
-Add it to the workspace `Anchor.toml` under `[programs.devnet]` / `[programs.mainnet]`.
+The keypair is at `target/deploy/scemadex_vault-keypair.json`, gitignored via
+`programs/*/target/`. **Back it up.** Until step 5 it is the upgrade authority; lose it
+before then and the program can never be fixed, publish it and anyone can rewrite it.
 
 ## 3. Devnet deploy and full lifecycle test
 
@@ -84,10 +99,33 @@ another's funds. Verify the balances rather than trusting the return code.
 
 ## 4. Mainnet deploy
 
-```bash
-solana config set --url mainnet-beta
-anchor deploy --provider.cluster mainnet
+```powershell
+solana config set --url <your-rpc>
+powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1 -Programs scemadex-vault
 ```
+
+which runs, with `--max-len` set to the exact `.so` length:
+
+```bash
+solana program deploy target/deploy/scemadex_vault.so \
+  --program-id target/deploy/scemadex_vault-keypair.json \
+  --max-len <exact .so byte length>
+```
+
+**Why exact rather than the default.** `solana program deploy` normally allocates *twice*
+the binary size so a future upgrade can grow, and you pay rent on all of it — 4.67 SOL
+here instead of 2.34. Exact sizing halves that at the cost of capping every future
+upgrade at the current size or smaller. For this program that cost is zero, because
+step 5 removes the ability to upgrade at all. Do not copy this flag to a program you
+intend to keep upgrading.
+
+> The devnet pass in §3 is **not** optional, and skipping it is a decision with a
+> specific consequence: the negative tests are the ones that assert the guarantee, and
+> the two defects found while first building this program (a stack overflow that made
+> `initialize_vault` unusable, and a sibling program that had never compiled) are both
+> the kind a devnet lifecycle run catches in minutes. If you deployed straight to
+> mainnet, **do not run step 5 until you have exercised the table in §3 against the live
+> program.** Everything is still fixable while you hold the upgrade authority.
 
 ## 5. Finalize — the step that makes the guarantee real
 
@@ -171,8 +209,12 @@ Publish this list; it is the actual product. None of it requires trusting the op
    Without this, nothing below matters.
 
 2. **The bytecode matches this source.**
-   `anchor build` from this commit, then compare `sha256sum` against the deployed
-   program. A verified build (e.g. `solana-verify`) is the stronger form.
+   `tools/build-programs.ps1 -Programs scemadex-vault` from this commit prints a
+   sha256; compare it against the deployed program. Reproducing it requires the same
+   inputs — solana-cli **1.18.26** (platform-tools v1.41), the committed `Cargo.lock`,
+   and `opt-level = 2`. A different optimisation level produces a different binary, and
+   in this program's case an unusable one. A verified build (e.g. `solana-verify`) is
+   the stronger form.
 
 3. **There is no admin instruction.**
    Read the IDL: `initialize_vault`, `deposit`, `extend_lock`, `withdraw`. That is the

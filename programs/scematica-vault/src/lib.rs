@@ -3,10 +3,10 @@ use anchor_spl::token_interface::{
     self, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
-// PLACEHOLDER — the stock Anchor default, deliberately left obvious. Replace with the
-// real program ID from `solana-keygen new -o target/deploy/scemadex_vault-keypair.json`
-// and rebuild before any deploy. See DEPLOY.md §2.
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+// The real program ID. Its keypair lives at target/deploy/scemadex_vault-keypair.json
+// (gitignored via `programs/*/target/`) and is the deploy + upgrade authority until
+// `set-upgrade-authority --final` is run. See DEPLOY.md §2 and §5.
+declare_id!("A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW");
 
 /// # The ScemaDEX Escrow Market vault
 ///
@@ -392,6 +392,13 @@ fn transfer_from_vault<'info>(
     token_interface::transfer_checked(cpi, amount, mint.decimals)
 }
 
+/// Every account here is `Box`ed, and that is a correctness requirement rather than a
+/// style choice. Anchor generates one `try_accounts` frame for the whole struct, and
+/// three `init` accounts plus two `Mint` deserializations put it at 5072 bytes against
+/// SBF's hard 4096-byte stack limit. `cargo-build-sbf` reports that overflow but still
+/// exits 0 and emits a `.so`, so an unboxed build deploys cleanly and then fails at
+/// runtime with a stack access violation — meaning no vault could ever be created.
+/// Boxing moves the payloads to the heap. Deref makes it invisible to the handlers.
 #[derive(Accounts)]
 pub struct InitializeVault<'info> {
     /// Pays rent. Gains no rights whatsoever by doing so — this is not an owner.
@@ -401,8 +408,8 @@ pub struct InitializeVault<'info> {
     /// Backing a mint with itself is not a product, it is a misreading waiting to
     /// happen — the published ratio would be meaningless. Rejected outright.
     #[account(constraint = token_mint.key() != backing_mint.key() @ VaultError::SameMint)]
-    pub token_mint: InterfaceAccount<'info, Mint>,
-    pub backing_mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub backing_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         init,
@@ -411,7 +418,7 @@ pub struct InitializeVault<'info> {
         seeds = [b"vault", token_mint.key().as_ref(), backing_mint.key().as_ref()],
         bump,
     )]
-    pub vault: Account<'info, Vault>,
+    pub vault: Box<Account<'info, Vault>>,
 
     #[account(
         init,
@@ -422,7 +429,7 @@ pub struct InitializeVault<'info> {
         token::authority = vault,
         token::token_program = token_program,
     )]
-    pub token_vault: InterfaceAccount<'info, TokenAccount>,
+    pub token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         init,
@@ -433,11 +440,13 @@ pub struct InitializeVault<'info> {
         token::authority = vault,
         token::token_program = token_program,
     )]
-    pub backing_vault: InterfaceAccount<'info, TokenAccount>,
+    pub backing_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
+    // No `rent: Sysvar<'info, Rent>`. Anchor's `init` reads rent via `Rent::get()`, so
+    // the account is dead weight — and on this struct it is weight the 4096-byte SBF
+    // stack frame cannot afford. See the note above.
 }
 
 #[derive(Accounts)]

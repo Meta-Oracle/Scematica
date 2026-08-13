@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("Esc1DExBondCust0dy1111111111111111111111111");
+declare_id!("Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz");
 
 /// # ScemaDEX optimistic bond escrow
 ///
@@ -208,6 +208,9 @@ pub mod scemadex_escrow {
         }
 
         // Close the now-empty vault, refunding its rent to the agent.
+        // `signer_seeds` must be a named binding: `&[seeds]` inline is a temporary that
+        // is dropped at the end of the statement while the CpiContext still borrows it.
+        let signer_seeds = [seeds];
         let cpi = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             CloseAccount {
@@ -215,7 +218,7 @@ pub mod scemadex_escrow {
                 destination: ctx.accounts.agent.to_account_info(),
                 authority: ctx.accounts.escrow.to_account_info(),
             },
-            &[seeds],
+            &signer_seeds,
         );
         token::close_account(cpi)?;
         Ok(())
@@ -310,6 +313,8 @@ fn transfer_from_vault<'info>(
     if amount == 0 {
         return Ok(());
     }
+    // Named binding, not `&[seeds]` inline — see the note in `settle`.
+    let signer_seeds = [seeds];
     let cpi = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         Transfer {
@@ -317,7 +322,7 @@ fn transfer_from_vault<'info>(
             to,
             authority: ctx.accounts.escrow.to_account_info(),
         },
-        &[seeds],
+        &signer_seeds,
     );
     token::transfer(cpi, amount)
 }

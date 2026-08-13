@@ -1,7 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount};
 
-declare_id!("962WQuEMgXYtJBVaDFMaQzTrJ1PWW1F5V6CVDBJrNCwf");
+// Rotated 2026-08-13. The previous program keypair was committed to git history (see
+// DEPLOY_DEVNET.md) and is therefore public — anyone holding it could have squatted the
+// address before our deploy landed. Its replacement lives only in target/deploy/,
+// which `.gitignore` covers via `programs/*/target/`.
+declare_id!("7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh");
 
 /// Scematica on-chain swap program.
 ///

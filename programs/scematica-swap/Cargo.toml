@@ -2,6 +2,11 @@
 name = "scematica-swap"
 version = "0.1.0"
 edition = "2021"
+# The SBF toolchain in solana-cli 1.18.26 (platform-tools v1.41) is rustc 1.75. Declaring
+# it lets the host cargo's MSRV-aware resolver pick dependency versions that actually
+# compile there — without it, a modern cargo resolves crates needing rustc >= 1.80 and
+# the build fails deep in a transitive dep. See DEPLOY_DEVNET.md.
+rust-version = "1.75"
 authors = ["Scematica Team"]
 license = "MIT"
 description = "On-chain atomic swap program for Scematica arbitrage"

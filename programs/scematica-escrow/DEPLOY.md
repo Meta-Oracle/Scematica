@@ -7,12 +7,25 @@ moves money at `settle`. It is the on-chain mirror of
 `scemadex_sdk::SettlementMachine`; the off-chain driver is
 `scemadex_settle::OptimisticUsdcSettler`.
 
-Placeholder program ID in `src/lib.rs`:
-`Esc1DExBondCust0dy1111111111111111111111111` — **replace it with a real keypair's
-pubkey before deploying** (`anchor keys sync`, or Playground assigns one).
+Program ID: `Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz`
+
+> Assigned 2026-08-13, replacing the placeholder `Esc1DExBondCust0dy111…` — which was
+> never a valid pubkey at all (`solana program show` rejects it with `Invalid
+> parameters`), so nothing could have been deployed under it. The keypair lives at
+> `target/deploy/scemadex_escrow-keypair.json`, gitignored via `programs/*/target/`.
 
 Like `scematica-swap`, this program is **excluded from the cargo workspace** and built
-separately with the Anchor / SBF toolchain.
+separately with the SBF toolchain:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scemadex-escrow
+```
+
+> **This program had never been compiled** before 2026-08-13. The first real build
+> surfaced two `E0716` borrow-lifetime errors in `settle` and `transfer_from_vault`
+> (`&[seeds]` inline is a temporary the `CpiContext` outlives), now fixed. Weigh that
+> against the audit warning at the bottom of this file: an uncompiled program is also an
+> unexecuted one, and none of the lifecycle below has ever run.
 
 ---
 

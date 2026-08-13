@@ -2,6 +2,9 @@
 name = "scemadex-escrow"
 version = "0.1.0"
 edition = "2021"
+# See programs/scematica-swap/Cargo.toml — the SBF toolchain is rustc 1.75 and the host
+# cargo needs to be told, or it resolves dependencies that cannot compile there.
+rust-version = "1.75"
 authors = ["Scematica Team"]
 license = "MIT"
 description = "On-chain optimistic bond escrow for ScemaDEX Conviction Routing: trustless custody of a bond through Escrowed → Provisional → Disputed → Finalized, with a four-way slash split. Mirrors scemadex-sdk's settlement state machine."

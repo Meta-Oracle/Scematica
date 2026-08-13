@@ -1,0 +1,56 @@
+[package]
+name = "scemadex-vault"
+version = "0.1.0"
+edition = "2021"
+# See programs/scematica-swap/Cargo.toml — the SBF toolchain is rustc 1.75 and the host
+# cargo needs to be told, or it resolves dependencies that cannot compile there.
+rust-version = "1.75"
+authors = ["Scematica Team"]
+license = "MIT"
+description = "The ScemaDEX Escrow Market vault: time-locked, non-custodial backing of any SPL token by a reserve asset (wBTC/wETH). No admin instruction, no privileged authority — funds move only to the depositor that put them in, and only after the lock elapses."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "scemadex_vault"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[profile.release]
+# DO NOT CHANGE THIS NUMBER without re-reading the build log for "Stack offset".
+#
+# `InitializeVault::try_accounts` — three `init` accounts plus two `Mint`
+# deserializations — sits on SBF's hard 4096-byte per-frame stack limit even with every
+# account `Box`ed. Measured against solana-cli 1.18.26 / platform-tools v1.41 with this
+# lockfile:
+#
+#   opt-level = 3    -> 4280 bytes  (over by 184)
+#   opt-level = 2    -> under 4096  <- the only value that fits
+#   opt-level = 1    -> 4840 bytes  (over by 744)
+#   opt-level = "s"  -> 4808 bytes  (over by 712)
+#   opt-level = "z" + lto = "fat" -> 5480 bytes (whole-program inlining makes it worse)
+#
+# This is not a performance tuning knob here. `cargo-build-sbf` reports the overflow and
+# then *exits 0 anyway*, emitting a `.so` that deploys cleanly and fails at runtime with
+# a stack access violation — meaning no vault could ever be created. tools/build-programs.ps1
+# greps the build log for "Stack offset" and fails the build; use it rather than calling
+# cargo-build-sbf directly.
+opt-level = 2
+
+[dependencies]
+# Matched to programs/scemadex-escrow rather than to Anchor.toml's toolchain pin —
+# the sibling program is demonstrably written against this API surface.
+anchor-lang = { version = "0.29", features = ["init-if-needed"] }
+anchor-spl = "0.29"
+solana-program = "1.18"
+
+# No [dev-dependencies]. The unit tests here are pure Rust over the program's own
+# constants and arithmetic, so `anchor-client` would add several minutes to every
+# `cargo test` for nothing. Lifecycle testing happens on devnet against a deployed
+# program — see DEPLOY.md §3, which is the only place the account constraints can
+# actually be exercised.

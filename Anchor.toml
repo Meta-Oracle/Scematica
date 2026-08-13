@@ -1,18 +1,30 @@
 [toolchain]
-anchor_version = "0.32.1"
+# Must match the `anchor-lang` pin in every programs/*/Cargo.toml. This previously read
+# 0.32.1 against 0.29 program sources; the CLI would then build with an IDL format the
+# programs cannot emit.
+anchor_version = "0.29.0"
 
 [features]
 seeds = false
 skip-lint = false
 
+# One ID per program across all clusters — we hold exactly one keypair per program, at
+# programs/<name>/target/deploy/<crate_name>-keypair.json (gitignored). The earlier
+# mainnet/devnet split named two IDs whose keypairs do not exist in this repo.
 [programs.mainnet]
-scematica_swap = "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc"
+scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
+scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [programs.devnet]
-scematica_swap = "962WQuEMgXYtJBVaDFMaQzTrJ1PWW1F5V6CVDBJrNCwf"
+scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
+scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [programs.localnet]
-scematica_swap = "7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc"
+scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
+scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [registry]
 url = "https://api.apr.dev"

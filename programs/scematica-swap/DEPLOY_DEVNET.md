@@ -1,14 +1,25 @@
-# Deploying `scematica_swap` to Devnet
+# Deploying `scematica_swap`
 
 Program ID (declared in `src/lib.rs` and `Anchor.toml`):
-`7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc`
+`7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh`
 
-A prebuilt artifact already exists at
-`target/deploy/scematica_swap.so` (~210 KB), so you can deploy without rebuilding.
+> **Keypair rotated 2026-08-13.** The previous program keypair really was committed to
+> git history (`git log --all -- programs/scematica-swap/target/deploy/scematica_swap-keypair.json`
+> shows it), so both the old ID `7DTvC8pF2QE7bQ74CZn3QDBxwyd5fMbxEU9zMcbPzN8e` and the
+> even older `7ycLhn5Wsodc…` this file used to name are dead. The current keypair exists
+> only under `target/deploy/`, which `.gitignore` covers via `programs/*/target/`. It is
+> the sole authority able to deploy at this address — **back it up**.
 
-> ⚠️ The committed `target/deploy/scematica_swap-keypair.json` was exposed in git
-> history — treat it as **devnet-throwaway only**. Do not reuse it on mainnet;
-> rotate before any mainnet deploy.
+Build the artifact with the repo's build script, not `cargo-build-sbf` directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scematica-swap
+```
+
+The script exists because `cargo-build-sbf` reports an SBF stack-frame overflow and then
+exits 0 anyway, emitting a `.so` that deploys fine and fails at runtime. It greps for
+that and fails the build. See `programs/scemadex-vault/Cargo.toml` for a program that
+actually hit this.
 
 Pick one path. **Path A needs nothing installed locally** and matches testing on
 Solana Playground.
@@ -54,9 +65,9 @@ solana program deploy \
 
 Verify:
 ```bash
-solana program show 7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc --url devnet
+solana program show 7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh --url devnet
 ```
-Explorer: https://explorer.solana.com/address/7ycLhn5WsodcbYwV9ecQDd3qWQhKgGzgMK5pc4CYXkEc?cluster=devnet
+Explorer: https://explorer.solana.com/address/7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh?cluster=devnet
 
 ---
 

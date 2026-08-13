@@ -19,7 +19,7 @@ Two audiences, one rail:
    day-one pool scores (see `deploy/README.md`, Step 0). A relay that answers
    `pool_score` with real numbers on launch is worth calling; an empty one isn't.
 2. **Deploy one public relay** — Docker / compose / Fly, per `deploy/README.md`.
-   Get a stable URL (e.g. `https://relay.scematica.xyz` or `*.fly.dev`).
+   Get a stable URL (e.g. `https://relay.scematica.org` or `*.fly.dev`).
 3. **Decide open vs. metered** — launch `/signal/*` **open** to maximize trial,
    then turn on x402 once there's demand. Free-to-try is the on-ramp; the token
    gate is not the first wall.

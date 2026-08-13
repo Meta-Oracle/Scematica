@@ -84,6 +84,28 @@ const config: Config = {
         'botchain-dim':     '#8e765a',
         'botchain-green':   '#3ddc97',
         'botchain-red':     '#ff6b5c',
+
+        // ── escrow market ───────────────────────────────────────────────────
+        // Fifth product, fifth identity: a cold teal on near-black, against the
+        // sniper's red, alchem's blue, scylar's violet and botchain's amber.
+        // Teal rather than gold on purpose — this is a vault page whose entire
+        // claim is "the money is verifiably there and nobody can take it", and
+        // gold reads as a yield pitch. The one warm colour in the set is
+        // reserved for `escrow-alarm`, which marks a reserve shortfall and
+        // should be the only thing on the page that ever looks urgent.
+        'escrow-black':     '#03090a',
+        'escrow-surface':   '#071316',
+        'escrow-hi':        '#0c2126',
+        'escrow-border':    '#154249',
+        'escrow-border-hi': '#1f6b76',
+        'escrow-teal':      '#2fd4c4',
+        'escrow-teal-hi':   '#6ff0e3',
+        'escrow-teal-dim':  '#1c8a80',
+        'escrow-text':      '#d2eae8',
+        'escrow-muted':     '#7fb3ae',
+        'escrow-dim':       '#4a7b77',
+        'escrow-locked':    '#2fd4c4',
+        'escrow-alarm':     '#ff5c78',
       },
       fontFamily: {
         mono: ['Space Mono', 'JetBrains Mono', 'Fira Code', 'monospace'],

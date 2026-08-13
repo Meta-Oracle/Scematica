@@ -144,6 +144,21 @@ tools/
 programs/
   scematica-swap/       Anchor on-chain program (NOT in cargo workspace).
                         Devnet deploy: programs/scematica-swap/DEPLOY_DEVNET.md
+  scemadex-escrow/      Optimistic bond escrow for Conviction Routing. Has a deliberate
+                        `authority` (the facilitator that adjudicates disputes) — correct
+                        for a performance bond, and exactly wrong for the vault below.
+  scemadex-vault/       The Escrow Market vault: time-locked, non-custodial backing of
+                        any SPL token by a reserve asset. **No privileged role exists** —
+                        four instructions (initialize_vault/deposit/extend_lock/withdraw)
+                        and no admin path, by design. Uses `token_interface`, not legacy
+                        `anchor_spl::token`, because SCEMA is Token-2022; deposits credit
+                        the **measured balance delta**, not the requested amount, because
+                        Token-2022 transfer fees otherwise book reserve that never
+                        arrived. Neither trap shows up in a test using a plain SPL token.
+                        The custody guarantee depends on a *deploy* step that is not
+                        visible in the source — `set-upgrade-authority --final`. Until
+                        `solana program show` reports `Authority: none`, a PDA vault is
+                        fully custodial regardless of how lib.rs reads. See DEPLOY.md.
 ```
 
 The ScemaDEX SDK family (`scemadex-*`, `sdk-dashboard`) is the agentic-liquidity
@@ -263,6 +278,38 @@ first for latency. Four constraints:
 
 `npm run check:scylar` pins the pure logic (expressions, speech, markdown, commands,
 session, tools, gate). Run it after touching any of those modules.
+
+**`/escrow` is the fifth product on the same site** — the Scema Escrow Market proof-of-
+reserve console (`components/escrow/`, `lib/escrow/`, `app/api/escrow/`) with its own
+teal palette (`escrow-*` tokens + `.escrow-root`). It reads the on-chain vault written by
+`programs/scemadex-vault`. Five constraints:
+
+- **No simulation branch, ever** — the same rule as `/alchem-link` and for a sharper
+  reason: the page exists to answer "is the money actually there?", so a fabricated
+  reserve defeats the entire product. Unreadable vaults render as failures. A failed
+  read, an unowned account and an unconfigured program are three *distinct* states and
+  none of them may render as a zero — "could not read the reserve" and "the reserve is
+  zero" are different claims and only one is an accusation.
+- **u64 amounts are strings, never numbers.** A u64 reaches ~1.8e19 against
+  `Number.MAX_SAFE_INTEGER` ~9e15, so satoshi-denominated wBTC or a 9-decimal token
+  loses precision the instant it is coerced. `formatAmount` places the decimal point on
+  the string without touching a float. Every figure here is a claim about locked money.
+- **No price, no USD, no "percent backed".** The program stores no price and consults no
+  oracle, and neither does the route. Adding one reintroduces the manipulable, arguable
+  number the whole design removes. Raw amounts + decimals out; valuation is the reader's.
+- **`balance >= recorded`, never `==`.** Anyone can transfer SPL tokens into any account,
+  so a surplus is normal — and permanently stuck, because the program moves only amounts
+  recorded on a position and a sweeper would mean a privileged role. Hence three verdicts
+  (`backed` / `donated` / `SHORTFALL`), not a boolean. `SHORTFALL` is the alarming case
+  and the only thing on the page allowed to look urgent.
+- **`lib/escrow/rpc.ts` is server-only** (reads `RPC_ENDPOINT`, throws in a browser);
+  `lib/escrow/program.ts` is pure PDA-derivation and decoding, safe for client imports.
+  Same split and same reasoning as `lib/alchem/endpoint.ts` vs `networks.ts`.
+
+The `Vault` byte layout in `lib/escrow/program.ts` mirrors `programs/scemadex-vault/src/
+lib.rs`; **Rust is authoritative**. A field added there must be added here in the same
+order or every number the page prints is silently wrong — `VAULT_LEN` is the tripwire,
+and a decode against an unexpected size is rejected rather than guessed at.
 
 Rebuilding `api.exe` on Windows fails with `Access is denied (os error 5)` while the API
 is running — stop it first. Cargo reports this as a build error, not a lock error.

@@ -25,6 +25,7 @@ members = [
 exclude = [
     "programs/scematica-swap",
     "programs/scemadex-escrow",
+    "programs/scemadex-vault",
     # The BOT Chain port. Its own workspace, and it must stay that way: an EVM stack
     # needs reqwest 0.12 / rustls 0.23, which is precisely the combination the pin
     # comments below say cannot coexist with solana-sdk's curve25519-dalek 3. One

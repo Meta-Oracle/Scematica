@@ -35,6 +35,29 @@
 //! value is and however decisively it beats the alternatives. Confidence is a property
 //! of the model; information is a property of the relationship between the model and its
 //! input, and it is measured by variance.
+//!
+//! # The second failure, and why one dispersion measure was not enough
+//!
+//! Observed 2026-08-11, three days of it in `scematica-pool-decisions.jsonl`: 264 buys
+//! vetoed on `dq_advice`, verdict reported as `consistent` throughout. The Q-vector was
+//! `[Hold 42.98, BuyStandard 5.21, BuyAggressive 12.72, SellPartial 43.03, SellAll -7.44]`
+//! and the measured `I = 4.8e-3`, comfortably 48× above [`COLLAPSE_THRESHOLD`].
+//!
+//! The policy was not a constant function — `Q*` really did move about 7% from pool to
+//! pool, which is what `I` measures. What never moved was the **argmax**. `SellPartial`
+//! won every single evaluation, and the buy actions sat structurally 3–8× below it, so
+//! the relative-margin veto in the sniper fired on 100% of candidates.
+//!
+//! `I` is dispersion of the *value* the policy assigns. That is not the same quantity as
+//! dispersion of the *decision* the policy makes, and only the second one is what a gate
+//! is made of. A policy can wobble its valuations by 7% while its ranking is frozen; the
+//! wobble buys it a passing grade on `I` and the frozen ranking is what actually reaches
+//! the trading path. So the window now also carries the argmax, and
+//! [`EquationMonitor::action_entropy`] measures whether the decision varies at all.
+//!
+//! The general lesson, which cost two incidents to learn: **measure the quantity the
+//! downstream consumer acts on.** The consumer here acts on the argmax, so the argmax is
+//! what has to be shown to carry information.
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -62,6 +85,20 @@ pub const MIN_DISPERSION_SAMPLES: usize = 12;
 /// percent across genuinely different pools is not reading the pools.
 pub const COLLAPSE_THRESHOLD: f64 = 1e-4;
 
+/// Below this normalised argmax entropy the *decision* is treated as frozen.
+///
+/// Entropy is normalised by `ln(n_actions)`, so the scale is 0 (the same action every
+/// time) to 1 (uniform over actions). The arithmetic that sets the value, for a
+/// 32-sample window over 5 actions: one dissenting sample scores 0.086, two score 0.145,
+/// and three score 0.19. At 0.15 the guard fires when at most two evaluations in a full
+/// window chose differently — "effectively always the same answer" — and clears as soon
+/// as the policy is genuinely picking between actions.
+///
+/// Deliberately not zero. A test for *exactly* constant argmax is trivially defeated by
+/// a single exploratory action per window, which is the same mistake as testing Q* for
+/// exact constancy: it catches the textbook case and misses the real one.
+pub const ACTION_ENTROPY_THRESHOLD: f64 = 0.15;
+
 /// A single evaluation's contribution to the population statistics.
 #[derive(Debug, Clone, Copy)]
 pub struct Evaluation {
@@ -69,6 +106,13 @@ pub struct Evaluation {
     pub q_star: f64,
     /// Mean Q across all actions — the value of acting at random, `Q̄_rand`.
     pub q_mean: f64,
+    /// `argmax_a Q(s,a)` — the action this evaluation actually chose.
+    ///
+    /// Carried because the downstream veto acts on the choice, not on the value. See
+    /// the module docs for the incident that made the distinction expensive.
+    pub argmax: usize,
+    /// How many actions the Q-vector ranked, for entropy normalisation.
+    pub n_actions: usize,
 }
 
 impl Evaluation {
@@ -80,7 +124,15 @@ impl Evaluation {
         }
         let q_star = q_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let q_mean = q_values.iter().sum::<f64>() / q_values.len() as f64;
-        Some(Self { q_star, q_mean })
+        let argmax = q_values
+            .iter()
+            .enumerate()
+            .fold(
+                (0usize, f64::NEG_INFINITY),
+                |(bi, bq), (i, &q)| if q > bq { (i, q) } else { (bi, bq) },
+            )
+            .0;
+        Some(Self { q_star, q_mean, argmax, n_actions: q_values.len() })
     }
 
     /// Policy advantage `ΔQ = Q* − Q̄_rand`, the value the policy adds over random action.
@@ -98,6 +150,12 @@ pub enum Verdict {
     Consistent,
     /// `ρ < 0` — measured dispersion below prediction. Confident but uninformative.
     Collapsed,
+    /// The *decision* is frozen even though the values move: argmax entropy below
+    /// [`ACTION_ENTROPY_THRESHOLD`]. The policy ranks the same action first on
+    /// essentially every input, so its output carries no per-pool information however
+    /// well its valuations disperse. Distinct from [`Verdict::Collapsed`] so the stats
+    /// file names which of the two failures occurred.
+    ActionCollapsed,
     /// `ρ > 0` — measured dispersion above prediction. Value estimates unstable
     /// relative to accumulated experience; argues for more training, not less authority.
     Unstable,
@@ -106,12 +164,12 @@ pub enum Verdict {
 impl Verdict {
     /// May the agent veto a buy outright on this verdict?
     ///
-    /// A collapsed policy may not. It keeps position-sizing influence and keeps
+    /// Neither collapse may. Such a policy keeps position-sizing influence and keeps
     /// training — it simply cannot hold the gate shut while saying the same thing about
     /// every pool it sees. `Unstable` retains the veto: a noisy net is still reading its
     /// input, which is the property the veto depends on.
     pub fn may_veto(self) -> bool {
-        !matches!(self, Verdict::Collapsed)
+        !matches!(self, Verdict::Collapsed | Verdict::ActionCollapsed)
     }
 
     pub fn label(self) -> &'static str {
@@ -119,6 +177,7 @@ impl Verdict {
             Verdict::Indeterminate => "indeterminate",
             Verdict::Consistent => "consistent",
             Verdict::Collapsed => "collapsed",
+            Verdict::ActionCollapsed => "action_collapsed",
             Verdict::Unstable => "unstable",
         }
     }
@@ -129,6 +188,12 @@ impl Verdict {
 pub struct EquationStats {
     /// Measured intelligence ratio `I = Var_p[Q*] / E_p[Q*]²`.
     pub intelligence_ratio: f64,
+    /// Normalised argmax entropy over the window — dispersion of the *decision*.
+    ///
+    /// Reported alongside `intelligence_ratio` because the two failed independently:
+    /// on 2026-08-11 this was ~0 while `intelligence_ratio` read a healthy 4.8e-3.
+    #[serde(default)]
+    pub action_entropy: f64,
     /// Predicted `I = (E_Σ² · ε · ν²) / q` from equations II and III.
     pub intelligence_predicted: f64,
     /// Consistency residual `ρ = measured − predicted`.
@@ -242,6 +307,45 @@ impl EquationMonitor {
         self.variance_q_star() / (mean * mean)
     }
 
+    /// Normalised Shannon entropy of the argmax distribution over the window, in `[0, 1]`.
+    ///
+    /// This is the dispersion of the *decision*, where [`Self::intelligence_ratio`] is the
+    /// dispersion of the *value*. `0.0` means the policy chose the same action on every
+    /// evaluation in the window; `1.0` means it spread choices uniformly across actions.
+    ///
+    /// Normalisation is by `ln(n_actions)` from the observed vectors rather than by the
+    /// number of *distinct* actions seen — dividing by the latter would rescale a frozen
+    /// policy's entropy to look healthy, since a policy that only ever picks one action
+    /// has `ln(1) = 0` in the denominator.
+    pub fn action_entropy(&self) -> f64 {
+        if self.window.is_empty() {
+            return 0.0;
+        }
+        let n_actions = self.window.iter().map(|e| e.n_actions).max().unwrap_or(1);
+        if n_actions < 2 {
+            // One action is not a choice, so there is no decision to disperse. Report the
+            // maximum rather than 0.0: the network is not withholding information here,
+            // there is none to withhold, and a 0.0 would brand it collapsed forever.
+            return 1.0;
+        }
+        let mut counts = vec![0usize; n_actions];
+        for e in &self.window {
+            if let Some(c) = counts.get_mut(e.argmax) {
+                *c += 1;
+            }
+        }
+        let total = self.window.len() as f64;
+        let entropy: f64 = counts
+            .iter()
+            .filter(|&&c| c > 0)
+            .map(|&c| {
+                let p = c as f64 / total;
+                -p * p.ln()
+            })
+            .sum();
+        entropy / (n_actions as f64).ln()
+    }
+
     /// Predicted intelligence ratio `I = (E_Σ² · ε · ν²) / q`, from equations II and III.
     ///
     /// `expected_return` is `E_Σ`, `episodes` is `N` (normalised internally by `N₀`).
@@ -297,6 +401,13 @@ impl EquationMonitor {
         if self.intelligence_ratio() < COLLAPSE_THRESHOLD {
             return Verdict::Collapsed;
         }
+        // Checked after the value test and before the residual, because a frozen decision
+        // is a stronger disqualification than a residual of either sign: `ρ` compares two
+        // estimates of how much the *values* spread, and neither of them is evidence that
+        // the policy ever picks differently.
+        if self.action_entropy() < ACTION_ENTROPY_THRESHOLD {
+            return Verdict::ActionCollapsed;
+        }
         let rho = self.residual(expected_return, epsilon, episodes);
         if rho > 0.0 {
             Verdict::Unstable
@@ -309,6 +420,7 @@ impl EquationMonitor {
     pub fn stats(&self, expected_return: f64, epsilon: f64, episodes: usize) -> EquationStats {
         EquationStats {
             intelligence_ratio: self.intelligence_ratio(),
+            action_entropy: self.action_entropy(),
             intelligence_predicted: self.intelligence_predicted(expected_return, epsilon, episodes),
             residual: self.residual(expected_return, epsilon, episodes),
             advantage: self.advantage(),
@@ -335,10 +447,27 @@ pub fn kelly_fraction(win_rate: f64, payoff_ratio: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// Value-dispersion fixture. The argmax is *rotated* across the five actions so these
+    /// cases exercise the `I` path only — a frozen argmax would trip the action guard and
+    /// mask whatever the test was actually about.
     fn monitor_with(q_stars: &[f64], q_mean_offset: f64) -> EquationMonitor {
         let mut m = EquationMonitor::new(DISPERSION_WINDOW);
+        for (i, &q) in q_stars.iter().enumerate() {
+            m.observe(Evaluation {
+                q_star: q,
+                q_mean: q - q_mean_offset,
+                argmax: i % 5,
+                n_actions: 5,
+            });
+        }
+        m
+    }
+
+    /// Decision-dispersion fixture: every evaluation ranks `argmax` first.
+    fn monitor_frozen_argmax(q_stars: &[f64], q_mean_offset: f64, argmax: usize) -> EquationMonitor {
+        let mut m = EquationMonitor::new(DISPERSION_WINDOW);
         for &q in q_stars {
-            m.observe(Evaluation { q_star: q, q_mean: q - q_mean_offset });
+            m.observe(Evaluation { q_star: q, q_mean: q - q_mean_offset, argmax, n_actions: 5 });
         }
         m
     }
@@ -372,6 +501,89 @@ mod tests {
         let m = monitor_with(&varied, 4.0);
         assert!(m.intelligence_ratio() > COLLAPSE_THRESHOLD);
         assert!(m.verdict(0.5, 0.068, 20_500).may_veto());
+    }
+
+    /// The exact 2026-08-11 production Q-vector, which the value test cleared.
+    ///
+    /// Q* moves ~7% pool to pool, so `I` lands 48× above the collapse threshold and the
+    /// old classifier returned `Consistent` — granting unlimited veto authority to a
+    /// policy that had ranked `SellPartial` first on 264 consecutive candidates.
+    #[test]
+    fn frozen_argmax_is_caught_even_when_values_disperse() {
+        let mut m = EquationMonitor::new(DISPERSION_WINDOW);
+        for i in 0..32 {
+            // Vary the vector by the same ~7% observed in the field, without ever
+            // letting a buy action overtake SellPartial.
+            let k = 1.0 + (i as f64 % 8.0) * 0.01;
+            let q = [42.98 * k, 5.21 * k, 12.72 * k, 43.03 * k, -7.44 * k];
+            m.observe_q_values(&q);
+        }
+
+        assert!(
+            m.intelligence_ratio() > COLLAPSE_THRESHOLD,
+            "fixture must reproduce the field condition: values disperse (I = {:.3e})",
+            m.intelligence_ratio()
+        );
+        assert_eq!(m.action_entropy(), 0.0, "the decision never varied");
+        assert_eq!(
+            m.verdict(0.5, 0.05, 35_964),
+            Verdict::ActionCollapsed,
+            "a frozen ranking must not be laundered into veto authority by value wobble"
+        );
+        assert!(!m.verdict(0.5, 0.05, 35_964).may_veto());
+    }
+
+    /// The guard must not fire on a policy that merely *prefers* one action while still
+    /// picking others — otherwise it would strip the veto from a working net.
+    #[test]
+    fn a_strong_but_genuine_preference_keeps_its_veto() {
+        let mut m = EquationMonitor::new(DISPERSION_WINDOW);
+        for i in 0..32 {
+            // SellPartial wins 3 of every 4, a buy wins the fourth.
+            let q = if i % 4 == 3 {
+                [10.0, 30.0 + i as f64, 12.0, 9.0, -5.0]
+            } else {
+                [10.0, 5.0, 12.0, 40.0 + i as f64, -5.0]
+            };
+            m.observe_q_values(&q);
+        }
+        assert!(
+            m.action_entropy() > ACTION_ENTROPY_THRESHOLD,
+            "entropy {} should clear the threshold",
+            m.action_entropy()
+        );
+        assert!(m.verdict(0.5, 0.05, 35_964).may_veto());
+    }
+
+    /// A single dissenting evaluation must not buy back veto authority for a frozen net.
+    #[test]
+    fn one_dissenting_sample_does_not_clear_the_action_guard() {
+        let mut m = EquationMonitor::new(DISPERSION_WINDOW);
+        for i in 0..32 {
+            let q = if i == 17 {
+                [10.0, 50.0, 12.0, 9.0, -5.0]
+            } else {
+                [10.0, 5.0, 12.0, 43.0 + i as f64 * 0.3, -5.0]
+            };
+            m.observe_q_values(&q);
+        }
+        assert!(m.action_entropy() < ACTION_ENTROPY_THRESHOLD, "got {}", m.action_entropy());
+        assert_eq!(m.verdict(0.5, 0.05, 35_964), Verdict::ActionCollapsed);
+    }
+
+    #[test]
+    fn from_q_values_records_the_argmax() {
+        let e = Evaluation::from_q_values(&[42.98, 5.21, 12.72, 43.03, -7.44]).unwrap();
+        assert_eq!(e.argmax, 3, "SellPartial is index 3");
+        assert_eq!(e.n_actions, 5);
+    }
+
+    /// Frozen argmax is not judged before the window is populated, same as the value test.
+    #[test]
+    fn action_guard_respects_the_sample_floor() {
+        let m = monitor_frozen_argmax(&[26.5, 27.1, 25.9, 26.8], 13.0, 3);
+        assert_eq!(m.verdict(0.5, 0.05, 35_964), Verdict::Indeterminate);
+        assert!(m.verdict(0.5, 0.05, 35_964).may_veto(), "silence must not disarm the veto");
     }
 
     #[test]
@@ -430,7 +642,7 @@ mod tests {
     fn window_is_bounded() {
         let mut m = EquationMonitor::new(8);
         for i in 0..50 {
-            m.observe(Evaluation { q_star: i as f64, q_mean: 0.0 });
+            m.observe(Evaluation { q_star: i as f64, q_mean: 0.0, argmax: i % 5, n_actions: 5 });
         }
         assert_eq!(m.samples(), 8);
     }

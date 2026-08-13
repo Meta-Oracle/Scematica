@@ -1229,15 +1229,19 @@ impl Sniper {
             )
             .await;
             match filter_result {
-                Ok(true) => {}
-                Ok(false) => {
-                    info!(mint = %pool.base_mint, "Pool rejected by filters");
+                Ok(None) => {}
+                Ok(Some(rejection)) => {
+                    info!(
+                        mint = %pool.base_mint,
+                        filter = %rejection.filter,
+                        "Pool rejected by filters"
+                    );
                     self.write_radar_entry(&pool, upfront_pool_size_sol, false, upfront_score);
                     self.write_pool_decision(
                         &pool,
                         "rejected",
                         "filters",
-                        "filter_rejected",
+                        rejection.as_decision_reason(),
                         upfront_pool_size_sol,
                         pool_age_secs as f64,
                         historical_velocity_sol_per_sec,
@@ -2357,7 +2361,7 @@ impl Sniper {
                             // margin test above is the predicted branch, and a collapsed
                             // policy satisfies the latter trivially while failing the
                             // former completely.
-                            let (verdict, intelligence, equation_samples) = {
+                            let (verdict, intelligence, action_entropy, equation_samples) = {
                                 let mut eq = self.equations.lock();
                                 eq.observe_q_values(&q_vals);
                                 // ε and episode count come from the agent; expected
@@ -2367,13 +2371,27 @@ impl Sniper {
                                 (
                                     eq.verdict(expected_return, epsilon, train_steps),
                                     eq.intelligence_ratio(),
+                                    eq.action_entropy(),
                                     eq.samples(),
                                 )
                             };
 
-                            // Coarse backstop: until the window has enough samples the
-                            // ratio is dominated by noise, so the consecutive-veto count
-                            // still guards that interval. Past it, dispersion decides.
+                            // Backstop: a 100% veto rate is an off switch, not a filter.
+                            //
+                            // This count used to be consulted only while the dispersion
+                            // window was still filling, on the assumption that dispersion
+                            // subsumed it afterwards. It does not, and the gap cost three
+                            // days: on 2026-08-11 the verdict read `Consistent` — Q* was
+                            // genuinely moving ~7% pool to pool — while the argmax was
+                            // frozen on SellPartial, so `Consistent | Unstable => false`
+                            // discarded the streak and 264 buys were vetoed in a row.
+                            //
+                            // `ActionCollapsed` now catches that case directly, but the
+                            // streak stays live on *every* verdict as defence in depth:
+                            // whatever the equations conclude, a gate that has rejected
+                            // twelve consecutive candidates has stopped being a gate, and
+                            // no amount of measured dispersion should let it hold the
+                            // trading path shut on its own.
                             let streak = if decisive {
                                 self.nn_veto_streak.fetch_add(1, Ordering::Relaxed) + 1
                             } else {
@@ -2381,26 +2399,44 @@ impl Sniper {
                                 0
                             };
                             let stuck = match verdict {
-                                Verdict::Collapsed => true,
-                                Verdict::Indeterminate => streak > NN_VETO_STUCK_STREAK,
+                                Verdict::Collapsed | Verdict::ActionCollapsed => true,
                                 // A net that is reading its input keeps its veto, even
                                 // when its estimates are noisy — instability argues for
-                                // more training, not for less authority.
-                                Verdict::Consistent | Verdict::Unstable => false,
+                                // more training, not for less authority. It does not keep
+                                // that veto unconditionally.
+                                Verdict::Indeterminate | Verdict::Consistent | Verdict::Unstable => {
+                                    streak > NN_VETO_STUCK_STREAK
+                                }
                             };
                             if stuck {
+                                // Name the reason that actually fired. The three are
+                                // diagnosed and fixed differently: flat values mean the
+                                // net collapsed, a frozen argmax means it learned one
+                                // answer, and a bare streak means neither measure caught
+                                // whatever is holding the gate shut.
+                                let why = match verdict {
+                                    Verdict::Collapsed => {
+                                        "values do not vary (Var[Q*]/E[Q*]² below threshold)"
+                                    }
+                                    Verdict::ActionCollapsed => {
+                                        "same action ranked first on every pool (argmax entropy ~0)"
+                                    }
+                                    _ => "vetoed every candidate for the whole streak",
+                                };
                                 warn!(
                                     mint = %pool.base_mint,
                                     verdict = verdict.label(),
                                     intelligence_ratio = %format!("{:.2e}", intelligence),
+                                    action_entropy = %format!("{action_entropy:.3}"),
                                     samples = equation_samples,
                                     streak,
                                     sell_q,
                                     buy_q,
+                                    epsilon,
                                     train_steps,
-                                    "DQ*: net is not discriminating between pools \
-                                     (Var[Q*]/E[Q*]² below threshold) — sizing down \
-                                     instead of skipping"
+                                    why,
+                                    "DQ*: net is not discriminating between pools — sizing \
+                                     down instead of skipping"
                                 );
                             }
                             let strong_veto = decisive && !stuck;

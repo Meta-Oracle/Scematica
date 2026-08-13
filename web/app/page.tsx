@@ -93,6 +93,14 @@ export default function Home() {
             >
               ◈ SCYLAR
             </Link>
+            <Link
+              href="/escrow"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-escrow-border
+                         text-escrow-teal hover:border-escrow-teal hover:text-escrow-teal-hi
+                         transition-all text-xs tracking-widest"
+            >
+              ⬡ ESCROW
+            </Link>
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

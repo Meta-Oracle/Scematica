@@ -90,6 +90,36 @@ pub trait PoolFilter: Send + Sync {
     async fn check(&self, pool: &CachedPool, rpc: &Arc<RpcClient>) -> FilterResult;
 }
 
+/// Which filter stopped a pool, and what it said.
+///
+/// The pipeline used to collapse to a bare `bool` here, so the decision log recorded
+/// 736 of 1959 rejections as an undifferentiated `filter_rejected` — enough to know the
+/// pipeline was rejecting and not enough to know what to change. `FilterStats` had the
+/// per-filter counts all along, but only as dashboard totals: they answer "how often does
+/// LpBurn fire?" and never "which filter stopped *this* pool, and was its input real?".
+///
+/// That second question is the one that matters, because a filter rejecting on a signal
+/// that is always zero looks identical in the totals to one doing its job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilterRejection {
+    /// The rejecting filter's `PoolFilter::name`.
+    pub filter: String,
+    /// That filter's own explanation, verbatim.
+    pub reason: String,
+}
+
+impl FilterRejection {
+    /// Render for the decision log's free-text `reason` column.
+    ///
+    /// `key=value;key=value` matches the convention already used by the momentum and
+    /// `dq_advice` sites. The `stage` column stays `filters` — `replay.rs` keys its
+    /// governed-stage matching on `stage` precisely because these reason strings are
+    /// heterogeneous free text, so enriching this string cannot mislead the replay.
+    pub fn as_decision_reason(&self) -> String {
+        format!("filter={};reason={}", self.filter, self.reason)
+    }
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Hard cap per RPC call — any node that takes longer is treated as failed.
@@ -1004,7 +1034,7 @@ pub struct FilterPipeline {
     rpc: Arc<RpcClient>,
     pub stats: FilterStats,
     /// Pool-id → (passed, timestamp) cache to avoid repeating RPC calls on duplicate events.
-    result_cache: Arc<DashMap<String, (bool, std::time::Instant)>>,
+    result_cache: Arc<DashMap<String, (Option<FilterRejection>, std::time::Instant)>>,
     cache_ttl_secs: u64,
     /// mint → enriched metadata (name, symbol, social links). Written by SocialLinksFilter,
     /// read by sniper AI call and pool scorer for quantitative signal enrichment.
@@ -1125,31 +1155,38 @@ impl FilterPipeline {
         }
     }
 
-    pub async fn execute(&self, pool: &CachedPool) -> bool {
+    /// Run the pipeline. `None` means the pool passed; `Some` names the filter that
+    /// stopped it.
+    pub async fn execute(&self, pool: &CachedPool) -> Option<FilterRejection> {
         self.stats.pools_seen.fetch_add(1, Ordering::Relaxed);
 
         // TTL cache: skip redundant RPC calls when the same pool fires multiple events
         let cache_key = pool.id.to_string();
         if let Some(entry) = self.result_cache.get(&cache_key) {
-            let (passed, ts) = *entry;
+            let (rejection, ts) = entry.value();
             if ts.elapsed().as_secs() < self.cache_ttl_secs {
-                debug!(mint = %pool.base_mint, cached = passed, "Filter result served from cache");
-                if passed {
+                let rejection = rejection.clone();
+                debug!(
+                    mint = %pool.base_mint,
+                    cached = rejection.is_none(),
+                    "Filter result served from cache"
+                );
+                if rejection.is_none() {
                     self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
                 }
-                return passed;
+                return rejection;
             }
         }
 
-        let passed = if self.filters.is_empty() {
-            true
+        let rejection = if self.filters.is_empty() {
+            None
         } else {
             self.run_once(pool).await
         };
 
         // Cache the result
         self.result_cache
-            .insert(cache_key, (passed, std::time::Instant::now()));
+            .insert(cache_key, (rejection.clone(), std::time::Instant::now()));
 
         // Periodically evict stale cache entries (every ~100 evaluations on average)
         if self.stats.pools_seen.load(Ordering::Relaxed) % 100 == 0 {
@@ -1158,14 +1195,14 @@ impl FilterPipeline {
                 .retain(|_, (_, ts)| ts.elapsed().as_secs() < ttl);
         }
 
-        if passed {
+        if rejection.is_none() {
             self.stats.pools_passed.fetch_add(1, Ordering::Relaxed);
         }
         self.stats.write_to_file(FILTER_STATS_FILE);
-        passed
+        rejection
     }
 
-    async fn run_once(&self, pool: &CachedPool) -> bool {
+    async fn run_once(&self, pool: &CachedPool) -> Option<FilterRejection> {
         // Run every filter concurrently — independent RPC reads with no side effects.
         // For a typical 10-filter config this replaces ~10*(RPC_RTT) sequential
         // latency with a single ~RPC_RTT round-trip in the common case.
@@ -1182,9 +1219,42 @@ impl FilterPipeline {
                 let reason = result.reason.as_deref().unwrap_or("unknown");
                 info!(mint = %pool.base_mint, filter = name, reason = %reason, "Filter rejected pool");
                 self.stats.record_rejection(name);
-                return false;
+                return Some(FilterRejection {
+                    filter: name.to_string(),
+                    reason: reason.to_string(),
+                });
             }
         }
-        true
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decision log's `reason` column is parsed by analysis tooling and by anyone
+    /// reading `scematica-pool-decisions.jsonl`, so the shape is pinned here rather than
+    /// left to whatever `format!` happens to say.
+    #[test]
+    fn rejection_renders_filter_and_reason() {
+        let r = FilterRejection {
+            filter: "LpBurnFilter".to_string(),
+            reason: "Pool vault is empty (possibly rugged)".to_string(),
+        };
+        assert_eq!(
+            r.as_decision_reason(),
+            "filter=LpBurnFilter;reason=Pool vault is empty (possibly rugged)"
+        );
+    }
+
+    /// `stage` stays `filters` and only `reason` gains detail. `replay.rs` matches
+    /// governed stages on `stage` precisely because reasons are heterogeneous free text;
+    /// if that ever inverts, this comment is the thing that was wrong.
+    #[test]
+    fn rejection_reason_is_prefixed_so_it_cannot_be_confused_with_a_bare_stage() {
+        let r = FilterRejection { filter: "X".into(), reason: "y".into() };
+        assert!(r.as_decision_reason().starts_with("filter="));
+        assert_ne!(r.as_decision_reason(), "filter_rejected");
     }
 }

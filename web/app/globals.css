@@ -661,3 +661,45 @@ body:has(.botchain-root)::after {
 .botchain-root ::-webkit-scrollbar-track { background: var(--b-black); }
 .botchain-root ::-webkit-scrollbar-thumb { background: var(--b-border); }
 .botchain-root ::-webkit-scrollbar-thumb:hover { background: var(--b-border-hi); }
+
+/* ── escrow market ────────────────────────────────────────────────────────
+   Fifth product, fifth palette. Mirrors the `escrow-*` tokens in
+   `tailwind.config.ts`; when one moves, move both.
+
+   Teal rather than gold: this is a vault page whose whole claim is "the money
+   is verifiably there and nobody can take it", and gold reads as a yield
+   pitch. `--e-alarm` is the only warm colour in the set and is reserved for a
+   reserve shortfall, so that urgency on this page always means exactly one
+   thing. */
+.escrow-root {
+  --e-black:     #03090a;
+  --e-surface:   #071316;
+  --e-hi:        #0c2126;
+  --e-border:    #154249;
+  --e-border-hi: #1f6b76;
+  --e-teal:      #2fd4c4;
+  --e-teal-hi:   #6ff0e3;
+  --e-text:      #d2eae8;
+  --e-muted:     #7fb3ae;
+  --e-dim:       #4a7b77;
+  --e-alarm:     #ff5c78;
+
+  background: var(--e-black);
+  color: var(--e-text);
+  min-height: 100vh;
+}
+
+/* Retint the site-wide scan bar, which is red for the sniper. Without this the
+   escrow page renders a red overlay across a teal design — `:has()` is the only
+   way a descendant reaches a body pseudo-element. */
+body:has(.escrow-root)::after {
+  background: linear-gradient(
+    transparent 0%,
+    rgba(47, 212, 196, 0.02) 50%,
+    transparent 100%
+  );
+}
+
+.escrow-root ::-webkit-scrollbar-track { background: var(--e-black); }
+.escrow-root ::-webkit-scrollbar-thumb { background: var(--e-border); }
+.escrow-root ::-webkit-scrollbar-thumb:hover { background: var(--e-border-hi); }

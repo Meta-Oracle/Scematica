@@ -13,10 +13,14 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1
 #
-# Requires solana-cli 1.18.26 on PATH (see programs/scemadex-vault/DEPLOY.md).
+# Requires solana-cli 1.18.26 on PATH (see programs/scematica-vault/DEPLOY.md).
 
+# These are DIRECTORY names under programs/. They stopped matching the package names in
+# commit 8cb5ab6, which renamed the directories to `scematica-*` while leaving the
+# packages as `scemadex-vault` / `scemadex-escrow` — hence `.so` files still named
+# `scemadex_vault.so`. Keep the two straight when editing.
 param(
-    [string[]]$Programs = @('scematica-swap', 'scemadex-escrow', 'scemadex-vault')
+    [string[]]$Programs = @('scematica-swap', 'scematica-escrow', 'scematica-vault')
 )
 
 $ErrorActionPreference = 'Continue'

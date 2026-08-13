@@ -5,15 +5,16 @@
 # than silently leaving them, because `solana program deploy` does not.
 #
 #   powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1
-#   powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1 -Programs scemadex-vault
+#   powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1 -Programs scematica-vault
 #
 # The upgrade authority is the deploy keypair (solana config get). Making the vault
 # non-custodial is a SEPARATE, IRREVERSIBLE step this script deliberately does not take:
 #   solana program set-upgrade-authority <ID> --final
-# See programs/scemadex-vault/DEPLOY.md sections 5 and 6.
+# See programs/scematica-vault/DEPLOY.md sections 5 and 6.
 
+# DIRECTORY names under programs/, which now match the package names again.
 param(
-    [string[]]$Programs = @('scematica-swap', 'scemadex-escrow', 'scemadex-vault')
+    [string[]]$Programs = @('scematica-swap', 'scematica-escrow', 'scematica-vault')
 )
 
 $ErrorActionPreference = 'Continue'
@@ -27,9 +28,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 # `exact` allocates no upgrade headroom, halving locked rent. Correct for a program that
 # will be finalized (the vault) and wrong for one you may still need to grow.
 $spec = @{
-    'scematica-swap'  = @{ so = 'scematica_swap.so';  keypair = 'scematica_swap-keypair.json';  sizing = 'double' }
-    'scemadex-escrow' = @{ so = 'scemadex_escrow.so'; keypair = 'scemadex_escrow-keypair.json'; sizing = 'double' }
-    'scemadex-vault'  = @{ so = 'scemadex_vault.so';  keypair = 'scemadex_vault-keypair.json';  sizing = 'exact'  }
+    'scematica-swap'   = @{ so = 'scematica_swap.so';  keypair = 'scematica_swap-keypair.json';  sizing = 'double' }
+    'scematica-escrow' = @{ so = 'scematica_escrow.so'; keypair = 'scematica_escrow-keypair.json'; sizing = 'double' }
+    'scematica-vault'  = @{ so = 'scematica_vault.so';  keypair = 'scematica_vault-keypair.json';  sizing = 'exact'  }
 }
 
 Write-Host "deployer : $(solana address)"

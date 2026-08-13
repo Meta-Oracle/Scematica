@@ -13,18 +13,18 @@ skip-lint = false
 # mainnet/devnet split named two IDs whose keypairs do not exist in this repo.
 [programs.mainnet]
 scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
-scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
-scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
+scematica_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scematica_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [programs.devnet]
 scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
-scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
-scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
+scematica_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scematica_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [programs.localnet]
 scematica_swap = "7rRHfgQphASzDTGEyLUEsh9daZ2hRXZA1GP9MPvSxXBh"
-scemadex_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
-scemadex_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
+scematica_escrow = "Fu5nDuRRBTTJGNBMcFC1hHvBQybtiCECeNzUBRHmVwLz"
+scematica_vault = "A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW"
 
 [registry]
 url = "https://api.apr.dev"

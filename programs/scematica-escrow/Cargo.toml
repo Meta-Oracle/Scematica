@@ -1,5 +1,5 @@
 [package]
-name = "scemadex-escrow"
+name = "scematica-escrow"
 version = "0.1.0"
 edition = "2021"
 # See programs/scematica-swap/Cargo.toml — the SBF toolchain is rustc 1.75 and the host
@@ -11,7 +11,9 @@ description = "On-chain optimistic bond escrow for ScemaDEX Conviction Routing: 
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "scemadex_escrow"
+# Renaming this renames the build artefact to scematica_escrow.so. It does NOT change the
+# program ID, which comes from declare_id! and the deploy keypair — both preserved.
+name = "scematica_escrow"
 
 [features]
 no-entrypoint = []

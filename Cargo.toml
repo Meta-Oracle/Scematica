@@ -24,8 +24,11 @@ members = [
 # The on-chain programs use Anchor and must be built separately with `anchor build`
 exclude = [
     "programs/scematica-swap",
-    "programs/scemadex-escrow",
-    "programs/scemadex-vault",
+    # Directory names, not package names: commit 8cb5ab6 renamed these directories to
+    # `scematica-*` while the packages inside are still `scemadex-escrow` /
+    # `scemadex-vault`. `exclude` matches paths, so it must track the directory.
+    "programs/scematica-escrow",
+    "programs/scematica-vault",
     # The BOT Chain port. Its own workspace, and it must stay that way: an EVM stack
     # needs reqwest 0.12 / rustls 0.23, which is precisely the combination the pin
     # comments below say cannot coexist with solana-sdk's curve25519-dalek 3. One

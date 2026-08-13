@@ -1,5 +1,5 @@
 [package]
-name = "scemadex-vault"
+name = "scematica-vault"
 version = "0.1.0"
 edition = "2021"
 # See programs/scematica-swap/Cargo.toml — the SBF toolchain is rustc 1.75 and the host
@@ -11,7 +11,9 @@ description = "The ScemaDEX Escrow Market vault: time-locked, non-custodial back
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "scemadex_vault"
+# Renaming this renames the build artefact to scematica_vault.so. It does NOT change the
+# program ID, which comes from declare_id! and the deploy keypair — both preserved.
+name = "scematica_vault"
 
 [features]
 no-entrypoint = []

@@ -64,7 +64,12 @@ const VERDICT_NOTE: Record<SolvencyVerdict, string> = {
   SHORTFALL: 'balance is BELOW the recorded total — accounting and tokens disagree',
 }
 
-export function EscrowConsole() {
+/**
+ * `embedded` drops the full-page chrome so this can sit under the market board without a
+ * second banner and a second min-h-screen. The verification logic is identical either
+ * way — this is layout, not behaviour, and the guarantees above hold in both modes.
+ */
+export function EscrowConsole({ embedded = false }: { embedded?: boolean } = {}) {
   const [token, setToken] = useState('')
   const [backing, setBacking] = useState('')
   const [data, setData] = useState<VaultResponse | null>(null)
@@ -92,20 +97,28 @@ export function EscrowConsole() {
   }, [token, backing])
 
   return (
-    <div className="escrow-root min-h-screen bg-escrow-black text-escrow-text font-mono p-6">
-      <header className="max-w-4xl mx-auto mb-8 border-b border-escrow-border pb-4">
-        <h1 className="text-2xl text-escrow-teal tracking-wide">SCEMA ESCROW MARKET</h1>
-        <p className="text-escrow-muted text-sm mt-2 max-w-2xl">
-          Time-locked, non-custodial backing for any Solana token. Read a vault below to
-          see how much reserve stands behind it, measured on-chain at a named slot.
-        </p>
-        <p className="text-escrow-dim text-xs mt-2 max-w-2xl">
-          No prices are shown and no oracle is consulted — raw amounts only. Any
-          valuation is yours to compute, so there is no feed here to manipulate.
-        </p>
-      </header>
+    <div
+      className={
+        embedded
+          ? 'escrow-root text-escrow-text font-mono'
+          : 'escrow-root min-h-screen bg-escrow-black text-escrow-text font-mono p-6'
+      }
+    >
+      {!embedded && (
+        <header className="max-w-4xl mx-auto mb-8 border-b border-escrow-border pb-4">
+          <h1 className="text-2xl text-escrow-teal tracking-wide">SCEMA ESCROW MARKET</h1>
+          <p className="text-escrow-muted text-sm mt-2 max-w-2xl">
+            Time-locked, non-custodial backing for any Solana token. Read a vault below to
+            see how much reserve stands behind it, measured on-chain at a named slot.
+          </p>
+          <p className="text-escrow-dim text-xs mt-2 max-w-2xl">
+            No prices are shown and no oracle is consulted — raw amounts only. Any
+            valuation is yours to compute, so there is no feed here to manipulate.
+          </p>
+        </header>
+      )}
 
-      <section className="max-w-4xl mx-auto">
+      <section className={embedded ? '' : 'max-w-4xl mx-auto'}>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="text-xs text-escrow-muted uppercase tracking-wider">Token mint</span>

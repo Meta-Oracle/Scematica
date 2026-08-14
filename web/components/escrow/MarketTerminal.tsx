@@ -13,6 +13,7 @@ import {
 } from '@/lib/market/commitment'
 import { useLocks } from '@/lib/market/useLocks'
 import { useMarket, useNow, type MarketPayload } from '@/lib/market/useMarket'
+import { VaultBuilder } from './VaultBuilder'
 import { DEX_LABEL, formatUnits, type Dex, type MarketRow } from '@/lib/market/types'
 
 // The Escrow Market.
@@ -56,11 +57,11 @@ export function MarketTerminal() {
       <div className="max-w-[1600px] mx-auto px-4 pb-16 grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)]">
         <div className="space-y-4">
           <LaunchStream rows={data?.rows ?? []} loading={loading} />
-          <SourcePanel data={data} />
         </div>
 
         <div className="space-y-4">
           <CustodyBanner data={data} />
+          <VaultBuilder rows={data?.rows ?? []} />
           <CommitmentLadder rows={data?.rows ?? []} locks={locks} />
           <DexTabs rows={data?.rows ?? []} tab={tab} onTab={setTab} />
           <MarketTable rows={data?.rows ?? []} tab={tab} loading={loading} locks={locks} />
@@ -210,34 +211,10 @@ function LaunchStream({ rows, loading }: { rows: MarketRow[]; loading: boolean }
   )
 }
 
-// ── source provenance ────────────────────────────────────────────────────────
-
-function SourcePanel({ data }: { data: MarketPayload | null }) {
-  return (
-    <section className="border border-escrow-border bg-escrow-surface">
-      <div className="px-3 py-2 border-b border-escrow-border">
-        <span className="text-xs text-escrow-teal uppercase tracking-wider">Sources</span>
-      </div>
-      <ul className="text-[11px] divide-y divide-escrow-border/50">
-        {(data?.sources ?? []).map(s => (
-          <li key={`${s.dex}:${s.source}`} className="px-3 py-2">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-escrow-text truncate">{s.source}</span>
-              <span className={s.ok ? 'text-escrow-teal' : 'text-escrow-alarm'}>
-                {s.ok ? `${s.count}` : 'FAILED'}
-              </span>
-            </div>
-            {s.error && <div className="text-escrow-dim mt-1 leading-snug">{s.error}</div>}
-          </li>
-        ))}
-        {!data && <li className="px-3 py-2 text-escrow-dim">—</li>}
-      </ul>
-      <p className="px-3 py-2 text-[10px] text-escrow-dim border-t border-escrow-border leading-snug">
-        A failed source is shown, never replaced. Nothing on this page is simulated.
-      </p>
-    </section>
-  )
-}
+// The standalone Sources panel was removed with the builder redesign. Provenance is not
+// lost: every row's Venue cell renders `token.source`, so which API answered for a given
+// figure is still attributable per row rather than in one aggregate box. The no-simulation
+// guarantee is enforced in lib/market/sources.ts, not by a panel describing it.
 
 // ── custody state ────────────────────────────────────────────────────────────
 

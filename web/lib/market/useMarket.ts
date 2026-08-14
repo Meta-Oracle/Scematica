@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { MarketRow, SourceStatus } from './types'
 import type { MarketStats } from './aggregate'
+import type { CommitmentBreakdown } from './commitment'
 
 // The ONLY timer on the Escrow Market page.
 //
@@ -30,6 +31,7 @@ export interface MarketPayload {
   rows: MarketRow[]
   sources: SourceStatus[]
   stats: MarketStats
+  commitments: CommitmentBreakdown
   custody: CustodyMeta
   fetchedAt: number
 }

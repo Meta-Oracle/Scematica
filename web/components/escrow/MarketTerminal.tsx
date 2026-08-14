@@ -3,6 +3,15 @@
 import { useMemo, useState } from 'react'
 
 import { groupByDex, rankByAge } from '@/lib/market/aggregate'
+import {
+  TIER_MEANING,
+  TIER_NAME,
+  gradeCommitment,
+  summariseCommitments,
+  type CommitmentTier,
+  type LockLookup,
+} from '@/lib/market/commitment'
+import { useLocks } from '@/lib/market/useLocks'
 import { useMarket, useNow, type MarketPayload } from '@/lib/market/useMarket'
 import { DEX_LABEL, formatUnits, type Dex, type MarketRow } from '@/lib/market/types'
 
@@ -32,6 +41,14 @@ export function MarketTerminal() {
   const { data, loading, error, lastGoodAt, refresh } = useMarket()
   const [tab, setTab] = useState<Tab>('all')
 
+  // Tier-3 enrichment for the rows most likely to be read. The board never waits on it.
+  const visible = useMemo(() => {
+    const rows = data?.rows ?? []
+    const scoped = tab === 'all' ? rows : rows.filter(r => r.token.dex === tab)
+    return scoped.slice(0, 25).map(r => r.token.mint)
+  }, [data, tab])
+  const locks = useLocks(visible)
+
   return (
     <div className="escrow-root min-h-screen bg-escrow-black text-escrow-text font-mono">
       <Header data={data} error={error} lastGoodAt={lastGoodAt} onRefresh={refresh} />
@@ -44,8 +61,9 @@ export function MarketTerminal() {
 
         <div className="space-y-4">
           <CustodyBanner data={data} />
+          <CommitmentLadder rows={data?.rows ?? []} locks={locks} />
           <DexTabs rows={data?.rows ?? []} tab={tab} onTab={setTab} />
-          <MarketTable rows={data?.rows ?? []} tab={tab} loading={loading} />
+          <MarketTable rows={data?.rows ?? []} tab={tab} loading={loading} locks={locks} />
         </div>
       </div>
     </div>
@@ -271,6 +289,74 @@ function CustodyBanner({ data }: { data: MarketPayload | null }) {
   )
 }
 
+// ── commitment ladder ────────────────────────────────────────────────────────
+
+const TIER_TONE: Record<CommitmentTier, string> = {
+  0: 'text-escrow-dim',
+  1: 'text-escrow-muted',
+  2: 'text-escrow-text',
+  3: 'text-escrow-teal',
+  4: 'text-escrow-teal-hi',
+}
+
+function CommitmentLadder({
+  rows,
+  locks,
+}: {
+  rows: MarketRow[]
+  locks: Record<string, LockLookup>
+}) {
+  // Computed client-side FROM THE SAME rows and locks the table renders, rather than
+  // from the server's `commitments`. The server cannot see lock data — tier 3 is a
+  // separate on-demand lookup — so a server-computed strip would permanently read
+  // LOCKED=0 while rows beneath it showed LOCKED. One grader, one set of inputs.
+  const c = useMemo(() => (rows.length ? summariseCommitments(rows, locks) : null), [rows, locks])
+  const checked = Object.keys(locks).length
+  const tiers: CommitmentTier[] = [0, 1, 2, 3, 4]
+
+  return (
+    <section className="border border-escrow-border bg-escrow-surface">
+      <div className="px-3 py-2 border-b border-escrow-border flex items-baseline justify-between gap-3 flex-wrap">
+        <span className="text-xs text-escrow-teal uppercase tracking-wider">
+          Commitment ladder
+        </span>
+        <span className="text-[10px] text-escrow-dim">
+          ordered by cost to fake · {c ? `${(c.anyCommitmentShare * 100).toFixed(1)}% at tier 1+` : '—'}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 divide-x divide-escrow-border/50">
+        {tiers.map(t => (
+          <div key={t} className="px-3 py-2" title={TIER_MEANING[t]}>
+            <div className="text-[10px] text-escrow-dim uppercase tracking-wider">
+              {t} · {TIER_NAME[t]}
+            </div>
+            <div className={`text-lg ${TIER_TONE[t]}`}>{c ? c.counts[t] : '—'}</div>
+          </div>
+        ))}
+      </div>
+      <p className="px-3 py-2 text-[10px] text-escrow-dim border-t border-escrow-border leading-snug">
+        Each rung is something the issuer gave up irreversibly and a stranger can check
+        without trusting this page. Tiers 1–2 need no program at all and are evaluated for
+        every row. <span className="text-escrow-muted">Tier 3 is a live lookup against
+        Jupiter Lock and Streamflow and has been checked for {checked} of {rows.length}{' '}
+        rows</span> — the rest are unevaluated, which is not the same as unlocked. Tier 4
+        is a Scema vault. A rung is not a score: it names exactly what was verified.
+      </p>
+    </section>
+  )
+}
+
+function CommitmentCell({ row, locks }: { row: MarketRow; locks?: LockLookup }) {
+  const c = gradeCommitment(row, locks)
+  const note = c.evidence[0] ?? c.unknown[0] ?? TIER_MEANING[0]
+  return (
+    <div title={note}>
+      <div className={`${TIER_TONE[c.tier]} tracking-wider`}>{TIER_NAME[c.tier]}</div>
+      <div className="text-[10px] text-escrow-dim truncate max-w-[220px]">{note}</div>
+    </div>
+  )
+}
+
 // ── dex tabs ─────────────────────────────────────────────────────────────────
 
 function DexTabs({
@@ -361,10 +447,12 @@ function MarketTable({
   rows,
   tab,
   loading,
+  locks,
 }: {
   rows: MarketRow[]
   tab: Tab
   loading: boolean
+  locks: Record<string, LockLookup>
 }) {
   const now = useNow(5_000)
   const shown = useMemo(
@@ -384,7 +472,8 @@ function MarketTable({
             <Th>24h vol</Th>
             <Th>24h %</Th>
             <Th>Age</Th>
-            <Th className="border-l border-escrow-border">Backing</Th>
+            <Th className="text-left border-l border-escrow-border">Commitment</Th>
+            <Th>Backing</Th>
             <Th className="text-left">Reserve held</Th>
           </tr>
         </thead>
@@ -425,7 +514,10 @@ function MarketTable({
                   : `${r.token.priceChange24hPct >= 0 ? '+' : ''}${r.token.priceChange24hPct.toFixed(1)}%`}
               </Td>
               <Td>{ageOf(r.token.createdAtUnix, now)}</Td>
-              <td className="px-3 py-2 text-center border-l border-escrow-border">
+              <td className="px-3 py-2 text-xs border-l border-escrow-border">
+                <CommitmentCell row={r} locks={locks[r.token.mint]} />
+              </td>
+              <td className="px-3 py-2 text-center">
                 <BackingPill row={r} />
               </td>
               <td className="px-3 py-2">

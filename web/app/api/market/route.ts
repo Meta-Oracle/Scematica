@@ -4,7 +4,8 @@ import { ESCROW_PROGRAM_ID } from '@/lib/escrow/program'
 import { listVaults, type VaultIndex } from '@/lib/escrow/vaults'
 import { resolveRpc } from '@/lib/escrow/rpc'
 import { buildSnapshot, computeStats } from '@/lib/market/aggregate'
-import { fetchLaunches, fetchPumpFunDirect, fetchRaydium, fetchTopTokens } from '@/lib/market/sources'
+import { summariseCommitments } from '@/lib/market/commitment'
+import { fetchLaunches, fetchRaydium, fetchTopTokens } from '@/lib/market/sources'
 import type { BackingClaim, SourceStatus } from '@/lib/market/types'
 
 // The Escrow Market board.
@@ -36,19 +37,13 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 export async function GET() {
-  const [raydium, launches, top, pumpDirect] = await Promise.all([
+  const [raydium, launches, top] = await Promise.all([
     fetchRaydium(),
     fetchLaunches(),
     fetchTopTokens(),
-    fetchPumpFunDirect(),
   ])
 
-  const sources: SourceStatus[] = [
-    raydium.status,
-    launches.status,
-    top.status,
-    pumpDirect.status,
-  ]
+  const sources: SourceStatus[] = [raydium.status, launches.status, top.status]
   const tokens = [...raydium.tokens, ...launches.tokens, ...top.tokens]
 
   // ── custody side ──────────────────────────────────────────────────────────
@@ -99,6 +94,9 @@ export async function GET() {
 
   const snapshot = buildSnapshot(tokens, sources, backingFor)
   const stats = computeStats(snapshot.rows)
+  // Graded server-side so the ladder has exactly one definition. Recomputing it in the
+  // client would be a second implementation to drift.
+  const commitments = summariseCommitments(snapshot.rows)
 
   return NextResponse.json(
     {
@@ -106,6 +104,7 @@ export async function GET() {
       rows: snapshot.rows,
       sources: snapshot.sources,
       stats,
+      commitments,
       custody: {
         available: backingAvailable,
         error: backingError,

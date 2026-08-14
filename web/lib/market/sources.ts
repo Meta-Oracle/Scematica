@@ -75,6 +75,7 @@ interface RayPool {
   price?: number
   tvl?: number
   openTime?: string
+  burnPercent?: number
   day?: { volume?: number }
 }
 
@@ -125,6 +126,13 @@ export async function fetchRaydium(): Promise<SourceResult> {
         holderCount: null,
         dev: null,
         poolAddress: p.id ?? null,
+        // Raydium reports LP burn but not token authorities. `null` for the ones it
+        // does not cover — the commitment grader treats those as unevaluated rather
+        // than failed, so a Raydium row is not penalised for Raydium's silence.
+        mintRenounced: null,
+        freezeRevoked: null,
+        devBalancePct: null,
+        lpBurnedPct: num(p.burnPercent),
       })
     }
     return { tokens, status: status('raydium', 'api-v3.raydium.io', tokens.length, null) }
@@ -137,6 +145,12 @@ export async function fetchRaydium(): Promise<SourceResult> {
 }
 
 // ── Jupiter (also the provenance for pump.fun and Meteora launchpad rows) ─────
+
+interface JupAudit {
+  mintAuthorityDisabled?: boolean
+  freezeAuthorityDisabled?: boolean
+  devBalancePercentage?: number
+}
 
 interface JupTok {
   id?: string
@@ -151,6 +165,7 @@ interface JupTok {
   launchpad?: string
   createdAt?: string
   firstPool?: { id?: string; createdAt?: string }
+  audit?: JupAudit
   stats24h?: { priceChange?: number; buyVolume?: number; sellVolume?: number }
 }
 
@@ -192,6 +207,17 @@ function toMarketToken(t: JupTok, sourceLabel: string): MarketToken | null {
     holderCount: num(t.holderCount),
     dev: t.dev || null,
     poolAddress: t.firstPool?.id ?? null,
+    // `=== true` rather than truthiness: an absent audit field must stay `null`
+    // ("not reported"), never collapse to `false` ("authority is live"). The sniper's
+    // own feed adapter takes the same position, for the same reason.
+    mintRenounced: t.audit?.mintAuthorityDisabled === undefined
+      ? null
+      : t.audit.mintAuthorityDisabled === true,
+    freezeRevoked: t.audit?.freezeAuthorityDisabled === undefined
+      ? null
+      : t.audit.freezeAuthorityDisabled === true,
+    devBalancePct: num(t.audit?.devBalancePercentage),
+    lpBurnedPct: null, // Jupiter does not report LP burn.
   }
 }
 
@@ -213,21 +239,12 @@ export const fetchLaunches = () => fetchJup(JUP_RECENT, 'jupiter tokens/v2/recen
 export const fetchTopTokens = () =>
   fetchJup(JUP_TOP, 'jupiter tokens/v2/toporganicscore', 'jupiter')
 
-/**
- * pump.fun's own API, kept as a documented dead end rather than silently omitted.
- *
- * Returns a failed status every time, on purpose: the board renders the failure so a
- * reader can see that the pump.fun rows are Jupiter-sourced. Deleting this function
- * would make the substitution invisible, which is the part that would be dishonest.
- */
-export async function fetchPumpFunDirect(): Promise<SourceResult> {
-  return {
-    tokens: [],
-    status: status(
-      'pumpfun',
-      'frontend-api.pump.fun',
-      0,
-      'origin does not resolve (Cloudflare 1016) — pump.fun rows sourced via Jupiter launchpad tag',
-    ),
-  }
-}
+// NOTE ON pump.fun. There is deliberately no direct pump.fun source here.
+// `frontend-api.pump.fun` answers HTTP 530 (Cloudflare 1016, "Origin DNS error") — the
+// origin does not resolve, so there is nothing to call and nothing to retry.
+//
+// pump.fun rows therefore come from Jupiter's `launchpad` tag. That substitution stays
+// visible WITHOUT a permanently-red status row, because `toMarketToken` stamps each row's
+// `source` as `... (launchpad=pump.fun)`. Provenance travels per row, which is the
+// stronger guarantee: a banner can be ignored, a column cannot. If a real pump.fun
+// endpoint reappears, add it as a source here rather than reviving a dead-end stub.

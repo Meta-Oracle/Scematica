@@ -60,6 +60,24 @@ export interface MarketToken {
   /** Deployer, when known — keys the reputation heuristic shared with the sniper. */
   dev: string | null
   poolAddress: string | null
+
+  // ── verifiable commitments ────────────────────────────────────────────────
+  // These are NOT market observations and NOT custody. They are facts about the
+  // token's own on-chain configuration, and they matter because they cost the issuer
+  // something irreversible while requiring no program of ours to verify.
+  //
+  // `null` means the source did not report it, which is emphatically not the same as
+  // `false`. "We were not told whether the mint authority is revoked" and "the mint
+  // authority is live" are different claims — treating the first as the second would
+  // mark a safe token dangerous, and the reverse would be far worse.
+  /** Mint authority revoked — no new supply can ever be created. */
+  mintRenounced: boolean | null
+  /** Freeze authority revoked — no holder's balance can be frozen. */
+  freezeRevoked: boolean | null
+  /** Share of supply held by the deployer, percent. High is a rug precondition. */
+  devBalancePct: number | null
+  /** Percent of LP tokens burned, where the venue reports it. */
+  lpBurnedPct: number | null
 }
 
 /** Verdicts from the vault program. Mirrors `solvency()` in lib/escrow/program.ts. */

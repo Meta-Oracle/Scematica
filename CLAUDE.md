@@ -306,10 +306,33 @@ teal palette (`escrow-*` tokens + `.escrow-root`). It reads the on-chain vault w
   `lib/escrow/program.ts` is pure PDA-derivation and decoding, safe for client imports.
   Same split and same reasoning as `lib/alchem/endpoint.ts` vs `networks.ts`.
 
+- **Decimals come from the mint account, never from a token list.** A typed amount becomes
+  base units by shifting the point `decimals` places, so a wrong `decimals` is a wrong
+  *quantity of money*, not a wrong label — a board reporting 6 for wBTC's real 8 locks one
+  hundredth of the intended reserve. Every selected mint resolves through
+  `GET /api/escrow/mint` (`lib/escrow/mintinfo.ts` decodes, `lib/escrow/useMint.ts` caches
+  and dedupes in-flight reads), and the amount fields stay inert until that read lands. A
+  `MarketRow.decimals` is a display label and must never reach `toBaseUnits`. The route
+  distinguishes `bad_address` / `not_found` / `not_a_mint` / `rpc_failed`, and rejects a
+  token *account* pasted in place of a mint — it is owned by the same program, and byte 44
+  where `decimals` lives is part of the amount field, so decoding one as the other yields
+  a decimals value read out of somebody's balance.
+- **Anything pasteable is vaultable.** The board is a convenience, not the menu: the vault
+  program takes any pair of SPL mints on the *same* token program (`InitializeVault`
+  carries one `token_program` for both legs — `pairingProblem` catches the mismatch before
+  a signature is spent). A token minted seconds ago is on no token list, and those are the
+  ones this page is about, so an unlisted symbol renders as the truncated mint rather than
+  blocking. Board rows are controls: selection lives in `MarketTerminal`, so clicking any
+  row loads that mint into the builder.
+
 The `Vault` byte layout in `lib/escrow/program.ts` mirrors `programs/scemadex-vault/src/
 lib.rs`; **Rust is authoritative**. A field added there must be added here in the same
 order or every number the page prints is silently wrong — `VAULT_LEN` is the tripwire,
 and a decode against an unexpected size is rejected rather than guessed at.
+
+`npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
+pair legality, base-unit conversion, solvency verdicts). Run it after touching
+`lib/escrow/mintinfo.ts` or `program.ts`.
 
 Rebuilding `api.exe` on Windows fails with `Access is denied (os error 5)` while the API
 is running — stop it first. Cargo reports this as a build error, not a lock error.

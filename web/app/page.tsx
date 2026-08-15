@@ -101,6 +101,14 @@ export default function Home() {
             >
               ⬡ ESCROW
             </Link>
+            <Link
+              href="/mesh"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-mesh-border
+                         text-mesh-accent hover:border-mesh-accent hover:text-mesh-glow
+                         transition-all text-xs tracking-widest"
+            >
+              ◇ MESH
+            </Link>
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

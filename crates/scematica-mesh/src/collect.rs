@@ -51,6 +51,10 @@ pub const NN_TOURNAMENT: Source = Source { path: "scematica-nn-tournament.json",
 pub const STRATEGY: Source = Source { path: "scematica-strategy.json", budget_secs: 3600 };
 pub const REPUTATION: Source = Source { path: "scematica-deployer-reputation.json", budget_secs: 86_400 };
 pub const POSITIONS: Source = Source { path: "scematica-positions.json", budget_secs: 120 };
+pub const POOL_RADAR: Source = Source { path: "scematica-pool-radar.json", budget_secs: 300 };
+/// Append-only, so age tracks the last close rather than a heartbeat. The budget is
+/// generous because a quiet hour is normal and does not make the history untrue.
+pub const TRADES: Source = Source { path: "scematica-trades.jsonl", budget_secs: 86_400 };
 
 /// A source that was read, or was not there.
 #[derive(Clone, Debug)]
@@ -461,6 +465,12 @@ impl Collector {
         // pass over the files and the gate is evaluated against the same bytes the nodes
         // were built from. Two reads could disagree if the sniper rewrote a file between
         // them, and a gate that disagrees with the graph above it is worse than no gate.
+        // The trade log is JSONL, so it is read as text rather than through `read`.
+        let history = fs::read_to_string(self.root.join(TRADES.path))
+            .map(|t| crate::history::TradeHistory::from_jsonl(&t))
+            .unwrap_or_default();
+        let radar = self.read(POOL_RADAR);
+
         let signals = crate::cognition::Signals {
             q_values: if q_values.is_empty() { None } else { Some(q_values.clone()) },
             variant_rewards: if rewards.is_empty() { None } else { Some(rewards.clone()) },
@@ -473,6 +483,14 @@ impl Collector {
             trades_attempted: attempted,
             trades_failed: metrics.f64("trades_failed"),
             world_model_active: nn.bool("world_model").unwrap_or(false),
+            wm_recon: nn.f64("wm_recon"),
+            distributional: nn.bool("distributional").unwrap_or(false),
+            quantile_spread: nn.f64("quantile_spread"),
+            drawdown: history.max_drawdown(),
+            volatility: history.volatility_risk(),
+            liquidity: radar.value.as_ref().and_then(crate::history::liquidity_risk),
+            concentration: positions.value.as_ref().and_then(crate::history::concentration_risk),
+            closes: history.closes(),
         };
 
         let generated_at = chrono::Utc::now().to_rfc3339();

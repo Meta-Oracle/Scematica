@@ -90,6 +90,25 @@ pub struct Signals {
     /// Whether the Dreamer-style latent world model is switched on. When it is not, the
     /// aleatoric branch of §16 has no covariance to read.
     pub world_model_active: bool,
+    /// World-model reconstruction error, when the model runs. §14 gives novelty as
+    /// `‖z − ẑ‖`, and this is exactly that quantity under a different name.
+    pub wm_recon: Option<f64>,
+    /// Whether QR-DQN distributional returns are enabled. The quantile spread of a
+    /// distributional agent IS aleatoric uncertainty (§16 `E[Σ_ψ]`) — irreducible spread
+    /// of the return distribution — so it becomes measurable the moment this is on.
+    pub distributional: bool,
+    /// Spread of the learned return distribution, when distributional mode is on.
+    pub quantile_spread: Option<f64>,
+    /// §20 `R_drawdown` — deepest peak-to-trough fall of the realised equity curve.
+    pub drawdown: Option<f64>,
+    /// §20 `R_volatility` — (σ of realised return %, mapped risk).
+    pub volatility: Option<(f64, f64)>,
+    /// §20 `R_liquidity` — (median pool depth in SOL, mapped risk).
+    pub liquidity: Option<(f64, f64)>,
+    /// §20 `R_concentration` — (open positions, Herfindahl index).
+    pub concentration: Option<(usize, f64)>,
+    /// Closed trades in the recent window, for term notes.
+    pub closes: usize,
 }
 
 /// §16 — uncertainty decomposition, `U = U_aleatoric + U_epistemic`.
@@ -180,16 +199,29 @@ const LAMBDA_D: f64 = 1.0;
 pub fn assess(nodes: &[Node], s: &Signals) -> Cognition {
     let uncertainty = uncertainty(s);
     let coherence = coherence(nodes);
-    let risk = risk_field(nodes, s);
+    let risk = risk_field(s);
 
     // §17, in the anchored form described in the module docs.
-    let novelty = Term::absent(
-        "N_t",
-        "§14",
-        "novelty",
-        0.0,
-        "needs the perception encoder of §2 — novelty is ‖z − ẑ‖ and there is no z yet",
-    );
+    // §14 gives novelty as ‖z − ẑ‖. The world model's reconstruction error is precisely
+    // that quantity, so novelty becomes measurable whenever the world model runs — no
+    // separate perception encoder required.
+    let novelty = match (s.world_model_active, s.wm_recon) {
+        (true, Some(recon)) => Term::measured(
+            "N_t",
+            "§14",
+            "novelty",
+            recon.clamp(0.0, 1.0),
+            format!("world-model reconstruction error {recon:.3} — this IS ‖z − ẑ‖"),
+        ),
+        (true, None) => Term::absent("N_t", "§14", "novelty", 0.0, "world model is on but reconstruction error is not exported"),
+        _ => Term::absent(
+            "N_t",
+            "§14",
+            "novelty",
+            0.0,
+            "needs the latent world model (world_model.rs) — novelty is ‖z − ẑ‖ and there is no ẑ without it",
+        ),
+    };
     // Disagreement among zero subsystems is not agreement — it is nothing observed. A
     // term that reports `measured` here would inflate `measured_fraction` with a
     // measurement of the empty set, which is precisely the sort of confident-looking
@@ -279,16 +311,31 @@ pub fn assess(nodes: &[Node], s: &Signals) -> Cognition {
 
 /// §16 — `U = U_A + U_E`.
 fn uncertainty(s: &Signals) -> Uncertainty {
-    let aleatoric = if s.world_model_active {
-        Term::measured("U_A", "§16", "aleatoric uncertainty", 0.0, "world model active but Σ_ψ is not yet exported")
-    } else {
-        Term::absent(
+    // Aleatoric uncertainty is irreducible spread of outcomes. A QR-DQN agent learns that
+    // spread directly as its quantile distribution, so distributional mode makes §16's
+    // `E[Σ_ψ]` measurable without the probabilistic transition model of §4 existing at all.
+    let aleatoric = match (s.distributional, s.quantile_spread) {
+        (true, Some(spread)) => Term::measured(
+            "U_A",
+            "§16",
+            "aleatoric uncertainty",
+            spread.clamp(0.0, 1.0),
+            format!("QR-DQN quantile spread {spread:.3} — irreducible outcome variance"),
+        ),
+        (true, None) => Term::absent(
             "U_A",
             "§16",
             "aleatoric uncertainty",
             0.0,
-            "world model is off — E[Σ_ψ] needs the probabilistic transition model of §4",
-        )
+            "distributional mode is on but the quantile spread is not exported yet",
+        ),
+        _ => Term::absent(
+            "U_A",
+            "§16",
+            "aleatoric uncertainty",
+            0.0,
+            "needs QR-DQN distributional returns (distributional.rs) or the probabilistic transition model of §4",
+        ),
     };
 
     // Epistemic uncertainty is ensemble disagreement (§16 `Var[f_ψ1..f_ψn]`). The
@@ -372,7 +419,7 @@ fn coherence(nodes: &[Node]) -> Coherence {
 }
 
 /// §20 — the risk field over its six components.
-fn risk_field(nodes: &[Node], s: &Signals) -> RiskField {
+fn risk_field(s: &Signals) -> RiskField {
     let mut components = Vec::new();
 
     // R_model: a policy that does not discriminate between inputs is a model risk, and the
@@ -399,20 +446,56 @@ fn risk_field(nodes: &[Node], s: &Signals) -> RiskField {
         _ => Term::absent("R_exec", "§20", "execution risk", 0.0, "no trades attempted — nothing to rate"),
     });
 
-    // The remaining four need breakers that write no state. The mesh already renders them
-    // dark; here they are simply absent, which keeps the risk figure from being inflated
-    // or deflated by systems nobody has instrumented.
-    let dark = |id: &str| nodes.iter().find(|n| n.id == id).map(|n| !n.provenance.is_visible()).unwrap_or(true);
-    components.push(Term::absent(
-        "R_dd",
-        "§20",
-        "drawdown risk",
-        0.0,
-        if dark("breaker.ath") { "ATH tracker writes no state file" } else { "not exported" },
-    ));
-    components.push(Term::absent("R_liq", "§20", "liquidity risk", 0.0, "needs per-pool depth in the observation"));
-    components.push(Term::absent("R_vol", "§20", "volatility risk", 0.0, "needs the volatility channel of the state vector"));
-    components.push(Term::absent("R_conc", "§20", "concentration risk", 0.0, "needs open-position composition"));
+    // The remaining four come from the trade log, the pool radar and the open book — data
+    // that was already on disk and had simply never been read as risk. The ATH tracker
+    // still writes no state, but drawdown does not need it: the realised equity curve is
+    // in `scematica-trades.jsonl`.
+    components.push(match s.drawdown {
+        Some(dd) => Term::measured(
+            "R_dd",
+            "§20",
+            "drawdown risk",
+            dd,
+            format!("deepest peak-to-trough fall {:.1}% over {} closes", dd * 100.0, s.closes),
+        ),
+        None => Term::absent(
+            "R_dd",
+            "§20",
+            "drawdown risk",
+            0.0,
+            "the realised equity curve never rose — no peak to fall from, which is not a drawdown of zero",
+        ),
+    });
+    components.push(match s.liquidity {
+        Some((median, r)) => Term::measured(
+            "R_liq",
+            "§20",
+            "liquidity risk",
+            r,
+            format!("median depth {median:.1} SOL against a {:.0} SOL reference (anchor, not a measurement)", crate::history::DEPTH_REFERENCE_SOL),
+        ),
+        None => Term::absent("R_liq", "§20", "liquidity risk", 0.0, "pool radar has too few sized entries to take a median"),
+    });
+    components.push(match s.volatility {
+        Some((sigma, r)) => Term::measured(
+            "R_vol",
+            "§20",
+            "volatility risk",
+            r,
+            format!("σ {sigma:.1}% per trade against a {:.0}% reference (anchor, not a measurement)", crate::history::VOL_REFERENCE_PCT),
+        ),
+        None => Term::absent("R_vol", "§20", "volatility risk", 0.0, "fewer than 8 closes — dispersion would be sampling noise"),
+    });
+    components.push(match s.concentration {
+        Some((n, h)) => Term::measured(
+            "R_conc",
+            "§20",
+            "concentration risk",
+            h,
+            format!("Herfindahl {h:.3} over {n} open position{} — scale-free, no anchor", if n == 1 { "" } else { "s" }),
+        ),
+        None => Term::absent("R_conc", "§20", "concentration risk", 0.0, "the book is empty — no exposure at all, which is not concentration zero"),
+    });
 
     // Mean over MEASURED components only. Averaging in the unmeasured zeros would divide a
     // real 1.0 model risk by six and report 0.17 — an unmeasured dimension must not dilute
@@ -560,11 +643,7 @@ mod tests {
     /// averaged over six slots would report 0.17 and read as safe.
     #[test]
     fn unmeasured_risk_components_do_not_dilute_measured_ones() {
-        let m = vec![live("learner.dqstar", NodeKind::Learner, Verdict::Pass)];
-        let r = risk_field(
-            &m,
-            &Signals { intelligence_ratio: Some(1e-6), ..Default::default() },
-        );
+        let r = risk_field(&Signals { intelligence_ratio: Some(1e-6), ..Default::default() });
         assert_eq!(r.value, 1.0, "a collapsed policy is full model risk, not one sixth of it");
         assert_eq!(r.components.len(), 6);
         assert_eq!(r.components.iter().filter(|t| t.measured).count(), 1);
@@ -591,11 +670,10 @@ mod tests {
     /// a flawless record.
     #[test]
     fn execution_risk_needs_attempts_to_mean_anything() {
-        let m = vec![live("a", NodeKind::Learner, Verdict::Pass)];
-        let none = risk_field(&m, &Signals { trades_attempted: Some(0.0), trades_failed: Some(0.0), ..Default::default() });
+        let none = risk_field(&Signals { trades_attempted: Some(0.0), trades_failed: Some(0.0), ..Default::default() });
         assert!(!none.components.iter().find(|t| t.symbol == "R_exec").unwrap().measured);
 
-        let some = risk_field(&m, &Signals { trades_attempted: Some(10.0), trades_failed: Some(3.0), ..Default::default() });
+        let some = risk_field(&Signals { trades_attempted: Some(10.0), trades_failed: Some(3.0), ..Default::default() });
         let t = some.components.iter().find(|t| t.symbol == "R_exec").unwrap();
         assert!(t.measured);
         assert!((t.value - 0.3).abs() < 1e-9);

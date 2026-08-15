@@ -8,9 +8,11 @@ import {
   TONE_HEX,
   ageLabel,
   edgeBlocking,
+  edgeKey,
   edgePath,
   layout,
   toneFor,
+  trace,
 } from '@/lib/mesh/view'
 import type { Mesh, MeshEdge, MeshNode } from '@/lib/mesh/types'
 
@@ -34,6 +36,14 @@ export interface MeshGraphProps {
 
 export function MeshGraph({ mesh, selected, onSelect }: MeshGraphProps) {
   const { placed, edges, width, height, columns } = useMemo(() => layout(mesh), [mesh])
+
+  // Selecting a node traces every unit that can reach it and every unit it can reach,
+  // dimming the rest. On 22 nodes this is the difference between seeing the topology and
+  // following it — select the Executor and what remains lit is exactly the set of units
+  // with any say in whether a trade happened.
+  const traced = useMemo(() => (selected ? trace(mesh, selected) : null), [mesh, selected])
+  const nodeLit = (id: string) => !traced || traced.nodes.has(id)
+  const edgeLit = (k: string) => !traced || traced.edges.has(k)
 
   return (
     <div className="overflow-x-auto">
@@ -70,20 +80,23 @@ export function MeshGraph({ mesh, selected, onSelect }: MeshGraphProps) {
 
         <g>
           {edges.map((pe, i) => (
-            <EdgeLine key={`${pe.edge.from}->${pe.edge.to}-${i}`} d={edgePath(pe)} edge={pe.edge} />
+            <g key={`${edgeKey(pe.edge)}-${i}`} opacity={edgeLit(edgeKey(pe.edge)) ? 1 : 0.12}>
+              <EdgeLine d={edgePath(pe)} edge={pe.edge} />
+            </g>
           ))}
         </g>
 
         <g>
           {placed.map(p => (
-            <NodeBox
-              key={p.node.id}
-              node={p.node}
-              x={p.x}
-              y={p.y}
-              selected={selected === p.node.id}
-              onSelect={onSelect}
-            />
+            <g key={p.node.id} opacity={nodeLit(p.node.id) ? 1 : 0.15}>
+              <NodeBox
+                node={p.node}
+                x={p.x}
+                y={p.y}
+                selected={selected === p.node.id}
+                onSelect={onSelect}
+              />
+            </g>
           ))}
         </g>
       </svg>

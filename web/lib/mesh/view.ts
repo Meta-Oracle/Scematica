@@ -189,6 +189,51 @@ export function edgePath(e: PlacedEdge): string {
   return `M ${e.x1} ${e.y1} C ${e.x1 + dx} ${e.y1}, ${e.x2 - dx} ${e.y2}, ${e.x2} ${e.y2}`
 }
 
+/**
+ * Every node that can reach `id`, and every node `id` can reach.
+ *
+ * This is the "why did nothing trade" question asked structurally: select the Executor and
+ * the trace is exactly the set of units with any say in that outcome, with everything
+ * irrelevant dimmed away. On a 22-node graph the difference between *seeing* the topology
+ * and *following* it is the difference between a diagram and a tool.
+ *
+ * Breadth-first over both directions, guarded against cycles — the graph has feedback
+ * edges (promotion runs backwards into the primary learner) and an unguarded walk would
+ * not terminate.
+ */
+export function trace(mesh: Mesh, id: string): { nodes: Set<string>; edges: Set<string> } {
+  const nodes = new Set<string>([id])
+  const edges = new Set<string>()
+
+  const walk = (start: string, forward: boolean) => {
+    const queue = [start]
+    const seen = new Set<string>([start])
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const e of mesh.edges) {
+        const from = forward ? e.from : e.to
+        const to = forward ? e.to : e.from
+        if (from !== cur) continue
+        edges.add(edgeKey(e))
+        nodes.add(to)
+        if (!seen.has(to)) {
+          seen.add(to)
+          queue.push(to)
+        }
+      }
+    }
+  }
+
+  walk(id, true)
+  walk(id, false)
+  return { nodes, edges }
+}
+
+/** Stable identity for an edge, used by trace sets and React keys alike. */
+export function edgeKey(e: MeshEdge): string {
+  return `${e.from}->${e.to}:${e.kind}`
+}
+
 /** The single line that belongs above the graph. */
 export function visibilityLabel(mesh: Mesh): string {
   const s = mesh.summary

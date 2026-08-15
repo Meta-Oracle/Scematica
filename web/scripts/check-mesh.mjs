@@ -22,7 +22,17 @@ import {
   statusOf,
   toneFor,
   visibilityLabel,
+  trace,
 } from '../lib/mesh/view.ts'
+import {
+  TAU_PSI,
+  TAU_PSI_FULL,
+  dominantConstraint,
+  effective,
+  recompute,
+  sensitivities,
+  verdictFor,
+} from '../lib/mesh/gate.ts'
 
 let failed = 0
 const check = (name, ok) => {
@@ -137,6 +147,118 @@ check('the visibility line leads with the percentage', visibilityLabel(mesh).sta
 check(
   'and names all three states',
   ['live', 'stale', 'unseen'].every(w => visibilityLabel(mesh).includes(w)),
+)
+
+console.log('\n── trace ─────────────────────────────────────────────────')
+
+const t = trace(mesh, 'exec.executor')
+check('the traced set includes the selection', t.nodes.has('exec.executor'))
+check('and everything upstream of it', t.nodes.has('learner.dqstar'))
+check('but not an unconnected node', !t.nodes.has('filter.b'))
+check('the connecting edge is traced', t.edges.has('learner.dqstar->exec.executor:veto'))
+// The graph has feedback edges (promotion runs backwards into the primary learner), so an
+// unguarded walk would not terminate. This asserts it does.
+const cyclic = {
+  ...mesh,
+  edges: [
+    { from: 'a', to: 'b', kind: 'signal', active: true, label: null },
+    { from: 'b', to: 'a', kind: 'promotion', active: true, label: null },
+  ],
+  nodes: [node('a', 'learner', LIVE), node('b', 'learner', LIVE)],
+}
+check('a cycle terminates', trace(cyclic, 'a').nodes.size === 2)
+
+console.log('\n── gate parity with Rust ─────────────────────────────────')
+
+const term = (symbol, section, value, measured) => ({ symbol, section, name: symbol, value, measured, note: '' })
+
+// Fixture taken from an actual `cargo run --example dump` against the real state files:
+// R_model 0.207, R_dd 0.198, R_liq 0.000, R_vol 1.000 measured; R_exec and R_conc absent.
+// Rust reported C 1.000, K 1.000, R 0.351, Ψ 0.649.
+const REAL = {
+  confidence: 1,
+  confidence_terms: [
+    term('U_A', '§16', 0, false),
+    term('U_E', '§16', 0, false),
+    term('N_t', '§14', 0, false),
+    term('D_t', '§40', 0, false),
+  ],
+  uncertainty: { aleatoric: term('U_A', '§16', 0, false), epistemic: term('U_E', '§16', 0, false), total: 0 },
+  risk: {
+    components: [
+      term('R_model', '§20', 0.20692229554528332, true),
+      term('R_exec', '§20', 0, false),
+      term('R_dd', '§20', 0.198, true),
+      term('R_liq', '§20', 0, true),
+      term('R_vol', '§20', 1, true),
+      term('R_conc', '§20', 0, false),
+    ],
+    value: 0.351,
+  },
+  coherence: { value: 1, subsystems: 0, disagreement: 0, approximation: true, note: '' },
+  psi: 0.649,
+  verdict: 'unevaluated',
+  omega: null,
+  omega_terms: [term('H_t', '§3', 0, false), term('M_t', '§11', 0, false)],
+  measured_fraction: 4 / 12,
+  reading: '',
+}
+
+const base = recompute(REAL, {})
+check('confidence matches Rust', Math.abs(base.confidence - 1) < 1e-9)
+// The rule that matters: the mean is over MEASURED components only. Averaging in the two
+// unmeasured zeros would give 0.234 and read as materially safer than the truth.
+check('risk averages over measured components only', Math.abs(base.risk - 0.35123057388632086) < 1e-6)
+check('and NOT over all six', Math.abs(base.risk - 1.4049222955452833 / 6) > 0.1)
+check('psi matches Rust to 3dp', base.psi.toFixed(3) === '0.649')
+check('a gate with no live subsystem is unevaluated', base.verdict === 'unevaluated')
+check('the observed state is not dirty', base.dirty === false)
+
+console.log('\n── counterfactual solver ─────────────────────────────────')
+
+const lifted = recompute(REAL, { R_vol: 0 })
+check('dropping volatility risk raises psi', lifted.psi > base.psi)
+check('and marks the result dirty', lifted.dirty === true)
+check('the observed payload is unmutated', REAL.risk.components[4].value === 1)
+
+// Overriding an UNMEASURED term makes it count as measured, which changes the denominator.
+// That is a real property of the design and the page says so out loud.
+const withExec = recompute(REAL, { R_exec: 0 })
+check('instrumenting a healthy term can still move risk', withExec.risk !== base.risk)
+check('effective() reports an override as measured', effective(term('R_exec', '§20', 0, false), { R_exec: 0.5 }).measured === true)
+check('and passes the overridden value through', effective(term('R_exec', '§20', 0, false), { R_exec: 0.5 }).value === 0.5)
+
+const s = sensitivities(REAL, {})
+check('sensitivities are ranked by magnitude', Math.abs(s[0].gradient) >= Math.abs(s[s.length - 1].gradient))
+// A MEASURED risk term is a pure cost: raising it can only lower Ψ.
+check(
+  'raising a measured risk term lowers psi',
+  s.filter(x => x.symbol.startsWith('R_') && x.measured).every(x => x.gradient <= 0),
+)
+check('raising an uncertainty term lowers psi', s.filter(x => x.symbol === 'U_E')[0].gradient <= 0)
+// …but an UNMEASURED one behaves the other way, and that is the design rather than a bug:
+// instrumenting a healthy subsystem enlarges the denominator of the risk mean, so measured
+// risk falls and Ψ rises. Pinned here because it is surprising enough that someone will
+// eventually "fix" it into averaging over all six, which would report 0.234 for a field
+// whose measured components average 0.351.
+const rExec = s.find(x => x.symbol === 'R_exec')
+check('an unmeasured healthy term raises psi when instrumented', !rExec.measured && rExec.gradient > 0)
+
+check('thresholds match Rust', TAU_PSI === 0.45 && TAU_PSI_FULL === 0.75)
+check('verdict boundaries are exclusive at tau', verdictFor(0.45, true, 1) === 'damp' && verdictFor(0.4499, true, 1) === 'abstain')
+check('full conviction needs tau_full', verdictFor(0.75, true, 1) === 'act' && verdictFor(0.7499, true, 1) === 'damp')
+// Nothing measured is ignorance, never a considered refusal.
+check('nothing measured is unevaluated, not abstain', verdictFor(0.0, false, 0) === 'unevaluated')
+
+// Unevaluated is not the same as unmeasured: K has no live subsystem, but four risk terms
+// are well measured, and the line must say so rather than claiming nothing is known.
+const dom = dominantConstraint(REAL, {})
+check('the dominant constraint names a measured term', /R_(model|dd|vol|liq)/.test(dom))
+check('and never names an unmeasured one', !/U_A|N_t/.test(dom))
+check('it distinguishes no-verdict from no-evidence', /no verdict/.test(dom))
+check(
+  'with nothing measured at all it says so',
+  /absence of evidence/.test(dominantConstraint({ ...REAL, risk: { components: [term('R_x', '§20', 0, false)], value: 0 } }, {})),
 )
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)

@@ -374,9 +374,20 @@ collects. Four constraints:
   empty bar, which would read as "measured, and it is zero".
 - **`measured_fraction` is never separated from Ψ.** A gate computed on two terms out of
   nine is a statement about ignorance and has to look like one.
+- **The gate solver is a counterfactual and must always look like one.** `lib/mesh/gate.ts`
+  re-evaluates Ψ in the browser under term overrides, so the page answers "what would open
+  this gate?" without a round trip and without the bot ever being in that state. The moment
+  any override exists, `recompute` returns `dirty: true`, the panel changes colour, every
+  touched row is marked `hypothetical`, and the **observed** value stays on screen beside
+  the hypothetical one. Nothing in that file writes, fetches, or influences the bot.
+  Overriding an *unmeasured* term makes it count as measured, which enlarges the
+  denominator of the risk mean and can therefore **raise** Ψ — surprising, real, and pinned
+  by a test, because the obvious "fix" is to average over all six components, which reports
+  0.234 for a field whose measured components average 0.351.
 
-`npm run check:mesh` pins the layer table, the colour rules, tri-state edges and layout
-determinism. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
+`npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
+determinism, path tracing, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
+captured from a real `cargo run --example dump`. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching
 `lib/escrow/mintinfo.ts` or `program.ts`.
 

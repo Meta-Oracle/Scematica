@@ -49,6 +49,7 @@
 
 pub mod cognition;
 pub mod collect;
+pub mod history;
 pub mod edge;
 pub mod node;
 pub mod topology;

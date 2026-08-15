@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 
+import { GateSolver } from './GateSolver'
 import { MeshGraph } from './MeshGraph'
 import { usePoll } from '@/lib/store'
 import { TONE_HEX, ageLabel, toneFor, visibilityLabel } from '@/lib/mesh/view'
@@ -75,8 +76,9 @@ export function MeshTerminal() {
           <div className="px-5 py-4">
             <MeshGraph mesh={mesh} selected={selected} onSelect={setSelected} />
           </div>
-          <Legend />
+          <Legend traced={selected !== null} />
           <GatePanel cognition={mesh.cognition} />
+          <GateSolver cognition={mesh.cognition} />
           {node && <NodeDetail node={node} onClose={() => setSelected(null)} />}
         </>
       )}
@@ -217,7 +219,7 @@ function TermRow({ term: t }: { term: Term }) {
   )
 }
 
-function Legend() {
+function Legend({ traced }: { traced: boolean }) {
   const items: [string, string, string][] = [
     ['live', TONE_HEX.live, 'reporting now — values are actionable'],
     ['stale', TONE_HEX.stale, 'reported once, now quiet — values are history'],
@@ -225,7 +227,12 @@ function Legend() {
     ['veto', TONE_HEX.veto, 'actively blocking, from a live source'],
   ]
   return (
-    <div className="px-5 pb-4 flex gap-x-6 gap-y-2 flex-wrap">
+    <div className="px-5 pb-4 flex gap-x-6 gap-y-2 flex-wrap items-center">
+      <span className="text-[10px] text-mesh-dim">
+        {traced
+          ? 'tracing — only units connected to the selection are lit; click it again to clear'
+          : 'click any node to trace what reaches it and what it reaches'}
+      </span>
       {items.map(([label, hex, blurb]) => (
         <div key={label} className="flex items-center gap-2">
           <span className="inline-block w-2.5 h-2.5" style={{ backgroundColor: hex }} />

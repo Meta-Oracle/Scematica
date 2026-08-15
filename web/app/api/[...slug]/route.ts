@@ -93,6 +93,26 @@ function localResponse(path: string, search: URLSearchParams): NextResponse | nu
         moon_chase: false,
         simulated: true,
       })
+    case 'mesh':
+      // THE ONE ENDPOINT HERE WITH NO SIMULATION, AND THE REASON IS A CATEGORY
+      // DIFFERENCE. A simulated metric is a fake number wearing a SIMULATED badge, and a
+      // reader discounts it accordingly. A simulated *topology* would assert that a
+      // particular set of units exists, is wired a particular way, and is healthy — a
+      // claim about the operator's machine rather than about a value on it. There is no
+      // honest way to badge that, so it is not offered.
+      //
+      // Note this is NOT the same as an empty mesh: a collector run against a directory
+      // with no state files returns a complete topology with every node dark, which is a
+      // true statement. Only the web layer, which has no directory to read at all, has
+      // nothing truthful to say.
+      return simJson(
+        {
+          error: 'no_instance_paired',
+          simulated: true,
+          hint: 'The mesh is a picture of a running system. Pair a sniper instance — there is no simulated topology, by design.',
+        },
+        503,
+      )
     default:
       return null
   }

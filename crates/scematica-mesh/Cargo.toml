@@ -1,0 +1,30 @@
+[package]
+name = "scematica-mesh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica Mesh — the running system's own topology, collected from live state and rendered as a graph of decision-making units with per-node data provenance"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+readme = "README.md"
+keywords = ["observability", "topology", "agents", "visualization", "trading"]
+categories = ["visualization", "development-tools::debugging"]
+
+[lib]
+name = "scematica_mesh"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# For `TradeAction`, so the Q-vector index order has ONE definition rather than a
+# constant here that silently drifts from the agent that writes the values. The crate is
+# pure Rust (serde/tracing/chrono/rand/anyhow) with no ML or solana dependency, so this
+# costs nothing structurally — see the note in `node.rs::dqstar_verdict`.
+scematica-nn = { path = "../scematica-nn" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

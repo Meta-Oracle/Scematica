@@ -1,0 +1,207 @@
+SCEMATICA — WHAT YOU CAN VERIFY YOURSELF
+
+
+This is not an announcement of a partnership, a roadmap, or a promise. It is a
+list of things that are true right now, each one with the exact command you can
+run to check it without trusting me.
+
+It also has a section listing what is NOT finished. That section is there
+because a page that only lists wins is marketing, and a record that names its
+own gaps is a record. Read that part first if you like — it is near the bottom.
+
+
+-------------------------------------------------------------------------------
+1. THE TOKEN
+-------------------------------------------------------------------------------
+
+Mint address:
+
+  HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump
+
+Four facts about it, all read from the mint account on Solana mainnet:
+
+  Token program      Token-2022
+  Name / symbol      Scematica-v2 / ScemaV2
+  Decimals           6
+  Supply             999,985,956.034206
+  Mint authority     None
+  Freeze authority   None
+  Metadata authority Disabled
+  Extensions         metadataPointer, tokenMetadata — and nothing else
+
+What those mean in plain terms:
+
+MINT AUTHORITY IS NONE. No new SCEMA can ever be created. Not by me, not by
+anyone. This is not a policy I am promising to follow — the capability has been
+destroyed at the protocol level. Supply can still fall when holders burn tokens,
+and it has; it can never rise.
+
+FREEZE AUTHORITY IS NONE. Nobody can freeze your wallet or block you from
+selling. Again, not a promise — the capability does not exist.
+
+THE METADATA IS FROZEN TOO. The update authority on the token's metadata is
+disabled, so the name, symbol and image can never be changed — by me or anyone.
+This one is quietly important: renaming a token after the fact, to impersonate
+something else or to shed a history, is a real trick and it is not available
+here.
+
+THE EXTENSION LIST IS THE WHOLE LIST. SCEMA is a Token-2022 mint, and Token-2022
+supports extensions that can be genuinely hostile: transferFee (a tax on every
+transfer), permanentDelegate (an address that can move anyone's tokens),
+defaultAccountState (new wallets frozen by default). SCEMA carries none of them.
+It has exactly two extensions and both are metadata — the name, symbol and
+image. That is a positive proof of absence, not an assurance.
+
+Check it yourself:
+
+  spl-token display HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump
+
+That command prints every line in the table above. It renders a revoked
+authority as "(not set)" rather than "None" — same thing, different wording.
+
+Or open the mint on any explorer and read the authorities and extensions
+directly. Every figure above comes from the account itself, not from a token
+list, an API, or me.
+
+
+-------------------------------------------------------------------------------
+2. THE ESCROW MARKET PROGRAM
+-------------------------------------------------------------------------------
+
+The Escrow Market is a Solana program that lets anyone lock a reserve asset
+behind any SPL token for a fixed period, so that a stranger can read on-chain
+exactly how much reserve stands behind how much token, and until when.
+
+Program ID:
+
+  A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW
+
+It has four instructions and no fifth one:
+
+  initialize_vault   open the vault for a token/reserve pair
+  deposit            lock reserve (and optionally token) for a fixed term
+  extend_lock        push your own unlock date further out
+  withdraw           return your own matured position to you
+
+WHAT THE PROGRAM CANNOT DO, BY CONSTRUCTION:
+
+  - There is no admin. No authority field on any account, no instruction that
+    accepts an admin signer, no pause switch, no fee recipient. Search the
+    source for "authority" and the only hits name the vault's own program
+    address.
+  - There is no early exit. Not for depositors, not for me. A lock that can be
+    cut short is not a lock.
+  - extend_lock only moves the unlock date FORWARD. A depositor may always
+    strengthen a commitment and can never weaken one.
+  - withdraw pays the recorded depositor and nobody else, transfers exactly the
+    amounts recorded at deposit, and closes the position so it cannot be
+    replayed. One position can never reach another's funds.
+  - There is no oracle and no price. The vault reports raw amounts only. Any
+    "percent backed" figure is computed by the reader with their own price
+    source. This removes oracle manipulation from the attack surface entirely.
+  - There is no redemption and no lending. Both are separate designs with
+    separate risks; neither will ever be added to this program by upgrade.
+
+The vaults are program-derived addresses. No private key exists for them. The
+only way funds move is an instruction in this program, and the only instruction
+that moves funds out is withdraw.
+
+
+-------------------------------------------------------------------------------
+3. THE BUILD MATCHES THE SOURCE
+-------------------------------------------------------------------------------
+
+The compiled program is 336,200 bytes with this SHA-256:
+
+  1ba117fe3d813eb2b47de50b76aa693a63167ae4d251b77c8d0f03cfb1b4b0a7
+
+I pulled the bytecode back down off the chain and hashed it. It is identical to
+the local build, byte for byte. You can reproduce this:
+
+  solana program dump A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW out.so
+  sha256sum out.so
+
+Build from the public source and you should get the same hash. If you don't,
+say so publicly — that is exactly the kind of thing this section exists to make
+checkable.
+
+
+-------------------------------------------------------------------------------
+4. IT RUNS — ON DEVNET
+-------------------------------------------------------------------------------
+
+The program is deployed and working on Solana DEVNET. A full lifecycle has been
+executed on chain: a vault created, and a deposit locked into it.
+
+  Vault state       AXFr3nzkrbVzhbyHpxo9Fyt9UQm5nwoYwSdzAKU7JpGN
+  Token vault       7QySdjk341DXLfzqZGi94V1yK4bmGE3esDvxqe5oy2sE   holds 1,000
+  Backing vault     GLsnvurSPeswoX9gb7yGDmZFvBb35m4rgBsfa4XnYBmT   holds 0.5
+
+Note that the vault is three accounts, not one. The first records the
+accounting; the tokens sit in the other two. Looking up the first and seeing no
+token balance is correct behaviour, not an empty vault.
+
+This run proves a specific thing that had never worked before: the token leg is
+a Token-2022 mint and the reserve leg is a legacy SPL mint, and the two are held
+under DIFFERENT token programs in the same vault. That matters because newly
+created tokens are routinely Token-2022 while every reserve asset worth locking
+— wBTC, wETH, wrapped SOL — is legacy SPL. Until this was fixed, the pairing
+that the product exists for could not be constructed at all.
+
+THE TOKENS IN THAT DEVNET VAULT ARE WORTH NOTHING. They are test mints created
+for the purpose. Devnet is a separate ledger with free money on it. This
+demonstrates that the machine works. It is not a reserve and I am not
+presenting it as one.
+
+
+-------------------------------------------------------------------------------
+5. WHAT IS NOT DONE
+-------------------------------------------------------------------------------
+
+Read this part carefully, because it is the part that is usually left out.
+
+NOT ON MAINNET. The program does not exist on Solana mainnet. Check for
+yourself — query that program ID against a mainnet RPC and you will get
+nothing. Deploying costs 2.34 SOL in rent, which is not currently funded. When
+it is deployed it will appear at the address published above and nowhere else.
+
+NOT YET IMMUTABLE. The devnet deployment is upgradeable and the upgrade
+authority is mine. That means the devnet program is, strictly speaking,
+custodial — an upgradeable program can be redeployed with a drain instruction,
+so a PDA vault under one is only as trustworthy as whoever holds the key. This
+is normal for a program still being tested and it is the reason nobody should
+put real money into it yet. The step that changes it is irreversible:
+
+  solana program set-upgrade-authority <PROGRAM_ID> --final
+  solana program show <PROGRAM_ID>        # must report "Authority: none"
+
+Until that command has been run on the MAINNET deployment and that output says
+none, the guarantee in section 2 is a design, not a fact. Do not take my word
+for when that happens — run the second command.
+
+WITHDRAW HAS NEVER EXECUTED. Deposit works and is proven on chain. Withdraw is
+not yet exercised, because the minimum lock is seven days and there is no early
+exit, so the first devnet position cannot mature before then. It will be tested
+before the mainnet program is finalized, not after.
+
+NO RESERVE EXISTS. There is no mainnet vault and nothing is backed today. When
+that changes, it will change at a public address holding a public balance that
+anyone can read, and the claim will be checkable the same way everything above
+is.
+
+
+-------------------------------------------------------------------------------
+6. THE POINT
+-------------------------------------------------------------------------------
+
+Almost nothing in this market is backed by anything. A team that locks a real
+reserve behind its token, publicly, irreversibly, for a fixed term, has done
+something a rug cannot cheaply fake — not because of a promise, but because the
+money is somewhere they cannot reach it either.
+
+That is the product. What is finished is the mechanism, and it is inspectable
+today. What is not finished is listed above with the reason.
+
+Every address in this article is real. Every command is one you can run. If any
+figure here does not match what the chain says, the chain is right and I am
+wrong — say so publicly and I will correct it.

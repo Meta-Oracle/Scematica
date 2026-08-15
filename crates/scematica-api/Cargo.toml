@@ -25,3 +25,6 @@ jsonwebtoken = "9"
 # Cognitive gating for /api/sentience. Pure computation — no solana-sdk, no network,
 # nothing that can widen this crate's dependency tree.
 scematica-sentience = { version = "1.25.0", path = "../scematica-sentience" }
+# Topology collection for /api/mesh. Reads the same state files this crate already serves
+# individually, and turns them into a graph. Pure file reads — no network, no solana-sdk.
+scematica-mesh = { version = "1.25.0", path = "../scematica-mesh" }

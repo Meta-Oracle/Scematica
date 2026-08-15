@@ -239,6 +239,25 @@ async fn filters_handler() -> impl IntoResponse {
     }
 }
 
+/// `GET /api/mesh` — the running system's own topology.
+///
+/// Every other read endpoint here serves one state file. This one reads them all and
+/// returns the graph they collectively describe: which decision-making units exist, what
+/// each last decided, and — before either — whether each can be seen at all.
+///
+/// Unlike its neighbours it has **no empty-object fallback**. `filters_handler` answering
+/// `{"pools_seen":0}` for a missing file is harmless because the caller renders a counter;
+/// answering an empty mesh would assert that the system has no units, which is a claim
+/// about the bot rather than about the read. A collector run against an empty directory
+/// already returns a complete topology with every node marked absent, so the honest
+/// degraded response is the mesh itself.
+async fn mesh_handler() -> impl IntoResponse {
+    let mesh = scematica_mesh::Collector::new(".").collect();
+    Json(serde_json::to_value(mesh).unwrap_or_else(|e| {
+        json!({ "error": "mesh serialisation failed", "detail": e.to_string() })
+    }))
+}
+
 async fn nn_handler() -> impl IntoResponse {
     let v = read_json_file(NN_STATS_FILE);
     if v.is_null() {
@@ -1283,6 +1302,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/trades", get(trades_handler))
         .route("/api/decisions", get(decisions_handler))
         .route("/api/tx-telemetry", get(tx_telemetry_handler))
+        .route("/api/mesh", get(mesh_handler))
         .route("/api/nn", get(nn_handler))
         .route("/api/nn-advice", get(nn_advice_handler))
         .route("/api/positions", get(positions_handler))

@@ -15,7 +15,8 @@
     "mobile:sync": "npm run mobile:export && cap sync android",
     "mobile:open": "cap open android",
     "mobile:signing": "node scripts/setup-signing.mjs",
-    "mobile:apk": "npm run mobile:sync && cd android && gradlew.bat assembleRelease"
+    "mobile:apk": "npm run mobile:sync && cd android && gradlew.bat assembleRelease",
+    "check:mesh": "node scripts/check-mesh.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^6.1.2",

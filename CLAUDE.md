@@ -111,6 +111,21 @@ crates/
                         as `sentience`; nothing in the *runtime* path (sniper,
                         dashboard, ai) depends on it yet, so gating live LLM calls
                         on Ψ remains a separate wiring step.
+  scematica-mesh/       Scematica Mesh: the running system's own topology, collected from
+                        the File-Based IPC files below and served as a graph of
+                        decision-making units. Read-only — writes nothing, takes no locks.
+                        Also implements §16/§17/§20/§22/§31/§32/§33 of the Agentic Neural
+                        Architecture spec as `cognition.rs` (Ψ = C·K·(1−R)) over the
+                        *observed* mesh, because no subsystem can measure its own agreement
+                        with the others. Every term carries `measured: bool` and an
+                        **unmeasured dimension contributes the neutral element, never 0** —
+                        the literal reading of §17/§34 pins the gate shut on subsystems
+                        nobody has built, which is the same trap that once jammed the
+                        sentience Ψ at 0. Ω stays `None` until one of its five subsystems
+                        exists. Distinct from `scema-bot-mesh` (BOT Chain verifiable
+                        inference, separate workspace) and from the data-integrity Ψ in
+                        `scematica-sentience`: that one asks "can this data be trusted",
+                        this one asks "do the subsystems agree". Bin: none; `examples/dump`.
   scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
                         launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
@@ -337,7 +352,31 @@ lib.rs`; **Rust is authoritative**. A field added there must be added here in th
 order or every number the page prints is silently wrong — `VAULT_LEN` is the tripwire,
 and a decode against an unexpected size is rejected rather than guessed at.
 
-`npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
+**`/mesh` is the sixth product on the same site** — Scematica Mesh
+(`components/mesh/`, `lib/mesh/`, backed by Rust `GET /api/mesh`) with its own indigo
+palette (`mesh-*` tokens + `.mesh-root`). It renders the topology `crates/scematica-mesh`
+collects. Four constraints:
+
+- **No simulation branch, and for a sharper reason than `/alchem-link` or `/escrow`.** A
+  simulated metric is a fake number wearing a badge; a simulated *topology* asserts that a
+  particular set of units exists, is wired a particular way and is healthy on the
+  operator's machine. There is no honest way to badge that, so `/api/mesh` 503s when no
+  bot is paired. Note this is **not** the same as an empty mesh: the collector run against
+  a directory with no state files returns a complete topology with every node dark, which
+  is a true statement.
+- **Colour is a claim about trust, assigned in one place.** `lib/mesh/view.ts::toneFor` is
+  the only thing that picks a tone. Provenance outranks verdict everywhere except a live
+  veto — a **stale** node reading PASS has not passed anything recently, and painting it
+  the same green as a live pass is the exact error the feature exists to prevent. A stale
+  veto is history, not an alarm.
+- **Tri-state survives to the renderer.** `edge.active === null` (unreadable) must render
+  differently from `false` (cleared); `node.activity === null` renders *nothing*, never an
+  empty bar, which would read as "measured, and it is zero".
+- **`measured_fraction` is never separated from Ψ.** A gate computed on two terms out of
+  nine is a statement about ignorance and has to look like one.
+
+`npm run check:mesh` pins the layer table, the colour rules, tri-state edges and layout
+determinism. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching
 `lib/escrow/mintinfo.ts` or `program.ts`.
 

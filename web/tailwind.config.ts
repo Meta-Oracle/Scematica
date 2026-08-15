@@ -85,6 +85,31 @@ const config: Config = {
         'botchain-green':   '#3ddc97',
         'botchain-red':     '#ff6b5c',
 
+        // ── mesh ────────────────────────────────────────────────────────────
+        // Sixth product, sixth identity: indigo night, against the sniper's red,
+        // alchem's blue, scylar's violet, botchain's amber and escrow's teal.
+        //
+        // The three status colours here are NOT decoration and must not be
+        // reassigned for looks. They are the only thing separating "this unit is
+        // reporting", "this unit last reported a while ago" and "this unit cannot
+        // be seen at all" — the distinction the whole feature exists to preserve.
+        // `mesh-absent` is deliberately close to the background: an unseen unit
+        // should read as a hole in the picture, because that is what it is.
+        'mesh-black':       '#050711',
+        'mesh-surface':     '#0a0e1f',
+        'mesh-hi':          '#131a33',
+        'mesh-border':      '#1e2a4d',
+        'mesh-border-hi':   '#354a7d',
+        'mesh-text':        '#dfe6ff',
+        'mesh-muted':       '#8f9cc7',
+        'mesh-dim':         '#545f8a',
+        'mesh-accent':      '#7c9cff',
+        'mesh-glow':        '#52e5ff',
+        'mesh-live':        '#4ade9b',
+        'mesh-stale':       '#f5b544',
+        'mesh-absent':      '#3a4266',
+        'mesh-veto':        '#ff5d7d',
+
         // ── escrow market ───────────────────────────────────────────────────
         // Fifth product, fifth identity: a cold teal on near-black, against the
         // sniper's red, alchem's blue, scylar's violet and botchain's amber.

@@ -703,3 +703,72 @@ body:has(.escrow-root)::after {
 .escrow-root ::-webkit-scrollbar-track { background: var(--e-black); }
 .escrow-root ::-webkit-scrollbar-thumb { background: var(--e-border); }
 .escrow-root ::-webkit-scrollbar-thumb:hover { background: var(--e-border-hi); }
+
+/* ── mesh ─────────────────────────────────────────────────────────────────── */
+
+.mesh-root {
+  --m-black:     #050711;
+  --m-surface:   #0a0e1f;
+  --m-hi:        #131a33;
+  --m-border:    #1e2a4d;
+  --m-border-hi: #354a7d;
+  --m-text:      #dfe6ff;
+  --m-muted:     #8f9cc7;
+  --m-dim:       #545f8a;
+  --m-accent:    #7c9cff;
+  --m-glow:      #52e5ff;
+  --m-live:      #4ade9b;
+  --m-stale:     #f5b544;
+  --m-absent:    #3a4266;
+  --m-veto:      #ff5d7d;
+
+  background: var(--m-black);
+  color: var(--m-text);
+  min-height: 100vh;
+}
+
+/* Retint the site-wide scan bar, which is red for the sniper. */
+body:has(.mesh-root)::after {
+  background: linear-gradient(
+    transparent 0%,
+    rgba(124, 156, 255, 0.02) 50%,
+    transparent 100%
+  );
+}
+
+.mesh-root ::-webkit-scrollbar-track { background: var(--m-black); }
+.mesh-root ::-webkit-scrollbar-thumb { background: var(--m-border); }
+.mesh-root ::-webkit-scrollbar-thumb:hover { background: var(--m-border-hi); }
+
+/* Flow along a signal edge. Purely decorative — it conveys direction, never state,
+   so a reader who cannot see motion (reduced-motion, a screenshot, a print) loses
+   nothing that is not also written in text somewhere on the node. */
+@keyframes mesh-flow { to { stroke-dashoffset: -24; } }
+
+.mesh-edge-flow {
+  stroke-dasharray: 3 9;
+  animation: mesh-flow 1.4s linear infinite;
+}
+
+/* A blocking edge does not flow; it pulses in place. Motion that goes nowhere is
+   the point — it reads as "stuck" rather than "moving". */
+@keyframes mesh-block-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+
+.mesh-edge-block { animation: mesh-block-pulse 1.6s ease-in-out infinite; }
+
+@keyframes mesh-node-breathe {
+  0%, 100% { opacity: 0.75; }
+  50%      { opacity: 1; }
+}
+
+.mesh-node-live { animation: mesh-node-breathe 3.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh-edge-flow,
+  .mesh-edge-block,
+  .mesh-node-live { animation: none; }
+  .mesh-edge-flow { stroke-dasharray: 3 9; }
+}

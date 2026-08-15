@@ -4382,6 +4382,7 @@ dependencies = [
  "axum 0.7.9",
  "jsonwebtoken",
  "reqwest",
+ "scematica-mesh",
  "scematica-sentience",
  "serde",
  "serde_json",
@@ -4508,6 +4509,16 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "scematica-mesh"
+version = "1.25.0"
+dependencies = [
+ "chrono",
+ "scematica-nn",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -917,8 +917,9 @@ function CostPanel({
 
       {c?.estimated && (
         <p className="px-3 py-2 text-[10px] text-escrow-dim border-t border-escrow-border">
-          Token-2022 mint: token accounts carrying extensions are larger than the 165-byte
-          base, so this can under-read. Your wallet&rsquo;s preview is authoritative.
+          One leg is a Token-2022 mint: token accounts carrying extensions are larger than
+          the 165-byte base, so this can under-read. Your wallet&rsquo;s preview is
+          authoritative.
         </p>
       )}
 

@@ -136,20 +136,19 @@ export async function POST(request: NextRequest) {
     if (!tokenMintInfo) return bad('Token mint does not exist on this cluster.')
     if (!backingMintInfo) return bad('Backing mint does not exist on this cluster.')
 
+    // Each leg's token program is whichever program owns that leg's mint. They need NOT
+    // match: `InitializeVault` takes one token program per leg precisely so a Token-2022
+    // token can be backed by legacy-SPL wBTC / wETH / wSOL. Both are checked here because
+    // the program's `Interface<TokenInterface>` accepts only these two, and a mint owned by
+    // anything else would fail deep inside the CPI rather than here.
     const tokenProgram = tokenMintInfo.owner
     const backingProgram = backingMintInfo.owner
     const known = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]
     if (!known.some(p => p.equals(tokenProgram))) {
       return bad('Token mint is not owned by a recognised SPL Token program.')
     }
-
-    // `InitializeVault` carries ONE `token_program` account and applies it to BOTH token
-    // vaults, so a Token-2022 token cannot be backed by a legacy SPL reserve. The program
-    // would reject it; catching it here explains why instead of failing opaquely.
-    if (!tokenProgram.equals(backingProgram)) {
-      return bad(
-        `Both mints must live on the same token program. Token is on ${tokenProgram.toBase58().slice(0, 8)}… and backing is on ${backingProgram.toBase58().slice(0, 8)}… — the vault has a single token_program account for both legs.`,
-      )
+    if (!known.some(p => p.equals(backingProgram))) {
+      return bad('Backing mint is not owned by a recognised SPL Token program.')
     }
 
     const decimalsOf = (data: Uint8Array) => (data.length > 44 ? data[44] : 0)
@@ -158,8 +157,10 @@ export async function POST(request: NextRequest) {
 
     // ── what must be created, and what that costs ───────────────────────────
     const needsVault = vaultInfo === null
+    // Each ATA is derived with its own leg's program — the ATA seeds include the token
+    // program, so using one leg's program for both yields a wrong address on a mixed pair.
     const ownerToken = associatedTokenAddress(tokenMint, owner, tokenProgram)
-    const ownerBacking = associatedTokenAddress(backingMint, owner, tokenProgram)
+    const ownerBacking = associatedTokenAddress(backingMint, owner, backingProgram)
 
     const [ownerTokenInfo, ownerBackingInfo] = await connection.getMultipleAccountsInfo([
       ownerToken,
@@ -221,11 +222,12 @@ export async function POST(request: NextRequest) {
           tokenMint,
           backingMint,
           tokenProgram,
+          backingProgram,
         }),
       )
     }
     if (!ownerTokenInfo) tx.add(createAtaInstruction(owner, owner, tokenMint, tokenProgram))
-    if (!ownerBackingInfo) tx.add(createAtaInstruction(owner, owner, backingMint, tokenProgram))
+    if (!ownerBackingInfo) tx.add(createAtaInstruction(owner, owner, backingMint, backingProgram))
     tx.add(
       depositInstruction({
         programId: ESCROW_PROGRAM_ID,
@@ -233,6 +235,7 @@ export async function POST(request: NextRequest) {
         tokenMint,
         backingMint,
         tokenProgram,
+        backingProgram,
         nonce,
         tokenAmount,
         backingAmount,
@@ -253,6 +256,7 @@ export async function POST(request: NextRequest) {
         vault: vault.toBase58(),
         needsVault,
         tokenProgram: tokenProgram.toBase58(),
+        backingProgram: backingProgram.toBase58(),
         decimals: { token: tokenDecimals, backing: backingDecimals },
         balances: { token: tokenBalance, backing: backingBalance, lamports },
         costs: {
@@ -261,7 +265,10 @@ export async function POST(request: NextRequest) {
           // Token-2022 mints carrying extensions need a larger token account than the
           // 165-byte base, so the figure can under-read for those. Flagged rather than
           // quietly wrong — the wallet's own preview is the authority before signing.
-          estimated: tokenProgram.equals(TOKEN_2022_PROGRAM_ID),
+          // Either leg being Token-2022 is enough: the rent line items cover both.
+          estimated:
+            tokenProgram.equals(TOKEN_2022_PROGRAM_ID) ||
+            backingProgram.equals(TOKEN_2022_PROGRAM_ID),
         },
         shortfalls,
         rpc: { host, authenticated },

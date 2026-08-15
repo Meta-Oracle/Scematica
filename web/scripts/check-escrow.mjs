@@ -129,10 +129,15 @@ const solF = facts('So11111111111111111111111111111111111111112', 'spl-token', 9
 
 check('a legal pair has no problem', pairingProblem(usdcF, solF) === null)
 check('a mint cannot back itself', /SameMint/.test(pairingProblem(usdcF, usdcF) ?? ''))
-// InitializeVault carries ONE token_program account and applies it to both legs, so this
-// pair cannot exist however sensible it looks.
-check('mixed token programs are rejected', /same token program/i.test(pairingProblem(scemaF, usdcF) ?? ''))
-check('the rejection names both sides', /Token-2022/.test(pairingProblem(scemaF, usdcF) ?? ''))
+// InitializeVault carries one token program PER LEG, so a Token-2022 token backed by a
+// legacy-SPL reserve is legal — and it is the product's central case, since new mints are
+// routinely Token-2022 while wBTC/wETH/wSOL are all legacy SPL. This assertion is inverted
+// from what it used to be; a single shared token_program account made SCEMA/wBTC, SCEMA/
+// wETH and SCEMA/SOL all unconstructible.
+check('a Token-2022 token can be backed by an SPL reserve', pairingProblem(scemaF, usdcF) === null)
+check('and the reverse pairing too', pairingProblem(usdcF, scemaF) === null)
+const otherT22 = facts('Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS', 'token-2022', 9)
+check('same-program pairs are of course still fine', pairingProblem(scemaF, otherT22) === null)
 
 console.log('\n── amounts (the money path) ──────────────────────────────')
 

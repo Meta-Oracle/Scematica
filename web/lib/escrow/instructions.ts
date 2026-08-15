@@ -125,12 +125,17 @@ export interface InitializeVaultArgs {
   payer: PublicKey
   tokenMint: PublicKey
   backingMint: PublicKey
+  /** Owner of `tokenMint` — Rust `token_token_program`. */
   tokenProgram: PublicKey
+  /** Owner of `backingMint` — Rust `backing_token_program`. May equal `tokenProgram`. */
+  backingProgram: PublicKey
 }
 
-/** Account order mirrors `InitializeVault`. Note: NO rent sysvar — it was removed from
- *  that struct to fit the 4096-byte SBF stack frame. Adding one back here would shift
- *  every subsequent account by one slot. */
+/** Account order mirrors `InitializeVault`. Two notes, both about slots:
+ *  - NO rent sysvar — it was removed from that struct to fit the 4096-byte SBF stack
+ *    frame. Adding one back here would shift every subsequent account by one slot.
+ *  - TWO token programs, one per leg, so a Token-2022 mint can be backed by a legacy-SPL
+ *    reserve. They are separate slots even when they hold the same pubkey. */
 export function initializeVaultInstruction(a: InitializeVaultArgs): TransactionInstruction {
   const vault = vaultPda(a.programId, a.tokenMint, a.backingMint)
   return new TransactionInstruction({
@@ -144,6 +149,7 @@ export function initializeVaultInstruction(a: InitializeVaultArgs): TransactionI
       meta(tokenVaultPda(a.programId, vault), false, true),
       meta(backingVaultPda(a.programId, vault), false, true),
       meta(a.tokenProgram, false, false),
+      meta(a.backingProgram, false, false),
       meta(SystemProgram.programId, false, false),
     ],
   })
@@ -154,14 +160,22 @@ export interface DepositArgs {
   depositor: PublicKey
   tokenMint: PublicKey
   backingMint: PublicKey
+  /** Owner of `tokenMint`. Also derives the depositor's token-leg ATA. */
   tokenProgram: PublicKey
+  /** Owner of `backingMint`. Also derives the depositor's backing-leg ATA. */
+  backingProgram: PublicKey
   nonce: bigint
   tokenAmount: bigint
   backingAmount: bigint
   lockSecs: bigint
 }
 
-/** Account order mirrors `Deposit`, which DOES still carry the rent sysvar. */
+/** Account order mirrors `Deposit`, which DOES still carry the rent sysvar.
+ *
+ *  Each ATA is derived with its OWN leg's token program: the ATA seeds include the token
+ *  program, so deriving the backing ATA with the token leg's program yields an address the
+ *  depositor does not own and has no balance at — on a mixed-program pair that is a
+ *  transaction which fails after the wallet has already been asked to sign. */
 export function depositInstruction(a: DepositArgs): TransactionInstruction {
   const vault = vaultPda(a.programId, a.tokenMint, a.backingMint)
   return new TransactionInstruction({
@@ -182,8 +196,9 @@ export function depositInstruction(a: DepositArgs): TransactionInstruction {
       meta(a.tokenMint, false, false),
       meta(a.backingMint, false, false),
       meta(associatedTokenAddress(a.tokenMint, a.depositor, a.tokenProgram), false, true),
-      meta(associatedTokenAddress(a.backingMint, a.depositor, a.tokenProgram), false, true),
+      meta(associatedTokenAddress(a.backingMint, a.depositor, a.backingProgram), false, true),
       meta(a.tokenProgram, false, false),
+      meta(a.backingProgram, false, false),
       meta(SystemProgram.programId, false, false),
       meta(SYSVAR_RENT_PUBKEY, false, false),
     ],

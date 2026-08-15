@@ -249,7 +249,7 @@ pub mod scemadex_vault {
 
         if backing_amount > 0 {
             transfer_from_vault(
-                &ctx.accounts.token_program,
+                &ctx.accounts.backing_token_program,
                 &ctx.accounts.backing_vault,
                 &ctx.accounts.backing_mint,
                 &ctx.accounts.depositor_backing,
@@ -260,7 +260,7 @@ pub mod scemadex_vault {
         }
         if token_amount > 0 {
             transfer_from_vault(
-                &ctx.accounts.token_program,
+                &ctx.accounts.token_token_program,
                 &ctx.accounts.token_vault,
                 &ctx.accounts.token_mint,
                 &ctx.accounts.depositor_token,
@@ -427,7 +427,7 @@ pub struct InitializeVault<'info> {
         bump,
         token::mint = token_mint,
         token::authority = vault,
-        token::token_program = token_program,
+        token::token_program = token_token_program,
     )]
     pub token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -438,11 +438,25 @@ pub struct InitializeVault<'info> {
         bump,
         token::mint = backing_mint,
         token::authority = vault,
-        token::token_program = token_program,
+        token::token_program = backing_token_program,
     )]
     pub backing_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Interface<'info, TokenInterface>,
+    /// One token program **per leg**, not one for the pair.
+    ///
+    /// These are separate accounts because the two mints need not live on the same token
+    /// program, and the interesting cases are exactly the mixed ones: a Token-2022 memecoin
+    /// (SCEMA is one) backed by legacy-SPL wBTC, wETH or wSOL. A single shared
+    /// `token_program` field made every such pair unconstructible — which is to say it made
+    /// the product's headline use case impossible — while adding no safety, since a mint's
+    /// owning program is not a matter of opinion.
+    ///
+    /// Passing the wrong program for a leg cannot create a bad vault: the `init` CPI runs
+    /// against the program named here, and `initialize_account3` fails outright when the
+    /// mint is not owned by it. Both fields may name the same program, and do whenever the
+    /// pair happens to be same-program — a duplicate account key is ordinary.
+    pub token_token_program: Interface<'info, TokenInterface>,
+    pub backing_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     // No `rent: Sysvar<'info, Rent>`. Anchor's `init` reads rent via `Rent::get()`, so
     // the account is dead weight — and on this struct it is weight the 4096-byte SBF
@@ -494,7 +508,11 @@ pub struct Deposit<'info> {
     )]
     pub depositor_backing: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Interface<'info, TokenInterface>,
+    /// Per-leg token programs — see [`InitializeVault`]. Each leg's transfer is a CPI to
+    /// the program that owns that leg's mint, so a mixed-program pair moves both halves
+    /// correctly and a mismatched program simply fails the transfer.
+    pub token_token_program: Interface<'info, TokenInterface>,
+    pub backing_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -502,7 +520,7 @@ pub struct Deposit<'info> {
 impl<'info> Deposit<'info> {
     fn token_deposit_ctx(&self) -> CpiContext<'_, '_, '_, 'info, TransferChecked<'info>> {
         CpiContext::new(
-            self.token_program.to_account_info(),
+            self.token_token_program.to_account_info(),
             TransferChecked {
                 from: self.depositor_token.to_account_info(),
                 mint: self.token_mint.to_account_info(),
@@ -514,7 +532,7 @@ impl<'info> Deposit<'info> {
 
     fn backing_deposit_ctx(&self) -> CpiContext<'_, '_, '_, 'info, TransferChecked<'info>> {
         CpiContext::new(
-            self.token_program.to_account_info(),
+            self.backing_token_program.to_account_info(),
             TransferChecked {
                 from: self.depositor_backing.to_account_info(),
                 mint: self.backing_mint.to_account_info(),
@@ -583,7 +601,9 @@ pub struct Withdraw<'info> {
     )]
     pub depositor_backing: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Interface<'info, TokenInterface>,
+    /// Per-leg token programs — see [`InitializeVault`].
+    pub token_token_program: Interface<'info, TokenInterface>,
+    pub backing_token_program: Interface<'info, TokenInterface>,
 }
 
 #[error_code]

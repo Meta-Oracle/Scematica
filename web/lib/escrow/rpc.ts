@@ -1,10 +1,23 @@
 // Escrow Market vault — chain reads. **Server-only.**
 //
-// Reads `RPC_ENDPOINT`, which carries the provider API key, so this must never be
-// imported from a client component. Same guard and same reasoning as
-// `lib/alchem/endpoint.ts`: Next only inlines `NEXT_PUBLIC_*` into client bundles, so a
-// stray import would not leak the key — it would silently fall back to a public
-// endpoint, which is the more confusing failure. The throw makes it loud.
+// Reads `ESCROW_RPC_ENDPOINT` then `RPC_ENDPOINT`, either of which carries a provider API
+// key, so this must never be imported from a client component. Same guard and same
+// reasoning as `lib/alchem/endpoint.ts`: Next only inlines `NEXT_PUBLIC_*` into client
+// bundles, so a stray import would not leak the key — it would silently fall back to a
+// public endpoint, which is the more confusing failure. The throw makes it loud.
+//
+// WHY THE ESCROW-SPECIFIC OVERRIDE EXISTS. `RPC_ENDPOINT` is shared by every server route
+// on this site, so without a dedicated variable the escrow page cannot be pointed at a
+// cluster where the vault program is deployed without dragging the market board, the
+// sniper API and everything else onto that cluster too. The vault program is a distinct
+// artifact with its own deploy lifecycle — it lands on devnet before mainnet, on purpose
+// (see programs/scematica-vault/DEPLOY.md §3) — so it needs its own endpoint.
+//
+// THE HAZARD THIS INTRODUCES, and it is a real one: the page can now read a *different
+// cluster* than the rest of the site, and a devnet vault holding test tokens minted out of
+// nothing renders exactly like a mainnet vault holding real reserve. `host` is returned on
+// every response for this reason and is the only thing distinguishing them today. Do not
+// demo this publicly without the cluster on screen.
 //
 // **There is no simulation branch in this file, by design.** Every other data path on
 // this site has one; this one must not. A fabricated reserve figure would defeat the
@@ -39,7 +52,9 @@ export interface ResolvedRpc {
 }
 
 export function resolveRpc(): ResolvedRpc {
-  const raw = process.env.RPC_ENDPOINT?.trim()
+  // Escrow-specific first, shared second. Precedence rather than replacement, so an
+  // existing deployment that only sets `RPC_ENDPOINT` keeps working untouched.
+  const raw = process.env.ESCROW_RPC_ENDPOINT?.trim() || process.env.RPC_ENDPOINT?.trim()
   const url = raw || PUBLIC_FALLBACK
   let host = 'unknown'
   try {

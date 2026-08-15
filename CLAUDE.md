@@ -318,12 +318,19 @@ teal palette (`escrow-*` tokens + `.escrow-root`). It reads the on-chain vault w
   where `decimals` lives is part of the amount field, so decoding one as the other yields
   a decimals value read out of somebody's balance.
 - **Anything pasteable is vaultable.** The board is a convenience, not the menu: the vault
-  program takes any pair of SPL mints on the *same* token program (`InitializeVault`
-  carries one `token_program` for both legs — `pairingProblem` catches the mismatch before
-  a signature is spent). A token minted seconds ago is on no token list, and those are the
-  ones this page is about, so an unlisted symbol renders as the truncated mint rather than
-  blocking. Board rows are controls: selection lives in `MarketTerminal`, so clicking any
-  row loads that mint into the builder.
+  program takes any pair of distinct SPL mints, on either token program and **not
+  necessarily the same one**. `InitializeVault`, `Deposit` and `Withdraw` each carry one
+  token program *per leg* (`token_token_program` / `backing_token_program`) precisely so a
+  Token-2022 mint can be backed by legacy-SPL wBTC / wETH / wSOL — the earlier single
+  shared `token_program` account made every such pair unconstructible, which barred the
+  product's central case since new mints are routinely Token-2022 (SCEMA is) and the
+  reserve assets are all legacy SPL. `pairingProblem` therefore rejects only `SameMint`.
+  Each leg's ATA must be derived with its *own* program (the ATA seeds include the token
+  program), or a mixed pair signs a transaction against an address the depositor does not
+  own. A token minted seconds ago is on no token list, and those are the ones this page is
+  about, so an unlisted symbol renders as the truncated mint rather than blocking. Board
+  rows are controls: selection lives in `MarketTerminal`, so clicking any row loads that
+  mint into the builder.
 
 The `Vault` byte layout in `lib/escrow/program.ts` mirrors `programs/scemadex-vault/src/
 lib.rs`; **Rust is authoritative**. A field added there must be added here in the same

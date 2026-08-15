@@ -92,10 +92,41 @@ tests** — they are the ones asserting the guarantee:
 | 8 | `withdraw` after unlock, correct depositor | returns both legs exactly; position closed |
 | 9 | replay the same `withdraw` transaction | fails — position account no longer exists |
 | 10 | two depositors in one vault; A withdraws | B's funds untouched, totals correct |
+| 11 | `initialize_vault` for a **Token-2022 token backed by a legacy-SPL reserve** | vault created; the two PDA token accounts are owned by *different* token programs |
+| 12 | full deposit → withdraw cycle on that mixed pair | both legs move; each transfer CPIs to its own leg's program |
+| 13 | `initialize_vault` passing the *wrong* program for a leg | fails — `initialize_account3` rejects a mint the program does not own |
 
 Test 10 is the one that catches the worst class of bug: `withdraw` transfers the
 *recorded* amounts, never the vault balance, precisely so one position cannot reach
 another's funds. Verify the balances rather than trusting the return code.
+
+Tests 11 and 12 are automated — `web/scripts/devnet-vault-lifecycle.mjs` drives the real
+instruction builders from `web/lib/escrow/instructions.ts`, so an account-order drift
+between the Rust structs and the web client fails there rather than in front of a user
+holding a signature prompt:
+
+```powershell
+cd web
+$env:RPC_ENDPOINT="<devnet rpc>"
+node scripts/devnet-vault-lifecycle.mjs <TOKEN_2022_MINT> <SPL_MINT>
+```
+
+Create the two mints first, one on each token program, or the run proves nothing about the
+mixed path (it says so and passes vacuously):
+
+```powershell
+spl-token create-token --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb --decimals 6
+spl-token create-token --decimals 8
+spl-token create-account <MINT> ; spl-token mint <MINT> <AMOUNT>    # for each
+```
+
+Tests 11–13 exercise the per-leg token programs. This is the product's central case, not
+an edge one: newly minted tokens are routinely Token-2022 while wBTC, wETH and wSOL are
+all legacy SPL, so almost every real vault is a mixed pair. The structs carry
+`token_token_program` and `backing_token_program` as separate accounts — pass the same
+pubkey twice for a same-program pair, which is ordinary and not an error. Test 13 asserts
+the failure mode is a clean CPI rejection rather than a vault created against the wrong
+program.
 
 ## 4. Mainnet deploy
 

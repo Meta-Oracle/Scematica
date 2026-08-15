@@ -155,16 +155,20 @@ export function displaySymbol(mint: string, label?: MintLabel | null): string {
 /**
  * Can these two mints share one vault?
  *
- * `InitializeVault` carries a single `token_program` account and applies it to both
- * legs, so a Token-2022 token cannot be backed by a legacy SPL reserve. The program
- * rejects it; saying so here spends no signature and no fee.
+ * Exactly one thing makes a pair illegal: a mint cannot back itself (`VaultError::
+ * SameMint`), because the published ratio would be meaningless.
+ *
+ * MIXED TOKEN PROGRAMS ARE LEGAL, and this is worth stating because it used to be the
+ * opposite. `InitializeVault` originally carried a single `token_program` account and
+ * applied it to both legs, which made a Token-2022 token backed by a legacy-SPL reserve
+ * unconstructible — i.e. it barred the product's central case, since new mints are
+ * routinely Token-2022 (SCEMA is) while wBTC, wETH and wSOL are all legacy SPL. The
+ * program now takes one token program *per leg*, so the pairing is decided by each mint's
+ * own owner and never by the other side's.
  */
 export function pairingProblem(token: MintFacts, backing: MintFacts): string | null {
   if (token.mint === backing.mint) {
     return 'A token cannot be backed by itself — the program rejects this as SameMint.'
-  }
-  if (token.program !== backing.program) {
-    return `Both mints must live on the same token program. This token is ${PROGRAM_LABEL[token.program]} and the reserve is ${PROGRAM_LABEL[backing.program]} — the vault has one token_program account for both legs.`
   }
   return null
 }

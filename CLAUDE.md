@@ -28,6 +28,12 @@ cargo run --release -p pool-seeder           # Seed pools/ (arb graph) — REQUI
 cargo run --release --bin arb                # Arb standalone (program-less by default: no on-chain deploy; atomic min-out profit-or-revert. Set SWAP_PROGRAM_ID to use a deployed program, or ARB_PROGRAM_LESS=1/0 to force)
 cargo run --release --bin scematica-protocol -- --pay-to <wallet> --price-lamports 10000
 
+# Scematica Mesh TUI — the running system's own topology (read-only, safe against a live bot)
+cargo run --release -p mesh-dashboard                 # live graph of the current dir
+cargo run --release -p mesh-dashboard -- /path/to/bot --interval 2
+cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipeable)
+cargo run --release -p mesh-dashboard -- --json       # raw mesh
+
 # ScemaDEX agentic-liquidity layer (separate from the bot)
 cargo run --release --bin sdk-dashboard           # SDK TUI over the bond pipeline (SIM)
 cargo run --release --bin sdk-dashboard -- --live # real Jupiter quotes through the bonds
@@ -126,6 +132,10 @@ crates/
                         inference, separate workspace) and from the data-integrity Ψ in
                         `scematica-sentience`: that one asks "can this data be trusted",
                         this one asks "do the subsystems agree". Bin: none; `examples/dump`.
+  mesh-dashboard/       Ratatui TUI over `scematica-mesh` — the topology as a live terminal
+                        graph. Separate crate so `scematica-mesh` stays a lean read-only
+                        library (same split as `scemadex-sdk` vs `sdk-dashboard`).
+                        Bin: `mesh-dashboard`; `scematica mesh` via the launcher.
   scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
                         launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
@@ -495,6 +505,7 @@ The sniper and dashboard are separate processes that communicate exclusively thr
 | `scematica-nn-stats.json` | NN agent | dashboard | ε, steps, replay size, total reward |
 | `scematica-nn-agent.json` | NN agent | NN agent | Model checkpoint (every 10 min) |
 | `scematica-nn-tournament.json` | NN tournament | NN tournament | Per-variant rewards + primary |
+| `scematica-nn-veto.json` | sniper | sniper | DQ* consecutive-veto streak + the `train_steps` it belongs to. Persisted because the streak backstop needs 12 vetoes and the process restarts more often than it sees 12 buy-ready pools — in-memory it had never once fired. A checkpoint whose `train_steps` went backwards is a different agent and resets the streak. |
 | `scematica-deployer-reputation.json` | reputation ledger | filters | Per-deployer rug/success EMA |
 | `scematica-strategy.json` | AI strategy agent | sniper (live_params) | TP/SL/multiplier/regime |
 | `scematica-rate-mode.json` | dashboard | sniper (live_params) | Active rate mode + TP/SL |

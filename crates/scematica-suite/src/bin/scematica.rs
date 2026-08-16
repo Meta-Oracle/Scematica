@@ -22,6 +22,7 @@ const COMMANDS: &[(&str, &str, &str, &str)] = &[
     ("sniper", "sniper", "scematica-sniper", "New-pool sniper engine (needs keypair + RPC)"),
     ("backtest", "backtest", "scematica-sniper", "Replay pool history through the filter + TP/SL sim"),
     ("protocol", "protocol", "scematica-protocol", "x402 HTTP 402 payment facilitator server"),
+    ("mesh", "mesh-dashboard", "mesh-dashboard", "The system's own topology as a live graph (--once for text)"),
     ("ddqn", "scema-ddqn", "scematica-nn", "Deep Q* agent live training viewer"),
     ("scemadex", "scemadex", "scemadex-sdk", "ScemaDEX agentic-liquidity live viewer"),
     ("mcp", "scemadex-mcp", "scemadex-mcp", "MCP server exposing the ScemaDEX rail to LLM agents"),

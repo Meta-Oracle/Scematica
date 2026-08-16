@@ -174,6 +174,8 @@ pub struct Sniper {
     /// else. Retained as a coarse backstop for the window before the dispersion monitor
     /// has enough samples to speak; `equations` below is the principled measure.
     nn_veto_streak: Arc<AtomicU64>,
+    /// False until the persisted streak has been read once this process.
+    nn_veto_streak_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Running evaluation of the Scematica equations (see `EQUATIONS.md`).
     ///
     /// Supplies the intelligence ratio `I = Var_p[Q*] / E_p[Q*]²` — the quantity that
@@ -293,6 +295,66 @@ pub struct LivePositionSnapshot {
 }
 
 const MINT_COOLDOWN_FILE: &str = "scematica-mint-cooldown.json";
+
+const NN_VETO_STATE_FILE: &str = "scematica-nn-veto.json";
+
+/// Does this exit count toward the session-heat loss breaker?
+///
+/// Keyed on realised PnL, deliberately NOT on whether the trade reached its take-profit
+/// target. Those are different questions and conflating them is what let a run of winners
+/// arm a breaker named for losses — see the comment at the call site.
+fn counts_toward_session_heat(pnl_lamports: i64) -> bool {
+    pnl_lamports < 0
+}
+
+/// Load the persisted DQ* veto streak, or 0 if it does not apply.
+///
+/// The streak backstop exists so a net that has rejected every candidate loses the
+/// authority to hold the trading path shut on its own. It was unreachable in practice:
+/// both it and `MIN_DISPERSION_SAMPLES` need 12 buy-ready pools **inside one process**,
+/// and this bot restarts far more often than it sees 12 buy-ready pools. Measured
+/// 2026-08-16: 366 lifetime vetoes, 100% of them `SELL_PARTIAL`, and the session that day
+/// saw 2 buy-ready pools with `samples: 1` — so the guard added on 2026-08-12 had never
+/// once executed. Persisting the count is what turns it from code into a control.
+///
+/// `train_steps` guards against carrying a dead net's history onto a live one: a
+/// checkpoint that has gone backwards is a different agent (reset, archived, rolled back)
+/// and must start with a clean slate, or a fresh net inherits the last one's disgrace.
+fn load_nn_veto_streak(train_steps: u64) -> u64 {
+    std::fs::read_to_string(artifact_path(NN_VETO_STATE_FILE))
+        .ok()
+        .map(|raw| parse_nn_veto_streak(&raw, train_steps))
+        .unwrap_or(0)
+}
+
+/// The decision half of [`load_nn_veto_streak`], separated so it is testable without
+/// touching the working directory.
+fn parse_nn_veto_streak(raw: &str, train_steps: u64) -> u64 {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return 0;
+    };
+    let saved_steps = v.get("train_steps").and_then(|s| s.as_u64()).unwrap_or(0);
+    if saved_steps > train_steps {
+        info!(
+            saved_steps,
+            train_steps, "DQ*: checkpoint went backwards — discarding persisted veto streak"
+        );
+        return 0;
+    }
+    v.get("streak").and_then(|s| s.as_u64()).unwrap_or(0)
+}
+
+/// Persist the streak. Atomic tmp+rename, per the File-Based IPC convention.
+fn save_nn_veto_streak(streak: u64, train_steps: u64) {
+    let path = artifact_path(NN_VETO_STATE_FILE);
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::json!({ "streak": streak, "train_steps": train_steps });
+    if let Ok(s) = serde_json::to_string(&body) {
+        if std::fs::write(&tmp, &s).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
 
 /// Load the persisted mint re-entry cooldown map from disk.
 /// Entries that have already expired (older than mint_cooldown_secs) are dropped on load
@@ -459,6 +521,7 @@ impl Sniper {
             nn_agent,
             processing_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             nn_veto_streak: Arc::new(AtomicU64::new(0)),
+            nn_veto_streak_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             equations: Arc::new(Mutex::new(EquationMonitor::default())),
             // (accessor: `Sniper::equations()` — the stats flush task in main.rs reads
             // this to publish the equation terms alongside the agent snapshot.)
@@ -2392,12 +2455,24 @@ impl Sniper {
                             // twelve consecutive candidates has stopped being a gate, and
                             // no amount of measured dispersion should let it hold the
                             // trading path shut on its own.
+                            // Seed from disk on the first evaluation of this process, so a
+                            // net that has been vetoing across restarts is judged on its
+                            // whole record rather than on however many pools happened to
+                            // arrive since the last launch.
+                            if !self.nn_veto_streak_loaded.swap(true, Ordering::Relaxed) {
+                                let restored = load_nn_veto_streak(train_steps as u64);
+                                if restored > 0 {
+                                    info!(restored, "DQ*: restored persisted veto streak");
+                                    self.nn_veto_streak.store(restored, Ordering::Relaxed);
+                                }
+                            }
                             let streak = if decisive {
                                 self.nn_veto_streak.fetch_add(1, Ordering::Relaxed) + 1
                             } else {
                                 self.nn_veto_streak.store(0, Ordering::Relaxed);
                                 0
                             };
+                            save_nn_veto_streak(streak, train_steps as u64);
                             let stuck = match verdict {
                                 Verdict::Collapsed | Verdict::ActionCollapsed => true,
                                 // A net that is reading its input keeps its veto, even
@@ -5385,28 +5460,46 @@ impl SellMonitor {
             self.consecutive_losses.store(0, Ordering::Relaxed);
         } else {
             self.consecutive_losses.fetch_add(1, Ordering::Relaxed);
+        }
 
-            // Session heat: accumulate loss timestamps and trigger cooldown if threshold hit
-            if self.config.session_heat_losses > 0 && self.config.session_heat_window_secs > 0 {
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let mut ts = self.loss_heat_timestamps.lock();
-                ts.push(now_secs);
-                let window = self.config.session_heat_window_secs;
-                ts.retain(|&t| now_secs.saturating_sub(t) < window);
-                if ts.len() >= self.config.session_heat_losses as usize {
-                    let cooldown_secs = self.config.session_heat_cooldown_mins as u64 * 60;
-                    let until_ms = (now_secs + cooldown_secs) * 1000;
-                    self.cooldown_until_ms.store(until_ms, Ordering::Relaxed);
-                    warn!(
-                        losses_in_window = ts.len(),
-                        window_secs = window,
-                        cooldown_mins = self.config.session_heat_cooldown_mins,
-                        "Session heat limit reached — pausing buys for cooldown"
-                    );
-                }
+        // Session heat counts LOSSES — trades that lost money — and nothing else.
+        //
+        // It used to hang off `!profitable`, and `profitable` does not mean "made money":
+        // it is `current_value >= target_profit`, i.e. *reached the take-profit target*.
+        // With `take_profit_pct = 175`, a +100% winner is not "profitable" by that test,
+        // so a run of good trades armed the loss breaker exactly as fast as a run of rugs
+        // — and since almost nothing reaches +175%, the breaker tripped on essentially
+        // any three exits inside the window and capped throughput at ~3 trades per 45
+        // minutes permanently. Measured 2026-08-16: three exits at −0.50% tripped it at
+        // 20:29:46 and 87 of the next 97 pools were skipped `session_heat_cooldown`,
+        // which read as "the bot stopped buying again" and is not what a breaker named
+        // for losses should do.
+        //
+        // `pnl_lamports < 0` is the honest test. A winner that missed TP no longer counts
+        // against the operator, and three genuine losers still pause buys, which is the
+        // protection the breaker was added for.
+        if counts_toward_session_heat(pnl_lamports)
+            && self.config.session_heat_losses > 0
+            && self.config.session_heat_window_secs > 0
+        {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut ts = self.loss_heat_timestamps.lock();
+            ts.push(now_secs);
+            let window = self.config.session_heat_window_secs;
+            ts.retain(|&t| now_secs.saturating_sub(t) < window);
+            if ts.len() >= self.config.session_heat_losses as usize {
+                let cooldown_secs = self.config.session_heat_cooldown_mins as u64 * 60;
+                let until_ms = (now_secs + cooldown_secs) * 1000;
+                self.cooldown_until_ms.store(until_ms, Ordering::Relaxed);
+                warn!(
+                    losses_in_window = ts.len(),
+                    window_secs = window,
+                    cooldown_mins = self.config.session_heat_cooldown_mins,
+                    "Session heat limit reached — pausing buys for cooldown"
+                );
             }
         }
 
@@ -5864,5 +5957,76 @@ impl SellMonitor {
             self.config.max_sell_retries,
             pool.base_mint
         )
+    }
+}
+
+#[cfg(test)]
+mod session_heat_tests {
+    use super::counts_toward_session_heat;
+
+    /// The bug: `profitable` means `current_value >= target_profit` — *reached the
+    /// take-profit target* — so with TP at 175% a +100% winner was filed as a loss and
+    /// armed the breaker exactly as fast as a rug did.
+    #[test]
+    fn a_winner_that_missed_take_profit_is_not_a_loss() {
+        // +100% on a 0.02 SOL entry, against a 175% target: a good trade.
+        assert!(!counts_toward_session_heat(20_000_000));
+        assert!(!counts_toward_session_heat(1));
+    }
+
+    #[test]
+    fn a_real_loss_still_counts() {
+        assert!(counts_toward_session_heat(-1));
+        // The three -0.50% exits measured 2026-08-16.
+        assert!(counts_toward_session_heat(-147_419));
+    }
+
+    /// Break-even is not a loss. It costs nothing and must not spend a heat slot.
+    #[test]
+    fn break_even_is_not_a_loss() {
+        assert!(!counts_toward_session_heat(0));
+    }
+}
+
+#[cfg(test)]
+mod nn_veto_state_tests {
+    use super::parse_nn_veto_streak;
+
+    /// The whole point: a streak accumulated before a restart still counts. Without this
+    /// the backstop needs 12 consecutive vetoes inside one process, and on 2026-08-16 the
+    /// session that vetoed saw 2 buy-ready pools total — so it had never fired once.
+    #[test]
+    fn a_streak_survives_a_restart() {
+        let saved = r#"{"streak":11,"train_steps":39096}"#;
+        assert_eq!(parse_nn_veto_streak(saved, 39_200), 11);
+    }
+
+    /// A checkpoint that went backwards is a DIFFERENT agent — reset, archived, or rolled
+    /// back. Inheriting the old one's streak would have the fresh net judged stuck before
+    /// it had made a single decision, which is exactly what archiving it was meant to undo.
+    #[test]
+    fn a_reset_checkpoint_starts_with_a_clean_slate() {
+        let saved = r#"{"streak":366,"train_steps":39096}"#;
+        assert_eq!(parse_nn_veto_streak(saved, 0), 0, "a fresh net inherits nothing");
+        assert_eq!(parse_nn_veto_streak(saved, 12), 0);
+        // Equal step counts are the same agent resuming, not a reset.
+        assert_eq!(parse_nn_veto_streak(saved, 39_096), 366);
+    }
+
+    /// Absent, truncated or malformed state must read as "no streak", never as a veto the
+    /// operator cannot see the origin of.
+    #[test]
+    fn unreadable_state_is_not_a_streak() {
+        assert_eq!(parse_nn_veto_streak("", 100), 0);
+        assert_eq!(parse_nn_veto_streak("{ not json", 100), 0);
+        assert_eq!(parse_nn_veto_streak("{}", 100), 0);
+        assert_eq!(parse_nn_veto_streak(r#"{"streak":"twelve"}"#, 100), 0);
+    }
+
+    /// A file with no `train_steps` predates the guard; treat it as belonging to whatever
+    /// agent is running now rather than discarding a real streak.
+    #[test]
+    fn state_without_train_steps_is_still_honoured() {
+        assert_eq!(parse_nn_veto_streak(r#"{"streak":7}"#, 500), 7);
     }
 }

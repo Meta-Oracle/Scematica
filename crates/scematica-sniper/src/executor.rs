@@ -16,6 +16,24 @@ use solana_sdk::{
 use std::{sync::Arc, time::Instant};
 use tracing::{debug, info, warn};
 
+/// Render a `TransactionError` so the retry classifier sees the program's custom code in
+/// the same `0x..` form the RPC uses in its own error strings.
+///
+/// Necessary because the two sources disagree on spelling for the identical failure. A
+/// preflight rejection arrives as text already containing `custom program error: 0x1e`,
+/// but a status read arrives as a typed `TransactionError` whose `Debug` is
+/// `InstructionError(7, Custom(30))` — decimal, no `0x`. Matching on the debug form alone
+/// would classify an on-chain slippage revert as an unknown transient purely because it
+/// was discovered by polling rather than by preflight.
+fn format_tx_error(e: &solana_sdk::transaction::TransactionError) -> String {
+    use solana_sdk::instruction::InstructionError;
+    use solana_sdk::transaction::TransactionError;
+    if let TransactionError::InstructionError(ix, InstructionError::Custom(code)) = e {
+        return format!("InstructionError({ix}, Custom({code})) custom program error: {code:#x}");
+    }
+    format!("{e:?}")
+}
+
 /// Result of a transaction execution attempt
 #[derive(Debug, Clone)]
 pub struct ExecResult {
@@ -285,31 +303,119 @@ impl TxExecutor for DefaultExecutor {
             const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(400);
 
             let send_started = Instant::now();
-            let outcome = tokio::time::timeout(per_attempt_deadline, async {
-                // 1. Fire the tx (non-blocking — returns once the RPC accepts it).
-                let sig = rpc.send_transaction_with_config(&tx, send_config).await?;
 
-                // 2. Poll for `processed` commitment. `processed` is the fastest meaningful
-                //    state on Solana — typically lands within 400–800 ms. Waiting for
-                //    `confirmed` here costs another 800–1500 ms per snipe with no value
-                //    because the sell-monitor verifies the position via on-chain balance
-                //    read anyway.
-                loop {
-                    match rpc
-                        .confirm_transaction_with_commitment(&sig, CommitmentConfig::processed())
-                        .await
-                    {
-                        Ok(resp) if resp.value => return Ok::<_, anyhow::Error>(sig),
-                        Ok(_) => tokio::time::sleep(POLL_INTERVAL).await,
-                        Err(e) => return Err(e.into()),
+            // THE SIGNATURE MUST OUTLIVE THE CONFIRMATION DEADLINE.
+            //
+            // Send and confirm used to sit inside one `timeout`, so when the deadline
+            // expired the whole future was dropped — signature included — and the caller
+            // was told "timeout". But the transaction had already been accepted by the
+            // cluster at that point. Two bad outcomes followed, and the second is much
+            // worse than the one that prompted this:
+            //
+            //   • A tx that landed and REVERTED was reported as a timeout, so the
+            //     error-specific retry logic below never saw the real reason. Measured
+            //     2026-08-16: a buy reverted with Raydium's "Exceeded desired slippage
+            //     limit" and the bot logged `timed out after 6s`, then burned two more
+            //     attempts on the same min_out.
+            //   • A tx that landed and SUCCEEDED would be reported as failed. That is an
+            //     untracked position: tokens bought, no sell-monitor spawned, no stop
+            //     loss, no exit. With real capital that is the worst failure in the file,
+            //     and it was one slow RPC response away at any time.
+            //
+            // So: send under its own deadline, keep the signature, then poll under the
+            // remaining budget. On expiry, ask the cluster once what actually happened.
+            // ── 1. Send, under its own deadline, keeping the signature. ──────────
+            let send_deadline = per_attempt_deadline / 2;
+            let sent = tokio::time::timeout(
+                send_deadline,
+                rpc.send_transaction_with_config(&tx, send_config),
+            )
+            .await;
+
+            // Set only when the send itself failed, so the shared "undecided" path below
+            // can report why instead of a bare deadline.
+            let mut send_error: Option<String> = None;
+            let sig = match sent {
+                Ok(Ok(sig)) => Some(sig),
+                // The RPC rejected it outright (preflight, malformed, 429). Nothing
+                // reached the cluster, so there is no signature to reconcile.
+                Ok(Err(e)) => {
+                    send_error = Some(e.to_string());
+                    None
+                }
+                // No signature came back, so we cannot know whether the cluster saw it.
+                Err(_) => {
+                    send_error = Some(format!("send timed out after {send_deadline:?}"));
+                    None
+                }
+            };
+
+            // ── 2. Poll the signature's real status. ─────────────────────────────
+            //
+            // `confirm_transaction_with_commitment` cannot be used here: it collapses
+            // `status.is_ok()` into the same `false` it returns for "not seen yet", so a
+            // REVERTED transaction is indistinguishable from a pending one and the loop
+            // simply spins until the deadline. That is the mechanism behind the
+            // 2026-08-16 report of `timed out after 6s` for a buy that had in fact
+            // already reverted on-chain with Raydium's slippage error two seconds in.
+            //
+            // `get_signature_statuses` keeps the three cases apart: absent (keep
+            // polling), present-with-err (a decided failure — return the real reason so
+            // the classifier below can act on it), present-without-err (landed).
+            let outcome: Option<Result<solana_sdk::signature::Signature, String>> = match sig {
+                None => None,
+                Some(sig) => {
+                    let confirm_budget =
+                        per_attempt_deadline.saturating_sub(send_started.elapsed());
+                    let polled = tokio::time::timeout(confirm_budget, async {
+                        loop {
+                            match rpc.get_signature_statuses(&[sig]).await {
+                                Ok(resp) => match resp.value.first().and_then(|s| s.as_ref()) {
+                                    Some(status)
+                                        if status.satisfies_commitment(
+                                            CommitmentConfig::processed(),
+                                        ) =>
+                                    {
+                                        return match &status.err {
+                                            Some(e) => Err(format_tx_error(e)),
+                                            None => Ok(sig),
+                                        };
+                                    }
+                                    // Not seen yet, or seen below our commitment.
+                                    _ => tokio::time::sleep(POLL_INTERVAL).await,
+                                },
+                                // A failed status query says nothing about the tx.
+                                Err(_) => tokio::time::sleep(POLL_INTERVAL).await,
+                            }
+                        }
+                    })
+                    .await;
+
+                    match polled {
+                        Ok(decided) => Some(decided),
+                        // The polling budget ran out. Ask once more, directly: the
+                        // cluster is the authority, and on a throttled RPC the answer
+                        // frequently arrives just after the budget expires. Reporting a
+                        // landed buy as failed would leave an untracked position with no
+                        // sell-monitor and no stop loss — the worst outcome in this file.
+                        Err(_) => match rpc.get_signature_statuses(&[sig]).await {
+                            Ok(resp) => resp
+                                .value
+                                .first()
+                                .and_then(|s| s.as_ref())
+                                .map(|status| match &status.err {
+                                    Some(e) => Err(format_tx_error(e)),
+                                    None => Ok(sig),
+                                }),
+                            Err(_) => None,
+                        },
                     }
                 }
-            })
-            .await;
+            };
             send_confirm_ms_total += send_started.elapsed().as_millis() as u64;
 
             match outcome {
-                Ok(Ok(sig)) => {
+                Some(Ok(sig)) => {
                     info!("Transaction landed: {}", sig);
                     let sig_str = sig.to_string();
                     append_tx_telemetry(
@@ -341,16 +447,29 @@ impl TxExecutor for DefaultExecutor {
                         error: None,
                     });
                 }
-                Ok(Err(e)) => {
-                    let err_str = e.to_string();
+                Some(Err(err_str)) => {
                     warn!("Transaction attempt {} failed: {}", attempt + 1, err_str);
                     // Error-specific retry delay:
-                    //   Slippage (0x26): immediate — rebuild with zero min_out at the do_sell layer
+                    //   Slippage: immediate — rebuild with zero min_out at the do_sell layer
                     //   BlockhashNotFound: immediate — fresh hash already fetched at loop top
                     //   Rate-limit (429): exponential backoff (Helius free-plan window ~10 s)
                     //   High-speed: always immediate regardless of error type
                     //   Other transient: short 200 ms gap
-                    let is_slippage = err_str.contains("0x26") || err_str.contains("slippage");
+                    //
+                    // `0x1e` is the one that matters and it was missing until 2026-08-16.
+                    // Raydium AMM V4 (675kPX9…) returns **30 / 0x1e** for
+                    // `ExceededSlippage` — confirmed on-chain from the program's own log,
+                    // `AMM error: Exceeded desired slippage limit.` followed by
+                    // `custom program error: 0x1e`. Matching only `0x26` (38) meant a real
+                    // Raydium slippage revert was classified as an unknown transient: no
+                    // zero-slippage rebuild, no immediate retry, just a 200 ms nap and two
+                    // more attempts at the same doomed min_out. Both codes stay listed —
+                    // other DEXes in the executor use their own numbering — and the
+                    // human-readable form is matched too, since it survives any
+                    // renumbering the programs do later.
+                    let is_slippage = err_str.contains("0x1e")
+                        || err_str.contains("0x26")
+                        || err_str.to_ascii_lowercase().contains("slippage");
                     let is_blockhash = err_str.contains("BlockhashNotFound")
                         || err_str.contains("Blockhash not found");
                     let is_rate_limit = err_str.contains("429");
@@ -405,16 +524,23 @@ impl TxExecutor for DefaultExecutor {
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                     }
                 }
-                Err(_) => {
+                // Undecided: either the send never produced a signature, or the cluster
+                // still had no status for it after the final direct check. This is the
+                // only branch entitled to say "timeout" — an on-chain revert now lands
+                // in the arm above with its real reason.
+                None => {
                     timeout_count += 1;
+                    let reason = send_error
+                        .clone()
+                        .unwrap_or_else(|| format!("timeout after {per_attempt_deadline:?}"));
                     warn!(
-                        "Transaction attempt {}/{} timed out after {:?}",
+                        "Transaction attempt {}/{} undecided: {}",
                         attempt + 1,
                         self.max_retries,
-                        per_attempt_deadline,
+                        reason,
                     );
                     if attempt + 1 >= self.max_retries {
-                        let err = format!("timeout after {:?}", per_attempt_deadline);
+                        let err = reason.clone();
                         append_tx_telemetry(
                             "default",
                             tx_kind,
@@ -740,5 +866,69 @@ impl TxExecutor for JitoExecutor {
                 error: Some(err),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::instruction::InstructionError;
+    use solana_sdk::transaction::TransactionError;
+
+    /// The exact failure measured on-chain 2026-08-16 (sig 5X7CTRDb…svvfJWs): a buy that
+    /// landed and reverted with Raydium AMM V4's "Exceeded desired slippage limit".
+    ///
+    /// It must render with the `0x1e` spelling, because the retry classifier reads a
+    /// string and the typed error's own `Debug` says `Custom(30)`. Getting this wrong is
+    /// silent: the buy still fails, it is just filed as an unknown transient and the
+    /// zero-slippage rebuild never runs.
+    #[test]
+    fn a_raydium_slippage_revert_renders_with_its_hex_code() {
+        let e = TransactionError::InstructionError(7, InstructionError::Custom(30));
+        let s = format_tx_error(&e);
+        assert!(s.contains("0x1e"), "got: {s}");
+        assert!(s.contains("Custom(30)"), "the raw form stays readable too: {s}");
+    }
+
+    /// Whatever discovers the failure — preflight text or a polled status — the classifier
+    /// must reach the same verdict. These are the two spellings of one event.
+    #[test]
+    fn both_spellings_of_a_slippage_failure_classify_alike() {
+        let is_slippage = |s: &str| {
+            s.contains("0x1e") || s.contains("0x26") || s.to_ascii_lowercase().contains("slippage")
+        };
+        let from_status =
+            format_tx_error(&TransactionError::InstructionError(7, InstructionError::Custom(30)));
+        let from_preflight =
+            "Error processing Instruction 7: custom program error: 0x1e".to_string();
+        assert!(is_slippage(&from_status), "status form: {from_status}");
+        assert!(is_slippage(&from_preflight));
+        // And the human-readable form the program logs, in case codes are renumbered.
+        assert!(is_slippage("AMM error: Exceeded desired slippage limit."));
+    }
+
+    /// A revert that is NOT slippage must not be swept into the slippage path — that path
+    /// rebuilds the swap with `min_out = 0`, which on a genuinely broken pool is how you
+    /// buy the top with no floor at all.
+    #[test]
+    fn unrelated_reverts_are_not_treated_as_slippage() {
+        let is_slippage = |s: &str| {
+            s.contains("0x1e") || s.contains("0x26") || s.to_ascii_lowercase().contains("slippage")
+        };
+        let insufficient = format_tx_error(&TransactionError::InsufficientFundsForFee);
+        assert!(!is_slippage(&insufficient), "got: {insufficient}");
+        // Custom(1) — seen on this wallet 2026-08-14 — is not slippage.
+        let other =
+            format_tx_error(&TransactionError::InstructionError(2, InstructionError::Custom(1)));
+        assert!(!is_slippage(&other), "got: {other}");
+    }
+
+    /// Non-instruction errors still have to say something useful.
+    #[test]
+    fn other_transaction_errors_keep_their_debug_form() {
+        assert_eq!(
+            format_tx_error(&TransactionError::BlockhashNotFound),
+            "BlockhashNotFound"
+        );
     }
 }

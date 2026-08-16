@@ -1,0 +1,26 @@
+[package]
+name = "mesh-dashboard"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica Mesh TUI — the running system's own topology as a live terminal graph, with the §32 coherence gate over it."
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+keywords = ["observability", "topology", "tui", "visualization", "trading"]
+categories = ["visualization", "command-line-utilities"]
+
+[[bin]]
+name = "mesh-dashboard"
+path = "src/main.rs"
+
+# `scematica-mesh` stays a lean read-only library — it is published for consumers that
+# only want the collector, and forcing ratatui + crossterm on them to ship a terminal UI
+# would be the same mistake as putting the TUI in `scemadex-sdk` instead of
+# `sdk-dashboard`. The rendering lives here; the crate next door owns the observation.
+[dependencies]
+scematica-mesh = { path = "../scematica-mesh" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

@@ -21,6 +21,7 @@ members = [
     "agent-playground",
     "crates/scematica-sentience",
     "crates/scematica-mesh",
+    "crates/mesh-dashboard",
 ]
 # The on-chain programs use Anchor and must be built separately with `anchor build`
 exclude = [

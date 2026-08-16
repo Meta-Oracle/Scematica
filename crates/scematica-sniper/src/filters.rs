@@ -128,6 +128,56 @@ impl FilterRejection {
 /// fail open than hold the whole pipeline.
 const RPC_CALL_TIMEOUT_SECS: u64 = 3;
 
+/// Maximum RPC calls the filter pipeline keeps in flight at once.
+///
+/// This is a **safety** control, not a politeness one. Every RPC-bound filter fails open,
+/// so a throttled provider does not slow the pipeline down — it silently converts it into
+/// a pass-through that still reports "passed". A skipped Freezable check is how you buy a
+/// token you cannot sell.
+///
+/// MEASURED against this deployment's keyed Helius endpoint, 2026-08-16, identical
+/// `getAccountInfo` calls issued concurrently:
+///
+/// ```text
+///   10 in flight →  10 ok,  0 rate-limited
+///   25 in flight →  22 ok,  3 rate-limited
+///   50 in flight →   0 ok, 50 rate-limited      ← total wipeout
+/// ```
+///
+/// Several pools evaluate at once and each runs several RPC-bound filters, so the
+/// unbounded pipeline routinely crossed 50 and lost *every* check. That is the
+/// `resolution_rate=49%` in the 2026-08-16 logs, and it is why the coherence breaker was
+/// halting buys: the breaker was right, the pipeline really was flying blind.
+///
+/// 8 sits below the measured clean ceiling with headroom for the executor's own calls,
+/// which take a different path and must never be starved by filter traffic — landing a
+/// sell matters more than verifying a pool we have not bought yet.
+const MAX_INFLIGHT_RPC: usize = 8;
+
+/// How long a call will queue for a permit before giving up.
+///
+/// Queuing is strictly better than failing open — a check that answers late still
+/// answers, and a check that fails open answers nothing while looking like a pass. But it
+/// cannot be unbounded, or a stalled provider backs the whole pipeline up behind it.
+const PERMIT_WAIT_SECS: u64 = 3;
+
+static RPC_INFLIGHT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+
+fn rpc_gate() -> &'static tokio::sync::Semaphore {
+    RPC_INFLIGHT.get_or_init(|| tokio::sync::Semaphore::new(MAX_INFLIGHT_RPC))
+}
+
+/// Acquire an in-flight slot, or `None` if the pipeline is saturated.
+async fn rpc_permit() -> Option<tokio::sync::SemaphorePermit<'static>> {
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(PERMIT_WAIT_SECS),
+        rpc_gate().acquire(),
+    )
+    .await
+    .ok()?
+    .ok()
+}
+
 fn is_rate_limited(e: &str) -> bool {
     e.contains("429") || e.contains("Too Many Requests")
 }
@@ -152,11 +202,20 @@ async fn get_account_retried_inner(
     retries: u32,
 ) -> Option<Account> {
     for attempt in 0..retries {
+        // Bounded concurrency: see MAX_INFLIGHT_RPC. The permit is held only for the call
+        // itself, and the queue wait is deliberately outside RPC_CALL_TIMEOUT_SECS —
+        // charging queue time to the call's budget would reproduce the very fail-open
+        // storm the gate exists to prevent.
+        let Some(permit) = rpc_permit().await else {
+            debug!("RPC gate saturated — get_account not attempted");
+            return None;
+        };
         let result = tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_account(pubkey),
         )
         .await;
+        drop(permit);
         match result {
             Ok(Ok(a)) => return Some(a),
             Ok(Err(e)) => {
@@ -201,11 +260,16 @@ async fn get_token_balance_retried_inner(
     retries: u32,
 ) -> Option<u64> {
     for attempt in 0..retries {
+        let Some(permit) = rpc_permit().await else {
+            debug!("RPC gate saturated — get_token_balance not attempted");
+            return None;
+        };
         let result = tokio::time::timeout(
             tokio::time::Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
             rpc.get_token_account_balance(pubkey),
         )
         .await;
+        drop(permit);
         match result {
             Ok(Ok(b)) => return b.amount.parse().ok(),
             Ok(Err(e)) => {

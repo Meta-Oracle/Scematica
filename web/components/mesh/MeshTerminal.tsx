@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { GateSolver } from './GateSolver'
 import { MeshGraph } from './MeshGraph'
+import { apiFetch, getPairing } from '@/lib/net'
 import { usePoll } from '@/lib/store'
 import { TONE_HEX, ageLabel, toneFor, visibilityLabel } from '@/lib/mesh/view'
 import { isMesh, type Cognition, type Mesh, type MeshNode, type Term } from '@/lib/mesh/types'
@@ -15,15 +16,60 @@ import { isMesh, type Cognition, type Mesh, type MeshNode, type Term } from '@/l
 
 const POLL_MS = 4_000
 
-async function fetchMesh(): Promise<Mesh | { unavailable: string }> {
-  const res = await fetch('/api/mesh', { cache: 'no-store' })
+/**
+ * Why this page cannot show a mesh right now. Three genuinely different situations, and
+ * collapsing them costs the operator the fix: `no_instance` means nothing is paired,
+ * `blocked` means the pairing exists but the browser will not make the request at all,
+ * and `unreachable` means the request was made and nothing answered.
+ */
+type Unavailable = {
+  unavailable: string
+  reason: 'no_instance' | 'blocked' | 'unreachable'
+}
+
+/**
+ * An `http://` pairing read from an `https://` page is refused by the browser as mixed
+ * content — the request never leaves, so there is no status code to interpret and the
+ * only symptom is a console warning the page cannot see. Detect it up front rather than
+ * reporting the resulting `TypeError` as "unreachable", which sends the operator off
+ * checking a firewall that is not the problem.
+ */
+function blockedPairing(): string | null {
+  if (typeof window === 'undefined') return null
+  const base = getPairing()?.baseUrl
+  if (!base) return null
+  return window.location.protocol === 'https:' && base.startsWith('http://') ? base : null
+}
+
+async function fetchMesh(): Promise<Mesh | Unavailable> {
+  const blocked = blockedPairing()
+  if (blocked) {
+    return {
+      reason: 'blocked',
+      unavailable: `This page is served over HTTPS and the paired instance is ${blocked} — the browser blocks that request as mixed content before it is sent. Serve the instance over HTTPS (a tunnel such as cloudflared or ngrok gives you one), or open this dashboard from the same machine over http://localhost:3000.`,
+    }
+  }
+
+  // `apiFetch`, not `fetch`: a paired instance is read directly, exactly like every
+  // other panel on the site. Unpaired, this is a same-origin call into the Next proxy.
+  let res: Response
+  try {
+    res = await apiFetch('/api/mesh')
+  } catch {
+    return {
+      reason: 'unreachable',
+      unavailable:
+        'The paired instance did not answer. Check that `scematica-api` is running and reachable at the paired base URL.',
+    }
+  }
+
   const json = await res.json().catch(() => null)
   if (res.ok && isMesh(json)) return json
   const hint =
     json && typeof json === 'object' && 'hint' in json && typeof json.hint === 'string'
       ? json.hint
       : 'No mesh available.'
-  return { unavailable: hint }
+  return { reason: 'no_instance', unavailable: hint }
 }
 
 export function MeshTerminal() {
@@ -54,21 +100,9 @@ export function MeshTerminal() {
         </div>
       </header>
 
-      {!payload && snap.loading && (
-        <div className="px-5 py-10 text-mesh-dim text-xs">reading the system…</div>
-      )}
+      {!payload && <div className="px-5 py-10 text-mesh-dim text-xs">reading the system…</div>}
 
-      {payload && 'unavailable' in payload && (
-        <div className="m-5 border border-mesh-border px-4 py-3">
-          <div className="text-mesh-stale text-xs uppercase tracking-wider">No instance paired</div>
-          <p className="text-mesh-muted text-xs mt-1.5 max-w-2xl">{payload.unavailable}</p>
-          <p className="text-mesh-dim text-[11px] mt-2 max-w-2xl">
-            There is deliberately no simulated mesh. A fake metric is a fake number; a fake
-            topology would assert that a particular set of units exists and is healthy on
-            your machine, which is not something this page is willing to invent.
-          </p>
-        </div>
-      )}
+      {payload && 'unavailable' in payload && <Unpaired state={payload} />}
 
       {mesh && (
         <>
@@ -82,6 +116,53 @@ export function MeshTerminal() {
           {node && <NodeDetail node={node} onClose={() => setSelected(null)} />}
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * The empty state. It is the most-seen screen on this page — a public visitor has no bot
+ * — so it has to say what is missing and how to supply it, per reason. The refusal to
+ * invent a topology stays at the bottom: it is the design, not an error.
+ */
+function Unpaired({ state }: { state: Unavailable }) {
+  const heading = {
+    no_instance: 'No instance paired',
+    blocked: 'Pairing blocked by the browser',
+    unreachable: 'Paired instance not answering',
+  }[state.reason]
+
+  return (
+    <div className="m-5 border border-mesh-border px-4 py-3">
+      <div className="text-mesh-stale text-xs uppercase tracking-wider">{heading}</div>
+      <p className="text-mesh-muted text-xs mt-1.5 max-w-2xl">{state.unavailable}</p>
+
+      {state.reason === 'no_instance' && (
+        <ol className="text-mesh-dim text-[11px] mt-2.5 max-w-2xl space-y-1 list-decimal pl-4">
+          <li>
+            Run the API next to your bot:{' '}
+            <code className="text-mesh-text">cargo run --release --bin api</code> (it serves{' '}
+            <code className="text-mesh-text">/api/mesh</code> on port 3001, reading the state
+            files in the working directory).
+          </li>
+          <li>
+            Point this dashboard at it — locally, set{' '}
+            <code className="text-mesh-text">RUST_API_URL=http://localhost:3001</code> and run{' '}
+            <code className="text-mesh-text">npm run dev</code>; from a hosted page, pair the
+            instance on <a className="text-mesh-accent underline" href="/pair">/pair</a>.
+          </li>
+          <li>
+            A hosted HTTPS page can only read an instance served over HTTPS — put a tunnel in
+            front of it, or open the dashboard on the machine running the bot.
+          </li>
+        </ol>
+      )}
+
+      <p className="text-mesh-dim text-[11px] mt-2 max-w-2xl">
+        There is deliberately no simulated mesh. A fake metric is a fake number; a fake
+        topology would assert that a particular set of units exists and is healthy on your
+        machine, which is not something this page is willing to invent.
+      </p>
     </div>
   )
 }

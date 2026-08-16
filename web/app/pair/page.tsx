@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 
+import { normalizeBase } from '@/lib/net'
+
 // Operator-facing pairing-QR generator. Runs on the web dashboard (visit /pair). The
 // operator enters their API base URL and the instance's SCEMATICA_API_TOKEN; this
 // renders a `scematica://pair?…` QR the mobile app scans/pastes to pair in one step.
@@ -10,7 +12,9 @@ import { QRCodeSVG } from 'qrcode.react'
 
 function buildPairString(url: string, token: string, label: string): string {
   const p = new URLSearchParams()
-  p.set('url', url.trim())
+  // Normalised into the QR, not just at scan time: a QR encoding `https://host/api`
+  // hands the phone a base that appends to `/api/api/*` and 404s on every endpoint.
+  p.set('url', normalizeBase(url))
   if (token.trim()) p.set('token', token.trim())
   if (label.trim()) p.set('label', label.trim())
   return `scematica://pair?${p.toString()}`

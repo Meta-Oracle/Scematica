@@ -33,6 +33,7 @@ import {
   sensitivities,
   verdictFor,
 } from '../lib/mesh/gate.ts'
+import { normalizeBase } from '../lib/net.ts'
 
 let failed = 0
 const check = (name, ok) => {
@@ -259,6 +260,37 @@ check('it distinguishes no-verdict from no-evidence', /no verdict/.test(dom))
 check(
   'with nothing measured at all it says so',
   /absence of evidence/.test(dominantConstraint({ ...REAL, risk: { components: [term('R_x', '§20', 0, false)], value: 0 } }, {})),
+)
+
+console.log('\n── transport: where the request actually goes ─────────────')
+
+// The bug this section exists for: `/mesh` on a hosted deploy rendered "No instance
+// paired" against a perfectly healthy bot, because the paired base was `https://host/api`
+// and every caller appends `/api/...` — so the request went to `/api/api/mesh` and 404'd.
+// It was undetectable because the Rust router serves BOTH `/health` and `/api/health`, so
+// the old pairing probe (which checked `<base>/health`) reported success.
+//
+// Two independent guarantees are pinned here: the base is repaired, and the probe path is
+// one that a wrong root cannot satisfy.
+check('a trailing /api is stripped from the base', normalizeBase('https://host/api') === 'https://host')
+check('trailing slashes go too', normalizeBase('https://host/api/') === 'https://host')
+check('and both together', normalizeBase('  https://host/api///  ') === 'https://host')
+check('a correct root is left alone', normalizeBase('https://host') === 'https://host')
+check('a port survives', normalizeBase('http://192.168.1.50:3001') === 'http://192.168.1.50:3001')
+// Only a *trailing* /api is a mistake. A reverse proxy legitimately mounted at
+// `https://host/api/bot` must keep its path, or the fix breaks a working deploy.
+check('an interior /api is not touched', normalizeBase('https://host/api/bot') === 'https://host/api/bot')
+// Idempotent, because it now runs on write, on read, and inside the probe.
+check('normalising twice changes nothing', normalizeBase(normalizeBase('https://host/api/')) === 'https://host')
+
+// The alias that made the original bug silent. If a future refactor points the probe back
+// at `/health`, a mis-rooted base passes again — so assert the shape of the path itself.
+const probeSrc = await import('node:fs').then(fs =>
+  fs.readFileSync(new URL('../lib/net.ts', import.meta.url), 'utf8'),
+)
+check(
+  'the pairing probe checks /api/health, not the aliased /health',
+  /fetch\(base \+ '\/api\/health'/.test(probeSrc) && !/fetch\(base \+ '\/health'/.test(probeSrc),
 )
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)

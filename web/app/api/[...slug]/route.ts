@@ -17,12 +17,37 @@ import { getSnapshot } from '@/lib/sim/engine'
 
 export const dynamic = 'force-dynamic'
 
-const RUST_API = process.env.RUST_API_URL || 'http://localhost:3001'
-const UPSTREAM_TIMEOUT_MS = 2_000
+/**
+ * The upstream API root, with a trailing `/api` stripped.
+ *
+ * Every request below appends `/api/<path>`, so `RUST_API_URL=https://host/api` asks for
+ * `https://host/api/api/mesh` and 404s on every endpoint. On Vercel that failure is
+ * invisible: the env var is server-only, the 404 body is empty, and the dashboard just
+ * looks empty. The API mounts at the server root, so a base legitimately ending in
+ * `/api` cannot exist and stripping is always safe — and a reverse proxy that maps
+ * `/api/*` onto the API root is served correctly by the stripped form.
+ */
+const RUST_API = (process.env.RUST_API_URL || 'http://localhost:3001')
+  .trim()
+  .replace(/\/+$/, '')
+  .replace(/\/api$/i, '')
+
+/**
+ * A Vercel lambda reaching an operator's home tunnel (cloudflared / ngrok / Tailscale)
+ * is a wide-area round trip through a relay, not the localhost hop this originally
+ * assumed. 2s timed out a working instance often enough to look like an outage, and the
+ * negative cache below then suppressed the next 15s of polls behind it. Override with
+ * `UPSTREAM_TIMEOUT_MS` when a tunnel is unusually slow.
+ */
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS) || 8_000
 
 /**
  * Remember a failed upstream probe briefly. Without this, every panel poll on a
  * deploy with no bot would pay the full connect timeout before falling back.
+ *
+ * Only *connection* failures arm this. An upstream that answers — even with a 404 or a
+ * 500 — is a reachable bot, and suppressing the next 15s of polls after one bad status
+ * turns a single hiccup into a rolling outage across every panel.
  */
 let upstreamDownUntil = 0
 const UPSTREAM_RETRY_MS = 15_000
@@ -141,12 +166,27 @@ async function tryUpstream(request: NextRequest, path: string): Promise<NextResp
 
     // A reachable-but-erroring bot is still a real bot: pass its status through
     // rather than silently masking the failure with simulated data.
-    const data = await res.json().catch(() => ({ error: `upstream ${res.status}` }))
+    //
+    // A 404 is the one status worth translating. The upstream body is empty, so the
+    // browser would receive `{"error":"upstream 404"}` and no way to tell a wrong
+    // RUST_API_URL from a route this build does not have — which is exactly the state
+    // a mis-rooted base URL produces on every single endpoint. Name the URL that was
+    // actually requested; it is server-side, but the *shape* of it is the diagnosis.
+    const data = await res.json().catch(() =>
+      res.status === 404
+        ? {
+            error: 'upstream_route_missing',
+            status: 404,
+            hint: `The paired instance answered, but has no route at /api/${path}. This is usually RUST_API_URL pointing at a sub-path — it must be the API root (e.g. https://host, not https://host/api), because this proxy appends /api/... itself.`,
+          }
+        : { error: `upstream ${res.status}`, status: res.status },
+    )
     return NextResponse.json(data, {
       status: res.status,
       headers: { 'Cache-Control': 'no-store, max-age=0', 'X-Scematica-Source': 'live' },
     })
   } catch {
+    // Connection-level failure only — a bad status returns above and never lands here.
     upstreamDownUntil = Date.now() + UPSTREAM_RETRY_MS
     return null
   }

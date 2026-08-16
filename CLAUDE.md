@@ -384,9 +384,25 @@ collects. Four constraints:
   denominator of the risk mean and can therefore **raise** Ψ — surprising, real, and pinned
   by a test, because the obvious "fix" is to average over all six components, which reports
   0.234 for a field whose measured components average 0.351.
+- **The paired base URL is the API *root*, and every caller appends `/api/...` itself.**
+  So `https://host/api` produces `/api/api/mesh` and 404s on every endpoint —
+  `lib/net.ts::normalizeBase` strips a trailing `/api` on write *and* on read (an old
+  pairing in someone's localStorage must start working without a re-pair), and the same
+  strip runs on `RUST_API_URL` in `app/api/[...slug]/route.ts`. This was undetectable for
+  a long time because the Rust router serves **both `/health` and `/api/health`**, so the
+  old `probePairing` — which checked `<base>/health` — validated a base that could not
+  serve one data endpoint. The probe now uses `<base>/api/health`, which has no alias, and
+  demands JSON (a tunnel login page answers 200 with HTML). Don't point it back at
+  `/health`; `check:mesh` asserts the path.
+- **A failed mesh read names the URL it tried.** `/mesh` used to collapse every failure
+  into "No instance paired", which is the *one* diagnosis that is wrong when a healthy bot
+  is paired at a bad URL. Five reasons now render distinctly (`no_instance` / `blocked` /
+  `misrooted` / `unreachable` / `malformed`) and the attempted URL is on screen. Pairing is
+  offered from the panel itself: `/pair` only generates a **mobile** QR and never calls
+  `setPairing`, so linking there left the browser as unpaired as before.
 
 `npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
-determinism, path tracing, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
+determinism, path tracing, URL rooting, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
 captured from a real `cargo run --example dump`. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching
 `lib/escrow/mintinfo.ts` or `program.ts`.

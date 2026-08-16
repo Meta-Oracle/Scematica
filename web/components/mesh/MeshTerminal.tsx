@@ -4,7 +4,8 @@ import { useState } from 'react'
 
 import { GateSolver } from './GateSolver'
 import { MeshGraph } from './MeshGraph'
-import { apiFetch, getPairing } from '@/lib/net'
+import { Pairing } from '@/components/Pairing'
+import { apiFetch, apiBase, getPairing, isMixedContent } from '@/lib/net'
 import { usePoll } from '@/lib/store'
 import { TONE_HEX, ageLabel, toneFor, visibilityLabel } from '@/lib/mesh/view'
 import { isMesh, type Cognition, type Mesh, type MeshNode, type Term } from '@/lib/mesh/types'
@@ -17,36 +18,40 @@ import { isMesh, type Cognition, type Mesh, type MeshNode, type Term } from '@/l
 const POLL_MS = 4_000
 
 /**
- * Why this page cannot show a mesh right now. Three genuinely different situations, and
- * collapsing them costs the operator the fix: `no_instance` means nothing is paired,
- * `blocked` means the pairing exists but the browser will not make the request at all,
- * and `unreachable` means the request was made and nothing answered.
+ * Why this page cannot show a mesh right now.
+ *
+ * Collapsing these costs the operator the fix, and this page used to collapse all of them
+ * into `no_instance` — which is how a *correctly running* bot behind a mis-rooted base URL
+ * came out reading "No instance paired". Every remedy below is different:
+ *
+ *   no_instance   nothing is paired at all — the honest empty state
+ *   blocked       a pairing exists, but the browser refuses to send the request
+ *   misrooted     something answered, at a URL that is not the API root
+ *   unreachable   the request was sent and nothing answered
+ *   malformed     the API answered 200 with something that is not a mesh
  */
 type Unavailable = {
   unavailable: string
-  reason: 'no_instance' | 'blocked' | 'unreachable'
-}
-
-/**
- * An `http://` pairing read from an `https://` page is refused by the browser as mixed
- * content — the request never leaves, so there is no status code to interpret and the
- * only symptom is a console warning the page cannot see. Detect it up front rather than
- * reporting the resulting `TypeError` as "unreachable", which sends the operator off
- * checking a firewall that is not the problem.
- */
-function blockedPairing(): string | null {
-  if (typeof window === 'undefined') return null
-  const base = getPairing()?.baseUrl
-  if (!base) return null
-  return window.location.protocol === 'https:' && base.startsWith('http://') ? base : null
+  reason: 'no_instance' | 'blocked' | 'misrooted' | 'unreachable' | 'malformed'
+  /** The URL actually requested, when one was. Shown verbatim — it is usually the bug. */
+  attempted?: string
 }
 
 async function fetchMesh(): Promise<Mesh | Unavailable> {
-  const blocked = blockedPairing()
-  if (blocked) {
+  const base = apiBase()
+  const attempted = (base || '') + '/api/mesh'
+
+  // An `http://` pairing read from an `https://` page is refused by the browser as mixed
+  // content — the request never leaves, so there is no status code to interpret and the
+  // only symptom is a console warning the page cannot see. Detect it up front rather than
+  // reporting the resulting `TypeError` as "unreachable", which sends the operator off
+  // checking a firewall that is not the problem. This is the default situation on a
+  // Vercel deploy paired to a LAN or localhost instance.
+  if (base && isMixedContent(base)) {
     return {
       reason: 'blocked',
-      unavailable: `This page is served over HTTPS and the paired instance is ${blocked} — the browser blocks that request as mixed content before it is sent. Serve the instance over HTTPS (a tunnel such as cloudflared or ngrok gives you one), or open this dashboard from the same machine over http://localhost:3000.`,
+      attempted,
+      unavailable: `This page is served over HTTPS and the paired instance is ${base} — the browser blocks that request as mixed content before it is sent. Serve the instance over HTTPS (cloudflared, ngrok or Tailscale Funnel each give you one), or open this dashboard from http://localhost:3000 on the machine running the bot.`,
     }
   }
 
@@ -58,18 +63,53 @@ async function fetchMesh(): Promise<Mesh | Unavailable> {
   } catch {
     return {
       reason: 'unreachable',
-      unavailable:
-        'The paired instance did not answer. Check that `scematica-api` is running and reachable at the paired base URL.',
+      attempted,
+      unavailable: base
+        ? `No response from ${attempted}. Check that \`scematica-api\` is running, that the tunnel in front of it is up, and that it is reachable from this browser — a CORS rejection also lands here.`
+        : 'The dashboard could not reach its own API route. If this is a hosted deploy, the server had no upstream to forward to.',
     }
   }
 
   const json = await res.json().catch(() => null)
   if (res.ok && isMesh(json)) return json
-  const hint =
-    json && typeof json === 'object' && 'hint' in json && typeof json.hint === 'string'
-      ? json.hint
-      : 'No mesh available.'
-  return { reason: 'no_instance', unavailable: hint }
+
+  const body = (json ?? {}) as { error?: string; hint?: string }
+
+  // 404 is the signature of a base URL pointing one level off — the single most common
+  // pairing mistake, because the API serves BOTH /health and /api/health, so a base of
+  // `https://host/api` passes a naive reachability probe and then 404s on every real
+  // endpoint. Say so instead of reporting "nothing is paired".
+  if (res.status === 404 || body.error === 'upstream_route_missing') {
+    return {
+      reason: 'misrooted',
+      attempted,
+      unavailable:
+        body.hint ??
+        `Something answered at ${attempted} with 404. The paired URL must be the API root — \`https://host\`, not \`https://host/api\` — because this page appends \`/api/mesh\` itself.`,
+    }
+  }
+
+  // The designed empty state: the web layer's own 503, which carries a hint.
+  if (res.status === 503 || body.error === 'no_instance_paired') {
+    return { reason: 'no_instance', attempted, unavailable: body.hint ?? 'No mesh available.' }
+  }
+
+  // 200 with a body that is not a mesh. Almost always a tunnel interstitial or an
+  // auth wall answering in place of the API. Never silently rendered as "unpaired".
+  if (res.ok) {
+    return {
+      reason: 'malformed',
+      attempted,
+      unavailable: `${attempted} answered 200, but the body is not a mesh (no \`nodes\`/\`edges\`/\`summary\`). Something is standing in front of the API — a tunnel login page or an auth proxy will do this.`,
+    }
+  }
+
+  return {
+    reason: 'unreachable',
+    attempted,
+    unavailable:
+      body.hint ?? `${attempted} answered ${res.status}${body.error ? ` — ${body.error}` : ''}.`,
+  }
 }
 
 export function MeshTerminal() {
@@ -124,18 +164,58 @@ export function MeshTerminal() {
  * The empty state. It is the most-seen screen on this page — a public visitor has no bot
  * — so it has to say what is missing and how to supply it, per reason. The refusal to
  * invent a topology stays at the bottom: it is the design, not an error.
+ *
+ * The pairing form is opened from *here*, not from `/pair`. `/pair` generates a QR for
+ * the mobile app and never calls `setPairing`, so following the link this panel used to
+ * show left the browser exactly as unpaired as before.
  */
 function Unpaired({ state }: { state: Unavailable }) {
+  const [pairing, setPairing] = useState(false)
+
+  if (pairing) {
+    return (
+      <div className="fixed inset-0 z-[100] bg-scema-black overflow-y-auto">
+        <button
+          onClick={() => setPairing(false)}
+          aria-label="Cancel pairing"
+          className="absolute top-4 right-4 z-10 text-mesh-dim hover:text-mesh-text text-lg"
+        >
+          ✕
+        </button>
+        <Pairing onPaired={() => setPairing(false)} />
+      </div>
+    )
+  }
+
   const heading = {
     no_instance: 'No instance paired',
     blocked: 'Pairing blocked by the browser',
+    misrooted: 'Paired URL is not the API root',
     unreachable: 'Paired instance not answering',
+    malformed: 'Something answered, but it is not the API',
   }[state.reason]
+
+  // A misrooted or malformed base is a *wrong* pairing, not a missing one. The remedy is
+  // to re-enter the URL, so the button leads with that rather than with setup steps the
+  // operator has already done.
+  const isWrongPairing = state.reason === 'misrooted' || state.reason === 'malformed'
 
   return (
     <div className="m-5 border border-mesh-border px-4 py-3">
-      <div className="text-mesh-stale text-xs uppercase tracking-wider">{heading}</div>
+      <div className={`text-xs uppercase tracking-wider ${isWrongPairing ? 'text-mesh-veto' : 'text-mesh-stale'}`}>
+        {heading}
+      </div>
       <p className="text-mesh-muted text-xs mt-1.5 max-w-2xl">{state.unavailable}</p>
+
+      {/* The URL that was actually requested. On every failure above except "nothing is
+          paired" this line *is* the diagnosis, and it was the one thing the page never
+          showed — an operator with a working bot had no way to see that the request had
+          gone to `/api/api/mesh`. */}
+      {state.attempted && state.reason !== 'no_instance' && (
+        <p className="text-[11px] text-mesh-dim mt-2 break-all">
+          requested <code className="text-mesh-text">{state.attempted}</code>
+        </p>
+      )}
 
       {state.reason === 'no_instance' && (
         <ol className="text-mesh-dim text-[11px] mt-2.5 max-w-2xl space-y-1 list-decimal pl-4">
@@ -148,8 +228,14 @@ function Unpaired({ state }: { state: Unavailable }) {
           <li>
             Point this dashboard at it — locally, set{' '}
             <code className="text-mesh-text">RUST_API_URL=http://localhost:3001</code> and run{' '}
-            <code className="text-mesh-text">npm run dev</code>; from a hosted page, pair the
-            instance on <a className="text-mesh-accent underline" href="/pair">/pair</a>.
+            <code className="text-mesh-text">npm run dev</code>; from a hosted page (Vercel),
+            use <span className="text-mesh-accent">Pair an instance</span> below.
+          </li>
+          <li>
+            Give the API <strong className="text-mesh-text">root</strong> URL —{' '}
+            <code className="text-mesh-text">https://host</code>, not{' '}
+            <code className="text-mesh-text">https://host/api</code>. This page appends{' '}
+            <code className="text-mesh-text">/api/mesh</code> itself.
           </li>
           <li>
             A hosted HTTPS page can only read an instance served over HTTPS — put a tunnel in
@@ -158,7 +244,15 @@ function Unpaired({ state }: { state: Unavailable }) {
         </ol>
       )}
 
-      <p className="text-mesh-dim text-[11px] mt-2 max-w-2xl">
+      <button
+        onClick={() => setPairing(true)}
+        className="mt-3 px-3 py-1.5 border border-mesh-accent/50 text-mesh-accent text-[11px]
+                   uppercase tracking-widest hover:bg-mesh-accent/10 transition-colors"
+      >
+        {isWrongPairing ? 'Fix the pairing' : 'Pair an instance'}
+      </button>
+
+      <p className="text-mesh-dim text-[11px] mt-3 max-w-2xl">
         There is deliberately no simulated mesh. A fake metric is a fake number; a fake
         topology would assert that a particular set of units exists and is healthy on your
         machine, which is not something this page is willing to invent.

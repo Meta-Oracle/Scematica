@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { setPairing, probePairing, type Pairing as PairingT } from '@/lib/net'
+import { setPairing, probePairing, normalizeBase, type Pairing as PairingT } from '@/lib/net'
 
 // The one-time pairing screen shown in the mobile app before it knows which sniper to
 // talk to. The operator runs their own instance (self-hosted), exposes the Rust API,
@@ -49,7 +49,9 @@ export function Pairing({ onPaired }: { onPaired?: () => void }) {
     setStatus('probing')
     setError('')
     const candidate: PairingT = {
-      baseUrl: baseUrl.trim(),
+      // Normalised here so the field shows the operator what was actually saved — the
+      // repaired `/api` suffix is the whole reason this pairing used to fail silently.
+      baseUrl: normalizeBase(baseUrl),
       token: token.trim() || undefined,
       label: label.trim() || undefined,
     }
@@ -58,13 +60,20 @@ export function Pairing({ onPaired }: { onPaired?: () => void }) {
       setError('Base URL must start with http:// or https://')
       return
     }
+    if (candidate.baseUrl !== baseUrl.trim()) setBaseUrl(candidate.baseUrl)
+
     const probe = await probePairing(candidate)
     if (!probe.ok) {
       setStatus('error')
       setError(
-        probe.reason === 'unauthorized'
-          ? 'The instance rejected this token. Check SCEMATICA_API_TOKEN on the machine running the API.'
-          : 'Could not reach the instance. Check the URL and port, that the API is running, and that a firewall isn’t blocking it.',
+        {
+          unauthorized:
+            'The instance rejected this token. Check SCEMATICA_API_TOKEN on the machine running the API.',
+          'not-an-api': `Something answered at ${candidate.baseUrl} but it is not a Scematica API — GET ${candidate.baseUrl}/api/health did not return JSON. Give the API's root URL (the port the API prints on startup), not a page or a sub-path.`,
+          'mixed-content': `This dashboard is served over HTTPS and ${candidate.baseUrl} is plain HTTP, so the browser blocks the request before it is sent. Put an HTTPS tunnel (cloudflared, ngrok, Tailscale Funnel) in front of the API, or open the dashboard from http://localhost:3000 on the machine running the bot.`,
+          unreachable:
+            'Could not reach the instance. Check the URL and port, that the API is running, that CORS/a firewall isn’t blocking it, and that the tunnel is up.',
+        }[probe.reason],
       )
       return
     }

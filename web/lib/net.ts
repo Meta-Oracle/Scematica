@@ -24,6 +24,28 @@ export interface Pairing {
 
 const KEY = 'scematica.pairing'
 
+/**
+ * Reduce a pasted base URL to the API **root** — the origin `apiFetch` may prepend to a
+ * `/api/...` path.
+ *
+ * The trailing-`/api` strip is not cosmetic. Every caller passes a proxy-style path that
+ * already starts with `/api/`, so a base of `https://host/api` produces
+ * `https://host/api/api/mesh`, which 404s on every endpoint. That mistake is *easy* to
+ * make and used to be *impossible to detect*, because the Rust router serves both
+ * `/health` and `/api/health`: the old probe checked `<base>/health`, which the wrong
+ * base satisfies via the second route. Pairing therefore reported success against a base
+ * that could not serve a single data endpoint, and the only visible symptom was every
+ * panel going empty — loudest on /mesh, which has no simulated fallback to hide behind.
+ *
+ * Nothing is lost by stripping: the API mounts its routes at the server root, so a base
+ * legitimately ending in `/api` cannot exist. A reverse proxy that maps `/api/*` to the
+ * API root is exactly the case this handles — the operator pairs `https://host/api` and
+ * we ask for `https://host/api/mesh`, which is what their proxy expects.
+ */
+export function normalizeBase(raw: string): string {
+  return raw.trim().replace(/\/+$/, '').replace(/\/api$/i, '')
+}
+
 /** True inside a Capacitor native shell (Android/iOS), false in a plain browser. */
 export function isNative(): boolean {
   return (
@@ -65,7 +87,9 @@ export function getPairing(): Pairing | null {
 export function setPairing(p: Pairing | null): void {
   if (typeof window === 'undefined') return
   try {
-    if (p) window.localStorage.setItem(KEY, JSON.stringify(p))
+    // Normalise on the way in as well as on the way out, so a pairing saved by an older
+    // build (or edited by hand in devtools) is repaired the next time it is written.
+    if (p) window.localStorage.setItem(KEY, JSON.stringify({ ...p, baseUrl: normalizeBase(p.baseUrl) }))
     else window.localStorage.removeItem(KEY)
   } catch {
     /* storage disabled — pairing simply won't persist */
@@ -75,7 +99,10 @@ export function setPairing(p: Pairing | null): void {
 /** API base for calls: the paired instance if set, else '' (same-origin web proxy). */
 export function apiBase(): string {
   const p = getPairing()
-  return p?.baseUrl ? p.baseUrl.replace(/\/+$/, '') : ''
+  // Normalised at read time too: a pairing written by a build that predates
+  // `normalizeBase` is already in someone's localStorage, and it must start working
+  // without them noticing they need to re-pair.
+  return p?.baseUrl ? normalizeBase(p.baseUrl) : ''
 }
 
 /**
@@ -114,15 +141,39 @@ export type ProbeResult =
   | { ok: false; reason: 'unreachable' }
   /** The instance answered but rejected the token. */
   | { ok: false; reason: 'unauthorized' }
+  /** Something answered, but it is not a scematica-api root — the paths do not exist. */
+  | { ok: false; reason: 'not-an-api' }
+  /** An `http://` instance read from an `https://` page: blocked before it is sent. */
+  | { ok: false; reason: 'mixed-content' }
 
 /**
- * Validate a candidate pairing before saving it: reachable, and carrying a token the
- * instance actually accepts.
+ * True when this page is HTTPS and `base` is HTTP. The browser refuses the request as
+ * mixed content *before* it leaves, so there is no status code and `fetch` rejects with
+ * a bare `TypeError` — indistinguishable from a firewall unless it is checked up front.
+ * This is the normal state of affairs on a Vercel deploy pointed at a LAN instance.
+ */
+export function isMixedContent(base: string): boolean {
+  if (typeof window === 'undefined') return false
+  return window.location.protocol === 'https:' && normalizeBase(base).startsWith('http://')
+}
+
+/**
+ * Validate a candidate pairing before saving it: reachable, rooted where `apiFetch`
+ * expects, and carrying a token the instance actually accepts.
  *
- * Getting the second half right is fiddly. `GET /api/controls` is NOT token-gated —
- * only the control **POSTs** carry `require_token` (see `main.rs`, where the gated
- * router holds `post(...)` routes and the plain router serves `get(controls)`), so
- * probing the GET reports success for any token at all, including none.
+ * **The reachability check must use a path under `/api/`, not `/health`.** The Rust
+ * router serves both `/health` and `/api/health`, so a base of `https://host/api` — the
+ * single most common way to get this wrong — satisfies `<base>/health` and the old probe
+ * declared success. Every subsequent call then asked for `/api/api/*` and 404'd, with no
+ * error anywhere pointing at the URL. Probing `<base>/api/health` has no such alias: it
+ * resolves only when `base` is the true root. `normalizeBase` now repairs that input
+ * anyway, so this is the backstop for the *other* wrong roots (a site root, a tunnel
+ * landing page, a proxy that swallows unknown paths).
+ *
+ * Getting the token half right is separately fiddly. `GET /api/controls` is NOT
+ * token-gated — only the control **POSTs** carry `require_token` (see `main.rs`, where
+ * the gated router holds `post(...)` routes and the plain router serves `get(controls)`),
+ * so probing the GET reports success for any token at all, including none.
  *
  * So the probe POSTs to a gated route instead, with a deliberately malformed body.
  * Axum runs the `route_layer` auth middleware *before* the `Json` extractor, giving
@@ -138,11 +189,21 @@ export type ProbeResult =
  * unreachable by construction.
  */
 export async function probePairing(p: Pairing): Promise<ProbeResult> {
-  const base = p.baseUrl.replace(/\/+$/, '')
+  const base = normalizeBase(p.baseUrl)
+
+  // Checked before the request, because the browser refuses it silently and the
+  // resulting TypeError is otherwise reported as a firewall problem.
+  if (isMixedContent(base)) return { ok: false, reason: 'mixed-content' }
 
   try {
-    const health = await fetch(base + '/health', { cache: 'no-store' })
+    const health = await fetch(base + '/api/health', { cache: 'no-store' })
+    // A 404 here means something is listening but it is not a scematica-api root —
+    // a different claim from "nothing answered", and it needs a different fix.
+    if (health.status === 404) return { ok: false, reason: 'not-an-api' }
     if (!health.ok) return { ok: false, reason: 'unreachable' }
+    // A tunnel landing page or an SPA catch-all answers 200 with HTML. Requiring JSON
+    // is what separates "the API is here" from "something is here".
+    await health.json()
   } catch {
     return { ok: false, reason: 'unreachable' }
   }
@@ -158,6 +219,7 @@ export async function probePairing(p: Pairing): Promise<ProbeResult> {
       cache: 'no-store',
     })
     if (res.status === 401 || res.status === 403) return { ok: false, reason: 'unauthorized' }
+    if (res.status === 404) return { ok: false, reason: 'not-an-api' }
     return { ok: true }
   } catch {
     return { ok: false, reason: 'unreachable' }

@@ -1,0 +1,39 @@
+[package]
+name = "scema-policy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — the policy layer: risk-adjusted utility over projections, with pluggable evaluators that may decline rather than guess."
+keywords = ["agent", "policy", "utility", "rl"]
+categories = ["algorithms"]
+
+[lib]
+name = "scema_policy"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-sim = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# The bot's Deep Q* agent, as ONE evaluator among several rather than as the agent
+# itself. `default-features = false` drops its ratatui viewer; what is left is
+# serde/tracing/chrono/rand/anyhow with no solana-sdk, which is why reaching across
+# workspaces here is safe (see the note in the workspace manifest).
+# `version` as well as `path` is required to publish: a path-only dependency cannot be
+# resolved by anyone who installs this from the registry. In-workspace the path wins;
+# published, consumers get scematica-nn 1.25.0 from crates.io. `default-features = false`
+# drops its ratatui viewer, leaving serde/tracing/chrono/rand/anyhow and no solana-sdk.
+scematica-nn = { version = "1.25.0", path = "../../../crates/scematica-nn", default-features = false, optional = true }
+
+[features]
+# On by default so `scema policy` lists the evaluator and shows it declining on a
+# software world. An evaluator that only exists in one build configuration is one
+# nobody finds out is out of domain.
+default = ["dqstar"]
+dqstar = ["dep:scematica-nn"]

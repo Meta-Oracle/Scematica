@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Scematica Omni",
+  "version": "0.1.0",
+  "description": "Perceive the current page as a world state and run the Scematica Omni loop against it. Reads nothing until you click.",
+  "minimum_chrome_version": "102",
+
+  "permissions": ["storage", "activeTab", "scripting"],
+
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+
+  "background": { "service_worker": "src/background.js" },
+
+  "action": { "default_title": "Scematica Omni — perceive this page" },
+
+  "options_ui": { "page": "src/options.html", "open_in_tab": true },
+
+  "icons": {}
+}

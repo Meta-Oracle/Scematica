@@ -1,0 +1,63 @@
+[workspace]
+members = [
+    "crates/scema-world",
+    "crates/scema-tools",
+    "crates/scema-memory",
+    "crates/scema-sim",
+    "crates/scema-policy",
+    "crates/scema-verify",
+    "crates/scema-agent",
+    "crates/scema-cli",
+    "crates/scema-daemon",
+    "crates/scema-mcp",
+]
+resolver = "2"
+
+# ── Why this is its own workspace ─────────────────────────────────────────────
+#
+# The third tree to make this call, after `scema-botchain` and `scema-bot-mesh`, and for
+# the same lockfile reason spelled out in the root `Cargo.toml`: that workspace is pinned
+# around `solana-sdk 1.18` (reqwest 0.11, curve25519-dalek 3, zeroize < 1.4). Omni is a
+# host for browser extensions, a local daemon and an MCP surface — every one of those
+# wants a modern HTTP/TLS stack, which is exactly the combination the pin comments say
+# cannot coexist. Two lockfiles make the conflict moot; one resurrects it.
+#
+# There is a second reason, specific to this tree. Omni is meant to be *domain-agnostic*:
+# a repository, a website and a market are all just `WorldState` to it. A dependency on
+# the bot's core would make the trading domain structurally privileged, and the first
+# thing anyone would do is reach for it. Nothing here may depend on `scematica-core` or
+# anything downstream of it.
+#
+# What omni MAY reach back into: the solana-free crates listed as safe in the root
+# CLAUDE.md — `scematica-nn`, `scematica-sentience`, `scemadex-sdk`. It currently uses
+# `scematica-nn` (default-features off, so no ratatui) in `scema-policy`, as ONE evaluator
+# among several rather than as the agent itself.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Scematica Team"]
+license = "MIT"
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+
+[workspace.dependencies]
+scema-world = { path = "crates/scema-world", version = "0.1.0" }
+scema-tools = { path = "crates/scema-tools", version = "0.1.0" }
+scema-memory = { path = "crates/scema-memory", version = "0.1.0" }
+scema-sim = { path = "crates/scema-sim", version = "0.1.0" }
+scema-policy = { path = "crates/scema-policy", version = "0.1.0" }
+scema-verify = { path = "crates/scema-verify", version = "0.1.0" }
+scema-agent = { path = "crates/scema-agent", version = "0.1.0" }
+scema-daemon = { path = "crates/scema-daemon", version = "0.1.0" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,11 @@
+{
+  "name": "scema-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scematica Omni browser extension (MV3). No build step, no dependencies, no bundler.",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "//test": "A quoted glob, not a bare directory. `node --test test/` resolves `test` as a module path on Windows and fails with MODULE_NOT_FOUND, which reads like a broken test file rather than a bad invocation.",
+  "//live": "The wire tests skip unless SCEMA_OMNID_URL and SCEMA_OMNID_TOKEN are set, so `npm test` stays hermetic and offline."
+}

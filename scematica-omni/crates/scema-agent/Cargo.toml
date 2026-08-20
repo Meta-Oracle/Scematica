@@ -1,0 +1,27 @@
+[package]
+name = "scema-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — the orchestration loop: observe, hypothesise, simulate, score, decide, record, remember."
+keywords = ["agent", "orchestration", "agi"]
+categories = ["science"]
+
+[lib]
+name = "scema_agent"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-tools = { workspace = true }
+scema-memory = { workspace = true }
+scema-sim = { workspace = true }
+scema-policy = { workspace = true }
+scema-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

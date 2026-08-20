@@ -1,0 +1,27 @@
+[package]
+name = "scema-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni over the Model Context Protocol — perceive, simulate, explain and verify, exposed as MCP tools with workspace-confined paths."
+keywords = ["mcp", "agent", "llm", "tools"]
+categories = ["command-line-utilities", "api-bindings"]
+
+[[bin]]
+name = "scema-mcp"
+path = "src/main.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-tools = { workspace = true }
+scema-agent = { workspace = true }
+scema-policy = { workspace = true }
+scema-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

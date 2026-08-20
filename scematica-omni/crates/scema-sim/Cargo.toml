@@ -1,0 +1,21 @@
+[package]
+name = "scema-sim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — counterfactual projection of competing hypotheses against a world state, with every term carrying whether it was measured."
+keywords = ["agent", "simulation", "counterfactual"]
+categories = ["simulation"]
+
+[lib]
+name = "scema_sim"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

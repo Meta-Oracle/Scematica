@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 members = [
     "crates/scematica-core",
     "crates/scematica-sniper",
@@ -41,6 +41,16 @@ exclude = [
     # second one: its inference path is a spec others reimplement, so it is kept
     # dependency-minimal on purpose. See scema-bot-mesh/README.md.
     "scema-bot-mesh",
+    # Scematica Omni: the agent runtime (world model -> counterfactual simulation ->
+    # policy -> verifiable decision record) plus the `scema` CLI. Own workspace for the
+    # lockfile reason above — it hosts a browser extension bridge, a local daemon and an
+    # MCP surface, all of which want a modern HTTP/TLS stack — and for a second reason
+    # specific to it: omni is domain-agnostic by design, so nothing in it may depend on
+    # `scematica-core` or anything downstream of it, or the trading domain becomes
+    # structurally privileged. It reaches back only into the solana-free crates
+    # (`scematica-nn` today, as ONE policy evaluator among several).
+    # See scematica-omni/README.md.
+    "scematica-omni",
 ]
 resolver = "2"
 

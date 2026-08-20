@@ -1,0 +1,5 @@
+# Agent state: decision records and the four memories. Local to a machine and to a
+# working directory, and full of absolute paths — never useful in a commit.
+.scema/
+
+target/

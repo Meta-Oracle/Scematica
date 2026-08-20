@@ -1,0 +1,20 @@
+[package]
+name = "scema-world"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — the universal world-state representation an agent perceives, reasons over and acts on. Pure types, no I/O."
+keywords = ["agent", "world-model", "provenance", "ai"]
+categories = ["data-structures", "science"]
+
+[lib]
+name = "scema_world"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

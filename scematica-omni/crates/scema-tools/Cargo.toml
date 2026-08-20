@@ -1,0 +1,22 @@
+[package]
+name = "scema-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — observers that turn a real environment into a WorldState. The only crate in the perception path allowed to touch the filesystem."
+keywords = ["agent", "perception", "observability"]
+categories = ["development-tools"]
+
+[lib]
+name = "scema_tools"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

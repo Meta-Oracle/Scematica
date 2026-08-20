@@ -34,6 +34,24 @@ cargo run --release -p mesh-dashboard -- /path/to/bot --interval 2
 cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipeable)
 cargo run --release -p mesh-dashboard -- --json       # raw mesh
 
+# Scematica Omni — the agent runtime (own workspace; cd first)
+# Published to crates.io as ten `scema-*` crates (0.1.0), independent of the bot's
+# `scematica-*` line. Install without a checkout:
+cargo install scema-cli scema-daemon scema-mcp   # -> scema, scema-omnid, scema-mcp
+cd scematica-omni ; cargo build --release
+cd scematica-omni ; cargo test --workspace          # 93 tests
+./scematica-omni/target/release/scema observe .     # perceive a source tree
+./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
+./scematica-omni/target/release/scema decide   "<goal>" --ground <signal-id>   # seals a record
+./scematica-omni/target/release/scema explain --list ; scema verify --all
+./scematica-omni/target/release/scema policy        # weights, observers, specialists
+
+# Omni's other three surfaces (all drive the same scema-agent)
+./scematica-omni/target/release/scema-omnid --allow .          # loopback daemon :7842
+./scematica-omni/target/release/scema-mcp --allow .            # MCP over stdio
+cd scematica-omni/plugins/scema-web ; npm test                 # extension (13 hermetic)
+cd web ; npm run check:omni                                    # Rust<->TS commitment parity
+
 # ScemaDEX agentic-liquidity layer (separate from the bot)
 cargo run --release --bin sdk-dashboard           # SDK TUI over the bond pipeline (SIM)
 cargo run --release --bin sdk-dashboard -- --live # real Jupiter quotes through the bonds
@@ -163,6 +181,28 @@ scema-botchain/         BOT Chain (EVM, chain 677) port. **Own cargo workspace, 
                         Bins: `botchain-probe`. See scema-botchain/README.md — it records
                         the measured pool-creation flow, which as of Aug 2026 is ~2 events
                         in 8 days and therefore does not yet support a sniper.
+scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace, in the
+                        root `exclude` list** — it will host a browser-extension bridge, a
+                        local daemon and an MCP surface, all of which want a modern
+                        HTTP/TLS stack, i.e. exactly what the pin comments say cannot
+                        coexist with solana-sdk. Second, sharper reason: omni is
+                        **domain-agnostic by design** (a repo, a web page and a market are
+                        all just `WorldState`), so nothing in it may depend on
+                        `scematica-core` or anything downstream — that would make the
+                        trading domain structurally privileged. It reaches back only into
+                        the solana-free crates; today `scematica-nn` (default-features off)
+                        as ONE policy evaluator among several, which declines on any
+                        non-trading world. Crates: scema-world (pure types + the extension
+                        wire format), scema-tools (perception + Workspace confinement),
+                        scema-memory (four memories), scema-sim (counterfactual projection),
+                        scema-policy (utility + pluggable evaluators + the ONE renderer),
+                        scema-verify (proof-carrying decision records), scema-agent (the
+                        loop), scema-cli (bin `scema`), scema-daemon (bin `scema-omnid`),
+                        scema-mcp (bin `scema-mcp`). Plus plugins/scema-web (MV3 browser
+                        extension, no build step) and `/omni` in web/ (offline record
+                        verifier). Tests: `cargo test --workspace` (159), plus 22 in
+                        plugins/scema-web and `npm run check:omni` in web/ (17).
+                        See scematica-omni/README.md.
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -411,11 +451,53 @@ collects. Four constraints:
   offered from the panel itself: `/pair` only generates a **mobile** QR and never calls
   `setPairing`, so linking there left the browser as unpaired as before.
 
+**`/omni` is the seventh product on the same site** — the Scematica Omni decision-record
+console (`components/omni/`, `lib/omni/`) with its own amber palette (`omni-*` tokens +
+`.omni-root`). It renders and verifies a record sealed by `scematica-omni`. Four
+constraints, and the first is stronger than anywhere else on the site:
+
+- **There is no server side at all.** No `/api/omni` route, no entry in
+  `app/api/[...slug]/route.ts`, no fetch of any kind. The record is read with `FileReader`
+  and hashed with WebCrypto in the reader's own browser. "No simulation branch" is trivially
+  true here — there is nothing to simulate and nothing to phone home to — and that is the
+  point: a verifier that had to send the record somewhere would be asking the reader to
+  trust a third party in order to avoid trusting one.
+- **The raw text is verified, never a re-serialised object.** `JSON.parse` collapses Rust's
+  `0.0` to `0` and `JSON.stringify` writes it back without the fraction, which moves it from
+  the FLOAT tag to the INTEGER tag in the canonical encoding and changes the digest. Nothing
+  is wrong with the record — the round trip destroyed information the encoding depends on.
+  `OmniTerminal` holds `text` alongside the parsed object and only `text` reaches
+  `verifyRecordText`; `check:omni` pins that a round-tripped record does *not* verify.
+- **`lib/omni/canonical.ts` is a port; Rust is authoritative.** One differing byte and the
+  page reports an untampered record as INVALID, which is the most damaging possible failure
+  — it teaches the reader to stop believing the verifier. The fixture in
+  `lib/omni/fixtures/record.json` is a real `scema decide` output carrying the digests
+  **Rust** computed, so the check asks Rust's answer rather than snapshotting the port's.
+- **What VERIFIED means is on the page, not only in a comment.** It proves the record was
+  not edited after sealing; it does **not** prove the world was as described (provenance
+  carries that), and it does **not** prove this is the original record (tamper-evident, not
+  tamper-proof, until the root is anchored somewhere the author does not control). The
+  `Limits` component renders all three, twice.
+
+`lib/omni/view.ts::cell` is the TS copy of the one render rule — an unmeasured term prints
+`—`, never `0.00`. Three implementations exist (Rust `scema_policy::render`, the extension
+HUD, this), each tested; the *rule* is shared, not the code, and a copy that drifts is worse
+than no copy.
+
 `npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
 determinism, path tracing, URL rooting, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
-captured from a real `cargo run --example dump`. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
+captured from a real `cargo run --example dump`. `npm run check:omni` pins the
+Rust↔TS commitment arithmetic (17 checks) against a real sealed record — including the
+1e-9 float binding, the integer/float tag distinction, byte-wise key ordering, and the
+`JSON.stringify` hazard above. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching
 `lib/escrow/mintinfo.ts` or `program.ts`.
+
+`tsconfig.json` has `allowImportingTsExtensions` on so a module can import a sibling as
+`"./x.ts"`. `lib/omni/verify.ts` imports `lib/omni/canonical.ts`, and `check:omni` runs both
+directly under Node's native type-stripping loader, which resolves real paths and therefore
+needs the extension. Safe because `noEmit` is on, and it only permits a form that used to be
+an error.
 
 Rebuilding `api.exe` on Windows fails with `Access is denied (os error 5)` while the API
 is running — stop it first. Cargo reports this as a build error, not a lock error.
@@ -490,6 +572,155 @@ hallucinated price.
 Grants are session-scoped and never persisted — a permission surviving the process turns
 one keystroke into standing authorisation. `tests/test_agent_workspace.py` is the
 security suite; most of its cases assert something does *not* happen.
+
+## Architecture: Scematica Omni (`scematica-omni/`)
+
+The agent runtime, in its own workspace. Loop: **observe -> hypothesise -> simulate ->
+score -> decide -> record -> remember**. Every stage is a trait with a real implementation
+and the whole pass is deterministic, which is the precondition for a decision record being
+verifiable by somebody who was not there.
+
+The organising idea is that **every layer can say "I don't know", and saying it costs
+nothing** — an agent that cannot express ignorance expresses a number of the right shape
+instead, and nothing downstream can tell it from a measurement. Six invariants carry that:
+
+- **`Provenance` before value, `Term` before score.** Same mechanism as
+  `scematica_mesh::cognition::Term`, same lesson: an unmeasured dimension takes the
+  **neutral element** (0.0 additive here) and is flagged `measured: false`. Every aggregate
+  carries a `Coverage` and no renderer may print the score without it — `render::cell` is
+  the only thing that formats a `Term`, and an unmeasured one prints `—`, never `0.00`. A
+  measured zero still prints `0.00`, because that is a real observation.
+- **The utility equation is additive *because* of that.** `U = R − λ₁K − λ₂C − λ₃U + λ₄V`.
+  A multiplicative form is more expressive and it is the trap this repo has paid for twice
+  (the sentience Ψ pinned at 0; the agentic gate pinned shut on unbuilt subsystems). λ
+  weights are a stated preference, never a fitted parameter, and they are hashed into every
+  record.
+- **A projection may not invent a number.** `StructuralSimulator` scores an expected gain
+  **only** from signals the observer actually counted; a dangling or estimated citation
+  yields `Term::absent`. The uncomfortable consequence is correct: on a barely-perceived
+  world most branches project exactly zero and the agent abstains.
+- **An instruction is not evidence.** The goal branch is grounded only by
+  `Goal::grounded_in`, which the operator sets with `--ground`. An earlier version inferred
+  it by keyword overlap and immediately grounded "add tests to the scema-cli crate" in a
+  marker backlog in a *different* crate, because `scema` is a substring of every unit name
+  here. Do not reintroduce inference.
+- **`Applicability` lets a specialist decline, in two distinguishable ways.**
+  `OutOfDomain` (permanent, fine) vs `Insufficient` (my domain, missing inputs — something
+  the operator can go and supply). `scematica-nn` is wired in at `scema-policy::dqstar` as
+  ONE evaluator and declines on every non-trading world; it also refuses a *partial* or
+  *stale* `TradeState` rather than defaulting a missing feature to 0.0, which the net would
+  read as a real observation of an empty pool. Specialist scores are **attached, never
+  averaged** into the ranking (a utility and a normalised Q are not the same quantity); a
+  qualified specialist's *measured* negative vetoes outright, and an *unmeasured* one is
+  silence and carries no veto.
+- **Unresolved counterfactuals are counted, never scored.** Every declined branch is
+  remembered with what was projected for it; its realised outcome almost never exists
+  because nobody ran it. `Calibration::mean_abs_error` is `None`, not `0.0`, when nothing
+  resolved. Imputing outcomes for untaken branches would mean the system generating its own
+  training signal. Same asymmetry as the bot's `calibration.rs`.
+
+Abstention is a first-class outcome with five distinct reasons (`NoCandidates`,
+`AllForbidden`, `NoPositiveUtility`, `TooLittleMeasured`, `Contested`), each of which is a
+different instruction to the operator. `scema decide` exits **0** when it abstains — a
+script that treats "the agent declined" as a crash gets rewritten to ignore the exit code,
+and then it ignores real crashes too.
+
+**What `scema verify` proves**: the record was not edited after sealing, naming the field
+that moved. **Not** that the world was as described (provenance carries that, which is why
+the world state is committed whole — `Absent` arms and blind spots included), and **not**
+that the record is the original (tamper-evident, not tamper-proof, until the root is
+anchored somewhere the author does not control). Canonical encoding is stricter than JSON —
+sorted keys, tagged types, normalised `-0.0` and NaN — because `serde_json` output is not
+stable enough to hash. SHA-256, not the keccak-256 in `scema-bot-mesh`: nothing on an EVM
+verifies these yet, and if one ever does that binding belongs on `mesh-core`'s keccak path.
+
+**Nothing in this workspace writes to the environment it observes.** `execute`, `delegate`,
+`discover` and `pay` are registered verbs that exit 2 and say what is missing; they are in
+`--help` on purpose. The action path needs the `alchem-link` approval model in front of it
+(risk declared per tool, no terminal means deny, secrets refused before the prompt), and
+`pay` needs a spend policy first.
+
+Observer rules: report what could not be read as `blind_spots`; never round an unread thing
+to zero (`Provenance::Absent` carries no attributes); state whether the walk was complete
+(`Extent { total: None }` when a cap was hit). **A deliberate exclusion is not a blind
+spot** — skipping `target/` is a decision, not a failure, and filing it as ignorance buries
+the paths that really could not be read. `RepoObserver` also strips the Windows
+extended-length path prefix, because the locator becomes the memory subject key and every
+signal target, and two spellings would split one repository into two subjects.
+
+**Floats are hashed as fixed-point, and that is not a shortcut.** A commitment over raw
+IEEE-754 bits is unverifiable the moment a record crosses JSON, which is the only way one
+ever travels: `serde_json`'s formatter is exact but its *parser* is not correctly rounded
+for every 17-significant-digit input, so `0.40066666666666667` comes back one ULP low from
+its own identical text. A record sealed in the daemon and re-read over `GET` therefore
+reported INVALID on a byte nobody had touched — and a verifier that cries tamper on an
+honest round trip is worse than no verifier, because the first thing anyone does with one is
+stop believing it. So `canonical.rs` encodes a float as `round(v * 1e9)` in `i64` and the
+commitment binds values to **1e-9**: an edit at or above that resolution is caught, one
+below it is not and cannot move any gate in `scema-policy`. Same wall `scema-bot-mesh` hit,
+same conclusion — bit-exact float agreement between processes is engineered, not achieved by
+care. Do not "simplify" this back to hashing bits.
+
+**`scema_policy::render` is the only place in Rust a `Term` becomes a string**, for the same
+reason `lib/mesh/view.ts::toneFor` is the only thing that picks a colour: a rule encoding a
+claim about trust gets one implementation. The CLI and the MCP server both call it. The
+extension HUD and `web/lib/omni/view.ts` are tested ports.
+
+### The four surfaces
+
+All four drive the same `scema-agent` and none re-implements perception, simulation or
+verification — which is why the safety argument is made once.
+
+- **`scema-omnid`** (`scema-daemon`) — hand-rolled HTTP/1.1 on `std`, no hyper/rustls/tokio.
+  Partly for consistency, mostly because the moment omni carries a TLS stack somebody will
+  path-depend it from the bot workspace and resurrect the zeroize/curve25519-dalek conflict.
+  Four guards in order: **loopback bind that is deliberately not configurable** (the one
+  thing that reliably happens to a `--bind` flag is somebody setting it to `0.0.0.0`),
+  `Host` check → 421 (DNS rebinding is how a page becomes same-origin with a localhost
+  service and gets to read its replies), constant-time 256-bit token → 401, `Workspace` →
+  403. **No `Access-Control-Allow-Origin` is ever emitted and no `OPTIONS` handled**, so a
+  page cannot read a reply even if it guesses a route; the extension is unaffected because a
+  service-worker fetch under `host_permissions` is not subject to CORS, and that asymmetry
+  is what lets the daemon refuse CORS outright. `POST /decide` is off until `--allow-decide`.
+  `POST /simulate` builds its own non-persisting agent rather than flipping a flag on the
+  shared `Arc<Agent>` — a shared mutable flag is a race whose failure mode is a simulation
+  quietly sealing a record. A client-supplied `world` has its `observer` rewritten to
+  `client:<name>` server-side, so a record can never claim a wire-supplied world was
+  observed locally.
+- **`plugins/scema-web`** — MV3, no build step, no dependencies, no bundler. **Perception is
+  the only new part**: `src/perceive.js` emits the same JSON `RepoObserver` does, so
+  `/simulate` cannot tell a DOM from a filesystem walk. It reads nothing until you click —
+  no `content_scripts` block, no `<all_urls>`, injection via `activeTab` on the toolbar
+  button. **The token lives only in the service worker**, never in the content script, and
+  the content script picks a message *type* which `background.js` maps to a path (same rule
+  as `lib/scylar/tools.ts`: the caller names a tool, never a URL). Cross-origin iframes are
+  genuinely unreadable and become blind spots → measured uncertainty. The entity locator
+  drops the query string; `test/wire.test.js` pins that a `?sid=SECRET` never reaches a
+  record. `npm test` is hermetic (13); the 9 wire tests skip unless `SCEMA_OMNID_URL` and
+  `SCEMA_OMNID_TOKEN` are set.
+- **`scema-mcp`** — links the loop directly rather than proxying the daemon: same library,
+  one less hop, no way for two surfaces to disagree. **stdout is the transport**; every
+  diagnostic goes to stderr. Paths resolve through `Workspace` — not paranoia about a
+  hostile model but because a *cooperative* one asked to audit a project will reason its way
+  to `~/.ssh`, that being genuinely relevant to an audit. `omni_decide` is **not advertised
+  at all** without `--allow-decide`, because a listed tool that always fails teaches a model
+  to retry it. A refused path is a `tools/call` result with `isError`, never a JSON-RPC
+  error — clients surface the latter as "the server broke", and a model told that stops
+  trying, where one told "that path is outside the workspace, which is X" corrects itself.
+  The `initialize` instructions state the two things a model otherwise gets wrong: an em
+  dash is not a zero, and grounding is never inferred.
+- **`/omni` in web/** — see the web-products section above.
+
+`scema_tools::Workspace` is shared by the daemon and MCP and answers **where** only; whether
+is `Goal`'s constraints and (when there is ever a write path) an approval policy. Merging
+the two is how a grant for one silently becomes a grant for the other. It resolves fully
+(symlinks followed, `..` collapsed) and *then* compares against roots — a string scan for
+`..` passes a symlink pointing at `/`. Note what it does not cover: `RepoObserver` reads
+file contents to count tests and markers and has no `PROTECTED_PATTERNS` equivalent yet. It
+emits only counts, never contents, but point `--allow` at a project, not a home directory.
+
+State lives in `.scema/` under the working directory (`decisions/<id>.json`,
+`memory/*.jsonl`), gitignored — machine-local and full of absolute paths.
 
 ## Architecture: File-Based IPC
 

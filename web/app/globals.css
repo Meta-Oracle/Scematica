@@ -706,6 +706,28 @@ body:has(.escrow-root)::after {
 
 /* ── mesh ─────────────────────────────────────────────────────────────────── */
 
+/* Scematica Omni — the agent runtime console. Amber; see tailwind.config.ts for why
+   `--o-unmeasured` sits close to the surface colour. */
+.omni-root {
+  --o-black:      #0b0906;
+  --o-surface:    #141009;
+  --o-hi:         #1f180c;
+  --o-border:     #33280f;
+  --o-border-hi:  #5a4518;
+  --o-text:       #f3e8d2;
+  --o-muted:      #b09872;
+  --o-dim:        #6f5f45;
+  --o-accent:     #ffb340;
+  --o-glow:       #ffd98a;
+  --o-valid:      #5ddc9a;
+  --o-invalid:    #ff6b6b;
+  --o-warn:       #ffb86b;
+  --o-unmeasured: #463a26;
+  background: var(--o-black);
+  color: var(--o-text);
+  min-height: 100vh;
+}
+
 .mesh-root {
   --m-black:     #050711;
   --m-surface:   #0a0e1f;

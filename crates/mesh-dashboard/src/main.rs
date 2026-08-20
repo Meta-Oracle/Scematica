@@ -26,6 +26,7 @@
 mod canvas;
 mod render;
 mod view;
+mod vortex;
 
 use std::io::{self, Stdout, Write};
 use std::path::Path;
@@ -42,7 +43,9 @@ use ratatui::Terminal;
 
 use scematica_mesh::{Collector, Mesh};
 
+use crate::render::View;
 use crate::view::{GraphLayout, Trace};
+use crate::vortex::Camera;
 
 /// Rows the chrome takes: header 2 + diagnosis 3 + panels 11 + footer 1.
 /// Mirrors the constraints in `render::draw`; used to keep the selected node scrolled
@@ -56,6 +59,7 @@ struct Args {
     interval: u64,
     once: bool,
     json: bool,
+    view: View,
 }
 
 fn parse_args() -> Result<Option<Args>> {
@@ -64,6 +68,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut once = false;
     let mut json = false;
+    let mut view = View::Graph;
     let mut saw_root = false;
 
     let mut i = 0;
@@ -75,6 +80,12 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "--once" => once = true,
             "--json" => json = true,
+            "--view" => {
+                i += 1;
+                let v = argv.get(i).ok_or_else(|| anyhow::anyhow!("--view needs a value"))?;
+                view = View::parse(v)
+                    .ok_or_else(|| anyhow::anyhow!("unknown view `{v}` (try graph|tornado|coherence|roster)"))?;
+            }
             "--interval" => {
                 i += 1;
                 let v = argv.get(i).ok_or_else(|| anyhow::anyhow!("--interval needs a value"))?;
@@ -99,7 +110,7 @@ fn parse_args() -> Result<Option<Args>> {
         anyhow::bail!("`{root}` is not a directory");
     }
 
-    Ok(Some(Args { root, interval, once, json }))
+    Ok(Some(Args { root, interval, once, json, view }))
 }
 
 fn print_help() {
@@ -109,13 +120,16 @@ fn print_help() {
     println!("OPTIONS:");
     println!("  --interval <SECS>   re-collect every SECS seconds (default: {DEFAULT_INTERVAL_SECS})");
     println!("  --once              render one frame as plain text and exit");
+    println!("  --view <VIEW>       start in graph|tornado|coherence|roster (default: graph)");
     println!("  --json              print the raw mesh as JSON and exit");
     println!("  -h, --help          this help\n");
     println!("KEYS (interactive):");
-    println!("  q / Esc             quit            r    re-collect now");
-    println!("  ↑↓←→ or hjkl        move selection  t    trace to/from the selection");
-    println!("  Tab / Shift-Tab     cycle units     g    expand the gate's terms");
-    println!("  c                   clear selection < >  scroll the graph horizontally\n");
+    println!("  1/2/3/4 or Tab       switch view (graph / tornado / coherence / roster)");
+    println!("  q / Esc              quit            r    re-collect now");
+    println!("  ↑↓←→ or hjkl         move selection  t    trace to/from the selection");
+    println!("  ← → (in tornado)     rotate the vortex");
+    println!("  Tab / Shift-Tab      cycle units     g    expand the gate's terms");
+    println!("  c                    clear selection < >  scroll the graph horizontally\n");
     println!("Reads only. It never writes a file or takes a lock, so it is safe against a");
     println!("live bot. A dark node means no source on disk — unseen, not idle.");
 }
@@ -130,29 +144,44 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if args.once {
-        print_once(&mesh, &args.root);
+        print_once(&mesh, &args.root, args.view);
         return Ok(());
     }
 
     run_tui(args, mesh)
 }
 
-/// One static frame, as text. Same canvas the TUI draws.
-fn print_once(mesh: &Mesh, root: &str) {
+/// One static frame, as text. Same canvas the TUI draws — so the answer to
+/// "why did nothing trade" is pipeable, greppable, and drawn by the code the unit
+/// tests already cover. The tornado renders as a plain-text depth proxy when asked.
+fn print_once(mesh: &Mesh, root: &str, view: View) {
     let layout = view::layout(mesh);
-    let canvas = render::paint_graph(mesh, &layout, None, None);
     let c = &mesh.cognition;
 
-    println!("SCEMATICA MESH   {}", mesh.generated_at);
+    println!("SCEMATICA MESH   {}   [{} view]", mesh.generated_at, view.as_str());
     println!("root             {root}");
     println!("visibility       {}", view::visibility_label(mesh));
     println!("diagnosis        {}", mesh.summary.diagnosis);
     println!();
 
-    for y in 0..canvas.height {
-        // Trailing spaces are noise in a pipe, and a diff of two runs should not light up
-        // over invisible padding.
-        println!("{}", canvas.row(y).trim_end());
+    match view {
+        View::Graph | View::Coherence | View::Roster => {
+            let canvas = render::paint_graph(mesh, &layout, None, None);
+            for y in 0..canvas.height {
+                println!("{}", canvas.row(y).trim_end());
+            }
+        }
+        View::Tornado => {
+            let camera = Camera::default();
+            let mut grid = crate::vortex::DepthGrid::new(120, 40);
+            grid.frame(0, 0, 120, 40, "ACTIVE NODE TORNADO", crate::vortex::FRAME);
+            let inner = (1, 1, 118, 38);
+            let clip = grid.set_clip(inner.0, inner.1, inner.2, inner.3);
+            let vortex = crate::vortex::Vortex::from_mesh(mesh);
+            vortex.draw_fitted(&mut grid, &camera, 60.0, 20.0, inner.2, inner.3, 1.2);
+            grid.restore_clip(clip);
+            println!("{}", grid.render_plain());
+        }
     }
 
     println!();
@@ -191,10 +220,13 @@ struct App {
     scroll_x: u16,
     scroll_y: u16,
     problems: Option<String>,
+    view: View,
+    camera: Camera,
+    started: Instant,
 }
 
 impl App {
-    fn new(root: String, mesh: Mesh, interval: Duration) -> Self {
+    fn new(root: String, mesh: Mesh, interval: Duration, view: View) -> Self {
         let layout = view::layout(&mesh);
         let problems = structural_problems(&mesh);
         App {
@@ -209,6 +241,9 @@ impl App {
             scroll_x: 0,
             scroll_y: 0,
             problems,
+            view,
+            camera: Camera::default(),
+            started: Instant::now(),
         }
     }
 
@@ -379,7 +414,7 @@ fn run_tui(args: Args, mesh: Mesh) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let _guard = TerminalGuard;
 
-    let mut app = App::new(args.root.clone(), mesh, Duration::from_secs(args.interval));
+    let mut app = App::new(args.root.clone(), mesh, Duration::from_secs(args.interval), args.view);
     let tick = Duration::from_millis(120);
 
     loop {
@@ -391,6 +426,7 @@ fn run_tui(args: Args, mesh: Mesh) -> Result<()> {
 
         let traced = app.trace();
         let canvas = render::paint_graph(&app.mesh, &app.layout, app.selected.as_deref(), traced.as_ref());
+        let time = app.started.elapsed().as_secs_f64();
 
         terminal.draw(|f| {
             render::draw(
@@ -407,6 +443,9 @@ fn run_tui(args: Args, mesh: Mesh) -> Result<()> {
                     scroll_y: app.scroll_y,
                     interval_secs: args.interval,
                     last_error: app.problems.as_deref(),
+                    view: app.view,
+                    time,
+                    camera: &app.camera,
                 },
             )
         })?;
@@ -418,7 +457,7 @@ fn run_tui(args: Args, mesh: Mesh) -> Result<()> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if handle_key(&mut app, key, view_w, view_h) {
+                if handle_key(&mut app, key, view_w, view_h, time) {
                     break;
                 }
             }
@@ -433,11 +472,16 @@ fn run_tui(args: Args, mesh: Mesh) -> Result<()> {
 }
 
 /// Returns true when the app should quit.
-fn handle_key(app: &mut App, key: KeyEvent, view_w: u16, view_h: u16) -> bool {
+fn handle_key(app: &mut App, key: KeyEvent, view_w: u16, view_h: u16, _time: f64) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return true,
         KeyCode::Char('c') if ctrl => return true,
+        // View switching: 1-4 and the number-row keys both work.
+        KeyCode::Char('1') | KeyCode::F(1) => app.view = View::Graph,
+        KeyCode::Char('2') | KeyCode::F(2) => app.view = View::Tornado,
+        KeyCode::Char('3') | KeyCode::F(3) => app.view = View::Coherence,
+        KeyCode::Char('4') | KeyCode::F(4) => app.view = View::Roster,
         KeyCode::Char('c') => {
             app.selected = None;
             app.tracing = false;
@@ -468,13 +512,24 @@ fn handle_key(app: &mut App, key: KeyEvent, view_w: u16, view_h: u16) -> bool {
             app.follow_selection(view_w, view_h);
         }
         KeyCode::Left | KeyCode::Char('h') => {
-            app.move_selection(-1, 0);
-            app.follow_selection(view_w, view_h);
+            if app.view == View::Tornado {
+                // Rotate the vortex about its vertical axis.
+                app.camera.yaw += 0.12;
+            } else {
+                app.move_selection(-1, 0);
+                app.follow_selection(view_w, view_h);
+            }
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            app.move_selection(1, 0);
-            app.follow_selection(view_w, view_h);
+            if app.view == View::Tornado {
+                app.camera.yaw -= 0.12;
+            } else {
+                app.move_selection(1, 0);
+                app.follow_selection(view_w, view_h);
+            }
         }
+        KeyCode::Char('[') => app.camera.pitch = (app.camera.pitch + 0.08).min(1.4),
+        KeyCode::Char(']') => app.camera.pitch = (app.camera.pitch - 0.08).max(-0.2),
         KeyCode::Char('<') | KeyCode::Char(',') => app.scroll_x = app.scroll_x.saturating_sub(6),
         KeyCode::Char('>') | KeyCode::Char('.') => app.scroll_x = app.scroll_x.saturating_add(6),
         KeyCode::PageUp => app.scroll_y = app.scroll_y.saturating_sub(view_h.max(1)),
@@ -491,16 +546,21 @@ fn handle_key(app: &mut App, key: KeyEvent, view_w: u16, view_h: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vortex::Camera;
     use scematica_mesh::{Edge, Node, NodeKind, Provenance, Verdict};
 
     fn node(id: &str, kind: NodeKind) -> Node {
+        node_with(id, kind, Provenance::Live { age_secs: 1 }, Verdict::Pass)
+    }
+
+    fn node_with(id: &str, kind: NodeKind, p: Provenance, v: Verdict) -> Node {
         Node {
             id: id.into(),
             kind,
             label: id.into(),
             blurb: String::new(),
-            provenance: Provenance::Live { age_secs: 1 },
-            verdict: Verdict::Pass,
+            provenance: p,
+            verdict: v,
             activity: None,
             detail: vec![],
             reason: None,
@@ -518,7 +578,7 @@ mod tests {
             vec![Edge::signal("l", "f1"), Edge::signal("f1", "x")],
             "t".into(),
         );
-        App::new(".".into(), mesh, Duration::from_secs(4))
+        App::new(".".into(), mesh, Duration::from_secs(4), View::Graph)
     }
 
     #[test]
@@ -569,7 +629,7 @@ mod tests {
     #[test]
     fn tracing_selects_something_first() {
         let mut a = app();
-        assert!(!handle_key(&mut a, KeyEvent::from(KeyCode::Char('t')), 80, 20));
+        assert!(!handle_key(&mut a, KeyEvent::from(KeyCode::Char('t')), 80, 20, 0.0));
         assert!(a.tracing);
         assert!(a.selected.is_some());
         assert!(a.trace().is_some());
@@ -580,7 +640,7 @@ mod tests {
         let mut a = app();
         a.selected = Some("l".into());
         a.tracing = true;
-        handle_key(&mut a, KeyEvent::from(KeyCode::Char('c')), 80, 20);
+        handle_key(&mut a, KeyEvent::from(KeyCode::Char('c')), 80, 20, 0.0);
         assert!(a.selected.is_none());
         assert!(!a.tracing);
         assert!(a.trace().is_none());
@@ -589,14 +649,39 @@ mod tests {
     #[test]
     fn q_and_esc_quit_and_ctrl_c_does_too() {
         let mut a = app();
-        assert!(handle_key(&mut a, KeyEvent::from(KeyCode::Char('q')), 80, 20));
-        assert!(handle_key(&mut a, KeyEvent::from(KeyCode::Esc), 80, 20));
+        assert!(handle_key(&mut a, KeyEvent::from(KeyCode::Char('q')), 80, 20, 0.0));
+        assert!(handle_key(&mut a, KeyEvent::from(KeyCode::Esc), 80, 20, 0.0));
         assert!(handle_key(
             &mut a,
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             80,
-            20
+            20,
+            0.0
         ));
+    }
+
+    #[test]
+    fn the_number_keys_switch_views() {
+        let mut a = app();
+        handle_key(&mut a, KeyEvent::from(KeyCode::Char('2')), 80, 20, 0.0);
+        assert_eq!(a.view, View::Tornado);
+        handle_key(&mut a, KeyEvent::from(KeyCode::Char('4')), 80, 20, 0.0);
+        assert_eq!(a.view, View::Roster);
+        handle_key(&mut a, KeyEvent::from(KeyCode::Char('3')), 80, 20, 0.0);
+        assert_eq!(a.view, View::Coherence);
+        handle_key(&mut a, KeyEvent::from(KeyCode::Char('1')), 80, 20, 0.0);
+        assert_eq!(a.view, View::Graph);
+    }
+
+    #[test]
+    fn left_and_right_rotate_the_vortex_in_tornado_view() {
+        let mut a = app();
+        a.view = View::Tornado;
+        let before = a.camera.yaw;
+        handle_key(&mut a, KeyEvent::from(KeyCode::Left), 80, 20, 0.0);
+        assert!(a.camera.yaw > before, "the vortex should rotate about its axis");
+        handle_key(&mut a, KeyEvent::from(KeyCode::Right), 80, 20, 0.0);
+        assert_eq!(a.camera.yaw, before);
     }
 
     /// A narrow terminal must still be able to reach the right-hand columns.
@@ -634,12 +719,60 @@ mod tests {
 
     #[test]
     fn an_empty_mesh_navigates_without_panicking() {
-        let mut a = App::new(".".into(), Mesh::new(vec![], vec![], "t".into()), Duration::from_secs(4));
+        let mut a = App::new(".".into(), Mesh::new(vec![], vec![], "t".into()), Duration::from_secs(4), View::Graph);
         a.move_selection(0, 1);
         a.move_selection(1, 0);
         a.cycle(true);
         a.follow_selection(40, 10);
         a.clamp_scroll(40, 10);
         assert!(a.selected.is_none());
+    }
+
+    /// Drive the whole frame through ratatui's TestBackend across every view and a couple
+    /// of camera angles, so a layout/state regression in the overhaul fails here.
+    #[test]
+    fn the_frame_renders_in_every_view_with_a_rotated_camera() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mesh = Mesh::new(
+            vec![
+                node_with("l", NodeKind::Listener, Provenance::Live { age_secs: 1 }, Verdict::Pass),
+                node_with("f", NodeKind::Filter, Provenance::Stale { age_secs: 999, budget_secs: 30 }, Verdict::Veto),
+                node_with("x", NodeKind::Executor, Provenance::Live { age_secs: 1 }, Verdict::Idle),
+            ],
+            vec![Edge::veto("f", "x").with_active(Some(true)), Edge::signal("l", "f")],
+            "2026-08-16T00:00:00Z".into(),
+        );
+        let layout = view::layout(&mesh);
+        let camera = Camera { yaw: 1.1, pitch: 0.4, distance: 9.0, focal: 14.0 };
+        let canvas = render::paint_graph(&mesh, &layout, None, None);
+
+        for view in View::ALL {
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|f| {
+                    render::draw(
+                        f,
+                        &render::Screen {
+                            mesh: &mesh,
+                            layout: &layout,
+                            canvas: &canvas,
+                            root: ".",
+                            selected: None,
+                            tracing: false,
+                            show_terms: true,
+                            scroll_x: 0,
+                            scroll_y: 0,
+                            interval_secs: 4,
+                            last_error: None,
+                            view,
+                            time: 2.0,
+                            camera: &camera,
+                        },
+                    )
+                })
+                .unwrap();
+        }
     }
 }

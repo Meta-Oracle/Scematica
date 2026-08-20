@@ -1,0 +1,29 @@
+[package]
+name = "scema-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — the `scema` command: a terminal-native agent runtime over the omni cognitive loop."
+keywords = ["agent", "cli", "ai"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "scema"
+path = "src/main.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-tools = { workspace = true }
+scema-memory = { workspace = true }
+scema-sim = { workspace = true }
+scema-policy = { workspace = true }
+scema-verify = { workspace = true }
+scema-agent = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

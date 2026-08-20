@@ -13,6 +13,13 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
+    // Lets a module import a sibling as "./x.ts". Needed because `lib/omni/verify.ts`
+    // imports `lib/omni/canonical.ts`, and `npm run check:omni` runs those files directly
+    // under Node's native type-stripping loader, which resolves real paths and therefore
+    // requires the extension. Safe here: `noEmit` is on, so nothing is written that could
+    // carry a `.ts` specifier into shipped output, and this only permits a form that was
+    // previously an error.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,

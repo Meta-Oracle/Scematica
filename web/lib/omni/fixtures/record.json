@@ -1,0 +1,918 @@
+{
+  "id": "58898030",
+  "at": 1787185813,
+  "runtime": "scema-omni/0.1.0",
+  "world": {
+    "observer": "repo",
+    "entity": {
+      "kind": "repository",
+      "locator": "C:\\scema-fx",
+      "label": "scema-fx"
+    },
+    "domain": "software",
+    "observed_at": 1787185813,
+    "objects": [
+      {
+        "id": "unit:",
+        "kind": "crate",
+        "label": "scema-fx",
+        "attrs": {
+          "documented": {
+            "t": "bool",
+            "v": true
+          },
+          "files": {
+            "t": "int",
+            "v": 2
+          },
+          "lines": {
+            "t": "int",
+            "v": 7
+          },
+          "markers": {
+            "t": "int",
+            "v": 3
+          },
+          "tests": {
+            "t": "int",
+            "v": 0
+          }
+        },
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      },
+      {
+        "id": "unit:sub",
+        "kind": "crate",
+        "label": "sub",
+        "attrs": {
+          "documented": {
+            "t": "bool",
+            "v": false
+          },
+          "files": {
+            "t": "int",
+            "v": 2
+          },
+          "lines": {
+            "t": "int",
+            "v": 402
+          },
+          "markers": {
+            "t": "int",
+            "v": 0
+          },
+          "tests": {
+            "t": "int",
+            "v": 0
+          }
+        },
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      }
+    ],
+    "facts": [
+      {
+        "subject": "C:\\scema-fx",
+        "predicate": "is_git_repository",
+        "object": "false",
+        "confidence": 1.0,
+        "evidence": [
+          ".git directory presence"
+        ],
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      }
+    ],
+    "signals": [
+      {
+        "id": "untested:scema-fx",
+        "polarity": "risk",
+        "label": "`scema-fx` has no tests",
+        "detail": "2 source file(s), 7 line(s), zero test attributes found",
+        "magnitude": 0.0023333333333333335,
+        "measured": true,
+        "targets": [
+          "unit:"
+        ],
+        "evidence": [
+          "counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)"
+        ]
+      },
+      {
+        "id": "markers:scema-fx",
+        "polarity": "opportunity",
+        "label": "3 marker(s) in `scema-fx`",
+        "detail": "TODO / FIXME / HACK left in source",
+        "magnitude": 0.06,
+        "measured": true,
+        "targets": [
+          "unit:"
+        ],
+        "evidence": [
+          "counted 3 marker(s)"
+        ]
+      },
+      {
+        "id": "untested:sub",
+        "polarity": "risk",
+        "label": "`sub` has no tests",
+        "detail": "2 source file(s), 402 line(s), zero test attributes found",
+        "magnitude": 0.134,
+        "measured": true,
+        "targets": [
+          "unit:sub"
+        ],
+        "evidence": [
+          "counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)"
+        ]
+      },
+      {
+        "id": "undocumented:sub",
+        "polarity": "opportunity",
+        "label": "`sub` has no README or module doc",
+        "detail": "no README and no `//!` / docstring found in its sources",
+        "magnitude": 0.0804,
+        "measured": true,
+        "targets": [
+          "unit:sub"
+        ],
+        "evidence": [
+          "presence check over the unit's files"
+        ]
+      }
+    ],
+    "extent": {
+      "observed": 4,
+      "total": 4,
+      "note": "walked 4 directories"
+    },
+    "blind_spots": []
+  },
+  "goal": {
+    "id": "goal",
+    "statement": "reduce the marker backlog",
+    "constraints": [],
+    "horizon": null,
+    "grounded_in": [
+      "markers:fixture-target"
+    ]
+  },
+  "hypotheses": [
+    {
+      "id": "h-goal",
+      "statement": "reduce the marker backlog",
+      "rationale": "the operator asserts this addresses: markers:fixture-target",
+      "origin": {
+        "kind": "human"
+      },
+      "actions": [
+        {
+          "id": "a0",
+          "verb": "write",
+          "target": "C:\\scema-fx",
+          "detail": "reduce the marker backlog",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "markers:fixture-target"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-untested-scema-fx",
+      "statement": "mitigate: `scema-fx` has no tests",
+      "rationale": "2 source file(s), 7 line(s), zero test attributes found — counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (untested:scema-fx)"
+      },
+      "actions": [
+        {
+          "id": "a0",
+          "verb": "write",
+          "target": "unit:",
+          "detail": "address ``scema-fx` has no tests`",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "untested:scema-fx"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-markers-scema-fx",
+      "statement": "take: 3 marker(s) in `scema-fx`",
+      "rationale": "TODO / FIXME / HACK left in source — counted 3 marker(s)",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (markers:scema-fx)"
+      },
+      "actions": [
+        {
+          "id": "a1",
+          "verb": "write",
+          "target": "unit:",
+          "detail": "address `3 marker(s) in `scema-fx``",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "markers:scema-fx"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-untested-sub",
+      "statement": "mitigate: `sub` has no tests",
+      "rationale": "2 source file(s), 402 line(s), zero test attributes found — counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (untested:sub)"
+      },
+      "actions": [
+        {
+          "id": "a2",
+          "verb": "write",
+          "target": "unit:sub",
+          "detail": "address ``sub` has no tests`",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "untested:sub"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-undocumented-sub",
+      "statement": "take: `sub` has no README or module doc",
+      "rationale": "no README and no `//!` / docstring found in its sources — presence check over the unit's files",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (undocumented:sub)"
+      },
+      "actions": [
+        {
+          "id": "a3",
+          "verb": "write",
+          "target": "unit:sub",
+          "detail": "address ``sub` has no README or module doc`",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "undocumented:sub"
+      ],
+      "tags": {}
+    }
+  ],
+  "projections": [
+    {
+      "hypothesis": "h-goal",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.0,
+        "measured": false,
+        "note": "hypothesis cites no signal in this world; no observed basis for a gain"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.4,
+        "measured": true,
+        "note": "worst declared action class Write; no counted risk signal on its targets"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [],
+      "shadow": {
+        "touched_objects": [
+          "C:\\scema-fx"
+        ],
+        "addresses_signals": [
+          "markers:fixture-target"
+        ],
+        "unaddressed_risks": [
+          "untested:scema-fx",
+          "untested:sub"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 4,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-untested-scema-fx",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.0023333333333333335,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): untested:scema-fx"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.467,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`scema-fx` has no tests",
+          "detail": "2 source file(s), 7 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0023333333333333335,
+            "measured": true,
+            "note": "counted signal untested:scema-fx"
+          }
+        },
+        {
+          "label": "`sub` has no tests",
+          "detail": "2 source file(s), 402 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.134,
+            "measured": true,
+            "note": "counted signal untested:sub"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:"
+        ],
+        "addresses_signals": [
+          "untested:scema-fx"
+        ],
+        "unaddressed_risks": [
+          "untested:sub"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-markers-scema-fx",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.06,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): markers:scema-fx"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.467,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`scema-fx` has no tests",
+          "detail": "2 source file(s), 7 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0023333333333333335,
+            "measured": true,
+            "note": "counted signal untested:scema-fx"
+          }
+        },
+        {
+          "label": "`sub` has no tests",
+          "detail": "2 source file(s), 402 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.134,
+            "measured": true,
+            "note": "counted signal untested:sub"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:"
+        ],
+        "addresses_signals": [
+          "markers:scema-fx"
+        ],
+        "unaddressed_risks": [
+          "untested:scema-fx",
+          "untested:sub"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-untested-sub",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.134,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): untested:sub"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.467,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`scema-fx` has no tests",
+          "detail": "2 source file(s), 7 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0023333333333333335,
+            "measured": true,
+            "note": "counted signal untested:scema-fx"
+          }
+        },
+        {
+          "label": "`sub` has no tests",
+          "detail": "2 source file(s), 402 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.134,
+            "measured": true,
+            "note": "counted signal untested:sub"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:sub"
+        ],
+        "addresses_signals": [
+          "untested:sub"
+        ],
+        "unaddressed_risks": [
+          "untested:scema-fx"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-undocumented-sub",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.0804,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): undocumented:sub"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.467,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`scema-fx` has no tests",
+          "detail": "2 source file(s), 7 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0023333333333333335,
+            "measured": true,
+            "note": "counted signal untested:scema-fx"
+          }
+        },
+        {
+          "label": "`sub` has no tests",
+          "detail": "2 source file(s), 402 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.134,
+            "measured": true,
+            "note": "counted signal untested:sub"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:sub"
+        ],
+        "addresses_signals": [
+          "undocumented:sub"
+        ],
+        "unaddressed_risks": [
+          "untested:scema-fx",
+          "untested:sub"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    }
+  ],
+  "decision": {
+    "chosen": null,
+    "ranked": [
+      {
+        "hypothesis": "h-untested-sub",
+        "statement": "mitigate: `sub` has no tests",
+        "utility": {
+          "value": -0.0012000000000000066,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.134,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): untested:sub"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.2802,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-undocumented-sub",
+        "statement": "take: `sub` has no README or module doc",
+        "utility": {
+          "value": -0.054800000000000015,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.0804,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): undocumented:sub"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.2802,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-markers-scema-fx",
+        "statement": "take: 3 marker(s) in `scema-fx`",
+        "utility": {
+          "value": -0.07519999999999999,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.06,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): markers:scema-fx"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.2802,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-goal",
+        "statement": "reduce the marker backlog",
+        "utility": {
+          "value": -0.09500000000000003,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.0,
+              "measured": false,
+              "note": "hypothesis cites no signal in this world; no observed basis for a gain"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.24,
+              "measured": true,
+              "note": "worst declared action class Write; no counted risk signal on its targets"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 4,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-untested-scema-fx",
+        "statement": "mitigate: `scema-fx` has no tests",
+        "utility": {
+          "value": -0.13286666666666663,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.0023333333333333335,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): untested:scema-fx"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.2802,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:scema-fx, untested:sub"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      }
+    ],
+    "excluded": [],
+    "abstention": {
+      "reason": "no_positive_utility",
+      "best": -0.0012000000000000066
+    },
+    "config": {
+      "weights": {
+        "risk": 0.6,
+        "cost": 0.3,
+        "uncertainty": 0.3,
+        "reversibility": 0.25
+      },
+      "min_coverage": 0.4,
+      "veto_at_or_below": 0.0
+    },
+    "evaluator_status": [
+      {
+        "evaluator": "dqstar",
+        "about": "Scematica Deep Q* (Dueling Double-DQN) — ranks trading branches by their position in the current Q spread. Trading worlds only.",
+        "applicability": {
+          "kind": "out_of_domain",
+          "note": "world domain is Software; the 24-feature state is pool and position data and has no reading of this"
+        }
+      }
+    ],
+    "coverage": {
+      "measured": 24,
+      "total": 25
+    }
+  },
+  "commitment": {
+    "world": "3de0060df076bbc832d9a5a85d15202f851b7edb80bcc20b1d27f6760c4d6e4f",
+    "goal": "41a2173e0ffa4cd08abf7c126c91895f9540246152c8e89d75e56196b75e556d",
+    "hypotheses": "cf7fe39e7576b58a55d8e9fd7af1d447d0db417c46ae4162ce3e3c1c11ff0dae",
+    "projections": "23b8c783f4a24fb37decead87d60d4ab729f15cb62cf4b95cb4ecdab725ba9b5",
+    "policy": "3a20eee9fc5978968228bc7fdd0a2e0ebac63bf3f1321328bbf25658ff97612a",
+    "decision": "099b0612e21b156c5dfec2cf402aa5d70a1133b96c490e06cb482b647186da55",
+    "root": "588980307fb3ced5017152daf40ff8ab1946b4e779b8550f4bac017721ecaa50"
+  }
+}

@@ -110,6 +110,32 @@ const config: Config = {
         'mesh-absent':      '#3a4266',
         'mesh-veto':        '#ff5d7d',
 
+        // ── omni ────────────────────────────────────────────────────────────
+        // Seventh product, seventh identity: warm amber on near-black, against
+        // the sniper's red, alchem's blue, scylar's violet, botchain's amber,
+        // escrow's teal and the mesh's indigo. Warmer and darker than
+        // `botchain-amber` so the two are separable at a glance.
+        //
+        // `omni-unmeasured` is deliberately close to the surface colour, for the
+        // same reason `mesh-absent` is close to the background: a term nobody
+        // measured must not draw the eye like a value somebody did. It is the
+        // colour of the em dash that stands in for a number, and it is the last
+        // line of defence for everything the Rust type system protects.
+        'omni-black':       '#0b0906',
+        'omni-surface':     '#141009',
+        'omni-hi':          '#1f180c',
+        'omni-border':      '#33280f',
+        'omni-border-hi':   '#5a4518',
+        'omni-text':        '#f3e8d2',
+        'omni-muted':       '#b09872',
+        'omni-dim':         '#6f5f45',
+        'omni-accent':      '#ffb340',
+        'omni-glow':        '#ffd98a',
+        'omni-valid':       '#5ddc9a',
+        'omni-invalid':     '#ff6b6b',
+        'omni-warn':        '#ffb86b',
+        'omni-unmeasured':  '#463a26',
+
         // ── escrow market ───────────────────────────────────────────────────
         // Fifth product, fifth identity: a cold teal on near-black, against the
         // sniper's red, alchem's blue, scylar's violet and botchain's amber.

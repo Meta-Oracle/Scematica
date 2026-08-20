@@ -1,0 +1,22 @@
+[package]
+name = "scema-memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — episodic, semantic, procedural and counterfactual memory over an append-only JSONL store."
+keywords = ["agent", "memory", "counterfactual"]
+categories = ["database-implementations"]
+
+[lib]
+name = "scema_memory"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

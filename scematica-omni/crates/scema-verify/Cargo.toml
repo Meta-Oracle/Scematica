@@ -1,0 +1,25 @@
+[package]
+name = "scema-verify"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — proof-carrying decision records: canonical hashing of world, goal, hypotheses, projections and policy, and independent re-verification."
+keywords = ["agent", "verification", "commitment", "audit"]
+categories = ["cryptography"]
+
+[lib]
+name = "scema_verify"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-sim = { workspace = true }
+scema-policy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+anyhow = { workspace = true }

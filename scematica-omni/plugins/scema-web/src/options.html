@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Scematica Omni — pairing</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #0b0b12; color: #e6e6f0;
+        max-width: 620px; margin: 40px auto; padding: 0 20px;
+      }
+      h1 { font-size: 15px; letter-spacing: .1em; color: #8b8bff; }
+      label { display: block; margin: 16px 0 4px; color: #7a7a9c; font-size: 11px; letter-spacing: .08em; }
+      input { width: 100%; box-sizing: border-box; font: inherit;
+              background: #08080f; color: #e6e6f0; border: 1px solid #35355c;
+              border-radius: 4px; padding: 7px 9px; }
+      button { font: inherit; background: #1b1b2e; color: #e6e6f0; border: 1px solid #35355c;
+               border-radius: 4px; padding: 6px 14px; margin-top: 16px; cursor: pointer; }
+      button:hover { border-color: #4c4cff; }
+      #out { margin-top: 16px; padding: 10px; border-radius: 4px; border: 1px solid #242440; }
+      .ok { color: #9dff9d; } .bad { color: #ff7b7b; } .dim { color: #7a7a9c; }
+      pre { background: #08080f; border: 1px solid #1c1c30; border-radius: 4px;
+            padding: 9px; overflow-x: auto; }
+      section { border-top: 1px solid #1c1c30; margin-top: 28px; padding-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>SCEMATICA OMNI — PAIRING</h1>
+
+    <p class="dim">
+      The extension talks to a <code>scema-omnid</code> running on this machine. Nothing is
+      sent anywhere else, and the daemon binds to loopback only.
+    </p>
+
+    <label for="base">DAEMON BASE URL</label>
+    <input id="base" placeholder="http://127.0.0.1:7842" />
+
+    <label for="token">TOKEN</label>
+    <input id="token" type="password" placeholder="from .scema/omnid.token" />
+
+    <button id="save">Save and test</button>
+    <div id="out" class="dim">not tested</div>
+
+    <section>
+      <h1>STARTING THE DAEMON</h1>
+      <pre>scema-omnid --allow /path/to/a/project
+cat .scema/omnid.token</pre>
+      <p class="dim">
+        The token is generated once and reused, so pairing survives restarts. Delete the
+        file to rotate it — every paired client will need the new one.
+      </p>
+      <p class="dim">
+        <strong>The token stays in this settings page and the extension's service worker.</strong>
+        It is never given to the overlay running on a web page, so a hostile page that
+        subverted the overlay still could not drive your agent.
+      </p>
+    </section>
+
+    <script src="options.js"></script>
+  </body>
+</html>

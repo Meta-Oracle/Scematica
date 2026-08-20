@@ -1,0 +1,36 @@
+[package]
+name = "scema-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — the local agent daemon. A loopback-only, token-authenticated HTTP surface over the omni cognitive loop, on the standard library."
+keywords = ["agent", "daemon", "localhost", "http"]
+categories = ["web-programming::http-server"]
+
+[lib]
+name = "scema_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scema-omnid"
+path = "src/bin/scema-omnid.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-tools = { workspace = true }
+scema-agent = { workspace = true }
+scema-verify = { workspace = true }
+scema-policy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+# The only non-workspace dependency, and it does one thing: read OS entropy for the
+# pairing token. `std` has no RNG, and a token derived from the clock and the pid is a
+# token an attacker on the same machine can reconstruct.
+getrandom = "0.2"

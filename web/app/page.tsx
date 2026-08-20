@@ -109,6 +109,14 @@ export default function Home() {
             >
               ◇ MESH
             </Link>
+            <Link
+              href="/omni"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-omni-border
+                         text-omni-accent hover:border-omni-accent hover:text-omni-glow
+                         transition-all text-xs tracking-widest"
+            >
+              ◆ OMNI
+            </Link>
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

@@ -168,11 +168,55 @@ function WhatThisIs() {
       </p>
       <div className="rounded border border-omni-border bg-omni-surface p-4">
         <h2 className="text-omni-accent">PRODUCE ONE</h2>
-        <pre className="mt-2 overflow-x-auto text-omni-text">{`scema decide "reduce the marker backlog" --ground markers:my-crate
+        <pre className="mt-2 overflow-x-auto text-omni-text">{`cargo install scema-cli
+scema decide "reduce the marker backlog" --ground markers:my-crate
 # → .scema/decisions/58898030.json`}</pre>
       </div>
+      <WhereThisFits />
       <Limits />
     </section>
+  )
+}
+
+/**
+ * Where this page sits among the other surfaces.
+ *
+ * Worth stating explicitly because the arrangement is genuinely surprising: the browser
+ * extension and this page are both "the web part", and they share no code path, no server
+ * and no network. Somebody who installs the extension expecting it to talk to this site
+ * will be looking for a connection that does not exist and should not.
+ */
+function WhereThisFits() {
+  return (
+    <div className="rounded border border-omni-border bg-omni-surface p-4">
+      <h2 className="text-omni-accent">WHERE THIS PAGE SITS</h2>
+      <p className="mt-2">
+        Omni runs on your machine. This page is the one part of it that runs here, and it is
+        a reader — it never contacts an agent, and no agent contacts it.
+      </p>
+      <pre className="mt-3 overflow-x-auto text-omni-muted">{`  scema            CLI            → seals records into .scema/decisions/
+  scema-omnid      local daemon   → 127.0.0.1:7842, token-authenticated
+  scema-mcp        MCP over stdio → the loop as tools, for a model
+  browser extension               → reads the page you are on, posts it
+                                    to YOUR daemon on 127.0.0.1 — never here
+  this page                       → drop a sealed record in, verify it offline`}</pre>
+      <p className="mt-3 text-omni-muted">
+        The extension&apos;s only host permission is <code className="text-omni-text">http://127.0.0.1/*</code>.
+        It has no access to this site and needs none: the page you are browsing is its
+        input, and your own daemon is what processes it.
+      </p>
+      <p className="mt-2 text-omni-dim">
+        Source, and the extension you load unpacked:{' '}
+        <a
+          href="https://github.com/Meta-Oracle/Scematica/tree/main/scematica-omni"
+          className="text-omni-accent underline decoration-omni-border hover:decoration-omni-accent"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Meta-Oracle/Scematica · scematica-omni
+        </a>
+      </p>
+    </div>
   )
 }
 

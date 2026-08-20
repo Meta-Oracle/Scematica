@@ -57,6 +57,32 @@ cat .scema/omnid.token</pre>
       </p>
     </section>
 
+    <section>
+      <h1>WHAT THIS TALKS TO</h1>
+      <p class="dim">
+        Only <code>127.0.0.1</code>. That is the extension's entire host permission, and it
+        is the reason the daemon can refuse CORS outright and still be usable — a
+        service-worker fetch under <code>host_permissions</code> is not subject to it, while
+        a web page is.
+      </p>
+      <p class="dim">
+        It does <strong>not</strong> talk to the Scematica website, and does not need to. The
+        page you are browsing is the extension's <em>input</em>; your own daemon is what
+        processes it. Nothing is sent anywhere else.
+      </p>
+      <p class="dim">
+        The site's <code>/omni</code> page is a separate thing on the same project: an
+        offline reader for records <code>scema decide</code> has already sealed. It shares no
+        code path, no server and no network with this extension.
+      </p>
+      <p class="dim">
+        Docs and source:
+        <a href="https://github.com/Meta-Oracle/Scematica/tree/main/scematica-omni"
+           target="_blank" rel="noopener noreferrer"
+           style="color:#ffb340">Meta-Oracle/Scematica &middot; scematica-omni</a>
+      </p>
+    </section>
+
     <script src="options.js"></script>
   </body>
 </html>

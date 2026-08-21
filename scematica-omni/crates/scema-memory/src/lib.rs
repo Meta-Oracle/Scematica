@@ -233,6 +233,38 @@ pub struct Calibration {
     pub mean_abs_error: Option<f64>,
 }
 
+/// Make a state root ignore itself, the moment it first exists.
+///
+/// `.scema/` holds decision records full of absolute paths, four append-only memory logs,
+/// and — when the daemon has run — a 256-bit pairing token. None of that is meaningful in
+/// somebody else's clone, and the token is a secret sitting inside a git working tree.
+///
+/// The ignore is written **inside** the directory rather than into the project's own
+/// `.gitignore`, for two reasons. A self-ignoring directory works whatever the project's
+/// ignore rules say, and whatever VCS it uses; and no library has any business rewriting a
+/// file the whole repository shares.
+///
+/// It is called from every place that can bring the root into existence — the record store,
+/// the memory store, and the daemon's token write — because whichever of those runs *first*
+/// is the one that creates it, and that varies by which surface the operator reached for.
+/// `scema init` writes the same file, so an operator who set the directory up deliberately
+/// and one who got it as a side effect end up with the same protection.
+///
+/// Failure is deliberately silent. This is a courtesy on the way to doing something else,
+/// and an unwritable `.gitignore` must not turn a successful `decide` into an error — the
+/// record is the thing the caller asked for. A pre-existing file is never overwritten,
+/// because an operator who edited it meant it.
+pub fn self_ignore(root: &Path) {
+    let marker = root.join(".gitignore");
+    if marker.exists() {
+        return;
+    }
+    let _ = fs::write(
+        &marker,
+        "# Machine-local agent state: decision records cite absolute paths, memory is a\n         # per-checkout history, and omnid.token is a secret. None of it belongs in a commit.\n         *\n",
+    );
+}
+
 /// The four logs on disk.
 pub struct MemoryStore {
     root: PathBuf,
@@ -260,6 +292,7 @@ impl MemoryStore {
     pub fn remember(&self, record: &MemoryRecord) -> Result<()> {
         let dir = self.dir();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        self_ignore(&self.root);
         let path = self.path(record.kind);
         let mut line = serde_json::to_string(record)?;
         line.push('\n');

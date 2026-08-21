@@ -8,6 +8,7 @@ members = [
     "crates/scema-verify",
     "crates/scema-agent",
     "crates/scema-cli",
+    "crates/scema-tui",
     "crates/scema-daemon",
     "crates/scema-mcp",
 ]
@@ -34,7 +35,7 @@ resolver = "2"
 # among several rather than as the agent itself.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Scematica Team"]
 license = "MIT"
@@ -42,14 +43,15 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [workspace.dependencies]
-scema-world = { path = "crates/scema-world", version = "0.1.0" }
-scema-tools = { path = "crates/scema-tools", version = "0.1.0" }
-scema-memory = { path = "crates/scema-memory", version = "0.1.0" }
-scema-sim = { path = "crates/scema-sim", version = "0.1.0" }
-scema-policy = { path = "crates/scema-policy", version = "0.1.0" }
-scema-verify = { path = "crates/scema-verify", version = "0.1.0" }
-scema-agent = { path = "crates/scema-agent", version = "0.1.0" }
-scema-daemon = { path = "crates/scema-daemon", version = "0.1.0" }
+scema-world = { path = "crates/scema-world", version = "0.2.0" }
+scema-tools = { path = "crates/scema-tools", version = "0.2.0" }
+scema-memory = { path = "crates/scema-memory", version = "0.2.0" }
+scema-sim = { path = "crates/scema-sim", version = "0.2.0" }
+scema-policy = { path = "crates/scema-policy", version = "0.2.0" }
+scema-verify = { path = "crates/scema-verify", version = "0.2.0" }
+scema-agent = { path = "crates/scema-agent", version = "0.2.0" }
+scema-tui = { path = "crates/scema-tui", version = "0.2.0" }
+scema-daemon = { path = "crates/scema-daemon", version = "0.2.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

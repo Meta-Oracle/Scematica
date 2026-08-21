@@ -16,8 +16,8 @@ name = "dashboard"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { version = "1.25.0", path = "../scematica-core" }
-scematica-ai = { version = "1.25.0", path = "../scematica-ai" }
+scematica-core = { version = "1.26.0", path = "../scematica-core" }
+scematica-ai = { version = "1.26.0", path = "../scematica-ai" }
 
 tokio.workspace = true
 serde.workspace = true

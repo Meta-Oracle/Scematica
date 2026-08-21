@@ -194,6 +194,85 @@ function perceive(doc, loc, now) {
     );
   }
 
+  // ── Subresource integrity on the third-party scripts ─────────────────────
+  //
+  // Counted separately from the origin count above, because they are different facts. A
+  // page can load ten scripts from one CDN it has pinned with an `integrity` hash, and that
+  // is a very different posture from one script from one CDN it has not.
+  const offOriginNoSri = scriptsWithSrc.filter((sc) => {
+    const o = originOf(attr(sc, 'src'), loc.href);
+    return o && o !== loc.origin && !attr(sc, 'integrity');
+  }).length;
+  if (offOriginNoSri > 0) {
+    signals.push(
+      signal(
+        'third-party-scripts-without-sri',
+        'risk',
+        `${offOriginNoSri} third-party script(s) load without an integrity hash`,
+        'Whatever that origin serves next runs here, with this page’s privileges.',
+        offOriginNoSri / 10,
+        Array.from(scriptOrigins.keys()).slice(0, 5).map((o) => `script-origin:${o}`),
+        [`counted ${offOriginNoSri} of ${offOriginScriptTags} off-origin script tag(s) with no integrity attribute`]
+      )
+    );
+  }
+
+  // ── Mixed content ────────────────────────────────────────────────────────
+  //
+  // Only meaningful on an https page: an http subresource on an http page is not "mixed",
+  // it is consistent, and the page-level `password-on-insecure-page` signal already covers
+  // the real problem there. Reporting it twice would double-count into the same decision.
+  let mixed = 0;
+  if (secure) {
+    const subresources = [
+      ...all(doc, 'script[src]'),
+      ...all(doc, 'img[src]'),
+      ...all(doc, 'iframe[src]'),
+      ...all(doc, 'audio[src]'),
+      ...all(doc, 'video[src]'),
+      ...all(doc, 'link[href]'),
+    ];
+    mixed = subresources.filter((n) => {
+      const raw = attr(n, 'src') || attr(n, 'href');
+      return /^http:\/\//i.test(raw);
+    }).length;
+  }
+  if (mixed > 0) {
+    signals.push(
+      signal(
+        'mixed-content-subresources',
+        'risk',
+        `${mixed} subresource(s) load over plain http on an https page`,
+        'The lock in the address bar does not cover these; they can be replaced in transit.',
+        mixed / 5,
+        [],
+        [`counted ${mixed} element(s) whose src or href begins with http://, on a page served over ${loc.protocol}`]
+      )
+    );
+  }
+
+  // ── Inline event handlers ────────────────────────────────────────────────
+  //
+  // Counted rather than judged. A page full of `onclick=` is not necessarily insecure; it
+  // is a page whose behaviour cannot be governed by a script-src CSP, which is a fact worth
+  // having and is not the same claim.
+  const INLINE_HANDLER_SELECTOR =
+    '[onclick],[onload],[onerror],[onmouseover],[onmouseout],[onsubmit],[onfocus],[onblur],[onchange],[oninput],[onkeydown],[onkeyup]';
+  const inlineHandlers = all(doc, INLINE_HANDLER_SELECTOR).length;
+  if (inlineHandlers > 0) {
+    signals.push(
+      signal(
+        'inline-event-handlers',
+        'risk',
+        `${inlineHandlers} element(s) carry an inline event handler`,
+        'Inline handlers run outside any script-src policy the page sets.',
+        inlineHandlers / 40,
+        [],
+        [`counted ${inlineHandlers} element(s) matching ${INLINE_HANDLER_SELECTOR.split(',').length} on* attribute selectors`]
+      )
+    );
+  }
+
   // ── Frames: the honest blind spot ────────────────────────────────────────
   const frames = all(doc, 'iframe');
   let unreadable = 0;
@@ -234,6 +313,85 @@ function perceive(doc, loc, now) {
     );
   }
 
+  // ── Form fields with nothing to announce ─────────────────────────────────
+  //
+  // A control is considered labelled if it carries `aria-label`, `aria-labelledby` or
+  // `title`, or if some `<label for=...>` names its id. Wrapping labels (`<label><input>`)
+  // are not detected and are therefore counted as unlabelled, which makes this an
+  // *over*-count. That direction is chosen deliberately: an over-count produces a branch
+  // somebody investigates and dismisses, an under-count produces silence, and the evidence
+  // string says which way it errs so a reader is not misled by the number.
+  const labelledIds = new Set(
+    all(doc, 'label[for]')
+      .map((l) => attr(l, 'for'))
+      .filter(Boolean)
+  );
+  const controls = all(doc, 'input, select, textarea').filter(
+    (c) => !['hidden', 'submit', 'button', 'reset', 'image'].includes((attr(c, 'type') || '').toLowerCase())
+  );
+  const unlabelled = controls.filter(
+    (c) =>
+      !attr(c, 'aria-label') &&
+      !attr(c, 'aria-labelledby') &&
+      !attr(c, 'title') &&
+      !(attr(c, 'id') && labelledIds.has(attr(c, 'id')))
+  ).length;
+  if (unlabelled > 0) {
+    signals.push(
+      signal(
+        'controls-without-labels',
+        'opportunity',
+        `${unlabelled} of ${controls.length} form control(s) have no accessible name`,
+        'A screen reader announces the control type and nothing else.',
+        unlabelled / 15,
+        [],
+        [
+          `counted ${unlabelled} control(s) with no aria-label, aria-labelledby, title, or matching <label for>; ` +
+            'wrapping labels are not detected, so this over-counts rather than under-counts',
+        ]
+      )
+    );
+  }
+
+  // ── Heading levels ───────────────────────────────────────────────────────
+  const headings = all(doc, 'h1, h2, h3, h4, h5, h6');
+  let skips = 0;
+  let previous = 0;
+  headings.forEach((h) => {
+    const level = Number(h.tag ? h.tag.slice(1) : (h.tagName || 'h1').slice(1));
+    if (previous && level > previous + 1) skips += 1;
+    previous = level;
+  });
+  if (skips > 0) {
+    signals.push(
+      signal(
+        'heading-level-skips',
+        'opportunity',
+        `${skips} place(s) where the heading level jumps by more than one`,
+        'Assistive technology uses heading level as document structure, so a skip reads as a missing section.',
+        skips / 6,
+        [],
+        [`counted ${skips} skip(s) across ${headings.length} heading(s) in document order`]
+      )
+    );
+  }
+
+  // ── javascript: links ────────────────────────────────────────────────────
+  const jsLinks = all(doc, 'a[href]').filter((a) => /^javascript:/i.test(attr(a, 'href'))).length;
+  if (jsLinks > 0) {
+    signals.push(
+      signal(
+        'javascript-url-links',
+        'risk',
+        `${jsLinks} link(s) navigate to a javascript: URL`,
+        'The href is executed as script, so it is a code path a CSP cannot see and a reader cannot preview.',
+        jsLinks / 10,
+        [],
+        [`counted ${jsLinks} <a href> value(s) beginning with javascript:`]
+      )
+    );
+  }
+
   // ── The document itself ──────────────────────────────────────────────────
   const links = all(doc, 'a[href]');
   const offOriginLinks = links.filter((a) => {
@@ -252,6 +410,10 @@ function perceive(doc, loc, now) {
       forms: num(forms.length),
       images: num(images.length),
       frames: num(frames.length),
+      headings: num(headings.length),
+      controls: num(controls.length),
+      inline_handlers: num(inlineHandlers),
+      mixed_content: num(mixed),
       https: bool(secure),
     })
   );

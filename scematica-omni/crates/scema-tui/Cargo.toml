@@ -1,0 +1,40 @@
+[package]
+name = "scema-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica Omni TUI — the agent loop as a terminal console: observe a world, rank branches, seal and verify decision records."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["agent", "tui", "observability", "verifiable", "decision"]
+categories = ["command-line-utilities", "visualization"]
+readme = "README.md"
+
+[[bin]]
+name = "scema-tui"
+path = "src/main.rs"
+
+# The same split `mesh-dashboard` / `scematica-mesh` makes in the bot workspace, and for
+# the same reason: `scema-agent` is a library other people embed, and forcing ratatui and
+# crossterm on a consumer that only wants the loop would be the mistake `sdk-dashboard`
+# exists to avoid. The rendering lives here; the crates next door own the thinking.
+#
+# Note what is NOT here: no `scema-daemon`, no HTTP client, no network of any kind. This
+# binary drives the loop in-process against a local path. A TUI that could also point at a
+# remote daemon would need the whole pairing/token story on screen, and the honest split is
+# that the daemon has its own front ends.
+[dependencies]
+scema-agent = { workspace = true }
+scema-world = { workspace = true }
+scema-policy = { workspace = true }
+scema-sim = { workspace = true }
+scema-memory = { workspace = true }
+scema-verify = { workspace = true }
+scema-tools = { workspace = true }
+
+ratatui = "0.26"
+crossterm = "0.27"
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }

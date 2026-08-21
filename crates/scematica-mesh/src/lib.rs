@@ -52,10 +52,12 @@ pub mod collect;
 pub mod history;
 pub mod edge;
 pub mod node;
+pub mod omni;
 pub mod topology;
 
 pub use cognition::{Cognition, Coherence, GateVerdict, RiskField, Signals, Term, Uncertainty, TAU_PSI, TAU_PSI_FULL};
 pub use collect::Collector;
+pub use omni::{world as omni_world, world_string as omni_world_string, world_string_now as omni_world_now};
 pub use edge::{Edge, EdgeKind};
 pub use node::{analyse_veto, Node, NodeKind, Provenance, Verdict, VetoAnalysis, NN_VETO_REL_MARGIN};
 pub use topology::{Mesh, MeshSummary};

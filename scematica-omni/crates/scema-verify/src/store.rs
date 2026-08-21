@@ -21,6 +21,38 @@ pub struct RecordStore {
     root: PathBuf,
 }
 
+/// Make a state root ignore itself, the moment it first exists.
+///
+/// `.scema/` holds decision records full of absolute paths, four append-only memory logs,
+/// and — when the daemon has run — a 256-bit pairing token. None of that is meaningful in
+/// somebody else's clone, and the token is a secret sitting inside a git working tree.
+///
+/// The ignore is written **inside** the directory rather than into the project's own
+/// `.gitignore`, for two reasons. A self-ignoring directory works whatever the project's
+/// ignore rules say, and whatever VCS it uses; and no library has any business rewriting a
+/// file the whole repository shares.
+///
+/// It is called from every place that can bring the root into existence — the record store,
+/// the memory store, and the daemon's token write — because whichever of those runs *first*
+/// is the one that creates it, and that varies by which surface the operator reached for.
+/// `scema init` writes the same file, so an operator who set the directory up deliberately
+/// and one who got it as a side effect end up with the same protection.
+///
+/// Failure is deliberately silent. This is a courtesy on the way to doing something else,
+/// and an unwritable `.gitignore` must not turn a successful `decide` into an error — the
+/// record is the thing the caller asked for. A pre-existing file is never overwritten,
+/// because an operator who edited it meant it.
+pub fn self_ignore(root: &Path) {
+    let marker = root.join(".gitignore");
+    if marker.exists() {
+        return;
+    }
+    let _ = fs::write(
+        &marker,
+        "# Machine-local agent state: decision records cite absolute paths, memory is a\n         # per-checkout history, and omnid.token is a secret. None of it belongs in a commit.\n         *\n",
+    );
+}
+
 impl RecordStore {
     /// Records live under `<root>/decisions/`. The directory is created on first write,
     /// not here — constructing a store must not have a side effect on a machine where the
@@ -40,6 +72,7 @@ impl RecordStore {
     pub fn save(&self, record: &DecisionRecord) -> Result<PathBuf> {
         let dir = self.dir();
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        self_ignore(&self.root);
         let path = self.path_for(&record.id);
         let tmp = path.with_extension("json.tmp");
         let body = serde_json::to_string_pretty(record)?;
@@ -162,5 +195,37 @@ mod tests {
         // A machine that has never run the agent must not look like a broken one.
         let store = RecordStore::new(tmpdir().join("never-created"));
         assert!(store.ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_fresh_state_root_ignores_itself() {
+        // The token, the records and the memory logs all land here, and a `.scema/` that a
+        // daemon created as a side effect must be as safe as one `scema init` created
+        // deliberately. Written inside the directory rather than into the project's own
+        // `.gitignore`: it then works whatever the project's rules say, and no library
+        // rewrites a file the whole repository shares.
+        let dir = tmpdir();
+        let store = RecordStore::new(dir.clone());
+        store.save(&dummy("aabbccdd")).unwrap();
+        let text = fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert!(text.contains('*'), "{text}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_existing_ignore_file_is_left_alone() {
+        // An operator who edited it meant it.
+        let dir = tmpdir();
+        fs::write(dir.join(".gitignore"), "# mine
+!keep-this
+").unwrap();
+        RecordStore::new(dir.clone()).save(&dummy("aabbccdd")).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(".gitignore")).unwrap(),
+            "# mine
+!keep-this
+"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }

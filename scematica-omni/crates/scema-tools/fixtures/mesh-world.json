@@ -1,0 +1,463 @@
+{
+  "blind_spots": [
+    "scorer.pool (Pool scorer): no source on disk — unseen, not idle",
+    "learner.dqstar (DQ* agent): no source on disk — unseen, not idle",
+    "learner.variant.conservative (conservative): no source on disk — unseen, not idle",
+    "learner.variant.balanced (balanced): no source on disk — unseen, not idle",
+    "learner.variant.aggressive (aggressive): no source on disk — unseen, not idle",
+    "reasoner.strategy (Strategy agent): no source on disk — unseen, not idle",
+    "gate.psi (Ψ gate): no source on disk — unseen, not idle",
+    "breaker.reputation (Deployer reputation): no source on disk — unseen, not idle",
+    "breaker.coherence (Coherence (Ψ)): no source on disk — unseen, not idle",
+    "breaker.kelly (Kelly sizing): no source on disk — unseen, not idle",
+    "breaker.ath (ATH drawdown): no source on disk — unseen, not idle",
+    "breaker.grief (Grief breaker): no source on disk — unseen, not idle",
+    "breaker.multi_rpc (Multi-RPC failover): no source on disk — unseen, not idle",
+    "exec.executor (Executor): no source on disk — unseen, not idle",
+    "the agentic gate: no term was measured, so Ψ describes nothing"
+  ],
+  "domain": "trading",
+  "entity": {
+    "kind": "service",
+    "label": "scematica",
+    "locator": "C:/Users/deads/AppData/Local/Temp/claude/C--Users-deads-OneDrive-Documents-AGI-scematica/508253bf-85b9-4055-ade9-cfe285602083/scratchpad/meshomni"
+  },
+  "extent": {
+    "note": "18 unit(s) in the roster; 6% currently visible",
+    "observed": 18,
+    "total": 18
+  },
+  "facts": [],
+  "objects": [
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "listener"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "pass"
+        }
+      },
+      "id": "listener.pools",
+      "kind": "listener",
+      "label": "Pool listener",
+      "provenance": {
+        "age_secs": 516,
+        "budget_secs": 120,
+        "kind": "stale"
+      }
+    },
+    {
+      "attrs": {
+        "activity": {
+          "t": "num",
+          "v": 0.3
+        },
+        "kind": {
+          "t": "text",
+          "v": "filter"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "pass"
+        }
+      },
+      "id": "filter.pipeline",
+      "kind": "filter",
+      "label": "Filter pipeline",
+      "provenance": {
+        "age_secs": 516,
+        "budget_secs": 120,
+        "kind": "stale"
+      }
+    },
+    {
+      "attrs": {
+        "activity": {
+          "t": "num",
+          "v": 0.4
+        },
+        "kind": {
+          "t": "text",
+          "v": "filter"
+        },
+        "reason": {
+          "t": "text",
+          "v": "rejected 4 pools, 40.0% of everything seen"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "veto"
+        }
+      },
+      "id": "filter.PoolSize",
+      "kind": "filter",
+      "label": "PoolSize",
+      "provenance": {
+        "age_secs": 516,
+        "budget_secs": 120,
+        "kind": "stale"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "scorer"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "idle"
+        }
+      },
+      "id": "scorer.pool",
+      "kind": "scorer",
+      "label": "Pool scorer",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "learner"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "learner.dqstar",
+      "kind": "learner",
+      "label": "DQ* agent",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "learner"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "learner.variant.conservative",
+      "kind": "learner",
+      "label": "conservative",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "learner"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "learner.variant.balanced",
+      "kind": "learner",
+      "label": "balanced",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "learner"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "learner.variant.aggressive",
+      "kind": "learner",
+      "label": "aggressive",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "reasoner"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "reasoner.strategy",
+      "kind": "reasoner",
+      "label": "Strategy agent",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "gate"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "gate.psi",
+      "kind": "gate",
+      "label": "Ψ gate",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "idle"
+        }
+      },
+      "id": "breaker.reputation",
+      "kind": "breaker",
+      "label": "Deployer reputation",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "breaker.coherence",
+      "kind": "breaker",
+      "label": "Coherence (Ψ)",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "breaker.kelly",
+      "kind": "breaker",
+      "label": "Kelly sizing",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "breaker.ath",
+      "kind": "breaker",
+      "label": "ATH drawdown",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "breaker.grief",
+      "kind": "breaker",
+      "label": "Grief breaker",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "breaker"
+        },
+        "reason": {
+          "t": "text",
+          "v": "no source on disk — this unit is unseen, not idle"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "breaker.multi_rpc",
+      "kind": "breaker",
+      "label": "Multi-RPC failover",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "executor"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "unknown"
+        }
+      },
+      "id": "exec.executor",
+      "kind": "executor",
+      "label": "Executor",
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "attrs": {
+        "kind": {
+          "t": "text",
+          "v": "agent"
+        },
+        "reason": {
+          "t": "text",
+          "v": "last decision `8994bb03` abstained (no positive utility)"
+        },
+        "verdict": {
+          "t": "text",
+          "v": "idle"
+        }
+      },
+      "id": "agent.omni",
+      "kind": "agent",
+      "label": "Scematica Omni",
+      "provenance": {
+        "age_secs": 516,
+        "kind": "live"
+      }
+    }
+  ],
+  "observed_at": 1787255266,
+  "observer": "mesh",
+  "signals": [
+    {
+      "detail": "No source file on disk. These units are unobserved, which is not the same as idle.",
+      "evidence": [
+        "counted 14 node(s) with absent provenance of 18 collected"
+      ],
+      "id": "unseen-units",
+      "label": "14 of 18 unit(s) cannot be seen at all",
+      "magnitude": 0.7777777777777778,
+      "measured": true,
+      "polarity": "risk",
+      "targets": [
+        "scorer.pool",
+        "learner.dqstar",
+        "learner.variant.conservative",
+        "learner.variant.balanced",
+        "learner.variant.aggressive",
+        "reasoner.strategy",
+        "gate.psi",
+        "breaker.reputation",
+        "breaker.coherence",
+        "breaker.kelly",
+        "breaker.ath",
+        "breaker.grief",
+        "breaker.multi_rpc",
+        "exec.executor"
+      ]
+    },
+    {
+      "detail": "Their values were true once. They are not true now, and must not be acted on as current.",
+      "evidence": [
+        "counted 3 node(s) whose age exceeds that source's measured freshness budget"
+      ],
+      "id": "stale-units",
+      "label": "3 unit(s) were last written past their own budget",
+      "magnitude": 0.16666666666666666,
+      "measured": true,
+      "polarity": "risk",
+      "targets": [
+        "listener.pools",
+        "filter.pipeline",
+        "filter.PoolSize"
+      ]
+    }
+  ]
+}

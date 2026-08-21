@@ -32,7 +32,6 @@ export function LogStream() {
   const [filter, setFilter] = useState('')
   const [pinned, setPinned] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
 
   const { data } = useLogs()
   const live = data?.lines
@@ -43,9 +42,17 @@ export function LogStream() {
     if (!paused && live) setLines(live)
   }, [live, paused])
 
+  // Scroll the *container*, never `scrollIntoView`.
+  //
+  // `scrollIntoView` walks up and scrolls every scrollable ancestor, the document included.
+  // On a page where this panel sits below the fold that means the whole page jumps down to
+  // the log panel the moment the first poll lands, and then re-pins there on every poll —
+  // the reader never sees the top of the page they asked for. Setting `scrollTop` on the
+  // element touches exactly one scroll container and cannot move the document.
   useEffect(() => {
-    if (pinned && !paused && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'instant' })
+    const el = containerRef.current
+    if (pinned && !paused && el) {
+      el.scrollTop = el.scrollHeight
     }
   }, [lines, pinned, paused])
 
@@ -76,7 +83,12 @@ export function LogStream() {
             <button
               onClick={() => {
                 setPinned(true)
-                bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+                // Same rule on the deliberate path: this is a request to scroll the log,
+                // not a request to move the page the log happens to be sitting on.
+                containerRef.current?.scrollTo({
+                  top: containerRef.current.scrollHeight,
+                  behavior: 'smooth',
+                })
               }}
               className="text-xs px-2 py-0.5 border border-scema-red-dim text-scema-red-hi hover:bg-scema-red/10 transition-colors"
             >
@@ -116,7 +128,6 @@ export function LogStream() {
             </div>
           )
         })}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

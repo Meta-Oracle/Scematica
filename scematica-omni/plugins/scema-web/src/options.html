@@ -4,85 +4,138 @@
     <meta charset="utf-8" />
     <title>Scematica Omni — pairing</title>
     <style>
-      :root { color-scheme: dark; }
+      /* Page furniture only. The palette comes from `theme.js` at runtime, so the options
+         page, the popup and the injected HUD cannot drift apart — which they had, before
+         that file existed. */
+      html { color-scheme: dark; }
       body {
-        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        background: #0b0b12; color: #e6e6f0;
-        max-width: 620px; margin: 40px auto; padding: 0 20px;
+        background: #08060f;
+        max-width: 680px;
+        margin: 40px auto;
+        padding: 0 20px 60px;
       }
-      h1 { font-size: 15px; letter-spacing: .1em; color: #8b8bff; }
-      label { display: block; margin: 16px 0 4px; color: #7a7a9c; font-size: 11px; letter-spacing: .08em; }
-      input { width: 100%; box-sizing: border-box; font: inherit;
-              background: #08080f; color: #e6e6f0; border: 1px solid #35355c;
-              border-radius: 4px; padding: 7px 9px; }
-      button { font: inherit; background: #1b1b2e; color: #e6e6f0; border: 1px solid #35355c;
-               border-radius: 4px; padding: 6px 14px; margin-top: 16px; cursor: pointer; }
-      button:hover { border-color: #4c4cff; }
-      #out { margin-top: 16px; padding: 10px; border-radius: 4px; border: 1px solid #242440; }
-      .ok { color: #9dff9d; } .bad { color: #ff7b7b; } .dim { color: #7a7a9c; }
-      pre { background: #08080f; border: 1px solid #1c1c30; border-radius: 4px;
-            padding: 9px; overflow-x: auto; }
-      section { border-top: 1px solid #1c1c30; margin-top: 28px; padding-top: 16px; }
+      .omni { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+      h1 {
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        margin: 32px 0 10px;
+        font-weight: 700;
+      }
+      section { padding: 0; border: 0; }
+      section + section { border-top: 1px solid #2a1f45; margin-top: 26px; padding-top: 4px; }
+      label {
+        display: block;
+        margin: 16px 0 4px;
+        font-size: 10px;
+        letter-spacing: 0.14em;
+      }
+      #out {
+        margin-top: 16px;
+        padding: 10px;
+        border-radius: 6px;
+        border: 1px solid #2a1f45;
+      }
+      button { margin-top: 16px; }
     </style>
   </head>
   <body>
-    <h1>SCEMATICA OMNI — PAIRING</h1>
+    <div class="omni">
+      <h1 class="chosen">SCEMATICA OMNI — PAIRING</h1>
 
-    <p class="dim">
-      The extension talks to a <code>scema-omnid</code> running on this machine. Nothing is
-      sent anywhere else, and the daemon binds to loopback only.
-    </p>
+      <p class="dim">
+        The extension talks to a <code>scema-omnid</code> running on this machine. Nothing
+        is sent anywhere else, and the daemon binds to loopback only.
+      </p>
 
-    <label for="base">DAEMON BASE URL</label>
-    <input id="base" placeholder="http://127.0.0.1:7842" />
+      <label for="base" class="label">DAEMON BASE URL</label>
+      <input id="base" placeholder="http://127.0.0.1:7842" />
 
-    <label for="token">TOKEN</label>
-    <input id="token" type="password" placeholder="from .scema/omnid.token" />
+      <label for="token" class="label">TOKEN</label>
+      <input id="token" type="password" placeholder="from .scema/omnid.token" />
 
-    <button id="save">Save and test</button>
-    <div id="out" class="dim">not tested</div>
+      <button id="save" class="primary">Save and test</button>
+      <div id="out" class="dim">not tested</div>
 
-    <section>
-      <h1>STARTING THE DAEMON</h1>
-      <pre>scema-omnid --allow /path/to/a/project
+      <section>
+        <h1 class="heading">STARTING THE DAEMON</h1>
+        <pre>scema-omnid --allow /path/to/a/project
 cat .scema/omnid.token</pre>
-      <p class="dim">
-        The token is generated once and reused, so pairing survives restarts. Delete the
-        file to rotate it — every paired client will need the new one.
-      </p>
-      <p class="dim">
-        <strong>The token stays in this settings page and the extension's service worker.</strong>
-        It is never given to the overlay running on a web page, so a hostile page that
-        subverted the overlay still could not drive your agent.
-      </p>
-    </section>
+        <p class="dim">
+          The token is generated once and reused, so pairing survives restarts. Delete the
+          file to rotate it — every paired client will need the new one.
+        </p>
+        <p class="dim">
+          <strong>The token stays in this settings page and the extension's service
+          worker.</strong> It is never given to the overlay running on a web page, so a
+          hostile page that subverted the overlay still could not drive your agent.
+        </p>
+        <p class="dim">
+          Sealing records over HTTP is <strong>off</strong> unless the daemon was started
+          with <code>--allow-decide</code>. That is the default because sealing a record is
+          a local write, and a front end that can be driven by a page or a model should have
+          to be told it may.
+        </p>
+      </section>
 
-    <section>
-      <h1>WHAT THIS TALKS TO</h1>
-      <p class="dim">
-        Only <code>127.0.0.1</code>. That is the extension's entire host permission, and it
-        is the reason the daemon can refuse CORS outright and still be usable — a
-        service-worker fetch under <code>host_permissions</code> is not subject to it, while
-        a web page is.
-      </p>
-      <p class="dim">
-        It does <strong>not</strong> talk to the Scematica website, and does not need to. The
-        page you are browsing is the extension's <em>input</em>; your own daemon is what
-        processes it. Nothing is sent anywhere else.
-      </p>
-      <p class="dim">
-        The site's <code>/omni</code> page is a separate thing on the same project: an
-        offline reader for records <code>scema decide</code> has already sealed. It shares no
-        code path, no server and no network with this extension.
-      </p>
-      <p class="dim">
-        Docs and source:
-        <a href="https://github.com/Meta-Oracle/Scematica/tree/main/scematica-omni"
-           target="_blank" rel="noopener noreferrer"
-           style="color:#ffb340">Meta-Oracle/Scematica &middot; scematica-omni</a>
-      </p>
-    </section>
+      <section>
+        <h1 class="heading">WHAT THIS TALKS TO</h1>
+        <p class="dim">
+          Only <code>127.0.0.1</code>. That is the extension's entire host permission, and
+          it is the reason the daemon can refuse CORS outright and still be usable — a
+          service-worker fetch under <code>host_permissions</code> is not subject to it,
+          while a web page is.
+        </p>
+        <p class="dim">
+          It does <strong>not</strong> talk to the Scematica website, and does not need to.
+          The page you are browsing is the extension's <em>input</em>; your own daemon is
+          what processes it.
+        </p>
+        <p class="dim">
+          The site's <code>/omni</code> page is a separate thing on the same project: an
+          offline reader for records <code>scema decide</code> has already sealed. It shares
+          no code path, no server and no network with this extension. It is also where an
+          exported record should be checked — this extension deliberately recomputes no
+          commitments of its own.
+        </p>
+      </section>
 
+      <section>
+        <h1 class="heading">WHAT IT READS, AND WHEN</h1>
+        <p class="dim">
+          Nothing until you ask. There is no <code>content_scripts</code> block in the
+          manifest and no <code>&lt;all_urls&gt;</code> permission. Perception happens
+          through <code>chrome.scripting.executeScript</code> on the popup's button or the
+          keyboard shortcut, under <code>activeTab</code> — one tab, one interaction.
+        </p>
+        <p class="dim">
+          It counts things: forms posting off-origin, third-party script origins, scripts
+          with no integrity hash, mixed content, inline event handlers, unlabelled controls,
+          heading-level skips. It never estimates a severity. That is what lets the
+          simulator treat those magnitudes as measured — a "page quality score" invented in
+          the browser would be a hallucination with a decimal point on it, laundered into a
+          decision record.
+        </p>
+        <p class="dim">
+          The entity locator drops the query string and fragment before anything is sent.
+          It is hashed into a record that outlives the tab, and query strings routinely
+          carry session tokens.
+        </p>
+      </section>
+
+      <section>
+        <h1 class="heading">SOURCE</h1>
+        <p class="dim">
+          <a
+            href="https://github.com/Meta-Oracle/Scematica/tree/main/scematica-omni"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Meta-Oracle/Scematica &middot; scematica-omni</a
+          >
+        </p>
+      </section>
+    </div>
+
+    <script src="theme.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

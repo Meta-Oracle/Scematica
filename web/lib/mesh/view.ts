@@ -32,6 +32,11 @@ export const LAYER: Record<NodeKind, number> = {
   gate: 3,
   executor: 4,
   peer: 5,
+  // A decision runtime observing this system from outside it. Column 3 with the other
+  // cognition units, but it carries no edges: Scematica Omni perceives, ranks and records,
+  // and has no wire into execution. Drawing one would be the single thing the mesh refuses
+  // to do — assert coordination that is not happening.
+  agent: 3,
 }
 
 export const LAYER_TITLES = ['Ingest', 'Filter', 'Risk', 'Cognition', 'Execution', 'Mesh']

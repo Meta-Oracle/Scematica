@@ -74,6 +74,13 @@ pub enum NodeKind {
     Executor,
     /// A remote participant reached over the ScemaDEX relay.
     Peer,
+    /// A decision runtime observing this system from outside it — today, Scematica Omni.
+    ///
+    /// Distinct from [`NodeKind::Reasoner`], which is an LLM agent wired *into* the trading
+    /// path. An `Agent` node is a loop that perceives, ranks and records, and has no wire
+    /// into execution at all. That distinction is the whole reason for the arm: folding it
+    /// into `Reasoner` would put it in a column that implies influence it does not have.
+    Agent,
 }
 
 impl NodeKind {
@@ -85,7 +92,7 @@ impl NodeKind {
             NodeKind::Listener => 0,
             NodeKind::Filter | NodeKind::Scorer => 1,
             NodeKind::Breaker => 2,
-            NodeKind::Learner | NodeKind::Reasoner | NodeKind::Gate => 3,
+            NodeKind::Learner | NodeKind::Reasoner | NodeKind::Gate | NodeKind::Agent => 3,
             NodeKind::Executor => 4,
             NodeKind::Peer => 5,
         }

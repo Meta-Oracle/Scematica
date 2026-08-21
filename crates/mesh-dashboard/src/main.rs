@@ -59,6 +59,8 @@ struct Args {
     interval: u64,
     once: bool,
     json: bool,
+    /// Emit the mesh as a Scematica Omni `WorldState` and exit.
+    world: bool,
     view: View,
 }
 
@@ -68,6 +70,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut once = false;
     let mut json = false;
+    let mut world = false;
     let mut view = View::Graph;
     let mut saw_root = false;
 
@@ -80,6 +83,7 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "--once" => once = true,
             "--json" => json = true,
+            "--world" => world = true,
             "--view" => {
                 i += 1;
                 let v = argv.get(i).ok_or_else(|| anyhow::anyhow!("--view needs a value"))?;
@@ -110,7 +114,7 @@ fn parse_args() -> Result<Option<Args>> {
         anyhow::bail!("`{root}` is not a directory");
     }
 
-    Ok(Some(Args { root, interval, once, json, view }))
+    Ok(Some(Args { root, interval, once, json, world, view }))
 }
 
 fn print_help() {
@@ -122,6 +126,7 @@ fn print_help() {
     println!("  --once              render one frame as plain text and exit");
     println!("  --view <VIEW>       start in graph|tornado|coherence|roster (default: graph)");
     println!("  --json              print the raw mesh as JSON and exit");
+    println!("  --world             print the mesh as a Scematica Omni WorldState and exit");
     println!("  -h, --help          this help\n");
     println!("KEYS (interactive):");
     println!("  1/2/3/4 or Tab       switch view (graph / tornado / coherence / roster)");
@@ -131,7 +136,13 @@ fn print_help() {
     println!("  Tab / Shift-Tab      cycle units     g    expand the gate's terms");
     println!("  c                    clear selection < >  scroll the graph horizontally\n");
     println!("Reads only. It never writes a file or takes a lock, so it is safe against a");
-    println!("live bot. A dark node means no source on disk — unseen, not idle.");
+    println!("live bot. A dark node means no source on disk — unseen, not idle.
+");
+    println!("REASONING OVER IT:");
+    println!("  mesh-dashboard --world | scema simulate \"get it trading again\" --path -");
+    println!("  Turns this topology into a world the omni agent can rank branches against.");
+    println!("  Every signal it emits is a count; an unseen unit becomes a blind spot, never");
+    println!("  a zero. See scematica_mesh::omni.");
 }
 
 fn main() -> Result<()> {
@@ -141,6 +152,13 @@ fn main() -> Result<()> {
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&mesh)?);
+        return Ok(());
+    }
+    if args.world {
+        // The same topology, in Scematica Omni's vocabulary, so a live bot becomes an
+        // environment the agent loop can reason over. `scematica_mesh::omni` owns the
+        // mapping; this is a pipe, not a second implementation.
+        println!("{}", scematica_mesh::omni::world_string_now(&mesh, &args.root));
         return Ok(());
     }
     if args.once {

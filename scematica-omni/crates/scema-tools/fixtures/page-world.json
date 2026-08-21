@@ -1,0 +1,220 @@
+{
+  "observer": "page",
+  "entity": {
+    "kind": "website",
+    "locator": "https://example.test/page",
+    "label": "Fixture page"
+  },
+  "domain": "unknown",
+  "observed_at": 1700000000,
+  "objects": [
+    {
+      "id": "script-origin:https://cdn.example.net",
+      "kind": "script-origin",
+      "label": "https://cdn.example.net",
+      "attrs": {
+        "scripts": {
+          "t": "int",
+          "v": 1
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "frames:cross-origin",
+      "kind": "frame-group",
+      "label": "1 cross-origin frame(s)",
+      "attrs": {
+        "frames": {
+          "t": "int",
+          "v": 1
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "document",
+      "kind": "document",
+      "label": "Fixture page",
+      "attrs": {
+        "elements": {
+          "t": "int",
+          "v": 10
+        },
+        "links": {
+          "t": "int",
+          "v": 2
+        },
+        "off_origin_links": {
+          "t": "int",
+          "v": 2
+        },
+        "forms": {
+          "t": "int",
+          "v": 0
+        },
+        "images": {
+          "t": "int",
+          "v": 2
+        },
+        "frames": {
+          "t": "int",
+          "v": 1
+        },
+        "headings": {
+          "t": "int",
+          "v": 2
+        },
+        "controls": {
+          "t": "int",
+          "v": 1
+        },
+        "inline_handlers": {
+          "t": "int",
+          "v": 1
+        },
+        "mixed_content": {
+          "t": "int",
+          "v": 1
+        },
+        "https": {
+          "t": "bool",
+          "v": true
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    }
+  ],
+  "facts": [],
+  "signals": [
+    {
+      "id": "third-party-scripts",
+      "polarity": "risk",
+      "label": "1 third-party script origin(s)",
+      "detail": "https://cdn.example.net",
+      "magnitude": 0.1,
+      "measured": true,
+      "targets": [
+        "script-origin:https://cdn.example.net"
+      ],
+      "evidence": [
+        "counted 1 distinct third-party origin(s) across 1 off-origin script tag(s), of 1 with a src"
+      ]
+    },
+    {
+      "id": "third-party-scripts-without-sri",
+      "polarity": "risk",
+      "label": "1 third-party script(s) load without an integrity hash",
+      "detail": "Whatever that origin serves next runs here, with this page’s privileges.",
+      "magnitude": 0.1,
+      "measured": true,
+      "targets": [
+        "script-origin:https://cdn.example.net"
+      ],
+      "evidence": [
+        "counted 1 of 1 off-origin script tag(s) with no integrity attribute"
+      ]
+    },
+    {
+      "id": "mixed-content-subresources",
+      "polarity": "risk",
+      "label": "1 subresource(s) load over plain http on an https page",
+      "detail": "The lock in the address bar does not cover these; they can be replaced in transit.",
+      "magnitude": 0.2,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 element(s) whose src or href begins with http://, on a page served over https:"
+      ]
+    },
+    {
+      "id": "inline-event-handlers",
+      "polarity": "risk",
+      "label": "1 element(s) carry an inline event handler",
+      "detail": "Inline handlers run outside any script-src policy the page sets.",
+      "magnitude": 0.025,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 element(s) matching 12 on* attribute selectors"
+      ]
+    },
+    {
+      "id": "images-without-alt",
+      "polarity": "opportunity",
+      "label": "2 of 2 image(s) have no alt text",
+      "detail": "Screen readers announce nothing for these.",
+      "magnitude": 0.1,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 2 <img> element(s) with an empty or absent alt attribute"
+      ]
+    },
+    {
+      "id": "controls-without-labels",
+      "polarity": "opportunity",
+      "label": "1 of 1 form control(s) have no accessible name",
+      "detail": "A screen reader announces the control type and nothing else.",
+      "magnitude": 0.06666666666666667,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 control(s) with no aria-label, aria-labelledby, title, or matching <label for>; wrapping labels are not detected, so this over-counts rather than under-counts"
+      ]
+    },
+    {
+      "id": "heading-level-skips",
+      "polarity": "opportunity",
+      "label": "1 place(s) where the heading level jumps by more than one",
+      "detail": "Assistive technology uses heading level as document structure, so a skip reads as a missing section.",
+      "magnitude": 0.16666666666666666,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 skip(s) across 2 heading(s) in document order"
+      ]
+    },
+    {
+      "id": "javascript-url-links",
+      "polarity": "risk",
+      "label": "1 link(s) navigate to a javascript: URL",
+      "detail": "The href is executed as script, so it is a code path a CSP cannot see and a reader cannot preview.",
+      "magnitude": 0.1,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 <a href> value(s) beginning with javascript:"
+      ]
+    },
+    {
+      "id": "target-blank-without-noopener",
+      "polarity": "risk",
+      "label": "1 link(s) open a new tab without rel=noopener",
+      "detail": "The opened page receives a handle to this one via window.opener.",
+      "magnitude": 0.1,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 1 of 2 link(s) with target=_blank and no noopener"
+      ]
+    }
+  ],
+  "extent": {
+    "observed": 10,
+    "total": 10,
+    "note": "scanned 10 element(s)"
+  },
+  "blind_spots": [
+    "iframe https://widget.example (cross-origin: contents unreadable from this document)"
+  ]
+}

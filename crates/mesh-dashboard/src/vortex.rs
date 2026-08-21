@@ -525,6 +525,10 @@ fn standing(kind: NodeKind) -> f64 {
     match kind {
         NodeKind::Learner => 0.9,
         NodeKind::Reasoner => 0.85,
+        // An observing decision runtime rides highest of all: it is the only unit that sees
+        // the whole system rather than one stage of it. Display heuristic, as above — role,
+        // never a number.
+        NodeKind::Agent => 0.95,
         NodeKind::Gate => 0.8,
         NodeKind::Scorer => 0.7,
         NodeKind::Breaker => 0.6,

@@ -26,6 +26,7 @@ export type NodeKind =
   | 'gate'
   | 'executor'
   | 'peer'
+  | 'agent'
 
 export type Verdict = 'pass' | 'veto' | 'damp' | 'degraded' | 'idle' | 'unknown'
 

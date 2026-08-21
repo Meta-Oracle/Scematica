@@ -1,0 +1,296 @@
+{
+  "observer": "alchem-link",
+  "entity": {
+    "kind": "service",
+    "locator": "chainlink:base",
+    "label": "Base Mainnet price feeds"
+  },
+  "domain": "unknown",
+  "observed_at": 1700000000,
+  "objects": [
+    {
+      "id": "feed:ETH/USD",
+      "kind": "aggregator",
+      "label": "ETH/USD",
+      "attrs": {
+        "price": {
+          "t": "num",
+          "v": 3000.0
+        },
+        "decimals": {
+          "t": "int",
+          "v": 8
+        },
+        "age_secs": {
+          "t": "int",
+          "v": 30
+        },
+        "heartbeat_secs": {
+          "t": "int",
+          "v": 1200
+        },
+        "heartbeat_measured": {
+          "t": "bool",
+          "v": true
+        },
+        "status": {
+          "t": "text",
+          "v": "FRESH"
+        },
+        "round_id": {
+          "t": "int",
+          "v": 42
+        },
+        "carried_over": {
+          "t": "bool",
+          "v": false
+        },
+        "address": {
+          "t": "text",
+          "v": "0x1111111111111111111111111111111111111111"
+        },
+        "description": {
+          "t": "text",
+          "v": "ETH/USD"
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 30
+      }
+    },
+    {
+      "id": "feed:BTC/USD",
+      "kind": "aggregator",
+      "label": "BTC/USD",
+      "attrs": {
+        "price": {
+          "t": "num",
+          "v": 3000.0
+        },
+        "decimals": {
+          "t": "int",
+          "v": 8
+        },
+        "age_secs": {
+          "t": "int",
+          "v": 9000
+        },
+        "heartbeat_secs": {
+          "t": "int",
+          "v": 1200
+        },
+        "heartbeat_measured": {
+          "t": "bool",
+          "v": true
+        },
+        "status": {
+          "t": "text",
+          "v": "STALE"
+        },
+        "round_id": {
+          "t": "int",
+          "v": 42
+        },
+        "carried_over": {
+          "t": "bool",
+          "v": false
+        },
+        "address": {
+          "t": "text",
+          "v": "0x1111111111111111111111111111111111111111"
+        },
+        "description": {
+          "t": "text",
+          "v": "BTC/USD"
+        }
+      },
+      "provenance": {
+        "kind": "stale",
+        "age_secs": 9000,
+        "budget_secs": 1200
+      }
+    },
+    {
+      "id": "feed:LINK/USD",
+      "kind": "aggregator",
+      "label": "LINK/USD",
+      "attrs": {
+        "price": {
+          "t": "num",
+          "v": 3000.0
+        },
+        "decimals": {
+          "t": "int",
+          "v": 8
+        },
+        "age_secs": {
+          "t": "int",
+          "v": 30
+        },
+        "heartbeat_secs": {
+          "t": "int",
+          "v": 1200
+        },
+        "heartbeat_measured": {
+          "t": "bool",
+          "v": false
+        },
+        "status": {
+          "t": "text",
+          "v": "FRESH"
+        },
+        "round_id": {
+          "t": "int",
+          "v": 42
+        },
+        "carried_over": {
+          "t": "bool",
+          "v": false
+        },
+        "address": {
+          "t": "text",
+          "v": "0x1111111111111111111111111111111111111111"
+        },
+        "description": {
+          "t": "text",
+          "v": "LINK/USD"
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 30
+      }
+    },
+    {
+      "id": "feed:USDC/USD",
+      "kind": "aggregator",
+      "label": "USDC/USD",
+      "attrs": {
+        "price": {
+          "t": "num",
+          "v": 0.0
+        },
+        "decimals": {
+          "t": "int",
+          "v": 8
+        },
+        "age_secs": {
+          "t": "int",
+          "v": 30
+        },
+        "heartbeat_secs": {
+          "t": "int",
+          "v": 1200
+        },
+        "heartbeat_measured": {
+          "t": "bool",
+          "v": true
+        },
+        "status": {
+          "t": "text",
+          "v": "INVALID"
+        },
+        "round_id": {
+          "t": "int",
+          "v": 42
+        },
+        "carried_over": {
+          "t": "bool",
+          "v": false
+        },
+        "address": {
+          "t": "text",
+          "v": "0x1111111111111111111111111111111111111111"
+        },
+        "description": {
+          "t": "text",
+          "v": "USDC/USD"
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 30
+      }
+    }
+  ],
+  "facts": [],
+  "signals": [
+    {
+      "id": "unreadable-feeds",
+      "polarity": "risk",
+      "label": "1 of 6 registered feed(s) did not answer",
+      "detail": "These have no price at all. Unreadable is not the same as zero, and not the same as stale.",
+      "magnitude": 0.16666666666666666,
+      "measured": true,
+      "targets": [
+        "feed:DAI/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) absent from a batched read of 6 registered address(es)"
+      ]
+    },
+    {
+      "id": "stale-feeds",
+      "polarity": "risk",
+      "label": "1 feed(s) have not published inside their own heartbeat",
+      "detail": "The value was true once. It is not true now, and pricing against it is pricing against history.",
+      "magnitude": 0.16666666666666666,
+      "measured": true,
+      "targets": [
+        "feed:BTC/USD"
+      ],
+      "evidence": [
+        "counted BTC/USD 9000s > 1200s"
+      ]
+    },
+    {
+      "id": "unmeasured-heartbeats",
+      "polarity": "risk",
+      "label": "1 feed(s) are judged against an assumed heartbeat",
+      "detail": "Their staleness verdict is a bound, not a measurement. A feed called fresh here may be late by its publisher's own schedule.",
+      "magnitude": 0.16666666666666666,
+      "measured": true,
+      "targets": [
+        "feed:LINK/USD"
+      ],
+      "evidence": [
+        "counted 1 reading(s) with heartbeat_measured=false of 4 read"
+      ]
+    },
+    {
+      "id": "non-positive-answers",
+      "polarity": "risk",
+      "label": "1 feed(s) report an answer of zero or below",
+      "detail": "A Chainlink price feed never legitimately reports this. Treating it as a price is how a liquidation cascade starts.",
+      "magnitude": 1.0,
+      "measured": true,
+      "targets": [
+        "feed:USDC/USD"
+      ],
+      "evidence": [
+        "counted 1 reading(s) with answer_raw <= 0"
+      ]
+    },
+    {
+      "id": "sequencer-grace-period",
+      "polarity": "risk",
+      "label": "the Base Mainnet sequencer came back 900s ago",
+      "detail": "Inside the grace period a feed can read fresh while the value behind it was produced before the outage.",
+      "magnitude": 0.25,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted 900s remaining of the configured grace window"
+      ]
+    }
+  ],
+  "extent": {
+    "observed": 4,
+    "total": 6,
+    "note": "4 of 6 registered feed(s) answered; 3 fresh, 1 stale"
+  },
+  "blind_spots": [
+    "DAI/USD on Base Mainnet: the aggregator did not answer \u2014 no price, no age, no verdict"
+  ]
+}

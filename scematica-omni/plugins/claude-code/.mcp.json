@@ -1,0 +1,10 @@
+{
+  "//": "The server is confined to the directory Claude Code is running in. `--allow` is not optional and must never be widened to a home directory: `scema_tools::Workspace` answers *where*, and a cooperative model asked to audit a project will reason its way to ~/.ssh because that is genuinely relevant to an audit.",
+  "//decide": "There is deliberately no --allow-decide here. Without it `omni_decide` is not advertised to the model at all, so it cannot seal records. Add it in your own project .mcp.json if you want that, having decided you want it.",
+  "mcpServers": {
+    "scema": {
+      "command": "scema-mcp",
+      "args": ["--allow", "${CLAUDE_PROJECT_DIR}"]
+    }
+  }
+}

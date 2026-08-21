@@ -12,7 +12,7 @@ repository = "https://github.com/Meta-Oracle/Scematica"
 homepage = "https://github.com/Meta-Oracle/Scematica"
 
 [dependencies]
-scematica-core = { version = "1.25.0", path = "../scematica-core" }
+scematica-core = { version = "1.26.0", path = "../scematica-core" }
 borsh.workspace = true
 
 solana-sdk.workspace = true

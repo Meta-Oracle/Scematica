@@ -11,17 +11,24 @@ else can check.
      └──────────────────────────────────────────────────────────────────┘
 ```
 
-Four surfaces over one loop:
+Five surfaces over one loop, and one entry point to all of them:
 
 ```console
-$ cargo install scema-cli scema-daemon scema-mcp
+$ cargo install scema-cli scema-tui scema-daemon scema-mcp
 
 $ scema simulate "clear the marker backlog" --ground markers:scema-tools   # CLI
-$ scema-omnid --allow .                                                     # daemon
-$ scema-mcp --allow .                                                       # MCP, for models
-#   plugins/scema-web  → browser extension, the page as a world
-#   /omni in web/      → verify a sealed record in a browser, offline
+$ scema tui                                                                # console
+$ scema daemon --allow .                                                   # loopback HTTP
+$ scema mcp    --allow .                                                   # MCP, for models
+$ scema connect claude-code --write                                        # wire it into an assistant
+#   plugins/scema-web      → browser extension, the page as a world
+#   plugins/claude-code    → a Claude Code plugin over the MCP server
+#   /omni in web/          → verify a sealed record in a browser, offline
 ```
+
+`scema` finds its siblings next to itself and hands over, so there is one command to
+remember. They stay separate binaries so that installing the CLI on a CI machine that will
+only ever run `scema verify` does not drag in a terminal stack.
 
 Embedding the loop rather than running it:
 
@@ -64,24 +71,78 @@ gain, because nothing observed supports it. **An instruction is not evidence.** 
 the runtime being unhelpful; it is the runtime being right, and it is the behaviour every
 other part of the design exists to protect.
 
+## Four kinds of world, one loop
+
+The claim "domain-agnostic" is cheap. What makes it true here is that a repository, a
+running Solana bot, a set of Chainlink oracle feeds and a web page are all `WorldState`, and
+nothing above perception can tell which it was looking at.
+
+```console
+$ scema observe .                                          # a source tree, in-process
+$ mesh-dashboard --world | scema simulate "…" --path -      # a running bot
+$ alchem-link omni -n base | scema simulate "…" --path -    # 66 Chainlink feeds
+#   the browser extension posts a perceived page to the daemon
+```
+
+Only the first of those is a filesystem walk in Rust. The other three live behind a lockfile
+pinned around `solana-sdk 1.18`, a stdlib-only Python package, and a browser — and linking
+any of them would make `scema-tools` a hub of domain dependencies, which is the exact thing
+the workspace note forbids.
+
+So the arrangement is inverted: **the thing being observed describes itself in
+`scema-world`'s vocabulary**, and `ImportObserver` reads that. There are four producers on
+that contract and only one is written in a language omni's crates can link, which is why the
+contract is a JSON shape rather than a trait.
+
+| Producer | Language | Emits |
+|---|---|---|
+| `scema_tools::RepoObserver` | Rust, in-process | a source tree |
+| `plugins/scema-web/src/perceive.js` | JavaScript, no build step | a DOM |
+| `scematica_mesh::omni` | Rust, the bot workspace | a running Scematica system |
+| `alchem_link.omni` | Python, stdlib only | one network's oracle feeds |
+
+Two mechanisms keep three hand-written producers from drifting. Each **restates the
+importer's validation on its own side** and fails its own tests — a magnitude outside
+`[0,1]`, a duplicated signal id, and above all a signal claiming `measured: true` while
+citing no evidence, which is a guess wearing a measurement's clothes. And
+`crates/scema-tools/fixtures/` holds **real captured output** from all three, asserted
+against the importer. A self-check catches a bug in one producer; a fixture catches the case
+where both sides changed and only one of them was right.
+
+An imported world's `observer` field is rewritten to `imported:<name>`, exactly as the
+daemon rewrites a wire-supplied world to `client:<name>`. A record can never claim that a
+world which arrived as a file was observed locally.
+
+### The mesh sees omni back
+
+`scematica-mesh` now carries an `agent.omni` node, read from `.scema/decisions/`. It is the
+only node in that topology with **no edges at all** — nothing in this workspace writes to an
+environment it observed, so there is no wire into the buy path, and drawing one would assert
+coordination that is not happening. It also counts records **without verifying them**, and
+says so on the node: a second implementation of the canonical encoding is one that will
+drift, and a verifier reporting an untampered record as INVALID teaches its reader to stop
+believing it.
+
 ## Crates
 
 | Crate | Role |
 |---|---|
 | `scema-world` | the universal state representation — `WorldState`, `Goal`, `Hypothesis`, `Term`, `Provenance`. Pure types, no I/O, `serde` only. Also the wire format for the browser extension. |
-| `scema-tools` | perception. `Observer` + `RepoObserver`. The only crate in the read path allowed to touch the outside world. |
+| `scema-tools` | perception. `Observer`, `RepoObserver`, and `ImportObserver` — a world perceived somewhere else. The only crate in the read path allowed to touch the outside world. |
 | `scema-memory` | four memories — episodic, semantic, procedural, **counterfactual** — over append-only JSONL. |
 | `scema-sim` | counterfactual projection. Refuses to invent a number. |
 | `scema-policy` | `U = R − λ₁K − λ₂C − λ₃U + λ₄V`, plus pluggable evaluators that may decline. |
 | `scema-verify` | canonical hashing and proof-carrying decision records. |
 | `scema-agent` | the orchestration loop. |
-| `scema-cli` | the `scema` binary. |
+| `scema-cli` | the `scema` binary — the loop, plus the launcher, `doctor` and `connect`. |
+| `scema-tui` | `scema-tui` — the console. Black and violet, soft blue for a claim. |
 | `scema-daemon` | `scema-omnid` — a loopback-only, token-authenticated HTTP surface, on `std`. |
 | `scema-mcp` | the loop as MCP tools, over stdio, with workspace-confined paths. |
 
 | Elsewhere | Role |
 |---|---|
 | `plugins/scema-web` | MV3 browser extension. Perceives a page as a `WorldState`. No build step. |
+| `plugins/claude-code` | a Claude Code plugin: the MCP server, three commands, and a skill about reading the output. |
 | `../web/app/omni` | a decision-record verifier that runs entirely in the reader's browser. |
 
 ## Six decisions worth knowing about
@@ -202,24 +263,87 @@ The action path needs the approval model `alchem-link` already worked out (risk 
 per tool, no terminal means deny, secrets refused before the prompt). `pay` needs a spend
 policy first: a runtime that can spend without one is a runtime nobody should install.
 
-## The four surfaces
+## The surfaces
 
-All four drive the same `scema-agent`. None of them re-implements perception, simulation or
+All of them drive the same `scema-agent`. None re-implements perception, simulation or
 verification, and none can reach a capability the others cannot — which is why the safety
 argument only has to be made once.
 
 ### `scema` — the CLI
 
 ```console
+$ scema init                                # create .scema/, self-ignoring
 $ scema observe .
 $ scema simulate "clear the marker backlog" --ground markers:scema-tools
 $ scema decide   "clear the marker backlog" --ground markers:scema-tools
 $ scema explain 58898030 ; scema verify --all
 $ scema policy
+$ scema doctor                              # what is installed, wired, or quietly broken
+$ scema connect --list                      # assistants this can wire the MCP server into
+$ scema completions powershell
 ```
 
 `simulate` never persists. `decide` seals a record and appends memory. `execute`,
 `delegate`, `discover` and `pay` are registered and exit non-zero saying what is missing.
+
+`doctor` runs every check at once and **changes nothing** — each finding names the command
+that would fix it and stops there. Its verdicts are four, not two: `ok`, `warn`, `FAIL`, and
+`?` for a check that could not be run. "The record store does not verify" and "the record
+store could not be read" are different claims, and only one of them is an accusation.
+
+`connect` writes the MCP server into a project's `.mcp.json` / `.cursor/mcp.json` /
+`.vscode/mcp.json`, merging rather than replacing — somebody routinely has three other
+servers configured, and a tool that "adds" a fourth by rewriting the file deletes them.
+User-level configs (Claude Desktop, Windsurf, Zed, Codex) are **printed with their path and
+never written**: a user config is shared by every project you open, and editing it on your
+behalf would mean a tool installed for one repository quietly gaining the ability to observe
+all of them.
+
+### `scema-tui` — the console
+
+```console
+$ scema tui                    # or: scema-tui /path/to/project
+$ scema-tui --once             # one pass as plain text, pipeable
+$ scema-tui --snapshot 120x40  # one frame as text, for a doc or a CI assertion
+$ scema-tui --palette          # what colour this terminal can actually carry
+```
+
+Five tabs — WORLD, SIMULATE, RECORDS, MEMORY, POLICY — one per stage of the loop that
+produces something a human needs to look at.
+
+```
+  1·WORLD │ 2·SIMULATE │ 3·RECORDS │ 4·MEMORY │ 5·POLICY │        SCEMA OMNI scema-omni/0.1.0
+┌ SIMULATION MATRIX  ·  NOT WRITTEN (would seal as c5ac7c5e) ────────────────────────────┐
+│ #   BRANCH                              GAIN   RISK   COST UNCERT REVERS  UTILITY  MEAS │
+│▸  1 take: 11 marker(s) in `scema-tools` 0.22   0.40   0.10   0.00   0.70    0.125  ▰▰▰▰▰│
+│   2 give scema-cli tests                   —   0.40   0.10   0.00   0.70    0.093  ▰▰▰▰▱│
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Four things about it are load-bearing rather than cosmetic:
+
+* **Black and violet, with soft blue for exactly one thing.** Every other terminal surface
+  in this repository has its own identity — the sniper dashboard is black and red,
+  `mesh-dashboard` is indigo over slate. An operator with three open must be able to tell at
+  a glance which is making a claim about their money and which about a decision record.
+  Azure appears only on the branch that was *chosen* and on a commitment that *verifies*: an
+  accent that appears on every third row is not an accent, it is a second body colour.
+* **A renderer names a role, never a colour**, and **colour is never the message**.
+  `--no-color`, a pipe and a 16-colour terminal all produce the same text — `—` for
+  unmeasured, `▸` for chosen, `LIVE`/`STALE`/`ABSENT`, `EXCLUDED`. A test asserts that every
+  role still carries a modifier when there is no colour at all, so nothing can be
+  distinguishable by hue alone.
+* **The coverage meter is a count, not a bar.** One cell per term, `▰▰▰▱▱`. A proportional
+  bar would render `2/5` and `4/10` identically, and the denominator is the number that
+  matters.
+* **`enter` simulates; `D` decides.** Two keys, and a confirmation on the second, because
+  the two paths compute *exactly* the same thing and differ only in whether they leave a
+  trace. The only protection against a counterfactual later reading as a decision is that
+  they are not the same keystroke.
+
+`--snapshot` draws a frame into an off-screen buffer and prints it, which is how a TUI gets
+tests at all: layout arithmetic underflows on small rectangles, and the production failure
+mode is the console dying on somebody's 80-column terminal.
 
 ### `scema-omnid` — the local daemon
 
@@ -258,9 +382,19 @@ MV3, no build step, no dependencies. A content script perceives the page as a `W
 and the daemon runs the same loop it runs over a source tree — **perception is the only new
 part.** `POST /simulate` cannot tell a DOM from a filesystem walk.
 
-It reads nothing until you click: no `content_scripts` block, no `<all_urls>`, injection via
-`activeTab` on the toolbar button. The token lives only in the service worker, never in the
-content script, and the content script picks a message *type* rather than a URL.
+It reads nothing until you ask: no `content_scripts` block, no `<all_urls>`, injection via
+`activeTab` from the popup's button or `Alt+Shift+O`. The token lives only in the service
+worker, never in the content script, and the content script picks a message *type* rather
+than a URL. The one route that needs a caller-supplied segment — `GET /decisions/{id}` —
+validates the id against a pattern before the path is built, so a `../` never reaches the
+daemon's router.
+
+Its palette is a port of the console's, pinned by a test, so the two surfaces cannot drift
+into looking like different products. And it deliberately **verifies nothing itself**: a
+fourth implementation of the canonical encoding is one that will drift, and an overlay
+reporting an untampered record as INVALID is the most damaging failure available. There is
+an export button instead, and the exported bytes are identical to what `RecordStore::save`
+wrote.
 
 The most useful thing it reports is what it could not see. A cross-origin iframe is
 genuinely unreadable, so it becomes a blind spot and then *measured* uncertainty — the agent
@@ -283,6 +417,31 @@ teaches a model to retry it.
 
 The `initialize` response tells the model the two things it will otherwise get wrong: an em
 dash is not a zero, and grounding is never inferred.
+
+### `plugins/claude-code` — the assistant plugin
+
+```console
+> /plugin marketplace add Meta-Oracle/Scematica
+> /plugin install scema-omni@scematica
+```
+
+The MCP server can be added with one line of JSON. What it cannot do by itself is stop a
+model from writing *"expected gain: 0.00"* when the tool said `—`.
+
+That is the whole reason the plugin carries a skill rather than only a config file. Omni's
+design is that every layer can say "I don't know" — `Provenance` before value, `Term` before
+score, `Applicability` before opinion — and the last layer is prose written by a model. A
+summary that reports an unmeasured term as a zero has undone the type system underneath it
+in one sentence, and nothing downstream can tell.
+
+The skill is five things not to do, each a failure this repository has paid for at least
+once: an em dash is not a zero; coverage never leaves the score it qualifies; abstention is
+an answer and *which* one is the actionable part; grounding is asserted, never inferred from
+wording; a verified commitment proves one thing and not two others.
+
+There is deliberately no `--allow-decide` in the plugin's `.mcp.json`, so `omni_decide` is
+not advertised at all — absent rather than listed-and-failing, which teaches a model to
+retry.
 
 ### `/omni` — the record console
 
@@ -321,10 +480,10 @@ solana-free — today, `scematica-nn` with `default-features = false`.
 ```powershell
 cd scematica-omni
 cargo build --release
-cargo test --workspace                 # 159 tests
+cargo test --workspace                 # 235 tests
 cargo clippy --workspace --all-targets
 
-cd plugins/scema-web ; npm test        # 13 hermetic
+cd plugins/scema-web ; npm test        # 44 hermetic
 # + 9 wire tests against a live daemon:
 #   SCEMA_OMNID_URL=... SCEMA_OMNID_TOKEN=... npm test
 

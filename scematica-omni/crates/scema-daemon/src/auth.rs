@@ -53,6 +53,11 @@ pub fn load_or_create(root: &Path) -> Result<String> {
     }
     let token = generate()?;
     fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
+    // The daemon is the one surface that brings `.scema/` into existence without the
+    // operator having decided anything, and it is also the one that puts a **secret** in
+    // there. If the directory is inside a git working tree, an untracked token is exactly
+    // what somebody commits by reflex on their next `git add -A`.
+    scema_verify::store::self_ignore(root);
     let tmp = path.with_extension("token.tmp");
     fs::write(&tmp, &token).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))?;

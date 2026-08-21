@@ -35,22 +35,41 @@ cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipea
 cargo run --release -p mesh-dashboard -- --json       # raw mesh
 
 # Scematica Omni — the agent runtime (own workspace; cd first)
-# Published to crates.io as ten `scema-*` crates (0.1.0), independent of the bot's
+# Published to crates.io as `scema-*` crates (0.1.0), independent of the bot's
 # `scematica-*` line. Install without a checkout:
-cargo install scema-cli scema-daemon scema-mcp   # -> scema, scema-omnid, scema-mcp
+cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 93 tests
+cd scematica-omni ; cargo test --workspace          # 235 tests
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
 ./scematica-omni/target/release/scema decide   "<goal>" --ground <signal-id>   # seals a record
 ./scematica-omni/target/release/scema explain --list ; scema verify --all
 ./scematica-omni/target/release/scema policy        # weights, observers, specialists
+./scematica-omni/target/release/scema init          # create .scema/ (self-ignoring)
+./scematica-omni/target/release/scema doctor        # installed / wired / quietly broken
+./scematica-omni/target/release/scema connect --list           # assistants it can wire up
+./scematica-omni/target/release/scema connect claude-code --write
 
-# Omni's other three surfaces (all drive the same scema-agent)
-./scematica-omni/target/release/scema-omnid --allow .          # loopback daemon :7842
-./scematica-omni/target/release/scema-mcp --allow .            # MCP over stdio
-cd scematica-omni/plugins/scema-web ; npm test                 # extension (13 hermetic)
+# `scema` is also a LAUNCHER: it finds its siblings next to itself (then PATH) and hands
+# over, so there is one command to remember. Sibling-first is deliberate — resolving
+# through PATH first pairs a checkout's launcher with ~/.cargo/bin's old component.
+./scematica-omni/target/release/scema tui           # -> scema-tui   (the console)
+./scematica-omni/target/release/scema daemon --allow .   # -> scema-omnid, loopback :7842
+./scematica-omni/target/release/scema mcp    --allow .   # -> scema-mcp, MCP over stdio
+
+# The console, directly. Black+violet palette, unique among this repo's TUIs.
+./scematica-omni/target/release/scema-tui                  # five tabs over the loop
+./scematica-omni/target/release/scema-tui --once           # one pass as plain text
+./scematica-omni/target/release/scema-tui --snapshot 120x40  # one frame as text (CI-assertable)
+./scematica-omni/target/release/scema-tui --palette        # what colour this terminal carries
+
+cd scematica-omni/plugins/scema-web ; npm test                 # extension (44 hermetic)
 cd web ; npm run check:omni                                    # Rust<->TS commitment parity
+
+# Omni perceives more than a source tree. The observed thing emits a WorldState; omni's
+# ImportObserver reads it. Four producers on that contract, one loop above them.
+cargo run --release -p mesh-dashboard -- --world | scema simulate "<goal>" --path -
+cd alchem-link ; PYTHONPATH=src python -m alchem_link.cli omni -n base | scema observe -
 
 # ScemaDEX agentic-liquidity layer (separate from the bot)
 cargo run --release --bin sdk-dashboard           # SDK TUI over the bond pipeline (SIM)
@@ -149,7 +168,15 @@ crates/
                         exists. Distinct from `scema-bot-mesh` (BOT Chain verifiable
                         inference, separate workspace) and from the data-integrity Ψ in
                         `scematica-sentience`: that one asks "can this data be trusted",
-                        this one asks "do the subsystems agree". Bin: none; `examples/dump`.
+                        this one asks "do the subsystems agree". Also `omni.rs`: the topology
+                        as a Scematica Omni `WorldState` (`mesh-dashboard --world`), hand-built
+                        JSON rather than a dependency on `scema-world`, because three other
+                        producers are on that contract and could not take the dependency
+                        either. The roster includes `agent.omni`, read from `.scema/decisions/`
+                        — the only node with **no edges at all**, because nothing in omni writes
+                        to what it observes and drawing a wire would assert coordination that is
+                        not happening. It counts records and never claims to have verified one.
+                        Bin: none; `examples/dump`.
   mesh-dashboard/       Ratatui TUI over `scematica-mesh` — the topology as a live terminal
                         graph. Separate crate so `scematica-mesh` stays a lean read-only
                         library (same split as `scemadex-sdk` vs `sdk-dashboard`).
@@ -168,8 +195,13 @@ alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
                         Keccak-256 (`keccak.py`), because hashlib ships SHA3-256 and the
                         padding differs, so function selectors are computed rather than
                         stored; and including `term/`, the in-package terminal system
-                        (see below). Bins: `alchem-link`, `alchem-link-ui`.
-                        Tests: `python -m unittest discover -s tests` (590, all offline)
+                        (see below). Also `omni.py` and the `omni` verb: the network's
+                        oracle set as a Scematica Omni `WorldState`, so an agent can rank
+                        branches against a stale feed rather than an operator reading a
+                        board. `world()` is a pure transform taking no RPC client; only
+                        `perceive()` reads a chain.
+                        Bins: `alchem-link`, `alchem-link-ui`.
+                        Tests: `python -m unittest discover -s tests` (622, all offline)
 scema-botchain/         BOT Chain (EVM, chain 677) port. **Own cargo workspace, in the
                         root `exclude` list** — an EVM stack needs reqwest 0.12/rustls
                         0.23, exactly what the pin comments say cannot coexist with
@@ -197,12 +229,16 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         scema-memory (four memories), scema-sim (counterfactual projection),
                         scema-policy (utility + pluggable evaluators + the ONE renderer),
                         scema-verify (proof-carrying decision records), scema-agent (the
-                        loop), scema-cli (bin `scema`), scema-daemon (bin `scema-omnid`),
-                        scema-mcp (bin `scema-mcp`). Plus plugins/scema-web (MV3 browser
-                        extension, no build step) and `/omni` in web/ (offline record
-                        verifier). Tests: `cargo test --workspace` (159), plus 22 in
-                        plugins/scema-web and `npm run check:omni` in web/ (17).
-                        See scematica-omni/README.md.
+                        loop), scema-cli (bin `scema` — the loop, plus the sibling launcher,
+                        `init`/`doctor`/`connect`/`completions`), scema-tui (bin `scema-tui`,
+                        the console), scema-daemon (bin `scema-omnid`), scema-mcp (bin
+                        `scema-mcp`). Plus plugins/scema-web (MV3 browser extension, no
+                        build step), plugins/claude-code (a Claude Code plugin over the MCP
+                        server, referenced by `.claude-plugin/marketplace.json` at the repo
+                        root) and `/omni` in web/ (offline record verifier). Tests:
+                        `cargo test --workspace` (214), plus 53 in plugins/scema-web
+                        (9 of them wire tests that skip without a live daemon) and
+                        `npm run check:omni` in web/ (17). See scematica-omni/README.md.
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -666,10 +702,76 @@ reason `lib/mesh/view.ts::toneFor` is the only thing that picks a colour: a rule
 claim about trust gets one implementation. The CLI and the MCP server both call it. The
 extension HUD and `web/lib/omni/view.ts` are tested ports.
 
-### The four surfaces
+### Four kinds of world, one loop
 
-All four drive the same `scema-agent` and none re-implements perception, simulation or
+"Domain-agnostic" is cheap to claim. What makes it true is that a repository, a running
+Scematica system, a set of Chainlink feeds and a web page are all `WorldState`, and nothing
+above perception can tell which it was looking at.
+
+Only the first is a filesystem walk in Rust. The other three live behind a lockfile pinned
+around `solana-sdk 1.18`, a stdlib-only Python package, and a browser — and linking any of
+them would make `scema-tools` a hub of domain dependencies, which is exactly what the
+workspace note forbids. So the arrangement is inverted: **the thing being observed describes
+itself in `scema-world`'s vocabulary**, and `ImportObserver` reads that.
+
+| Producer | Language | Emits |
+|---|---|---|
+| `scema_tools::RepoObserver` | Rust, in-process | a source tree |
+| `plugins/scema-web/src/perceive.js` | JavaScript, no build step | a DOM |
+| `scematica_mesh::omni` | Rust, the bot workspace | a running Scematica system |
+| `alchem_link.omni` | Python, stdlib only | one network's oracle feeds |
+
+Rules that hold on **every** producer, and are enforced twice:
+
+- **An unreadable thing is a blind spot, never a zero.** An absent mesh node, an aggregator
+  that did not answer, a cross-origin iframe. `scema-sim` turns a blind spot into *measured*
+  uncertainty, which is the arithmetic behind the claim.
+- **Stale is not fresh, and it keeps its value.** A veto from a stale mesh node is not
+  counted as blocking; a feed past its heartbeat is `Provenance::Stale` with the age and the
+  budget attached, not dropped and not presented as current.
+- **Every signal is a count.** `measured: true` is a claim somebody counted something, and
+  it is what lets `scema-sim` score a real expected gain. A "system health score" or an
+  "oracle health score" invented in a producer would be a hallucination with a decimal point
+  on it, laundered into a verifiable record.
+- **A capped or unregistered read reports an unknown denominator.** `Extent { total: None }`
+  rather than a numerator over a smaller total, which would claim over 100% coverage.
+
+Enforced twice because three of the four producers are hand-written against a JSON shape.
+Each **restates the importer's validation on its own side** and fails its own tests; and
+`crates/scema-tools/fixtures/` holds **real captured output** from all three, asserted
+against the importer. A self-check catches a bug in one producer; a fixture catches the case
+where both sides were changed and only one of them was right. `alchem_link.omni._check`
+caught a real extent bug the first time it ran.
+
+`ImportObserver` rewrites `observer` to `imported:<name>` (idempotently), exactly as the
+daemon rewrites a wire-supplied world to `client:<name>`. It validates the *shape*, never
+the *claims* — a producer reporting a stale feed as `Live` is lying and no parser catches
+that; the prefix is what tells a reader whose word this is.
+
+### The surfaces
+
+All of them drive the same `scema-agent` and none re-implements perception, simulation or
 verification — which is why the safety argument is made once.
+
+- **`scema-tui`** — the console. **Black and violet with soft-blue accents**, deliberately
+  unlike every other TUI here (sniper: black/red; `mesh-dashboard`: indigo/slate;
+  `sdk-dashboard`: green), because an operator with three open must be able to tell which
+  is making a claim about money and which about a decision record. Three rules carry over
+  from `alchem_link.theme` and `lib/mesh/view.ts`: **a renderer names a `Role`, never a
+  colour** (`theme.rs` is the only file with a hex in it, `view.rs` the only one that maps a
+  state to a role, `render.rs` only places rectangles); **colour is decoration, never the
+  message** (a test walks every role in `Depth::Mono` and fails one that carries neither a
+  modifier nor a distinguishing word, so `--no-color`, a pipe and a 16-colour terminal all
+  produce the same text); and **azure is reserved for claims** — the chosen branch and a
+  verifying commitment, never an observation. The coverage meter is one cell per term
+  (`▰▰▰▱▱`), never a proportional bar, because a bar renders 2/5 and 4/10 identically and
+  the denominator is the number that matters; an empty coverage is `∅`, never an empty
+  meter. `enter` simulates and `D` decides, with a confirmation, because the two paths
+  compute exactly the same thing and the only thing keeping a counterfactual from reading
+  as a decision is that they are not the same keystroke. Grounding is **ticked, never
+  inferred** — a test pins that a goal naming a signal id verbatim still does not ground it.
+  `--snapshot WxH` draws a frame into a `TestBackend` and prints it, which is what makes a
+  TUI testable at all; the tests assert on symbols, not styles.
 
 - **`scema-omnid`** (`scema-daemon`) — hand-rolled HTTP/1.1 on `std`, no hyper/rustls/tokio.
   Partly for consistency, mostly because the moment omni carries a TLS stack somebody will
@@ -689,15 +791,52 @@ verification — which is why the safety argument is made once.
   observed locally.
 - **`plugins/scema-web`** — MV3, no build step, no dependencies, no bundler. **Perception is
   the only new part**: `src/perceive.js` emits the same JSON `RepoObserver` does, so
-  `/simulate` cannot tell a DOM from a filesystem walk. It reads nothing until you click —
-  no `content_scripts` block, no `<all_urls>`, injection via `activeTab` on the toolbar
-  button. **The token lives only in the service worker**, never in the content script, and
-  the content script picks a message *type* which `background.js` maps to a path (same rule
-  as `lib/scylar/tools.ts`: the caller names a tool, never a URL). Cross-origin iframes are
-  genuinely unreadable and become blind spots → measured uncertainty. The entity locator
-  drops the query string; `test/wire.test.js` pins that a `?sid=SECRET` never reaches a
-  record. `npm test` is hermetic (13); the 9 wire tests skip unless `SCEMA_OMNID_URL` and
-  `SCEMA_OMNID_TOKEN` are set.
+  `/simulate` cannot tell a DOM from a filesystem walk. It reads nothing until you ask —
+  no `content_scripts` block, no `<all_urls>`, injection via `activeTab` from the popup
+  button or `Alt+Shift+O`. **The token lives only in the service worker**, never in the
+  content script, and the content script picks a message *type* which `background.js` maps
+  to a path (same rule as `lib/scylar/tools.ts`: the caller names a tool, never a URL). The
+  one parameterised route, `GET /decisions/{id}`, validates the id against a pattern
+  **before** the path is built, so a `../` never reaches the daemon's router. The seal
+  confirmation lives in the closed shadow root and is **not** `window.confirm` — a content
+  script shares the page's window, so a page can define `confirm = () => true`. It
+  deliberately **verifies nothing itself**: a fourth canonical-encoding implementation is
+  one that will drift, and an overlay reporting an untampered record as INVALID teaches the
+  reader to stop believing the verifier — so there is an export button, byte-identical to
+  `RecordStore::save`, checked with `scema verify --file` or `/omni`. `src/theme.js` is a
+  **port** of `crates/scema-tui/src/theme.rs` (Rust authoritative; `test/theme.test.js` pins
+  the hexes) — before it existed the HUD was `#4c4cff` and the options page `#8b8bff`, and
+  neither was the console's violet. Signals are **counts only**, never estimates;
+  `mixed-content-subresources` is counted only on an https page (on an http page it is not
+  "mixed", it is consistent, and the page-level signal already covers it), and
+  `controls-without-labels` misses wrapping labels so it **over-counts** — the evidence
+  string says so, because a number whose bias is undocumented cannot be calibrated against.
+  Cross-origin iframes are genuinely unreadable and become blind spots → measured
+  uncertainty. The entity locator drops the query string; `test/wire.test.js` pins that a
+  `?sid=SECRET` never reaches a record. `npm test` is hermetic (44); the 9 wire tests skip
+  unless `SCEMA_OMNID_URL` and `SCEMA_OMNID_TOKEN` are set.
+- **`scema-cli`** — also the **launcher**: `scema tui|daemon|mcp` locate the sibling binary
+  next to the running `scema` first and only then on `PATH` (PATH-first silently pairs a
+  checkout's launcher with `~/.cargo/bin`'s old component). They stay separate crates so
+  `cargo install scema-cli` on a CI box that only runs `scema verify` does not pull in a
+  terminal stack. `scema doctor` **changes nothing** and reports four verdicts, not two:
+  `ok`/`warn`/`FAIL`/`?`, where `?` is a check that could not be run — "does not verify" and
+  "could not be read" are different claims and only one is an accusation. `scema connect`
+  wires the MCP server into an assistant; it **merges** into `.mcp.json` rather than
+  overwriting (people have three other servers configured) and refuses an unparseable file
+  rather than replacing it. `--write` touches **project-local files only**; Claude Desktop /
+  Windsurf / Zed / Codex configs are printed with their path and never written, because a
+  user-level config is shared by every project and editing it means a tool installed for one
+  repository quietly gained the ability to observe all of them.
+- **`plugins/claude-code`** — a Claude Code plugin: the MCP server confined to
+  `${CLAUDE_PROJECT_DIR}`, three commands, and a skill. **The skill is the point.** A config
+  file cannot stop a model writing "expected gain: 0.00" when the tool said `—`, and the
+  last layer of this whole design is prose a model writes. It is five things not to do, each
+  a failure paid for here at least once: an em dash is not a zero; coverage never leaves the
+  score it qualifies; abstention is an answer and *which* one is the actionable part;
+  grounding is asserted, never inferred; a verified commitment proves one thing and not two
+  others. No `--allow-decide` in its `.mcp.json`, so `omni_decide` is **absent** rather than
+  listed-and-failing.
 - **`scema-mcp`** — links the loop directly rather than proxying the daemon: same library,
   one less hop, no way for two surfaces to disagree. **stdout is the transport**; every
   diagnostic goes to stderr. Paths resolve through `Workspace` — not paranoia about a

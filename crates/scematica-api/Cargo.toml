@@ -2,6 +2,14 @@
 name = "scematica-api"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica HTTP API — serves the sniper's state files, the Ψ data-integrity gate and the mesh topology to the web dashboard and the mobile companion."
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+readme = "README.md"
+keywords = ["api", "trading", "observability", "solana", "dashboard"]
+categories = ["web-programming::http-server"]
 
 [[bin]]
 name = "api"
@@ -24,7 +32,7 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "rus
 jsonwebtoken = "9"
 # Cognitive gating for /api/sentience. Pure computation — no solana-sdk, no network,
 # nothing that can widen this crate's dependency tree.
-scematica-sentience = { version = "1.25.0", path = "../scematica-sentience" }
+scematica-sentience = { version = "1.26.0", path = "../scematica-sentience" }
 # Topology collection for /api/mesh. Reads the same state files this crate already serves
 # individually, and turns them into a graph. Pure file reads — no network, no solana-sdk.
-scematica-mesh = { version = "1.25.0", path = "../scematica-mesh" }
+scematica-mesh = { version = "1.26.0", path = "../scematica-mesh" }

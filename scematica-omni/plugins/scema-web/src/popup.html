@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Scematica Omni</title>
+    <style>
+      /* Only what a popup window needs; everything else comes from `theme.js` at runtime,
+         so the popup, the options page and the injected HUD cannot drift apart. */
+      html, body { margin: 0; padding: 0; background: #08060f; }
+      body { width: 380px; max-height: 580px; overflow-y: auto; }
+      #style { display: none; }
+      .omni { border: 0; border-radius: 0; box-shadow: none; }
+    </style>
+  </head>
+  <body>
+    <div class="omni" id="root">
+      <div class="bar">
+        <b>SCEMA OMNI</b>
+        <span class="sp"></span>
+        <span id="status" class="dim">checking…</span>
+      </div>
+
+      <section>
+        <h4>THIS PAGE</h4>
+        <div id="page" class="dim">—</div>
+        <div class="row" style="margin-top:7px">
+          <button id="perceive" class="primary">Perceive this page</button>
+          <button id="options">Pairing…</button>
+        </div>
+        <div class="note">
+          Opens the overlay on the current tab. Nothing is read until you press it — this
+          extension has no content scripts and no <code>&lt;all_urls&gt;</code> permission.
+        </div>
+      </section>
+
+      <section id="policy-box">
+        <h4>DAEMON</h4>
+        <div id="policy" class="dim">—</div>
+      </section>
+
+      <section>
+        <h4>RECENT DECISIONS</h4>
+        <div id="decisions" class="dim">—</div>
+        <div class="note">
+          <strong>VALID</strong> is what the daemon reported when it recomputed the
+          commitment. It proves the record was not edited after sealing. It does
+          <em>not</em> prove the world was as described — provenance carries that — and it
+          is not a second opinion: this popup did not recompute anything. Run
+          <code>scema verify &lt;id&gt;</code>, or drop the exported record on the
+          <code>/omni</code> page, to check it somewhere that is not the daemon.
+        </div>
+      </section>
+    </div>
+
+    <script src="theme.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

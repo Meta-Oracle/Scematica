@@ -61,12 +61,18 @@ console.log('── layer table ────────────────
 
 // Mirrors NodeKind::layer() in Rust. A kind missing here would stack in column 0 and the
 // picture would stop matching the pipeline.
-const KINDS = ['listener', 'filter', 'scorer', 'breaker', 'learner', 'reasoner', 'gate', 'executor', 'peer']
+const KINDS = ['listener', 'filter', 'scorer', 'breaker', 'learner', 'reasoner', 'gate', 'executor', 'peer', 'agent']
 check('every node kind has a layer', KINDS.every(k => typeof LAYER[k] === 'number'))
 check('the table has no extra kinds', Object.keys(LAYER).length === KINDS.length)
 check('flow runs left to right', LAYER.listener < LAYER.filter && LAYER.filter < LAYER.breaker)
 check('execution is downstream of cognition', LAYER.learner < LAYER.executor)
 check('filters and scorers share a column', LAYER.filter === LAYER.scorer)
+// An `agent` node is a decision runtime watching from outside — Scematica Omni. It sits in
+// the cognition column with the learners, and it has no edges at all: omni perceives, ranks
+// and records, and nothing in it writes to the environment it observed. Placing it
+// downstream of execution would imply a wire into the trading path that does not exist.
+check('an observing agent sits with cognition', LAYER.agent === LAYER.learner)
+check('an observing agent is upstream of execution', LAYER.agent < LAYER.executor)
 
 console.log('\n── colour rules (the honesty layer) ──────────────────────')
 

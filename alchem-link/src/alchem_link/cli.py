@@ -330,6 +330,35 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_OK if result.ok else EXIT_UNUSABLE
 
 
+def _cmd_omni(args: argparse.Namespace) -> int:
+    """Emit this network's oracle feeds as a Scematica Omni ``WorldState``.
+
+    Always JSON, and deliberately not routed through ``_structured``/``_out``. The other
+    commands have a text form for a human and a JSON form for a pipe; this one has a single
+    consumer — an agent runtime that reads one exact shape — and a "text form" of a
+    ``WorldState`` would be a second, prettier thing nobody parses. ``--format`` is
+    therefore ignored here rather than silently producing something the consumer rejects.
+
+        $ alchem-link omni -n base | scema simulate "is this safe to price against" --path -
+
+    Every signal it emits is a count. An unreadable aggregator becomes a blind spot, never
+    a price of zero. See :mod:`alchem_link.omni`.
+    """
+    import json
+
+    from .omni import perceive
+
+    state = perceive(network=args.network, rpc_url=args.rpc_url)
+    print(json.dumps(state, indent=2, sort_keys=True))
+
+    # Exit code reflects what was found, so a shell pipeline can branch on it: a world with
+    # nothing counted against it is a clean read, and one carrying a risk signal is not a
+    # failure of this command either — the *agent* decides what to do about it. Only an
+    # unreadable set is a problem this command can report.
+    unreadable = any(s["id"] == "unreadable-feeds" for s in state["signals"])
+    return EXIT_UNUSABLE if unreadable else EXIT_OK
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     from .feeds import verify_registry
 
@@ -1141,6 +1170,7 @@ LIVE_COMMANDS = [
     ("doctor", "End-to-end readiness check"),
     ("verify", "Confirm each address reports the pair it is filed under"),
     ("ccip", "CCIP routers, chain selectors and live lane status"),
+    ("omni", "Emit these feeds as a Scematica Omni WorldState (JSON, for `scema`)"),
 ]
 
 OFFLINE_COMMANDS = [
@@ -1169,6 +1199,7 @@ REFERENCE_COMMANDS = [
 ]
 
 HANDLERS = {
+    "omni": _cmd_omni,
     "ui": _cmd_ui,
     "shell": _cmd_shell,
     "chat": _cmd_chat,

@@ -243,7 +243,7 @@ publishes) and Ethereum (3600s). The interval comes from the timestamps.
 
 **Live** — `price` · `feeds` · `audit` · `inspect` · `history` · `updates` · `stats` ·
 `cadence` · `divergence` · `sequencer` · `watch` · `gas` · `holdings` · `transfers` ·
-`block` · `doctor` · `verify` · `ccip`
+`block` · `doctor` · `verify` · `ccip` · `omni`
 
 **Offline** — `search` · `networks` · `coverage` · `simulate` · `backtest` · `theme`
 
@@ -275,6 +275,71 @@ alchem_link_feed_age_seconds{network="polygon",pair="ETH/USD"} 41
 Scrape that on a timer and `alchem_link_feed_stale == 1` is a complete alert rule — the
 tool stops being something you run when you are worried and starts telling you when to
 be.
+
+## Handing the verdict to an agent — `omni`
+
+Every command above answers *what do these feeds currently say, and can they be believed*.
+None of them answers *so what should be done about it* — that has always been the reader's
+job, and on a board with three stale feeds, an unmeasured heartbeat and a sequencer four
+minutes out of its grace period it is not an easy one.
+
+`alchem-link omni` emits the network's oracle set as a
+[Scematica Omni](https://github.com/Meta-Oracle/Scematica/tree/main/scematica-omni)
+`WorldState`, so an agent runtime can rank branches against it:
+
+```bash
+alchem-link omni -n base | scema simulate "stop pricing against anything unsafe"   --path - --ground non-positive-answers
+```
+
+```
+WORLD    chainlink:base
+         Service · Unknown · observer `imported:alchem-link`
+         4 observed (4 of 6 registered feed(s) answered; 3 fresh, 1 stale) · legibility 75%
+         BLIND SPOTS (1):
+           · DAI/USD on Base Mainnet: the aggregator did not answer — no price, no age, no verdict
+
+SIGNALS
+  RISK   counted  1.00  1 feed(s) report an answer of zero or below
+  RISK   counted  0.17  1 feed(s) have not published inside their own heartbeat
+  RISK   counted  0.17  1 feed(s) are judged against an assumed heartbeat
+  RISK   counted  0.25  the Base Mainnet sequencer came back 900s ago
+
+DECISION  h-goal — stop pricing against anything unsafe
+             +1.000  R  mean magnitude of 1 counted signal(s): non-positive-answers
+             -0.315  K  worst declared action class Write, escalated by counted risk(s)
+             -0.056  U  25% of observed objects unreadable or stale, 1 blind spot(s)
+             +0.600  = utility
+```
+
+The whole point is that nothing had to be softened to cross the boundary. The four rules
+this toolkit already lived by are the four rules that make the world usable:
+
+- **A feed that did not answer is a blind spot, not a zero.** It has no price, no age and
+  no verdict, and it goes into `blind_spots` — which the simulator turns into *measured*
+  uncertainty. An agent reasoning about a partly-readable oracle set is less confident and
+  can say so with a number. Rendering it as a price of `0` is the same error as rendering
+  an unreadable vault balance as zero.
+- **Stale is not fresh, and it still carries its price.** A value that was true an hour ago
+  looks exactly like one that is true now; that resemblance is the hazard, and it survives
+  as `Provenance::Stale` with the age and the budget attached.
+- **`heartbeat_measured: false` crosses intact.** A staleness verdict against an assumed
+  heartbeat is a bound, not a measurement, and it is counted as its own signal because the
+  fix is different: one is a feed to stop using, the other is a table entry to go and
+  measure.
+- **Every signal is a count.** Nothing estimates a severity. An "oracle health score"
+  invented here would be a hallucination with a decimal point on it, laundered into a
+  decision record a third party can verify but cannot second-guess.
+
+The sequencer keeps its three states rather than two: **down** is a signal, **in grace** is
+a signal (a feed can read fresh inside the window while the value behind it predates the
+outage), and **unreadable** is a blind spot — because whether L2 prices are safe is then
+*unknown*, which is a different claim from "fine".
+
+`alchem_link.omni.world()` is a pure transform from readings to a dict and takes no RPC
+client, so everything that decides what a reading *means* is tested offline. Only
+`perceive()` touches a chain. The emitted shape is validated on the way out by the same
+rules omni's importer applies, so this package fails its own tests rather than producing
+something the consumer rejects three processes away.
 
 ## Batched reads
 
@@ -725,7 +790,7 @@ both drop straight into a CI gate.
 python -m unittest discover -s tests
 ```
 
-561 cases, all offline — no test in this suite reads a chain.
+622 cases, all offline — no test in this suite reads a chain.
 
 That is a design constraint rather than a convenience. `analytics` and `simulate` compute
 numbers people size positions and write guards against, and a number that can only be

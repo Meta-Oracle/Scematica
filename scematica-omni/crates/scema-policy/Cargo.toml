@@ -29,6 +29,12 @@ serde_json = { workspace = true }
 # resolved by anyone who installs this from the registry. In-workspace the path wins;
 # published, consumers get scematica-nn 1.25.0 from crates.io. `default-features = false`
 # drops its ratatui viewer, leaving serde/tracing/chrono/rand/anyhow and no solana-sdk.
+# `1.25.0` is a CARET requirement (^1.25.0), not a pin, and it is deliberately left at
+# 1.25.0 while the bot workspace moves to 1.26.0. That is what lets this workspace publish
+# *first*: 1.25.0 is already on crates.io and satisfies the requirement, so omni does not
+# have to wait behind a bot release. Consumers resolve to 1.26.0 once it lands.
+# Raising it to 1.26.0 before that version is published makes every omni crate below
+# `scema-policy` unpublishable, with an error that names a dependency nobody changed.
 scematica-nn = { version = "1.25.0", path = "../../../crates/scematica-nn", default-features = false, optional = true }
 
 [features]

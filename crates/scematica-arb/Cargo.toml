@@ -16,9 +16,9 @@ name = "arb"
 path = "src/main.rs"
 
 [dependencies]
-scematica-core = { version = "1.25.0", path = "../scematica-core" }
-scematica-ai = { version = "1.25.0", path = "../scematica-ai" }
-scematica-executor = { version = "1.25.0", path = "../scematica-executor" }
+scematica-core = { version = "1.26.0", path = "../scematica-core" }
+scematica-ai = { version = "1.26.0", path = "../scematica-ai" }
+scematica-executor = { version = "1.26.0", path = "../scematica-executor" }
 
 solana-sdk.workspace = true
 solana-client.workspace = true

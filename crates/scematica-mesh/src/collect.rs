@@ -55,6 +55,16 @@ pub const POOL_RADAR: Source = Source { path: "scematica-pool-radar.json", budge
 /// Append-only, so age tracks the last close rather than a heartbeat. The budget is
 /// generous because a quiet hour is normal and does not make the history untrue.
 pub const TRADES: Source = Source { path: "scematica-trades.jsonl", budget_secs: 86_400 };
+/// Scematica Omni's decision records. A directory rather than a file, so the `path` here is
+/// documentation and the reader below walks it; the budget is what matters.
+///
+/// Seven days, and generously so on purpose. A decision is a deliberate act, not a
+/// heartbeat: a record sealed last Tuesday is not stale in the way a five-second-old metrics
+/// file is. A tight budget would paint a perfectly good decision history amber for the
+/// ordinary reason that nobody ran the agent today, and a status that is amber by default
+/// is a status people stop reading.
+pub const OMNI_DECISIONS: Source =
+    Source { path: ".scema/decisions", budget_secs: 7 * 86_400 };
 
 /// A source that was read, or was not there.
 #[derive(Clone, Debug)]
@@ -127,6 +137,194 @@ impl Collector {
             Provenance::Stale { age_secs: age, budget_secs: source.budget_secs }
         };
         Reading { value: Some(value), provenance }
+    }
+
+
+    /// Scematica Omni's state directory, when there is one.
+    ///
+    /// `.scema/` is not part of the File-Based IPC table: the sniper does not write it and
+    /// nothing in the trading path reads it. It is here because omni is a decision-making
+    /// unit that observes this system, and a topology that could not see its own observer
+    /// would be an odd kind of topology.
+    ///
+    /// ## The node has no edges, and that is the claim
+    ///
+    /// Every other unit in this mesh is wired to something. This one is not, because
+    /// nothing in the omni workspace writes to an environment it observed — `execute`,
+    /// `delegate`, `discover` and `pay` are registered verbs that exit non-zero saying what
+    /// is missing. Drawing an edge from `agent.omni` into the buy path would assert
+    /// coordination that is not happening, which is the single thing this crate refuses to
+    /// do (see the note on `EdgeKind::Experience` in the crate root).
+    ///
+    /// ## It counts records; it does not verify them
+    ///
+    /// Verifying a commitment means recomputing six SHA-256 digests under omni's canonical
+    /// encoding, and this crate has neither the encoder nor any business owning a second
+    /// copy of it — a copy that drifts is worse than no copy, and a verifier that reports an
+    /// untampered record as INVALID teaches its reader to stop believing it. So the detail
+    /// lines say how many records exist and how many could be *parsed*, and the reason
+    /// field says explicitly that `scema verify` is what checks them.
+    fn omni_node(&self) -> Node {
+        let dir = self.root.join(".scema").join("decisions");
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Node::absent(
+                "agent.omni",
+                NodeKind::Agent,
+                "Scematica Omni",
+                "the decision runtime: perceives this system, ranks branches, seals verifiable records",
+            );
+        };
+
+        let mut total = 0usize;
+        let mut unreadable = 0usize;
+        let mut newest: Option<(SystemTime, String, Value)> = None;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            total += 1;
+            let modified = entry.metadata().and_then(|m| m.modified()).ok();
+            match fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            {
+                Some(value) => {
+                    let id = value
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string();
+                    if let Some(m) = modified {
+                        let replace = newest.as_ref().map(|(prev, _, _)| m > *prev).unwrap_or(true);
+                        if replace {
+                            newest = Some((m, id, value));
+                        }
+                    }
+                }
+                // A record that will not parse is counted apart from one that is missing.
+                // A corrupt store must not look like a smaller one — the same rule
+                // `scema explain --list` follows.
+                None => unreadable += 1,
+            }
+        }
+
+        if total == 0 {
+            let mut n = Node::absent(
+                "agent.omni",
+                NodeKind::Agent,
+                "Scematica Omni",
+                "the decision runtime: perceives this system, ranks branches, seals verifiable records",
+            );
+            n.reason = Some(
+                ".scema/decisions exists but holds no records — omni has decided nothing here yet"
+                    .to_string(),
+            );
+            return n;
+        }
+
+        let (provenance, verdict, reason, detail) = match &newest {
+            Some((modified, id, record)) => {
+                let age = self.now.duration_since(*modified).map(|d| d.as_secs()).unwrap_or(0);
+                // A decision is a deliberate act, not a heartbeat. A day-old record is not
+                // stale in the way a five-second-old metrics file is, so the budget is
+                // generous — a tight one would paint a perfectly good decision history
+                // amber for the ordinary reason that nobody ran the agent today.
+                let provenance = if age <= OMNI_DECISIONS.budget_secs {
+                    Provenance::Live { age_secs: age }
+                } else {
+                    Provenance::Stale { age_secs: age, budget_secs: OMNI_DECISIONS.budget_secs }
+                };
+
+                let decision = record.get("decision");
+                let chosen = decision
+                    .and_then(|d| d.get("chosen"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let abstained = decision
+                    .and_then(|d| d.get("abstention"))
+                    .and_then(|a| a.get("reason"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let coverage = decision.and_then(|d| d.get("coverage")).map(|c| {
+                    format!(
+                        "{}/{}",
+                        c.get("measured").and_then(Value::as_u64).unwrap_or(0),
+                        c.get("total").and_then(Value::as_u64).unwrap_or(0)
+                    )
+                });
+
+                // Abstention is `Idle` rather than `Veto`: omni declining to choose is not
+                // the same act as a breaker halting the buy path, and it blocks nothing.
+                // Painting it as a veto would put the page in alarm over an agent behaving
+                // exactly as designed.
+                let verdict = match (&chosen, &abstained) {
+                    (Some(_), _) => Verdict::Pass,
+                    (None, Some(_)) => Verdict::Idle,
+                    _ => Verdict::Unknown,
+                };
+                let reason = match (&chosen, &abstained) {
+                    (Some(c), _) => format!("last decision `{id}` chose `{c}`"),
+                    (None, Some(r)) => {
+                        format!("last decision `{id}` abstained ({})", r.replace('_', " "))
+                    }
+                    _ => format!("last decision `{id}` recorded neither a choice nor a reason"),
+                };
+
+                let detail = vec![
+                    ("records".to_string(), total.to_string()),
+                    (
+                        "unreadable".to_string(),
+                        if unreadable == 0 { dash() } else { unreadable.to_string() },
+                    ),
+                    ("newest".to_string(), id.clone()),
+                    ("goal".to_string(), {
+                        let g = record
+                            .get("goal")
+                            .and_then(|g| g.get("statement"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if g.is_empty() { dash() } else { g.chars().take(46).collect() }
+                    }),
+                    ("measured".to_string(), coverage.unwrap_or_else(dash)),
+                ];
+                (provenance, verdict, reason, detail)
+            }
+            // Files are there and not one of them could be read.
+            None => (
+                Provenance::Absent,
+                Verdict::Unknown,
+                format!("{total} record file(s) present, none readable"),
+                vec![
+                    ("records".to_string(), total.to_string()),
+                    ("unreadable".to_string(), unreadable.to_string()),
+                ],
+            ),
+        };
+
+        let mut detail = detail;
+        detail.push((
+            "verified".to_string(),
+            // Never a claim. This crate counts records and has no canonical encoder; saying
+            // "valid" here would be a second, drifting implementation of the one thing omni
+            // exists to make checkable.
+            "not checked here — run `scema verify --all`".to_string(),
+        ));
+
+        Node {
+            id: "agent.omni".into(),
+            kind: NodeKind::Agent,
+            label: "Scematica Omni".into(),
+            blurb: "observes this system, ranks branches, seals verifiable records — and never acts"
+                .into(),
+            provenance,
+            verdict,
+            // No throughput to report: a decision runtime that has sealed forty records over
+            // a month has no meaningful utilisation, and a bar drawn from record count would
+            // be a number invented to fill a slot.
+            activity: None,
+            detail,
+            reason: Some(reason),
+        }
     }
 
     /// Build the full observation.
@@ -493,6 +691,11 @@ impl Collector {
             closes: history.closes(),
         };
 
+        // The observer, observed. Deliberately last and deliberately unwired — see
+        // `omni_node`. A topology that could not see its own observer would be an odd kind
+        // of topology, and one that drew an edge from it into the buy path would be lying.
+        nodes.push(self.omni_node());
+
         let generated_at = chrono::Utc::now().to_rfc3339();
         Mesh::with_signals(nodes, edges, generated_at, &signals)
     }
@@ -677,4 +880,166 @@ mod tests {
         assert_eq!(mesh.summary.blocking, 0);
         assert_eq!(mesh.node("learner.variant.b").unwrap().verdict, Verdict::Pass, "primary_idx 1 is b");
     }
+
+    // ── the observer, observed ────────────────────────────────────────────────
+    //
+    // `.scema/` is not part of the File-Based IPC table — the sniper does not write it and
+    // nothing in the trading path reads it. These pin the two things that make including it
+    // honest: it never claims to have verified anything, and it is never wired into the buy
+    // path.
+
+    /// A record store that does not exist is a dark node, exactly like every other source.
+    #[test]
+    fn no_scema_directory_is_a_dark_omni_node() {
+        let d = tmpdir("omni-absent");
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        assert_eq!(n.provenance, Provenance::Absent);
+        assert_eq!(n.verdict, Verdict::Unknown);
+        assert!(n.activity.is_none());
+    }
+
+    /// An empty store is distinguishable from a missing one. "Omni has decided nothing here"
+    /// and "omni is not installed here" send an operator to different places.
+    #[test]
+    fn an_empty_record_store_says_so_rather_than_looking_uninstalled() {
+        let d = tmpdir("omni-empty");
+        fs::create_dir_all(d.join(".scema").join("decisions")).unwrap();
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        assert_eq!(n.provenance, Provenance::Absent);
+        assert!(n.reason.as_ref().unwrap().contains("decided nothing"), "{:?}", n.reason);
+    }
+
+    fn write_record(dir: &Path, id: &str, body: &str) {
+        let decisions = dir.join(".scema").join("decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        fs::write(decisions.join(format!("{id}.json")), body).unwrap();
+    }
+
+    /// A record that chose something reads as `Pass`, and the reason names the branch.
+    #[test]
+    fn a_record_that_chose_reads_as_pass() {
+        let d = tmpdir("omni-chose");
+        write_record(
+            &d,
+            "aaaa1111",
+            r#"{"id":"aaaa1111","goal":{"statement":"clear the backlog"},
+                "decision":{"chosen":"h-markers","abstention":null,
+                            "coverage":{"measured":5,"total":5}}}"#,
+        );
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        assert_eq!(n.verdict, Verdict::Pass);
+        assert!(n.reason.as_ref().unwrap().contains("h-markers"), "{:?}", n.reason);
+        assert!(n.detail.iter().any(|(k, v)| k == "measured" && v == "5/5"), "{:?}", n.detail);
+    }
+
+    /// An abstention is `Idle`, never `Veto`.
+    ///
+    /// Omni declining to choose is not the same act as a breaker halting the buy path, and it
+    /// blocks nothing. Painting it as a veto would put the page in alarm over an agent
+    /// behaving exactly as designed — and would inflate `MeshSummary::blocking`, which is the
+    /// number an operator reads to answer "why is nothing trading".
+    #[test]
+    fn an_abstention_is_idle_and_does_not_count_as_blocking() {
+        let d = tmpdir("omni-abstained");
+        write_record(
+            &d,
+            "bbbb2222",
+            r#"{"id":"bbbb2222","goal":{"statement":"do a thing"},
+                "decision":{"chosen":null,
+                            "abstention":{"reason":"too_little_measured"},
+                            "coverage":{"measured":1,"total":5}}}"#,
+        );
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        assert_eq!(n.verdict, Verdict::Idle);
+        assert_ne!(n.verdict, Verdict::Veto);
+        assert!(n.reason.as_ref().unwrap().contains("too little measured"), "{:?}", n.reason);
+        assert_eq!(mesh.summary.blocking, 0);
+    }
+
+    /// The mesh counts records. It does not verify them, and it says so.
+    ///
+    /// Verifying a commitment means recomputing six SHA-256 digests under omni's canonical
+    /// encoding. This crate has neither the encoder nor any business owning a second copy of
+    /// it — a copy that drifts is worse than no copy, and a verifier that reports an
+    /// untampered record as INVALID teaches its reader to stop believing it.
+    #[test]
+    fn the_mesh_never_claims_to_have_verified_a_record() {
+        let d = tmpdir("omni-noverify");
+        write_record(
+            &d,
+            "cccc3333",
+            r#"{"id":"cccc3333","goal":{"statement":"x"},
+                "decision":{"chosen":"h","abstention":null,"coverage":{"measured":5,"total":5}}}"#,
+        );
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        let (_, verified) = n.detail.iter().find(|(k, _)| k == "verified").expect("a verified row");
+        assert!(verified.contains("scema verify"), "{verified}");
+        assert!(!verified.to_lowercase().contains("valid"), "{verified}");
+    }
+
+    /// An unparseable record is counted apart from a missing one. A corrupt store must not
+    /// look like a smaller one — the same rule `scema explain --list` follows.
+    #[test]
+    fn an_unreadable_record_is_counted_separately() {
+        let d = tmpdir("omni-torn");
+        write_record(&d, "dddd4444", "{ not a record");
+        write_record(
+            &d,
+            "eeee5555",
+            r#"{"id":"eeee5555","goal":{"statement":"x"},
+                "decision":{"chosen":"h","abstention":null,"coverage":{"measured":5,"total":5}}}"#,
+        );
+        let mesh = Collector::new(&d).collect();
+        let n = mesh.node("agent.omni").unwrap();
+        assert!(n.detail.iter().any(|(k, v)| k == "records" && v == "2"), "{:?}", n.detail);
+        assert!(n.detail.iter().any(|(k, v)| k == "unreadable" && v == "1"), "{:?}", n.detail);
+    }
+
+    /// The observer has no wire into the trading path, and the topology must say so.
+    ///
+    /// Nothing in the omni workspace writes to an environment it observed. Drawing an edge
+    /// from `agent.omni` into the buy path would assert coordination that is not happening,
+    /// which is the single thing this crate refuses to do.
+    #[test]
+    fn the_omni_node_carries_no_edges_at_all() {
+        let d = tmpdir("omni-unwired");
+        write_record(
+            &d,
+            "ffff6666",
+            r#"{"id":"ffff6666","goal":{"statement":"x"},
+                "decision":{"chosen":"h","abstention":null,"coverage":{"measured":5,"total":5}}}"#,
+        );
+        let mesh = Collector::new(&d).collect();
+        assert!(
+            !mesh.edges.iter().any(|e| e.from == "agent.omni" || e.to == "agent.omni"),
+            "omni observes; it does not act, and the graph must not imply otherwise"
+        );
+        // An unwired node is not a broken graph.
+        assert!(mesh.validate().is_empty(), "{:?}", mesh.validate());
+    }
+
+    /// A week-old decision is still live. A decision is a deliberate act, not a heartbeat,
+    /// and a tight budget would paint a perfectly good history amber for the ordinary reason
+    /// that nobody ran the agent today.
+    /// A week-old decision is still live. A decision is a deliberate act, not a heartbeat,
+    /// and a tight budget would paint a perfectly good history amber for the ordinary reason
+    /// that nobody ran the agent today.
+    ///
+    /// `const` assertions, so a narrowed budget is a compile error rather than a test that
+    /// somebody runs later. The value is a policy, and a policy is exactly the kind of
+    /// constant worth checking at build time.
+    const _: () = assert!(
+        OMNI_DECISIONS.budget_secs >= 86_400,
+        "a one-day-old decision must not read as stale"
+    );
+    const _: () = assert!(
+        OMNI_DECISIONS.budget_secs > METRICS.budget_secs * 100,
+        "a decision record is not a heartbeat and must not share a heartbeat's budget"
+    );
+
 }

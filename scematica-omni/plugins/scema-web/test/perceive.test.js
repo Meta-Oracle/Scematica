@@ -38,6 +38,16 @@ function flatten(nodes) {
 function matches(node, sel) {
   const s = sel.trim();
   if (s === '*') return true;
+  // `[attr]` with no tag. Needed for the inline-event-handler scan, which is a list of
+  // bare attribute selectors — the alternative would be enumerating every element type
+  // that can carry an `onclick`, which is all of them.
+  const bareAttr = s.match(/^\[([\w-]+)(?:=(.+))?\]$/);
+  if (bareAttr) {
+    const [, name, value] = bareAttr;
+    const v = node.getAttribute(name);
+    if (v === null) return false;
+    return value === undefined || v === value;
+  }
   const withAttr = s.match(/^(\w+)\[([\w-]+)(?:=(.+))?\]$/);
   if (withAttr) {
     const [, tag, name, value] = withAttr;
@@ -206,4 +216,175 @@ test('the shape matches what the Rust WorldState deserialiser expects', () => {
   const scalar = Object.values(o.attrs)[0];
   assert.ok(['int', 'num', 'text', 'bool'].includes(scalar.t));
   assert.equal(w.observed_at, 123);
+});
+
+// ── signals added in 0.2.0 ────────────────────────────────────────────────────
+//
+// Every one of these counts something. None of them estimates a severity, which is what
+// lets `scema-sim` treat the magnitude as `measured` and score a real expected gain from
+// it. A test that asserted on a "page quality score" would be pinning a hallucination.
+
+test('a third-party script with an integrity hash is not counted as one without', () => {
+  // Ten scripts from one pinned CDN and one script from an unpinned one are different
+  // postures, and the origin count alone cannot tell them apart.
+  const pinned = doc([
+    el('script', { src: 'https://cdn.test/a.js', integrity: 'sha384-x' }),
+    el('script', { src: 'https://cdn.test/b.js', integrity: 'sha384-y' }),
+  ]);
+  const w = perceive(pinned, httpsLoc, 0);
+  assert.ok(!w.signals.some((s) => s.id === 'third-party-scripts-without-sri'));
+  assert.ok(w.signals.some((s) => s.id === 'third-party-scripts'), 'the origin is still counted');
+
+  const loose = doc([el('script', { src: 'https://cdn.test/a.js' })]);
+  const sri = perceive(loose, httpsLoc, 0).signals.find(
+    (s) => s.id === 'third-party-scripts-without-sri'
+  );
+  assert.ok(sri);
+  assert.equal(sri.measured, true);
+  assert.match(sri.evidence[0], /counted 1 of 1/);
+});
+
+test('mixed content is only counted on a page that is itself secure', () => {
+  // An http subresource on an http page is not "mixed", it is consistent — and the
+  // page-level signal already covers the real problem there. Counting it twice would
+  // double it into the same decision.
+  const children = [el('img', { src: 'http://cdn.test/a.png' })];
+  assert.ok(
+    perceive(doc(children), httpsLoc, 0).signals.some((s) => s.id === 'mixed-content-subresources')
+  );
+  assert.ok(
+    !perceive(doc(children), httpLoc, 0).signals.some((s) => s.id === 'mixed-content-subresources')
+  );
+});
+
+test('inline event handlers are counted, not judged', () => {
+  const w = perceive(
+    doc([el('button', { onclick: 'go()' }), el('div', { onmouseover: 'hi()' }), el('p')]),
+    httpsLoc,
+    0
+  );
+  const s = w.signals.find((x) => x.id === 'inline-event-handlers');
+  assert.ok(s);
+  assert.match(s.label, /2 element/);
+  // The label says what was counted. The detail says why it matters. Neither claims the
+  // page is insecure, because counting handlers does not establish that.
+  assert.match(s.detail, /script-src/);
+});
+
+test('a javascript: link is counted separately from an ordinary one', () => {
+  const w = perceive(
+    doc([el('a', { href: 'javascript:void 0' }), el('a', { href: '/ok' })]),
+    httpsLoc,
+    0
+  );
+  const s = w.signals.find((x) => x.id === 'javascript-url-links');
+  assert.ok(s);
+  assert.match(s.evidence[0], /counted 1/);
+});
+
+test('a labelled control is not counted as unlabelled, by any of the four routes', () => {
+  const labelled = doc([
+    el('label', { for: 'a' }),
+    el('input', { id: 'a', type: 'text' }),
+    el('input', { 'aria-label': 'search', type: 'text' }),
+    el('input', { 'aria-labelledby': 'h', type: 'text' }),
+    el('input', { title: 'phone', type: 'text' }),
+  ]);
+  assert.ok(!perceive(labelled, httpsLoc, 0).signals.some((s) => s.id === 'controls-without-labels'));
+});
+
+test('buttons and hidden inputs are not form fields for this purpose', () => {
+  // A submit button announces its own value; a hidden input announces nothing to anybody.
+  // Counting either produces a number that a reader investigates and dismisses, which is
+  // how a signal stops being read.
+  const w = perceive(
+    doc([
+      el('input', { type: 'hidden', name: 'csrf' }),
+      el('input', { type: 'submit', value: 'Go' }),
+      el('input', { type: 'button' }),
+    ]),
+    httpsLoc,
+    0
+  );
+  assert.ok(!w.signals.some((s) => s.id === 'controls-without-labels'));
+});
+
+test('the unlabelled-control count says which way it errs', () => {
+  // A wrapping `<label><input></label>` is not detected, so this over-counts. The evidence
+  // string has to say so: a number whose bias is undocumented is a number a reader cannot
+  // calibrate against, and this one will be wrong in a predictable direction.
+  const w = perceive(doc([el('input', { type: 'text' })]), httpsLoc, 0);
+  const s = w.signals.find((x) => x.id === 'controls-without-labels');
+  assert.ok(s);
+  assert.match(s.evidence[0], /over-counts/);
+});
+
+test('heading level skips are counted in document order', () => {
+  const w = perceive(
+    doc([el('h1'), el('h3'), el('h4'), el('h6')]),
+    httpsLoc,
+    0
+  );
+  const s = w.signals.find((x) => x.id === 'heading-level-skips');
+  assert.ok(s);
+  // h1 -> h3 skips, h3 -> h4 does not, h4 -> h6 skips.
+  assert.match(s.evidence[0], /counted 2 skip/);
+});
+
+test('a correct heading outline produces no signal at all', () => {
+  const w = perceive(doc([el('h1'), el('h2'), el('h3'), el('h2')]), httpsLoc, 0);
+  assert.ok(!w.signals.some((s) => s.id === 'heading-level-skips'));
+});
+
+test('every magnitude stays inside [0,1] however many things are counted', () => {
+  // `signal()` clamps, and the clamp is what keeps a page with four hundred inline handlers
+  // from producing a magnitude of ten and dominating a ranking through arithmetic rather
+  // than through importance.
+  const many = [];
+  for (let i = 0; i < 400; i += 1) many.push(el('div', { onclick: 'x()' }));
+  const w = perceive(doc(many), httpsLoc, 0);
+  assert.ok(w.signals.every((s) => s.magnitude >= 0 && s.magnitude <= 1), JSON.stringify(w.signals));
+});
+
+test('every signal is measured and cites how it was counted', () => {
+  // The property `scema-sim` depends on. An estimated magnitude that claimed to be counted
+  // would launder a guess into an expected gain, and nothing downstream could tell.
+  const w = perceive(
+    doc([
+      el('script', { src: 'https://cdn.test/a.js' }),
+      el('img', { src: 'http://cdn.test/a.png' }),
+      el('a', { href: 'javascript:void 0' }),
+      el('input', { type: 'text' }),
+      el('h1'),
+      el('h3'),
+      el('button', { onclick: 'x()' }),
+      el('img', { src: '/b.png' }),
+    ]),
+    httpsLoc,
+    0
+  );
+  assert.ok(w.signals.length >= 6, `expected several signals, got ${w.signals.length}`);
+  for (const s of w.signals) {
+    assert.equal(s.measured, true, `${s.id} must be counted, not estimated`);
+    assert.ok(s.evidence.length > 0, `${s.id} must cite its count`);
+    assert.match(s.evidence[0], /counted/, `${s.id}: ${s.evidence[0]}`);
+  }
+});
+
+test('signal ids are unique within one perception', () => {
+  // Two signals with one id would be ranked as two branches supporting the same thing, and
+  // `--ground` could not name either of them unambiguously.
+  const w = perceive(
+    doc([
+      el('script', { src: 'https://a.test/x.js' }),
+      el('script', { src: 'https://b.test/y.js' }),
+      el('img', { src: 'http://c.test/z.png' }),
+      el('input', { type: 'text' }),
+      el('select', {}),
+    ]),
+    httpsLoc,
+    0
+  );
+  const ids = w.signals.map((s) => s.id);
+  assert.equal(new Set(ids).size, ids.length, ids.join(', '));
 });

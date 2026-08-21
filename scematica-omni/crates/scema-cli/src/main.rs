@@ -29,11 +29,16 @@
 //! record and appends memory. Both compute exactly the same thing; only the side effects
 //! differ, which is why they share one code path with a flag rather than being two.
 
+mod connect;
+mod doctor;
+mod launch;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use scema_agent::{Agent, Cycle};
 use scema_memory::{MemoryKind, Recall};
 // The render rule lives with the types it protects, not with each front end. See
@@ -151,6 +156,67 @@ enum Command {
     },
     /// The utility weights and the registered specialists.
     Policy,
+    /// Open the console — the loop as a full-screen terminal application.
+    ///
+    /// A separate binary (`scema-tui`), handed over to rather than linked in, so that
+    /// `cargo install scema-cli` does not drag a terminal stack onto a CI machine whose
+    /// only use for this is `scema verify`.
+    Tui {
+        /// Arguments forwarded verbatim to `scema-tui`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run the local daemon (`scema-omnid`) — loopback HTTP, token-authenticated.
+    Daemon {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run the MCP server (`scema-mcp`) — the loop as tools, over stdio, for a model.
+    Mcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Create the state directory, so the first `decide` is not also the first write.
+    Init {
+        /// Overwrite an existing `.gitignore` entry rather than leaving it alone.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Wire the MCP server into an assistant — Claude Code, Cursor, VS Code, Zed, Codex.
+    ///
+    /// Prints the exact snippet and where it goes. `--write` merges it, and only into
+    /// project-local files: a user-level assistant config is shared by every project, and
+    /// editing it on your behalf would mean a tool installed for one repository quietly
+    /// gaining the ability to observe all of them.
+    Connect {
+        /// Which assistant. Omit with `--list` to see them all.
+        host: Option<String>,
+        /// List every host this knows about.
+        #[arg(long)]
+        list: bool,
+        /// Merge the entry into the project-local config file.
+        #[arg(long)]
+        write: bool,
+        /// The directory the MCP server is confined to. Defaults to the working directory.
+        #[arg(long)]
+        allow: Option<PathBuf>,
+        /// Let the model seal decision records. Off by default, and `omni_decide` is not
+        /// even advertised without it.
+        #[arg(long)]
+        allow_decide: bool,
+    },
+
+    /// What is installed, what is wired up, and what is quietly broken. Changes nothing.
+    Doctor,
+
+    /// Emit a shell completion script.
+    Completions {
+        /// bash | zsh | fish | powershell | elvish
+        shell: Shell,
+    },
+
     /// Not implemented: carry out a chosen action.
     Execute,
     /// Not implemented: hire another agent.
@@ -485,6 +551,153 @@ fn run(cli: Cli) -> Result<ExitCode> {
             for e in agent.evaluators() {
                 println!("  {:<10} {}", e.name(), e.about());
             }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Tui { args } => launch::run(launch::TUI, args),
+        Command::Daemon { args } => launch::run(launch::DAEMON, args),
+        Command::Mcp { args } => launch::run(launch::MCP, args),
+
+        Command::Init { force } => {
+            let root = &cli.root;
+            std::fs::create_dir_all(root.join("decisions"))
+                .with_context(|| format!("creating {}", root.join("decisions").display()))?;
+            std::fs::create_dir_all(root.join("memory"))
+                .with_context(|| format!("creating {}", root.join("memory").display()))?;
+
+            // `.scema/` is machine-local and full of absolute paths, so it is ignored rather
+            // than committed. Writing the ignore *inside* the directory rather than editing
+            // the project's root `.gitignore` is deliberate: this tool has no business
+            // rewriting a file the whole repository shares, and a self-ignoring directory
+            // works whatever the project's own ignore rules say.
+            let ignore = root.join(".gitignore");
+            if !ignore.exists() || *force {
+                std::fs::write(
+                    &ignore,
+                    "# Machine-local. Decision records cite absolute paths and memory is a\n\
+                     # per-checkout history; neither is meaningful in somebody else's clone.\n\
+                     *\n",
+                )
+                .with_context(|| format!("writing {}", ignore.display()))?;
+            }
+
+            println!("Initialised {}", root.display());
+            println!("  decisions/   sealed decision records, one JSON file each");
+            println!("  memory/      four append-only JSONL logs");
+            println!("  .gitignore   this directory is machine-local");
+            println!();
+            println!("Nothing has been decided yet. Start with:");
+            println!("  scema observe .                        # what is out there");
+            println!("  scema simulate \"<goal>\" --ground <id>   # rank branches, write nothing");
+            println!("  scema tui                              # the same thing, interactively");
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Connect { host, list, write, allow, allow_decide } => {
+            if *list || host.is_none() {
+                println!("Assistants this can wire up:\n");
+                for (key, h) in connect::catalogue() {
+                    println!(
+                        "  {:<15} {:<32} {}",
+                        key,
+                        h.label,
+                        match h.scope {
+                            connect::Scope::Project => format!("project: {}", h.project_path),
+                            connect::Scope::User =>
+                                "user-level (printed, never written)".to_string(),
+                        }
+                    );
+                }
+                println!("\n  scema connect <host>            print the snippet and where it goes");
+                println!("  scema connect <host> --write    merge it, project-local hosts only");
+                return Ok(ExitCode::SUCCESS);
+            }
+
+            let key = host.as_deref().unwrap();
+            let h = connect::host(key).ok_or_else(|| {
+                anyhow!(
+                    "unknown host `{key}`. Known: {}",
+                    connect::catalogue().keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })?;
+            let project = doctor::cwd();
+            let allow_path = allow.clone().unwrap_or_else(|| project.clone());
+            let text = connect::snippet(h, &allow_path, *allow_decide)?;
+
+            if *write {
+                match connect::write(h, &project, &allow_path, *allow_decide) {
+                    Ok(connect::Written::Created(p)) => println!("created {}", p.display()),
+                    Ok(connect::Written::Merged(p)) => {
+                        println!("merged the `scema` entry into {} (nothing else touched)", p.display())
+                    }
+                    Ok(connect::Written::Unchanged(p)) => {
+                        println!("{} already has this exact entry", p.display())
+                    }
+                    Err(e) => {
+                        // Not a hard failure: the snippet is still useful, and the whole
+                        // point of refusing a user-level write is that pasting it is the
+                        // correct next step rather than a workaround.
+                        eprintln!("scema connect: {e:#}\n");
+                        println!("{text}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            } else {
+                match h.scope {
+                    connect::Scope::Project => println!("{} — {}\n", h.label, h.project_path),
+                    connect::Scope::User => println!("{}\n{}\n", h.label, h.user_hint),
+                }
+                println!("{text}");
+            }
+            println!("Then: {}", h.after);
+            if !*allow_decide {
+                println!(
+                    "\nNote: `omni_decide` is not advertised to the model. The server can perceive,\n\
+                     simulate, explain and verify; it cannot seal a record. Add --allow-decide if\n\
+                     you want that, having decided you want it."
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Doctor => {
+            let project = doctor::cwd();
+            let findings = doctor::run(&cli.root, &project);
+            if cli.json {
+                let rows: Vec<_> = findings
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "verdict": format!("{:?}", f.verdict).to_lowercase(),
+                            "check": f.check,
+                            "detail": f.detail,
+                            "fix": f.fix,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                println!("scema doctor — {}\n", scema_agent::RUNTIME);
+                for f in &findings {
+                    println!("  [{}] {:<24} {}", f.verdict.glyph(), f.check, f.detail);
+                    if !f.fix.is_empty() {
+                        println!("         {:<24} → {}", "", f.fix);
+                    }
+                }
+                println!("\nThis command changes nothing. Every finding names the fix and stops there.");
+            }
+            // Only a real failure is non-zero. A missing optional console must not fail a
+            // pipeline, or the pipeline stops running this.
+            Ok(match doctor::worst(&findings) {
+                doctor::Verdict::Fail => ExitCode::FAILURE,
+                _ => ExitCode::SUCCESS,
+            })
+        }
+
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(*shell, &mut cmd, name, &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
         }
 

@@ -11,6 +11,16 @@
 //! not an aesthetic property — it is what makes the record verifiable by somebody who was
 //! not there.
 //!
+//! ## One loop, four kinds of world
+//!
+//! `Agent::observe` resolves a locator against an ordered registry. `RepoObserver` walks a
+//! source tree in this process; `ImportObserver` reads a `WorldState` that something else
+//! produced — the browser extension, `scematica_mesh::omni`, `alchem_link.omni`. Nothing
+//! above perception can tell which it was, which is what "domain-agnostic" has to mean in
+//! order to be worth claiming. The one thing that *is* distinguishable is attribution: an
+//! imported world's `observer` field is stamped `imported:`, so a record can never claim a
+//! world that arrived as a file was observed here.
+//!
 //! ## What the loop does *not* do
 //!
 //! It does not execute. [`Cycle`] ends at a decision and a record; nothing in this
@@ -39,7 +49,7 @@ use anyhow::{anyhow, Result};
 use scema_memory::{MemoryBody, MemoryKind, MemoryRecord, MemoryStore, Outcome};
 use scema_policy::{decide, Decision, DecisionConfig, Evaluator};
 use scema_sim::{Projection, Simulator, StructuralSimulator};
-use scema_tools::{Observer, RepoObserver};
+use scema_tools::{ImportObserver, Observer, RepoObserver};
 use scema_verify::{DecisionRecord, RecordStore};
 use scema_world::{now_secs, Goal, Hypothesis, WorldState};
 use std::path::PathBuf;
@@ -101,7 +111,11 @@ impl Agent {
         }
 
         Agent {
-            observers: vec![Box::new(RepoObserver::new())],
+            // Ordered, not scored — `Agent::observe` takes the first that claims a locator.
+            // `ImportObserver` is ahead of `RepoObserver` because the latter accepts almost
+            // any string; the former's grammar is narrow (`-`, or a `.json` suffix) exactly
+            // because being first means anything it claims, the repo observer never sees.
+            observers: vec![Box::new(ImportObserver::new()), Box::new(RepoObserver::new())],
             simulator: Box::new(StructuralSimulator::new()),
             evaluators,
             memory: MemoryStore::new(root.clone()),

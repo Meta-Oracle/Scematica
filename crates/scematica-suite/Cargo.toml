@@ -18,14 +18,14 @@ path = "src/bin/scematica.rs"
 [dependencies]
 # The whole stack, re-exported as a single dependency. Heavy crates keep their
 # lean defaults (no TUI binaries) since the suite only needs their libraries.
-scematica-core = { version = "1.25.0", path = "../scematica-core" }
-scematica-executor = { version = "1.25.0", path = "../scematica-executor" }
-scematica-protocol = { version = "1.25.0", path = "../scematica-protocol" }
-scematica-ai = { version = "1.25.0", path = "../scematica-ai" }
-scematica-nn = { version = "1.25.0", path = "../scematica-nn", default-features = false }
-scematica-sniper = { version = "1.25.0", path = "../scematica-sniper" }
-scematica-dashboard = { version = "1.25.0", path = "../scematica-dashboard" }
+scematica-core = { version = "1.26.0", path = "../scematica-core" }
+scematica-executor = { version = "1.26.0", path = "../scematica-executor" }
+scematica-protocol = { version = "1.26.0", path = "../scematica-protocol" }
+scematica-ai = { version = "1.26.0", path = "../scematica-ai" }
+scematica-nn = { version = "1.26.0", path = "../scematica-nn", default-features = false }
+scematica-sniper = { version = "1.26.0", path = "../scematica-sniper" }
+scematica-dashboard = { version = "1.26.0", path = "../scematica-dashboard" }
 scemadex-sdk = { version = "0.3.0", path = "../scemadex-sdk", default-features = false }
 # First published at the workspace version — unlike its siblings there is no
 # earlier release for a wider `^` range to point at.
-scematica-sentience = { version = "1.25.0", path = "../scematica-sentience" }
+scematica-sentience = { version = "1.26.0", path = "../scematica-sentience" }

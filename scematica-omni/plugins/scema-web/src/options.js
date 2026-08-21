@@ -14,6 +14,22 @@
 
 const $ = (id) => document.getElementById(id);
 
+/**
+ * Apply the shared palette.
+ *
+ * `:host` only means anything inside a shadow root; in an ordinary document it matches
+ * nothing, so the reset it carries would be silently dropped and the page would inherit the
+ * browser's defaults for everything the sheet does not name.
+ */
+function applyTheme() {
+  const style = document.createElement('style');
+  style.textContent = globalThis.ScemaTheme.css().replace(
+    ':host { all: initial; }',
+    ':root { color-scheme: dark; }'
+  );
+  document.head.appendChild(style);
+}
+
 /** Strip trailing slashes and a pasted endpoint path. */
 function normalizeBase(raw) {
   let s = (raw || '').trim();
@@ -48,7 +64,7 @@ async function saveAndTest() {
   chrome.runtime.sendMessage({ type: 'health' }, (health) => {
     if (!health || !health.ok) {
       report(
-        'bad',
+        'invalid',
         `<strong>${health ? health.reason : 'no response'}</strong><br>` +
           `<span class="dim">${health ? health.detail : 'the service worker did not answer'}</span>`
       );
@@ -59,7 +75,7 @@ async function saveAndTest() {
     chrome.runtime.sendMessage({ type: 'policy' }, (policy) => {
       if (!policy || !policy.ok) {
         report(
-          'bad',
+          'invalid',
           `<strong>daemon reachable, token ${policy ? policy.reason : 'untested'}</strong><br>` +
             `<span class="dim">${policy ? policy.detail : ''}</span>`
         );
@@ -67,7 +83,7 @@ async function saveAndTest() {
       }
       const p = policy.data;
       report(
-        'ok',
+        'valid',
         `<strong>paired</strong> — ${health.data.runtime}<br>` +
           `<span class="dim">workspace: ${(p.workspace_roots || []).join(', ')}<br>` +
           `decide over HTTP: ${p.allow_decide ? 'ON' : 'OFF'}<br>` +
@@ -78,4 +94,12 @@ async function saveAndTest() {
 }
 
 $('save').addEventListener('click', saveAndTest);
+// Enter in either field saves. A settings page with one button that the operator has to
+// find with the mouse after typing a token is a settings page people abandon half-done.
+['base', 'token'].forEach((id) =>
+  $(id).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveAndTest();
+  })
+);
+applyTheme();
 load();

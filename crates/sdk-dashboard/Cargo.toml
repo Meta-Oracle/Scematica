@@ -6,6 +6,17 @@ authors.workspace = true
 license.workspace = true
 description = "ScemaDEX SDK TUI — live intent → conviction-bonded routing → settlement, with a peer-market view."
 
+# Cannot be published, and not by choice: it depends on `scemadex-integrations`, which is
+# `publish = false` because it reaches into the bot-side crates. A published crate may not
+# depend on an unpublished one — cargo strips the `path` and is left with a dependency that
+# does not exist on the registry.
+#
+# Recorded here rather than left as an omission from the release script, so that
+# `scripts/publish-order.py` cannot put it back. Publishing it needs
+# `scemadex-integrations` released first, which is a separate decision about what that
+# crate exposes.
+publish = false
+
 [[bin]]
 name = "sdk-dashboard"
 path = "src/main.rs"

@@ -19,7 +19,7 @@ path = "src/main.rs"
 # would be the same mistake as putting the TUI in `scemadex-sdk` instead of
 # `sdk-dashboard`. The rendering lives here; the crate next door owns the observation.
 [dependencies]
-scematica-mesh = { path = "../scematica-mesh" }
+scematica-mesh = { version = "1.26.0", path = "../scematica-mesh" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 anyhow = { workspace = true }

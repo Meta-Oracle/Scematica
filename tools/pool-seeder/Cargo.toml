@@ -6,6 +6,15 @@ authors.workspace = true
 license.workspace = true
 description = "Fetches live pool metadata from Raydium, Orca, and Meteora and writes JSON files for the arb engine"
 
+# Build tooling for this repository, not a library anybody installs. Marked unpublishable
+# rather than merely left out of a release script: `scripts/publish-order.py` derives the
+# order from `cargo metadata`, so anything publishable reappears the next time somebody
+# regenerates it. `publish = false` is the only form of "no" that survives that.
+#
+# `key-converter` and `pool-seeder` are also both very generic crates.io names, and claiming
+# a name there is permanent.
+publish = false
+
 [[bin]]
 name = "pool-seeder"
 path = "src/main.rs"

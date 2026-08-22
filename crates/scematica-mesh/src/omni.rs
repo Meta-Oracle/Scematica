@@ -335,6 +335,11 @@ pub fn world(mesh: &Mesh, locator: &str, observed_at: i64) -> Value {
     }
 
     json!({
+        // The contract version. Declared rather than assumed: this crate cannot link
+        // `scema-world` (that is the whole reason the world is hand-built JSON), so this
+        // string is the only thing that tells an importer which reading of the format the
+        // producer was written against.
+        "schema": "scema.world/1",
         "observer": OBSERVER,
         "entity": {
             // `Service` rather than `Process`: what is being described is the running
@@ -412,6 +417,11 @@ mod tests {
     /// this module emits hand-built JSON is that the two workspaces do not link, and a test
     /// that reached across would quietly reintroduce the coupling it exists to avoid.
     fn assert_importable(w: &Value) {
+        // The contract version. Restated here rather than imported, for the same reason as
+        // everything else in this function: this crate cannot link `scema-world`. A
+        // producer that stops declaring it is refused by the importer, and the point of a
+        // self-check is to fail here first.
+        assert_eq!(w["schema"].as_str(), Some("scema.world/1"));
         assert!(w["observer"].as_str().is_some_and(|s| !s.trim().is_empty()));
         assert!(w["entity"]["locator"].as_str().is_some_and(|s| !s.trim().is_empty()));
         assert!(w["observed_at"].is_i64());

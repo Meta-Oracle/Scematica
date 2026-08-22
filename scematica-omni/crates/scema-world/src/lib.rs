@@ -40,11 +40,14 @@ pub mod provenance;
 pub mod term;
 pub mod world;
 
-pub use goal::{Constraint, ConstraintKind, Goal};
+pub use goal::{Constraint, ConstraintKind, Goal, GOAL_HYPOTHESIS_ID};
 pub use hypothesis::{Action, Hypothesis, HypothesisOrigin, Reversibility, RiskClass};
 pub use provenance::Provenance;
 pub use term::{Coverage, Term};
-pub use world::{Domain, Entity, EntityKind, Extent, Fact, Object, Polarity, Scalar, Signal, WorldState};
+pub use world::{
+    parse_schema, Domain, Entity, EntityKind, Extent, Fact, Object, Polarity, Scalar, Signal,
+    WorldState, WORLD_SCHEMA, WORLD_SCHEMA_MAJOR,
+};
 
 /// Unix seconds, for observers that need to stamp a `WorldState`.
 ///

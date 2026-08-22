@@ -541,6 +541,7 @@ mod tests {
 
     fn world(signal_ids: &[&str]) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "test".into(),
             entity: Entity {
                 kind: EntityKind::Repository,

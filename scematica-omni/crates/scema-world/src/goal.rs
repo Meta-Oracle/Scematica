@@ -8,6 +8,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The id of the branch that is simply *what the operator asked for*.
+///
+/// A shared constant rather than a literal in the hypothesiser, because a renderer has to
+/// be able to tell that branch apart from the ones the agent proposed by itself. "You asked
+/// for X and I am doing Y instead" is a different thing to report than "I am doing X", and
+/// without a stable id the distinction is only visible to whoever wrote the hypothesiser.
+pub const GOAL_HYPOTHESIS_ID: &str = "h-goal";
+
 /// A hard limit on how a goal may be pursued.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Constraint {

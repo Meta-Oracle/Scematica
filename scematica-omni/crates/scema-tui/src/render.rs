@@ -1267,6 +1267,7 @@ mod tests {
 
     fn world() -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "test".into(),
             entity: Entity {
                 kind: EntityKind::Repository,

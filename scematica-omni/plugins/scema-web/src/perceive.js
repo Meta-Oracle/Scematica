@@ -36,6 +36,10 @@
  */
 
 /** Elements scanned before the walk reports an unbounded extent. */
+// The world-contract version this producer writes. Bump only alongside
+// `scema_world::WORLD_SCHEMA`; `scema check` reports a mismatch in either direction.
+const WORLD_SCHEMA = 'scema.world/1';
+
 const MAX_NODES = 5000;
 /** Blind spots recorded before the list is truncated. */
 const MAX_BLIND_SPOTS = 20;
@@ -433,6 +437,10 @@ function perceive(doc, loc, now) {
   }
 
   return {
+    // The contract version. A producer that does not declare one is refused by the
+    // importer, because an undeclared version is what makes the next change to the format
+    // a silent misread instead of an error message.
+    schema: WORLD_SCHEMA,
     // Rewritten to `client:page` by the daemon. Named honestly here anyway, so a world
     // dumped straight to a file is still self-describing.
     observer: 'page',
@@ -443,7 +451,12 @@ function perceive(doc, loc, now) {
       locator: `${loc.origin}${loc.pathname || ''}`,
       label: doc.title || loc.origin,
     },
-    domain: 'unknown',
+    // `web`, not `unknown`. Before the domain vocabulary opened, a perceived page and a
+    // set of oracle feeds both had to report `unknown`, which made two entirely different
+    // worlds indistinguishable to every specialist downstream. Naming it does not make any
+    // specialist claim competence here — they match the arm they understand and decline on
+    // everything else — it just stops the decline from being uninformative.
+    domain: 'web',
     observed_at: now,
     objects,
     facts: [],

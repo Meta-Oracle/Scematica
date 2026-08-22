@@ -1,11 +1,12 @@
 {
+  "schema": "scema.world/1",
   "observer": "page",
   "entity": {
     "kind": "website",
     "locator": "https://example.test/page",
     "label": "Fixture page"
   },
-  "domain": "unknown",
+  "domain": "web",
   "observed_at": 1700000000,
   "objects": [
     {

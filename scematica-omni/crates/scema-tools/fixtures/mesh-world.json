@@ -415,6 +415,7 @@
   ],
   "observed_at": 1787255266,
   "observer": "mesh",
+  "schema": "scema.world/1",
   "signals": [
     {
       "detail": "No source file on disk. These units are unobserved, which is not the same as idle.",

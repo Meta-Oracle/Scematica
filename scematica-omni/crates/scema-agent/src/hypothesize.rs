@@ -30,8 +30,8 @@
 
 use scema_memory::{MemoryBody, MemoryKind, MemoryStore, Recall};
 use scema_world::{
-    Action, Domain, Goal, Hypothesis, HypothesisOrigin, Polarity, Reversibility, RiskClass,
-    Signal, WorldState,
+    Action, Goal, Hypothesis, HypothesisOrigin, Polarity, RiskClass, Signal, WorldState,
+    GOAL_HYPOTHESIS_ID,
 };
 
 /// Something that proposes candidate futures.
@@ -40,18 +40,11 @@ pub trait Hypothesizer {
     fn propose(&self, world: &WorldState, goal: &Goal) -> Vec<Hypothesis>;
 }
 
-/// What reversing an edit costs in this kind of world.
-///
-/// `Software` is `Recoverable` rather than `Trivial`: source under version control is
-/// revertible, but a change that has already been depended on is not a `git checkout` away.
-/// Anything else is `Unknown`, which propagates to an unmeasured reversibility term — the
-/// conservative reading, and the one that does not launder ignorance into a safe score.
-fn edit_reversibility(domain: Domain) -> Reversibility {
-    match domain {
-        Domain::Software => Reversibility::Recoverable,
-        _ => Reversibility::Unknown,
-    }
-}
+// What reversing an edit costs is a property of the domain, so the table lives on
+// `Domain::edit_reversibility` rather than here. It moved when `Domain` became an open enum:
+// a `match` with a `_ => Unknown` arm in this file was fine while there were four domains
+// and quietly wrong once a producer could name its own, because every new domain would have
+// landed on the fallback without anyone reading this function again.
 
 /// One branch per counted signal.
 #[derive(Clone, Debug, Default)]
@@ -69,7 +62,7 @@ impl SignalHypothesizer {
             RiskClass::Write,
             target,
             format!("address `{}`", s.label),
-            edit_reversibility(world.domain),
+            world.domain.edit_reversibility(),
         )
     }
 }
@@ -118,7 +111,8 @@ impl Hypothesizer for GoalHypothesizer {
         if goal.statement.trim().is_empty() {
             return vec![];
         }
-        let mut h = Hypothesis::new("h-goal", goal.statement.clone(), HypothesisOrigin::Human)
+        let mut h =
+            Hypothesis::new(GOAL_HYPOTHESIS_ID, goal.statement.clone(), HypothesisOrigin::Human)
             .because(if goal.grounded_in.is_empty() {
                 "the operator asked for this and cited no counted signal; an instruction is not evidence"
                     .to_string()
@@ -133,7 +127,7 @@ impl Hypothesizer for GoalHypothesizer {
                 RiskClass::Write,
                 world.entity.locator.clone(),
                 goal.statement.clone(),
-                edit_reversibility(world.domain),
+                world.domain.edit_reversibility(),
             ));
         for g in &goal.grounded_in {
             h = h.grounded(g.clone());
@@ -188,7 +182,7 @@ impl Hypothesizer for MemoryHypothesizer<'_> {
                             RiskClass::Write,
                             world.entity.locator.clone(),
                             step.clone(),
-                            edit_reversibility(world.domain),
+                            world.domain.edit_reversibility(),
                         ));
                     }
                     Some(h)
@@ -202,6 +196,7 @@ impl Hypothesizer for MemoryHypothesizer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scema_world::{Domain, Reversibility};
     use scema_world::{Entity, EntityKind, Extent, Object, Provenance};
 
     fn signal(id: &str, label: &str, measured: bool) -> Signal {
@@ -219,6 +214,7 @@ mod tests {
 
     fn world(signals: Vec<Signal>, domain: Domain) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "t".into(),
             entity: Entity {
                 kind: EntityKind::Repository,

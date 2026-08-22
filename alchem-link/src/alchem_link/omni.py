@@ -59,6 +59,10 @@ from .networks import DEFAULT_NETWORK, get_network
 #: locally.
 OBSERVER = "alchem-link"
 
+#: The world-contract version this producer writes. Must track
+#: ``scema_world::WORLD_SCHEMA``; ``scema check`` reports a mismatch in either direction.
+WORLD_SCHEMA = "scema.world/1"
+
 #: Signals emitted before the list is capped. A network has tens of feeds, not thousands,
 #: so this is generous — but a cap that is never hit still has to be declared. An unbounded
 #: producer is one whose output size is somebody else's problem.
@@ -364,6 +368,10 @@ def world(
     )
 
     state = {
+        # The contract version. This package cannot import the Rust crate, so declaring the
+        # version is the only way an importer can tell a producer written against an older
+        # reading of the format from a current one.
+        "schema": WORLD_SCHEMA,
         "observer": OBSERVER,
         "entity": {
             # `Service` rather than `Chain`: what is being described is one network's oracle
@@ -373,11 +381,15 @@ def world(
             "locator": f"chainlink:{network}",
             "label": f"{net.label} price feeds",
         },
-        # Not `trading`. A specialist declines on the domain it cannot serve, and the bot's
-        # Deep Q* net reads pool and position data — asked about an oracle set it would
-        # still emit five finite Q-values, correctly shaped and entirely meaningless.
-        # `unknown` is what lets it decline politely.
-        "domain": "unknown",
+        # `data`, and specifically not `trading`. A specialist declines on the domain it
+        # cannot serve, and the bot's Deep Q* net reads pool and position data — asked
+        # about an oracle set it would still emit five finite Q-values, correctly shaped
+        # and entirely meaningless. Declining is what `domain` is for.
+        #
+        # It said `unknown` until the vocabulary opened, which was accurate about the
+        # decline and useless about everything else: a perceived web page reported the
+        # same thing, so nothing downstream could tell an oracle set from a DOM.
+        "domain": "data",
         "observed_at": observed_at,
         "objects": objects,
         "facts": [],
@@ -405,6 +417,10 @@ def _check(state: Dict[str, Any]) -> None:
     across would quietly reintroduce the coupling it exists to avoid. This package fails
     its own tests instead of producing something the consumer rejects at run time.
     """
+    if state.get("schema") != WORLD_SCHEMA:
+        raise ValueError(
+            f"a world must declare schema {WORLD_SCHEMA!r}, not {state.get('schema')!r}"
+        )
     if not str(state["observer"]).strip():
         raise ValueError("a world with no observer cannot be attributed")
     if not str(state["entity"]["locator"]).strip():

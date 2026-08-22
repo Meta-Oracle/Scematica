@@ -23,11 +23,13 @@
 //! been watched abstaining on real inputs for a while, and `scema execute` says so rather
 //! than pretending.
 
+pub mod conform;
 pub mod import;
 pub mod observer;
 pub mod repo;
 pub mod workspace;
 
+pub use conform::{conform, has_failure, Finding, Level};
 pub use import::ImportObserver;
 pub use observer::{resolve, Observer};
 pub use repo::RepoObserver;

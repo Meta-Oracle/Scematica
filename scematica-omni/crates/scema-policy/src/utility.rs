@@ -116,6 +116,7 @@ mod tests {
 
     fn empty_world() -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "t".into(),
             entity: Entity { kind: EntityKind::Unknown, locator: "".into(), label: "".into() },
             domain: Domain::Unknown,

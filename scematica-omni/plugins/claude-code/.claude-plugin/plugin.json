@@ -1,7 +1,7 @@
 {
   "name": "scema-omni",
   "description": "Perceive a project as a world state, rank competing branches under a stated preference, and seal decisions into records anyone can verify. Wraps the scema-mcp server plus commands and a skill that teach a model to read its output correctly.",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "author": {
     "name": "Scematica",
     "url": "https://github.com/Meta-Oracle/Scematica"

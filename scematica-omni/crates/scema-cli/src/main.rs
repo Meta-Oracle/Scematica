@@ -29,6 +29,8 @@
 //! record and appends memory. Both compute exactly the same thing; only the side effects
 //! differ, which is why they share one code path with a flag rather than being two.
 
+mod check;
+mod quickstart;
 mod connect;
 mod doctor;
 mod launch;
@@ -55,7 +57,18 @@ const DEFAULT_ROOT: &str = ".scema";
     name = "scema",
     version,
     about = "Scematica Omni — an agent runtime with a world model, counterfactual simulation and verifiable decisions",
-    long_about = None
+    long_about = None,
+    // The useful next command is otherwise buried in a list of seventeen verbs that all
+    // sound equally plausible to somebody who has not read the README.
+    after_help = concat!(
+        "New here?                scema quickstart
+",
+        "Writing a producer?      scema check --vocabulary
+",
+        "Wiring up an assistant?  scema connect --list
+",
+        "Something not working?   scema doctor",
+    ),
 )]
 struct Cli {
     /// State directory for decision records and memory.
@@ -76,6 +89,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// The loop, narrated, over a directory you already have. Writes nothing.
+    ///
+    /// The first thing to run. It walks observe -> simulate -> ground -> decide, explaining
+    /// each stage's output as it appears, and stops before sealing anything — a tutorial
+    /// that writes a decision record on your behalf has taught you the wrong thing about
+    /// the one command in here that leaves a trace.
+    Quickstart {
+        /// The path to walk. Defaults to the working directory.
+        #[arg(default_value = ".")]
+        path: String,
+    },
+
     /// Perceive an environment and print the world state.
     Observe {
         /// Path to observe.
@@ -208,6 +233,24 @@ enum Command {
         allow_decide: bool,
     },
 
+    /// Check that a world conforms to the contract, and say exactly why if it does not.
+    ///
+    /// For anyone writing a producer. Omni is domain-agnostic because the observed thing
+    /// describes itself in `scema-world`'s vocabulary, which means a producer can be
+    /// written in any language — and then nothing but this stands between it and a silent
+    /// misread. It runs the importer's own rules, not a friendlier restatement of them, and
+    /// reports every problem at once rather than one per fix-and-rerun.
+    ///
+    /// Exits 1 if the world would be refused, so it drops straight into a producer's CI.
+    Check {
+        /// A `.json` file, or `-` for stdin.
+        #[arg(default_value = "-")]
+        locator: String,
+        /// Print the domains and entity kinds this build knows, and stop.
+        #[arg(long)]
+        vocabulary: bool,
+    },
+
     /// What is installed, what is wired up, and what is quietly broken. Changes nothing.
     Doctor,
 
@@ -285,6 +328,14 @@ fn print_cycle(c: &Cycle, json: bool, failures: bool) -> Result<()> {
     println!("{}\n", render::evaluators(&c.decision));
     println!("{}", render::verdict(&c.decision));
 
+    // An abstention is an answer, and *which* one is the actionable part. Printing the
+    // verdict without it is what made a first run read as the tool being broken.
+    let next = render::next_steps(&c.world, &c.record.goal, &c.decision);
+    if !next.is_empty() {
+        println!("
+{next}");
+    }
+
     if failures {
         if let Some(top) = c.decision.ranked.first() {
             if let Some(p) = c.projections.iter().find(|p| p.hypothesis == top.hypothesis) {
@@ -319,6 +370,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
     };
 
     match &cli.command {
+        Command::Quickstart { path } => quickstart::run(path, &cli.root),
+        Command::Check { locator, vocabulary } => {
+            if *vocabulary {
+                return Ok(check::vocabulary());
+            }
+            check::run(locator, cli.json)
+        }
         Command::Observe { locator } => {
             let agent = agent_for(false);
             let w = agent.observe(locator)?;

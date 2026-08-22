@@ -11,6 +11,13 @@ else can check.
      └──────────────────────────────────────────────────────────────────┘
 ```
 
+**New here?** [GETTING-STARTED.md](GETTING-STARTED.md), or:
+
+```console
+$ cargo install scema-cli
+$ cd ~/some-project && scema quickstart      # the loop, narrated. writes nothing
+```
+
 Five surfaces over one loop, and one entry point to all of them:
 
 ```console
@@ -34,9 +41,13 @@ Embedding the loop rather than running it:
 
 ```toml
 [dependencies]
-scema-agent  = "0.1"   # the whole loop
-scema-world  = "0.1"   # just the types, if you only need the wire format
+scema-agent  = "0.5"   # the whole loop
+scema-world  = "0.5"   # just the types, if you only need the wire format
 ```
+
+Beta. What is stable and what is not is spelled out in
+[CHANGELOG.md](CHANGELOG.md#what-is-stable-in-beta-and-what-is-not) — the JSON contract, the
+canonical encoding and `verify` are; the Rust trait shapes below the CLI are not yet.
 
 ## The one idea
 
@@ -112,6 +123,28 @@ where both sides changed and only one of them was right.
 An imported world's `observer` field is rewritten to `imported:<name>`, exactly as the
 daemon rewrites a wire-supplied world to `client:<name>`. A record can never claim that a
 world which arrived as a file was observed locally.
+
+### Writing the fifth producer
+
+Nothing about that list is privileged, and as of 0.5.0 nothing about it is hard-coded
+either. The contract is versioned (`scema.world/1`) and both vocabularies are **open**:
+`Domain` and `EntityKind` carry known names plus anything else, verbatim.
+
+That change is what turns the claim into a mechanism. Before it, a perceived web page and a
+set of Chainlink feeds both had to report `unknown` — two entirely different worlds,
+indistinguishable to every specialist downstream — and naming a fifth kind of world meant
+releasing this crate. Now a cluster, a dataset, a document corpus or a CI pipeline can say
+what it is, and the runtime tells you honestly that its specialists will decline on it.
+
+```console
+$ my-tool --world | scema check -        # the importer's own rules, every failure at once
+$ scema check --vocabulary               # the names this build knows
+```
+
+`scema check` runs `scema_tools::conform` — the same code the importer runs, not a
+friendlier restatement. A checker that disagreed with the importer in either direction
+teaches an author that the tooling is unreliable and to route around it. See
+**[docs/PRODUCERS.md](docs/PRODUCERS.md)**.
 
 ### The mesh sees omni back
 
@@ -272,12 +305,14 @@ argument only has to be made once.
 ### `scema` — the CLI
 
 ```console
+$ scema quickstart                          # the loop, narrated. writes nothing
 $ scema init                                # create .scema/, self-ignoring
 $ scema observe .
 $ scema simulate "clear the marker backlog" --ground markers:scema-tools
 $ scema decide   "clear the marker backlog" --ground markers:scema-tools
 $ scema explain 58898030 ; scema verify --all
 $ scema policy
+$ scema check world.json                    # does a producer's output conform, and why not
 $ scema doctor                              # what is installed, wired, or quietly broken
 $ scema connect --list                      # assistants this can wire the MCP server into
 $ scema completions powershell
@@ -285,6 +320,13 @@ $ scema completions powershell
 
 `simulate` never persists. `decide` seals a record and appends memory. `execute`,
 `delegate`, `discover` and `pay` are registered and exit non-zero saying what is missing.
+
+`quickstart` walks the whole loop over a directory you already have, explaining each stage
+as it prints, and **stops before sealing** — a tutorial that writes a decision record on
+your behalf has taught you the wrong thing about the one command here that leaves a trace.
+It exists because two correct behaviours read as malfunctions on a first run: an ungrounded
+goal abstaining, and a grounded signal branch outranking the goal you typed. Both now say so
+and name the next command; neither ever fills in `--ground` for you.
 
 `doctor` runs every check at once and **changes nothing** — each finding names the command
 that would fix it and stops there. Its verdicts are four, not two: `ok`, `warn`, `FAIL`, and
@@ -480,10 +522,10 @@ solana-free — today, `scematica-nn` with `default-features = false`.
 ```powershell
 cd scematica-omni
 cargo build --release
-cargo test --workspace                 # 235 tests
+cargo test --workspace                 # 262 tests
 cargo clippy --workspace --all-targets
 
-cd plugins/scema-web ; npm test        # 44 hermetic
+cd plugins/scema-web ; npm test        # 45 hermetic
 # + 9 wire tests against a live daemon:
 #   SCEMA_OMNID_URL=... SCEMA_OMNID_TOKEN=... npm test
 

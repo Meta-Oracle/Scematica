@@ -238,6 +238,7 @@ pub(crate) mod tests_support {
 
     pub(crate) fn sample() -> DecisionRecord {
         let world = WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "test".into(),
             entity: Entity { kind: EntityKind::Repository, locator: ".".into(), label: "t".into() },
             domain: Domain::Software,
@@ -281,6 +282,51 @@ mod tests {
         let r = cycle();
         let v = verify(&r);
         assert!(v.valid, "{:?}", v.mismatches);
+    }
+
+    #[test]
+    fn a_record_sealed_before_the_world_contract_was_versioned_still_verifies() {
+        // The compatibility guarantee for `WorldState::schema`, and the reason it is
+        // `Option` with `skip_serializing_if` rather than a plain `String` with a default.
+        //
+        // Records already on operators' disks were sealed over a world with no `schema` key
+        // at all. If the field were written back as `""` or `null`, the digest would change
+        // and every one of those records would report INVALID on a byte nobody had touched.
+        // That is the single most damaging failure this verifier has available: the first
+        // thing anyone does with a verifier that cries tamper on honest history is stop
+        // believing it. Same lesson as the float round-trip in `canonical.rs`.
+        let mut r = cycle();
+        r.world.schema = None;
+        // Re-seal so the commitment is the one an older build would have computed.
+        let r = DecisionRecord::seal(
+            r.runtime.clone(),
+            r.at,
+            r.world.clone(),
+            r.goal.clone(),
+            r.hypotheses.clone(),
+            r.projections.clone(),
+            r.decision.clone(),
+        );
+
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("\"schema\""), "an absent schema must not be serialised");
+
+        let reread: DecisionRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(reread.world.schema, None);
+        let v = verify(&reread);
+        assert!(v.valid, "legacy record failed to verify: {:?}", v.mismatches);
+        assert_eq!(reread.id, r.id, "the id of an existing record must not move");
+    }
+
+    #[test]
+    fn stamping_a_schema_onto_a_sealed_world_is_caught_like_any_other_edit() {
+        // The other half of the deal: the field is inside the commitment, so it cannot be
+        // added to a sealed record after the fact without the verifier saying so.
+        let mut r = cycle();
+        r.world.schema = Some("scema.world/99".into());
+        let v = verify(&r);
+        assert!(!v.valid);
+        assert!(v.mismatches.iter().any(|m| m.field == "world"));
     }
 
     #[test]

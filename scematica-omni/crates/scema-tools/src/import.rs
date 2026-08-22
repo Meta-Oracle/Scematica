@@ -134,76 +134,36 @@ fn stamp(observer: &str) -> String {
     format!("imported:{name}")
 }
 
-/// Internal consistency rules that make downstream output wrong when violated.
+/// Refuse a world that does not conform, listing every reason at once.
 ///
-/// Kept short on purpose. Every rule here earns its place by naming a specific way the
-/// ranking, the grounding or the record would be misleading — not by being tidy.
+/// The rules live in [`crate::conform`] rather than here, because `scema check` has to
+/// report exactly what the importer enforces. Two implementations would drift, and the
+/// failure mode is the one that destroys trust in tooling fastest: a producer that passes
+/// the checker and is then refused by the importer, or the reverse.
+///
+/// Every failure is listed, not just the first. A producer author with four problems should
+/// learn about four problems.
 fn check(w: &WorldState) -> Result<()> {
-    // A duplicated signal id cannot be named unambiguously by `--ground`, and the two
-    // branches built from it would rank as two independent supports for one thing.
-    let mut ids: Vec<&str> = w.signals.iter().map(|s| s.id.as_str()).collect();
-    ids.sort_unstable();
-    let before = ids.len();
-    ids.dedup();
-    if before != ids.len() {
-        bail!("two signals share an id; `--ground` could not name either unambiguously");
+    use crate::conform::{conform, has_failure, Level};
+    let findings = conform(w);
+    if !has_failure(&findings) {
+        return Ok(());
     }
-
-    let mut object_ids: Vec<&str> = w.objects.iter().map(|o| o.id.as_str()).collect();
-    object_ids.sort_unstable();
-    let before = object_ids.len();
-    object_ids.dedup();
-    if before != object_ids.len() {
-        bail!("two objects share an id");
-    }
-
-    for s in &w.signals {
-        if s.id.trim().is_empty() {
-            bail!("a signal has an empty id");
-        }
-        // A magnitude outside [0,1] would dominate a ranking through arithmetic rather than
-        // through importance, and the producer is the only place that can be fixed.
-        if !s.magnitude.is_finite() || s.magnitude < 0.0 || s.magnitude > 1.0 {
-            bail!(
-                "signal `{}` has magnitude {}, outside [0,1] — clamp it in the producer",
-                s.id,
-                s.magnitude
-            );
-        }
-        // A *counted* signal with nothing to cite is the exact laundering this workspace
-        // exists to prevent: it claims `measured: true`, so `scema-sim` will score a real
-        // expected gain from it, and nothing downstream can tell it from a real count.
-        if s.measured && s.evidence.is_empty() {
-            bail!(
-                "signal `{}` claims to be measured but cites no evidence; either cite the \
-                 count or set measured=false",
-                s.id
-            );
+    let mut msg = String::new();
+    for f in findings.iter().filter(|f| f.level == Level::Fail) {
+        msg.push_str("
+  - ");
+        msg.push_str(&f.message);
+        if let Some(fix) = &f.fix {
+            msg.push_str("
+    fix: ");
+            msg.push_str(fix);
         }
     }
+    msg.push_str("
 
-    for f in &w.facts {
-        if !f.confidence.is_finite() || f.confidence < 0.0 || f.confidence > 1.0 {
-            bail!("fact `{} {} {}` has confidence outside [0,1]", f.subject, f.predicate, f.object);
-        }
-    }
-
-    if let Some(total) = w.extent.total {
-        if w.extent.observed > total {
-            bail!(
-                "extent claims {} observed of {} total; if the denominator is unknown it must \
-                 be null, not smaller than the numerator",
-                w.extent.observed,
-                total
-            );
-        }
-    }
-
-    if w.entity.locator.trim().is_empty() {
-        bail!("the entity has no locator; it is what a decision record cites to find this again");
-    }
-
-    Ok(())
+  `scema check <file>` prints the full report.");
+    bail!("{msg}");
 }
 
 impl Observer for ImportObserver {
@@ -242,6 +202,7 @@ mod tests {
 
     fn minimal() -> serde_json::Value {
         serde_json::json!({
+            "schema": scema_world::WORLD_SCHEMA,
             "observer": "mesh",
             "entity": { "kind": "service", "locator": "/bot", "label": "bot" },
             "domain": "trading",
@@ -337,7 +298,7 @@ mod tests {
         };
         let text = with_signals(serde_json::json!([sig("a"), sig("a")]));
         let chain = format!("{:#}", ImportObserver::from_json(&text, "t").unwrap_err());
-        assert!(chain.contains("share an id"), "{chain}");
+        assert!(chain.contains("share the id"), "{chain}");
     }
 
     #[test]
@@ -348,7 +309,7 @@ mod tests {
         let mut v = minimal();
         v["extent"] = serde_json::json!({ "observed": 9, "total": 3, "note": "?" });
         let chain = format!("{:#}", ImportObserver::from_json(&v.to_string(), "t").unwrap_err());
-        assert!(chain.contains("not smaller than the numerator"), "{chain}");
+        assert!(chain.contains("not a smaller number"), "{chain}");
     }
 
     #[test]
@@ -399,6 +360,7 @@ mod tests {
         // The contract producers are written against: everything survives except the
         // attribution, which is the one thing that must not.
         let original = WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "mesh".into(),
             entity: Entity {
                 kind: EntityKind::Service,
@@ -544,20 +506,74 @@ mod tests {
         assert!(!w.entity.locator.contains("SECRET"), "{}", w.entity.locator);
     }
 
-    /// Each producer describes a different kind of world, and the domain reflects it.
+    /// Each producer describes a different kind of world, and the domain now says which.
     ///
     /// `Domain` exists so a specialist can decline rather than pretend. The bot mesh is a
     /// trading world and the Deep Q* evaluator recognises it (and then declines for want of
     /// a checkpoint, which is a different and more useful answer). An oracle set and a web
-    /// page are `Unknown`, and the evaluator declines outright.
+    /// page are declined by that evaluator either way.
+    ///
+    /// What changed when the vocabulary opened is that they are no longer declined
+    /// *identically*. Both used to report `unknown`, so nothing downstream could tell a set
+    /// of Chainlink feeds from a DOM — three producers, two indistinguishable worlds. The
+    /// decline is the same; the record of what was declined is not.
     #[test]
     fn the_domain_lets_a_specialist_decline_correctly() {
         let mesh = ImportObserver::from_json(&fixture("mesh-world.json"), "mesh").unwrap();
         assert_eq!(mesh.domain, scema_world::Domain::Trading);
 
-        for file in ["alchem-world.json", "page-world.json"] {
+        let feeds = ImportObserver::from_json(&fixture("alchem-world.json"), "a").unwrap();
+        assert_eq!(feeds.domain, scema_world::Domain::Data);
+
+        let page = ImportObserver::from_json(&fixture("page-world.json"), "p").unwrap();
+        assert_eq!(page.domain, scema_world::Domain::Web);
+
+        assert_ne!(feeds.domain, page.domain, "two different worlds must not read alike");
+    }
+
+    /// Every producer declares the contract version it was written against.
+    ///
+    /// The one rule that cannot be enforced by any producer's own test suite, because the
+    /// thing it protects against is a producer nobody in this repository wrote.
+    #[test]
+    fn every_producer_declares_the_contract_it_was_written_against() {
+        for file in ["mesh-world.json", "alchem-world.json", "page-world.json"] {
             let w = ImportObserver::from_json(&fixture(file), file).unwrap();
-            assert_eq!(w.domain, scema_world::Domain::Unknown, "{file}");
+            assert_eq!(w.schema.as_deref(), Some(scema_world::WORLD_SCHEMA), "{file}");
+        }
+    }
+
+    /// A world with no declared contract is refused, and the message says what to add.
+    #[test]
+    fn an_undeclared_contract_is_refused_with_the_line_to_paste() {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&fixture("mesh-world.json")).unwrap();
+        v.as_object_mut().unwrap().remove("schema");
+        let err = ImportObserver::from_json(&v.to_string(), "t").unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(chain.contains("scema.world/1"), "{chain}");
+        assert!(chain.contains("scema check"), "{chain}");
+    }
+
+    /// Every failure at once, rather than one per fix-and-rerun.
+    #[test]
+    fn a_producer_with_several_problems_is_told_about_all_of_them() {
+        // The development-loop property. Before the checker was shared with `scema check`,
+        // the importer bailed on the first violation, so an author with four problems
+        // learned about them one at a time.
+        let mut v = minimal();
+        v.as_object_mut().unwrap().remove("schema");
+        v["entity"]["locator"] = serde_json::json!("  ");
+        v["signals"] = serde_json::json!([
+            { "id": "dup", "polarity": "risk", "label": "l", "detail": "",
+              "magnitude": 0.5, "measured": true, "targets": [], "evidence": [] },
+            { "id": "dup", "polarity": "risk", "label": "l", "detail": "",
+              "magnitude": 4.0, "measured": false, "targets": [], "evidence": ["e"] }
+        ]);
+        let chain = format!("{:#}", ImportObserver::from_json(&v.to_string(), "t").unwrap_err());
+        for expected in ["schema", "locator", "cites no evidence", "share the id", "outside [0,1]"] {
+            assert!(chain.contains(expected), "missing `{expected}` in:
+{chain}");
         }
     }
 

@@ -414,6 +414,7 @@ mod tests {
 
     fn world(signals: Vec<Signal>, blind: Vec<String>) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "test".into(),
             entity: Entity { kind: EntityKind::Repository, locator: ".".into(), label: "t".into() },
             domain: Domain::Software,

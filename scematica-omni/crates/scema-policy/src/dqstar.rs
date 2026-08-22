@@ -245,6 +245,7 @@ mod tests {
 
     fn world(domain: Domain, objects: Vec<Object>) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "t".into(),
             entity: Entity { kind: EntityKind::Market, locator: "m".into(), label: "m".into() },
             domain,

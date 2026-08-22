@@ -269,6 +269,7 @@ mod tests {
 
     fn world(signals: Vec<Signal>) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "t".into(),
             entity: Entity { kind: EntityKind::Repository, locator: ".".into(), label: "t".into() },
             domain: Domain::Software,

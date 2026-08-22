@@ -35,16 +35,19 @@ cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipea
 cargo run --release -p mesh-dashboard -- --json       # raw mesh
 
 # Scematica Omni — the agent runtime (own workspace; cd first)
-# Published to crates.io as `scema-*` crates (0.1.0), independent of the bot's
+# Published to crates.io as `scema-*` crates (0.5.0 beta), independent of the bot's
 # `scematica-*` line. Install without a checkout:
 cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 235 tests
+cd scematica-omni ; cargo test --workspace          # 262 tests
+./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
 ./scematica-omni/target/release/scema decide   "<goal>" --ground <signal-id>   # seals a record
 ./scematica-omni/target/release/scema explain --list ; scema verify --all
 ./scematica-omni/target/release/scema policy        # weights, observers, specialists
+./scematica-omni/target/release/scema check world.json   # does a producer's output conform
+./scematica-omni/target/release/scema check --vocabulary # the open domain / entity-kind lists
 ./scematica-omni/target/release/scema init          # create .scema/ (self-ignoring)
 ./scematica-omni/target/release/scema doctor        # installed / wired / quietly broken
 ./scematica-omni/target/release/scema connect --list           # assistants it can wire up
@@ -236,7 +239,7 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         build step), plugins/claude-code (a Claude Code plugin over the MCP
                         server, referenced by `.claude-plugin/marketplace.json` at the repo
                         root) and `/omni` in web/ (offline record verifier). Tests:
-                        `cargo test --workspace` (214), plus 53 in plugins/scema-web
+                        `cargo test --workspace` (262), plus 54 in plugins/scema-web
                         (9 of them wire tests that skip without a live daemon) and
                         `npm run check:omni` in web/ (17). See scematica-omni/README.md.
 tools/
@@ -661,6 +664,19 @@ different instruction to the operator. `scema decide` exits **0** when it abstai
 script that treats "the agent declined" as a crash gets rewritten to ignore the exit code,
 and then it ignores real crashes too.
 
+**Two correct behaviours used to read as malfunctions on a first run, and both are rendering
+bugs rather than logic ones.** `scema simulate "<goal>"` with no `--ground` abstains, which
+is right at every step and looked like the tool refusing or breaking — what was being asked
+for was one flag nobody had heard of. And when a grounded signal branch outranks the
+operator's own goal, the runtime chose something else and said nothing, which looks like
+success and reads as the goal being ignored. `scema_policy::render::next_steps` now renders
+each of the five abstention reasons as a *different* next command, lists the counted signal
+ids for an ungrounded goal, and explains a goal that lost. It **suggests and never acts** —
+filling in `--ground` because it looked plausible would be the keyword-overlap bug again with
+a friendlier face. `scema quickstart` walks the loop narrated over a real directory and stops
+before sealing, because a tutorial that writes a record on your behalf teaches the wrong
+thing about the one command that leaves a trace.
+
 **What `scema verify` proves**: the record was not edited after sealing, naming the field
 that moved. **Not** that the world was as described (provenance carries that, which is why
 the world state is committed whole — `Absent` arms and blind spots included), and **not**
@@ -675,6 +691,34 @@ verifies these yet, and if one ever does that binding belongs on `mesh-core`'s k
 `--help` on purpose. The action path needs the `alchem-link` approval model in front of it
 (risk declared per tool, no terminal means deny, secrets refused before the prompt), and
 `pay` needs a spend policy first.
+
+**The world contract is versioned and its vocabularies are open** (0.5.0). `WorldState`
+carries `schema: "scema.world/1"` and an undeclared version is refused on import — the
+contract is JSON implemented in four languages and no compiler stands between a producer and
+it, so without a version the next format change is a silent misread rather than an error.
+The field is `Option` + `skip_serializing_if`, which is load-bearing: records sealed before
+it existed must keep verifying, and a verifier that cries tamper on untouched history is the
+one failure that teaches a reader to stop believing it.
+
+`Domain` and `EntityKind` are **open** enums — known arms plus `Other(String)`, held
+verbatim so a decision record round-trips byte for byte. Closing them was the largest limit
+on universality: a perceived web page and a set of Chainlink feeds both reported `unknown`,
+so two entirely different worlds were indistinguishable to every specialist. Parsing
+normalises case and padding and deliberately does **not** guess synonyms (`k8s` != `kubernetes`);
+the known lists are published via `scema check --vocabulary` so an author picks rather than
+coins. An unfamiliar name is a **warning, never a failure** — failing on one would push
+producers back onto `unknown`. `Domain::edit_reversibility` is the table that used to be a
+`match` with a `_ => Unknown` arm in the hypothesiser (quietly wrong once domains were open);
+it also corrects `Trading` from `Unknown` to **`Irreversible`**, the one domain here where
+irreversibility is certain.
+
+`scema_tools::conform` is the **single** implementation of "is this a usable world", used by
+both `ImportObserver` and `scema check` — two would drift, and the worst available failure is
+a producer that passes the checker and is then refused by the importer. It reports **every**
+finding at once (the importer used to bail on the first, so an author with four problems
+learned about them one release at a time) and each carries a stable `code`, so a producer's
+tests assert on the code and not on wording that is meant to improve. See
+`scematica-omni/docs/PRODUCERS.md`.
 
 Observer rules: report what could not be read as `blind_spots`; never round an unread thing
 to zero (`Provenance::Absent` carries no attributes); state whether the walk was complete

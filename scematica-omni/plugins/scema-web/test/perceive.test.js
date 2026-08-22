@@ -81,8 +81,23 @@ test('a clean page produces no signals but still describes itself', () => {
   const w = perceive(doc([el('p')]), httpsLoc, 0);
   assert.equal(w.signals.length, 0);
   assert.equal(w.observer, 'page');
-  assert.equal(w.domain, 'unknown', 'guessing a page domain would be a guess');
+  // `web`, and this is not the guess the earlier `unknown` was avoiding. Two different
+  // questions were being run together: what a page is *about* is unknowable from a DOM and
+  // must not be guessed, but what kind of world this is has one answer and the producer
+  // knows it — it only ever perceives pages. `unknown` reported the same thing an oracle
+  // set reported, so nothing downstream could tell the two apart. No specialist gains a
+  // claim of competence from this; they match the arm they understand and decline.
+  assert.equal(w.domain, 'web');
   assert.ok(w.objects.some((o) => o.id === 'document'));
+});
+
+test('the world declares the contract version it was written against', () => {
+  // The one rule no producer can enforce for the others. `perceive.js` cannot link
+  // `scema-world`, so this string is the only thing telling an importer which reading of
+  // the format these bytes were built against — and without it the next change to the
+  // format is a silent misread rather than an error message.
+  const w = perceive(doc([]), httpsLoc, 0);
+  assert.equal(w.schema, 'scema.world/1');
 });
 
 test('the locator drops the query string and fragment', () => {

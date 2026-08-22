@@ -464,6 +464,7 @@ impl Observer for RepoObserver {
         };
 
         Ok(WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: self.name().to_string(),
             entity: Entity {
                 kind: EntityKind::Repository,

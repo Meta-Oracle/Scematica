@@ -330,6 +330,7 @@ mod tests {
 
     fn world_with(signals: Vec<Signal>) -> WorldState {
         WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "test".into(),
             entity: Entity {
                 kind: EntityKind::Repository,

@@ -1,11 +1,12 @@
 {
+  "schema": "scema.world/1",
   "observer": "alchem-link",
   "entity": {
     "kind": "service",
     "locator": "chainlink:base",
     "label": "Base Mainnet price feeds"
   },
-  "domain": "unknown",
+  "domain": "data",
   "observed_at": 1700000000,
   "objects": [
     {

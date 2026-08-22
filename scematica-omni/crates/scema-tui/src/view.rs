@@ -351,6 +351,7 @@ mod tests {
     fn an_unbounded_extent_is_shouted_and_not_styled_as_a_measurement() {
         use scema_world::{Domain, Entity, EntityKind, Extent};
         let mut w = WorldState {
+            schema: Some(scema_world::WORLD_SCHEMA.into()),
             observer: "t".into(),
             entity: Entity { kind: EntityKind::Repository, locator: "/r".into(), label: "r".into() },
             domain: Domain::Software,

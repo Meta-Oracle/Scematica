@@ -14,6 +14,8 @@ import {
   spriteFor,
   spriteSrc,
 } from '@/lib/scylar/expressions'
+import type { SigilTelemetry } from '@/lib/scylar/sigil'
+import { ScylarSigil } from './ScylarSigil'
 
 // The portrait. All three sprites are mounted at once and cross-faded by opacity —
 // never swapped by changing `src`.
@@ -43,9 +45,19 @@ interface Props {
    * `lib/scylar/usePortraits.ts`.
    */
   portraits?: Partial<Record<Expression, string>>
+  /**
+   * Live readings for the instrument ring, minus the phase — which this component already
+   * owns and would otherwise be passed twice, with two chances to disagree.
+   *
+   * Optional: with no telemetry the ring is not drawn at all. Drawing an empty one would
+   * mean rendering an unmeasured Ψ, a `∅` coverage and four dark channels around a portrait
+   * on a page that simply never wired it up, which reads as a system in trouble rather than
+   * as one nobody asked for a reading from.
+   */
+  telemetry?: Omit<SigilTelemetry, 'phase'>
 }
 
-export function ScylarAvatar({ phase, size = 420, portraits }: Props) {
+export function ScylarAvatar({ phase, size = 420, portraits, telemetry }: Props) {
   const [flapSprite, setFlapSprite] = useState<Expression>('idle')
   const [settledFor, setSettledFor] = useState(0)
   const reduceMotion = usePrefersReducedMotion()
@@ -209,6 +221,23 @@ export function ScylarAvatar({ phase, size = 420, portraits }: Props) {
           )
         })}
       </div>
+
+      {/* The instrument ring. Absolutely positioned over the whole portrait rather than
+          around it, because the stage is a fixed square and a ring drawn outside it would
+          be clipped by the panel — the outer radius is inset far enough that it reads as a
+          frame on the portrait rather than a halo behind it.
+
+          Mounted between the sprites and the holo layer so the scanlines pass over it: the
+          ring is part of the projection, not an overlay on the page. */}
+      {telemetry && (
+        <div className="scylar-sigil-layer absolute inset-0" aria-hidden>
+          <ScylarSigil
+            telemetry={{ ...telemetry, phase }}
+            size={size}
+            reduceMotion={reduceMotion}
+          />
+        </div>
+      )}
 
       {/* The projection artefacts: scanlines, the interlace sweep, and the chromatic
           fringe. A real element rather than a third pseudo-element because

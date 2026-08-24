@@ -26,6 +26,8 @@
 // unless the deployment enables it, because a listed tool that always fails teaches a model
 // to retry it.
 
+import { codexMap, lookup } from './codex.ts'
+
 /** Hard cap on a serialised tool result. Beyond this the model just gets less useful. */
 const MAX_RESULT_CHARS = 6_000
 
@@ -45,7 +47,7 @@ const MAX_ROWS = 40
  * switched off reasoning about the codebase whenever the trading process was stopped — the
  * exact moment an operator is most likely to be asking what to do about it.
  */
-export type ToolGroup = 'bot' | 'omni'
+export type ToolGroup = 'bot' | 'omni' | 'codex'
 
 export interface ToolSpec {
   name: string
@@ -53,8 +55,8 @@ export interface ToolSpec {
   description: string
   /** OpenAI-style JSON schema for the arguments. */
   parameters: Record<string, unknown>
-  /** Fixed path under `/api`. Never derived from model output. */
-  path: string
+  /** Fixed path under `/api`. Never derived from model output. Absent for a local tool. */
+  path?: string
   /**
    * HTTP method. `POST` is allowed only for endpoints that compute and return —
    * `/api/replay` reads two files and writes nothing. No tool may reach a control route;
@@ -68,6 +70,15 @@ export interface ToolSpec {
   body?: (args: Record<string, unknown>) => Record<string, unknown>
   /** Trim a raw payload down to the fields worth spending tokens on. */
   shape?: (data: unknown) => unknown
+  /**
+   * Answer in-process instead of over HTTP.
+   *
+   * Only the codex uses this. Its data is static and already in the bundle, so routing it
+   * through `fetch(origin + path)` would spend a network round trip re-reading a constant —
+   * and would give the codex a URL, which is the one thing this file is built to keep away
+   * from model output. A local tool has no `path` at all, so there is nothing to guess.
+   */
+  local?: (args: Record<string, unknown>) => string
 }
 
 /** A finite number, or `undefined` so the field is omitted rather than sent as null. */
@@ -101,6 +112,60 @@ const listOf = (key: string, keys: string[]) => (data: unknown) => {
   if (!Array.isArray(arr)) return data
   return arr.slice(-MAX_ROWS).map((r) => pick(r, keys))
 }
+
+// ── the codex tools ──────────────────────────────────────────────────────────────
+//
+// These reach nothing. `lib/scylar/codex.ts` is static data compiled into the bundle, so
+// the tool answers in-process — no path, no fetch, no URL for a model to aim at. They are
+// available on every deployment, including one with no bot and no daemon, which is the
+// point: "what is the coherence breaker" is a question about the repository, and it does
+// not stop being answerable because the trading process is stopped.
+const CODEX_TOOLS: ToolSpec[] = [
+  {
+    name: 'explain_project',
+    group: 'codex',
+    description:
+      'Look up a part of the Scematica project — any crate, web product, on-chain program, ' +
+      'contract or cross-cutting subsystem, including all of Scematica Omni. Returns the ' +
+      'summary, the invariants that are easy to get wrong, the commands that drive it, and ' +
+      'the ids of neighbouring areas. ' +
+      'Call this BEFORE answering any question about how a part of this project works, ' +
+      'rather than describing it from the name. The entries were written from the ' +
+      'repository and every path in them is checked to exist. ' +
+      'If it reports no entry, say the codex does not cover that — do not fill the gap.',
+    parameters: {
+      type: 'object',
+      properties: {
+        topic: {
+          type: 'string',
+          description:
+            'An area id (e.g. "scema-daemon", "coherence-breaker", "omni-verify") or a ' +
+            'free-text topic (e.g. "how does verification work").',
+        },
+      },
+      required: ['topic'],
+    },
+    local: (a) => {
+      const topic = typeof a.topic === 'string' ? a.topic.trim() : ''
+      if (!topic) return `A topic is needed. Areas that exist:
+${codexMap()}`
+      // Bounded so a model asking for a whole kind cannot pull the entire codex into one
+      // result; three entries is enough to answer a comparison and short enough to leave
+      // room for the answer itself.
+      return lookup(topic, 3)
+    },
+  },
+  {
+    name: 'list_project_areas',
+    group: 'codex',
+    description:
+      'List every area of the Scematica project the codex covers, grouped by kind. Use when ' +
+      'the operator asks what the project contains, or when you are not sure which id to ' +
+      'pass to explain_project.',
+    parameters: { type: 'object', properties: {} },
+    local: () => codexMap(),
+  },
+]
 
 export const TOOLS: ToolSpec[] = [
   {
@@ -333,6 +398,7 @@ export const TOOLS: ToolSpec[] = [
       verify: '1',
     }),
   },
+  ...CODEX_TOOLS,
 ]
 
 /**
@@ -414,11 +480,21 @@ export interface ToolAvailability {
   omni: boolean
   /** Sealing is enabled here *and* on the daemon. */
   seal: boolean
+  /**
+   * The project codex is offered.
+   *
+   * Effectively always true — it is static data with no external dependency. It is a field
+   * rather than a constant so that a deployment which wants a bare persona can turn it off,
+   * and so `availableTools` has one shape of answer for every group rather than a special
+   * case that reads as an oversight.
+   */
+  codex: boolean
 }
 
 /** Every tool available for this request. */
 export function availableTools(a: ToolAvailability): ToolSpec[] {
-  const out = TOOLS.filter((t) => (t.group === 'bot' ? a.bot : a.omni))
+  const on: Record<ToolGroup, boolean> = { bot: a.bot, omni: a.omni, codex: a.codex }
+  const out = TOOLS.filter((t) => on[t.group])
   if (a.omni && a.seal) out.push(SEAL_TOOL)
   return out
 }
@@ -501,11 +577,33 @@ export async function runTool(
     }
   }
 
+  // A local tool answers from data already in this process. Handled before anything
+  // network-shaped is built, so there is no path, no query string and no timeout in play —
+  // and no way for a future edit to accidentally give the codex a URL.
+  if (spec.local) {
+    const content = spec.local(args)
+    return {
+      name,
+      ok: true,
+      content:
+        content.length > MAX_RESULT_CHARS
+          ? content.slice(0, MAX_RESULT_CHARS) + ' …[truncated]'
+          : content,
+    }
+  }
+
+  if (!spec.path) {
+    // Unreachable with the current table, and asserted by `check:scylar`. Kept because the
+    // alternative is a `!` that turns a future mistake into a runtime crash mid-stream.
+    return { name, ok: false, content: `Tool ${name} has no path and no local handler.` }
+  }
+  const path = spec.path
+
   const qs = spec.query ? '?' + new URLSearchParams(spec.query(args)).toString() : ''
   const method = spec.method ?? 'GET'
 
   try {
-    const res = await fetch(`${origin}/api/${spec.path}${qs}`, {
+    const res = await fetch(`${origin}/api/${path}${qs}`, {
       method,
       headers:
         method === 'POST'
@@ -519,11 +617,11 @@ export async function runTool(
       // Omni observes a source tree before it ranks anything, which is a different order
       // of work from reading a state file.
       signal: AbortSignal.timeout(
-        spec.path.startsWith('scylar/omni/') ? 20_000 : method === 'POST' ? 8_000 : 4_000,
+        path.startsWith('scylar/omni/') ? 20_000 : method === 'POST' ? 8_000 : 4_000,
       ),
     })
     if (!res.ok) {
-      return { name, ok: false, content: `The bot API returned ${res.status} for ${spec.path}.` }
+      return { name, ok: false, content: `The bot API returned ${res.status} for ${path}.` }
     }
 
     const raw: unknown = await res.json()
@@ -542,7 +640,7 @@ export async function runTool(
     return {
       name,
       ok: false,
-      content: `Could not reach the bot API for ${spec.path} — it may be stopped.`,
+      content: `Could not reach the bot API for ${path} — it may be stopped.`,
     }
   }
 }

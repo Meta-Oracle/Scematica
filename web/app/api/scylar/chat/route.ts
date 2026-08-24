@@ -3,11 +3,17 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { buildBriefing, contextSystemMessage } from '@/lib/scylar/context'
 import { cautionInstruction, holdInstruction, readGate, recordAnswer } from '@/lib/scylar/gate'
 import {
-  SCYLAR_SYSTEM_PROMPT,
   configuredProviders,
   providerEnvVars,
   resolveProvider,
 } from '@/lib/scylar/provider'
+import {
+  DEFAULT_BUDGET,
+  composePsyche,
+  psycheHeader,
+  type PsycheContext,
+  type Senses,
+} from '@/lib/scylar/psyche'
 import { SEAL_TOOL, TOOLS, availableTools, runTool, toolDefinitions } from '@/lib/scylar/tools'
 import type { ToolAvailability, ToolOutcome } from '@/lib/scylar/tools'
 import { OMNI_INSTRUCTION, omniConfig, sealingAllowed } from '@/lib/scylar/omni'
@@ -143,6 +149,69 @@ export async function POST(request: NextRequest) {
   // back through the side door exactly what withholding the block took away.
   const useTools = wantContext && briefing.source !== 'unavailable' && !held
 
+  // Availability is per-subsystem, because the three are genuinely independent. The omni
+  // loop reasons about a source tree and does not care whether the sniper is running; a Ψ
+  // HOLD is a statement about stale *bot* state, which says nothing about a repository; and
+  // the codex is static data that is correct whether anything is running at all. Gating
+  // everything on the bot would switch off reasoning about the codebase at exactly the
+  // moment an operator is most likely to be asking what to do about it.
+  const availability: ToolAvailability = {
+    bot: useTools,
+    omni: omniConfig() !== null,
+    seal: sealingAllowed(),
+    codex: true,
+  }
+  const anyTools = availableTools(availability)
+  const botNames = anyTools.filter((t) => t.group === 'bot').map((t) => t.name)
+  const omniNames = anyTools.filter((t) => t.group === 'omni').map((t) => t.name)
+
+  // What she can actually sense this turn, as five distinct bot states rather than a
+  // boolean. "I can't see the bot" and "you turned the toggle off" are different sentences
+  // and only one of them is a fault report.
+  const senses: Senses = {
+    bot: !wantContext
+      ? 'off'
+      : held
+        ? 'held'
+        : briefing.source === 'unavailable'
+          ? 'unavailable'
+          : briefing.source,
+    omni: availability.omni,
+    sealing: availability.seal,
+    codex: availability.codex,
+    tools: anyTools.map((t) => t.name),
+  }
+
+  const psycheCtx: PsycheContext = {
+    // Prior turns in this session. `history` ends with the message being answered, so a
+    // first message gives 0 — which is what the `first-contact` layer keys off.
+    turn: Math.max(0, history.length - 1),
+    utterance: history[history.length - 1]?.content ?? '',
+    senses,
+    gate: gate ? { verdict: gate.verdict, psi: gate.psi, bottleneck: gate.bottleneck } : null,
+    provider: { id: provider.id, model: provider.model },
+    blocks: {
+      botState: contextBlock,
+      // The overlay's own annotation, verbatim from the Rust readout — the same string
+      // `Overlay::effective_system` would have prepended if it owned the transport.
+      gateNote: held ? null : (gate?.note ?? null),
+      gateInstruction:
+        held && gate
+          ? holdInstruction(gate)
+          : gate?.verdict === 'caution'
+            ? cautionInstruction(gate)
+            : null,
+      toolInstruction: botNames.length
+        ? 'You can call read-only tools for anything the state block does not cover: ' +
+          `${botNames.join(', ')}. Call one when the question needs per-pool, per-trade ` +
+          'or per-transaction detail. Do not call one for general questions about ' +
+          'trading or code. You cannot change the bot — no tool here writes to it.'
+        : null,
+      omniInstruction: omniNames.length ? OMNI_INSTRUCTION(omniNames, availability.seal) : null,
+    },
+    budget: DEFAULT_BUDGET,
+  }
+
   // One system message, not five.
   //
   // Llama 3.x's chat template is trained on a single system turn; consecutive ones are
@@ -152,48 +221,13 @@ export async function POST(request: NextRequest) {
   // train-step count 4/5, concatenated into one both were 5/5. A small margin, but free,
   // and the failure it removes is the model silently ignoring the block rather than
   // saying it cannot see one.
-  const systemParts: string[] = [SCYLAR_SYSTEM_PROMPT]
-  if (contextBlock) systemParts.push(contextBlock)
-  if (held && gate) {
-    systemParts.push(holdInstruction(gate))
-  } else {
-    // The overlay's own annotation, verbatim from the Rust readout — the same string
-    // `Overlay::effective_system` would have prepended if it owned the transport.
-    if (gate?.note) systemParts.push(gate.note)
-    if (gate?.verdict === 'caution') systemParts.push(cautionInstruction(gate))
-  }
-  // Availability is per-subsystem, because the two are genuinely independent. The omni
-  // loop reasons about a source tree and does not care whether the sniper is running — and
-  // a Ψ HOLD is a statement about stale *bot* state, which says nothing about a repository.
-  // Gating everything on the bot would switch off reasoning about the codebase at exactly
-  // the moment an operator is most likely to be asking what to do about it.
-  const availability: ToolAvailability = {
-    bot: useTools,
-    omni: omniConfig() !== null,
-    seal: sealingAllowed(),
-  }
-  const anyTools = availableTools(availability)
-
-  if (anyTools.length > 0) {
-    const botNames = anyTools.filter((t) => t.group === 'bot').map((t) => t.name)
-    const omniNames = anyTools.filter((t) => t.group === 'omni').map((t) => t.name)
-
-    if (botNames.length) {
-      systemParts.push(
-        'You can call read-only tools for anything the state block does not cover: ' +
-          `${botNames.join(', ')}. Call one when the question needs per-pool, per-trade ` +
-          'or per-transaction detail. Do not call one for general questions about ' +
-          'trading or code. You cannot change the bot — no tool here writes to it.',
-      )
-    }
-
-    if (omniNames.length) {
-      systemParts.push(OMNI_INSTRUCTION(omniNames, availability.seal))
-    }
-  }
+  //
+  // `composePsyche` is what does the concatenating now, in a fixed order and under a
+  // budget, and it reports back which layers made it in. See lib/scylar/psyche.ts.
+  const psyche = composePsyche(psycheCtx)
 
   const messages: Record<string, unknown>[] = [
-    { role: 'system', content: systemParts.join('\n\n') },
+    { role: 'system', content: psyche.text },
     ...history,
   ]
 
@@ -354,6 +388,27 @@ export async function POST(request: NextRequest) {
           // read identically, and only one of them is checkable.
           send({ scylar: { tools: outcomes.map((o) => ({ name: o.name, ok: o.ok })) } })
 
+          // Coverage from an omni result, forwarded to the ring.
+          //
+          // Lifted out of the tool payload rather than recomputed: it is the loop's own
+          // count of how many terms it managed to measure, and the ring is forbidden from
+          // showing a score without it. Anything unparseable is skipped in silence — a
+          // missing coverage renders as `∅`, which is the true statement, where a guessed
+          // one would be the exact failure the meter exists to prevent.
+          for (const o of outcomes) {
+            if (!o.ok || !o.name.startsWith('omni_')) continue
+            try {
+              const cov = (JSON.parse(o.content) as { coverage?: unknown }).coverage as
+                | { measured?: unknown; total?: unknown }
+                | undefined
+              if (typeof cov?.measured === 'number' && typeof cov?.total === 'number') {
+                send({ scylar: { coverage: { measured: cov.measured, total: cov.total } } })
+              }
+            } catch {
+              /* a truncated or non-JSON result carries no coverage; the meter stays empty */
+            }
+          }
+
           // A seal the model asked for. Nothing has been written — `runTool` intercepts
           // that tool and records the request instead. This puts the proposal in front of
           // the operator, whose confirmation is the only thing that reaches the write.
@@ -407,6 +462,14 @@ export async function POST(request: NextRequest) {
       // the persona alone, and a header is checkable where a paragraph is not.
       'X-Scylar-Omni': availability.omni ? (availability.seal ? 'seal' : 'read') : 'off',
       'X-Scylar-Gate': gate?.verdict ?? 'off',
+      // Which injection layers were actually composed into the system prompt, in order.
+      // The point of a layered prompt is that a turn which went wrong can be traced back
+      // to what she was given — a claim made in a comment is not checkable, and this is.
+      // See lib/scylar/psyche.ts.
+      'X-Scylar-Psyche': psycheHeader(psyche),
+      // Present only when the budget dropped something, which should be never on a normal
+      // turn. If this starts appearing, a layer has grown — that is the signal to look.
+      ...(psyche.dropped.length ? { 'X-Scylar-Psyche-Dropped': psyche.dropped.join(',') } : {}),
     },
   })
 }
@@ -510,6 +573,7 @@ export async function GET() {
     tools: {
       bot: TOOLS.filter((t) => t.group === 'bot').map((t) => t.name),
       omni: TOOLS.filter((t) => t.group === 'omni').map((t) => t.name),
+      codex: TOOLS.filter((t) => t.group === 'codex').map((t) => t.name),
       seal: SEAL_TOOL.name,
     },
     omni: {

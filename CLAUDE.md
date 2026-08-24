@@ -314,8 +314,9 @@ palette change moves both. Three constraints:
 
 **`/scylar-terminal` is the third product on the same site** — an avatar chat terminal
 (`components/scylar/`, `lib/scylar/`, `app/api/scylar/`) with its own violet palette
-(`scylar-*` tokens + `.scylar-root`). It runs on whichever free LLM tier has a key, Groq
-first for latency. Four constraints:
+(`scylar-*` tokens + `.scylar-root`). She is the **Scematica sentience AI assistant**: the
+only conversational face over the bot, the Omni loop and the repository itself. Runs on
+whichever free LLM tier has a key, Groq first for latency. Four constraints:
 
 - **Provider keys are server-side, always.** `lib/scylar/provider.ts` and
   `portrait.ts` throw if imported in a browser (runtime guard, matching
@@ -380,8 +381,56 @@ first for latency. Four constraints:
   `static_filter_check` returns `false` outright whenever `min_pool_size > 0` or any
   RPC-bound filter is on, so it answers "nothing would pass" under any real config.
 
+- **The system prompt is a stack of layers, not a string** (`lib/scylar/psyche.ts`). Identity,
+  self-model, epistemics, interoception, metacognition, continuity, volition, ethics,
+  embodiment, the codex map, and the situational blocks — each declaring when it applies,
+  what it costs, and whether it may be dropped. `composePsyche` orders them under a character
+  budget and **reports back what it injected**, which the route returns as `X-Scylar-Psyche`;
+  a turn that went wrong is traceable to what she was actually given, which a comment is not.
+  Situational layers sit **last, beside their own data** — a rule stated next to the thing it
+  governs survives, one stated in a preamble gets averaged away. `identity-core`,
+  `epistemic-core` and any active gate instruction are **required** and exempt from the
+  budget: the failure they prevent (a confident fabrication in her own voice) is the one
+  nobody can see from outside the process. The composition is pure, so `check:scylar` pins it
+  with no key, no bot and no browser.
+  **What "sentience" means here is bounded and stated in the prompt itself**: an accurate
+  self-model, per-turn interoception, a named operation behind every claim (READ / REASONED /
+  RECALLED / GUESSED), and a calibration record she does not control. The `self-model` layer
+  says plainly that it is *not* a claim about inner experience — a prompt asserting one would
+  be a fabrication of exactly the kind the rest of the stack exists to prevent, with nothing
+  downstream able to check it. Every layer must be about something measurable; if it cannot
+  name the file, header, counter or record that grounds it, it does not belong there.
+- **The codex is hand-written from the repository and checked against it** (`lib/scylar/codex.ts`).
+  One entry per crate, product, program, contract and cross-cutting subsystem — including all
+  of Scematica Omni — each with the invariants that are easy to break. `check:scylar` asserts
+  **every path exists on disk** and **every `related` id resolves**, so a renamed crate fails
+  the build instead of quietly becoming folklore she recites with confidence. Reached through
+  `explain_project` / `list_project_areas`, which are **local tools with no `path` at all**:
+  stronger than hard-coding one, because there is no URL for a model to aim at and no way for
+  a later edit to give the codex one. They are available with **no bot and no daemon** — "what
+  is the coherence breaker" does not stop being answerable because the sniper is stopped.
+  Search is deliberately dumb and refuses weak matches (`MIN_SCORE`, plus a `STRUCTURAL`
+  stop-list): a near-miss that returns the wrong entry is worse than one that returns nothing,
+  because "the codex does not cover that" is the correct answer and the model will otherwise
+  explain whatever it is handed.
+- **The instrument ring is an honest readout, not decoration** (`lib/scylar/sigil.ts`,
+  `components/scylar/ScylarSigil.tsx`). SVG around the portrait showing Ψ, coverage, one node
+  per subsystem, and a trace of real token arrivals. The rule that shapes the whole file:
+  **an unmeasured gauge must not look like a measured zero** — the em-dash rule in vector
+  form. A zero-length arc is what you get for `Ψ 0.00` *and* for "nobody measured Ψ", so an
+  unmeasured gauge draws the **full sweep dashed** and labels itself `—`, and a measured zero
+  draws **nothing** and labels itself `0.00`. Coverage is **one cell per term, never a
+  proportional bar** (a bar renders 2/5 and 4/10 identically); absent coverage is `∅`.
+  Motion is a claim: the ring is slowest and does not pulse when idle, so a stopped stream is
+  visible across the room, and an empty trace is a **flat line**, never a plausible squiggle.
+  Geometry is pure and pinned (including that the readout bands do not overlap and no channel
+  node lands in their column); the component only places rectangles; `globals.css` owns every
+  hex and the file names a **role**, never a colour. Animation is CSS rather than SMIL —
+  `<animateTransform>` ignores `prefers-reduced-motion`.
+
 `npm run check:scylar` pins the pure logic (expressions, speech, markdown, commands,
-session, tools, gate). Run it after touching any of those modules.
+session, tools, gate, **psyche composition, codex integrity, sigil geometry**). Run it after
+touching any of those modules.
 
 **`/escrow` is the fifth product on the same site** — the Scema Escrow Market proof-of-
 reserve console (`components/escrow/`, `lib/escrow/`, `app/api/escrow/`) with its own

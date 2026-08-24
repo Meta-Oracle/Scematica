@@ -37,12 +37,37 @@ import { parseCommand } from '../lib/scylar/commands.ts'
 import { deserialise, serialise } from '../lib/scylar/session.ts'
 import { contextSystemMessage } from '../lib/scylar/context.ts'
 import { SEAL_TOOL, TOOLS, availableTools, runTool, toolDefinitions } from '../lib/scylar/tools.ts'
+import { OMNI_INSTRUCTION } from '../lib/scylar/omni.ts'
 import {
   cautionInstruction,
   holdExplanation,
   holdInstruction,
   readGate,
 } from '../lib/scylar/gate.ts'
+import { CODEX, codexEntry, codexIds, codexMap, lookup, searchCodex } from '../lib/scylar/codex.ts'
+import { DEFAULT_BUDGET, PSYCHE, composePsyche } from '../lib/scylar/psyche.ts'
+import {
+  CENTER,
+  CHANNEL_START,
+  RADIUS,
+  READOUT,
+  arcPath,
+  channelRole,
+  coverageCells,
+  gaugeArc,
+  motionFor,
+  polar,
+  channelPositions,
+  sigilView,
+  ticks,
+  tracePoints,
+} from '../lib/scylar/sigil.ts'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/** Repository root, from this file's location — `web/scripts/` is two levels down. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 let failed = 0
 const check = (name, ok) => {
@@ -349,17 +374,26 @@ console.log('\n── tools ─────────────────�
 
 // The security property, asserted rather than assumed: a model chooses a name, never a
 // URL. If a tool ever grows a caller-supplied path this is the check that fails.
-check('every tool hard-codes its own path',
-  TOOLS.every((t) => typeof t.path === 'string' && t.path.length > 0 && !t.path.includes('..')))
+//
+// A LOCAL tool (the codex) has no path at all, which is strictly stronger — there is no
+// URL to aim at. It is excluded here and asserted separately below, rather than being
+// allowed to slip through a check whose whole subject is the path.
+const NETWORK_TOOLS = TOOLS.filter((t) => !t.local)
+check('every network tool hard-codes its own path',
+  NETWORK_TOOLS.every((t) => typeof t.path === 'string' && t.path.length > 0 && !t.path.includes('..')))
 check('no tool targets a control route',
-  TOOLS.every((t) => !t.path.startsWith('controls/') && !t.path.startsWith('push')))
+  NETWORK_TOOLS.every((t) => !t.path.startsWith('controls/') && !t.path.startsWith('push')))
+// A local tool must be exactly that: no path, and a handler. Half of each is how a tool
+// that was meant to answer in-process quietly acquires a network call.
+check('every local tool has a handler and no path',
+  TOOLS.filter((t) => t.local).every((t) => t.path === undefined && typeof t.local === 'function'))
 // POST is allowed only for endpoints that compute and return. "Read-only" has to be a
 // property of the list, not of the verb, or the first POST tool quietly widens it. The
 // allowlist is explicit rather than a pattern, so adding a writing endpoint is a decision
 // somebody has to make here in words.
 const COMPUTING_POSTS = ['replay', 'scylar/omni/simulate']
 check('only computing endpoints may POST',
-  TOOLS.filter((t) => t.method === 'POST').every((t) => COMPUTING_POSTS.includes(t.path)))
+  NETWORK_TOOLS.filter((t) => t.method === 'POST').every((t) => COMPUTING_POSTS.includes(t.path)))
 
 // ── the write path ────────────────────────────────────────────────────────────
 //
@@ -368,11 +402,11 @@ check('only computing endpoints may POST',
 check('the sealing tool is not in the general tool list',
   !TOOLS.some((t) => t.name === SEAL_TOOL.name))
 check('sealing is absent unless the deployment enables it',
-  !availableTools({ bot: true, omni: true, seal: false }).some((t) => t.name === SEAL_TOOL.name))
+  !availableTools({ bot: true, omni: true, seal: false, codex: false }).some((t) => t.name === SEAL_TOOL.name))
 check('sealing requires omni, not just the flag',
-  !availableTools({ bot: true, omni: false, seal: true }).some((t) => t.name === SEAL_TOOL.name))
+  !availableTools({ bot: true, omni: false, seal: true, codex: false }).some((t) => t.name === SEAL_TOOL.name))
 check('sealing is offered when both are on',
-  availableTools({ bot: true, omni: true, seal: true }).some((t) => t.name === SEAL_TOOL.name))
+  availableTools({ bot: true, omni: true, seal: true, codex: false }).some((t) => t.name === SEAL_TOOL.name))
 
 // The confirmation must not be satisfiable by the thing asking for it. An earlier version
 // set `confirm: true` in the tool body, which made the route's 428 decorative.
@@ -395,14 +429,17 @@ check('a seal with no goal is refused rather than proposed', (await runTool(
 // The omni loop reasons about a source tree and does not care whether the sniper is
 // running. Gating it on the bot would switch off reasoning about the codebase at exactly
 // the moment an operator is most likely to be asking what to do about it.
-check('every tool declares a group', TOOLS.every((t) => t.group === 'bot' || t.group === 'omni'))
+// A tool with no group is invisible to `availableTools` and therefore silently never
+// offered — a failure that looks exactly like the model choosing not to call it.
+const GROUPS = ['bot', 'omni', 'codex']
+check('every tool declares a known group', TOOLS.every((t) => GROUPS.includes(t.group)))
 check('omni tools survive the bot being down',
-  availableTools({ bot: false, omni: true, seal: false }).every((t) => t.group === 'omni') &&
-  availableTools({ bot: false, omni: true, seal: false }).length > 0)
+  availableTools({ bot: false, omni: true, seal: false, codex: false }).every((t) => t.group === 'omni') &&
+  availableTools({ bot: false, omni: true, seal: false, codex: false }).length > 0)
 check('bot tools are withheld when the bot is down',
-  !availableTools({ bot: false, omni: true, seal: false }).some((t) => t.group === 'bot'))
+  !availableTools({ bot: false, omni: true, seal: false, codex: false }).some((t) => t.group === 'bot'))
 check('no tools at all when neither subsystem is reachable',
-  availableTools({ bot: false, omni: false, seal: false }).length === 0)
+  availableTools({ bot: false, omni: false, seal: false, codex: false }).length === 0)
 
 // Each omni tool description has to carry the rule the model gets wrong without it. This is
 // the last layer of omni's design and the only one with no type system under it.
@@ -428,7 +465,7 @@ check('non-numeric replay arguments are dropped', (() => {
 })())
 check('tool names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length)
 check('definitions are OpenAI-shaped',
-  toolDefinitions({ bot: true, omni: true, seal: true }).every((d) => d.type === 'function' && d.function.name && d.function.parameters))
+  toolDefinitions({ bot: true, omni: true, seal: true, codex: false }).every((d) => d.type === 'function' && d.function.name && d.function.parameters))
 
 // Models routinely ask for 500 rows. The clamp is what keeps one greedy call from
 // eating the whole context window.
@@ -525,6 +562,305 @@ check('a caution instruction names the bottleneck', caution.includes('perception
 // endpoint, must stay fully usable rather than refuse every question.
 check('an unreachable gate is no opinion, not a refusal',
   (await readGate('http://127.0.0.1:1')) === null)
+
+console.log('\n\u2500\u2500 codex \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500')
+
+// The whole value of the codex is that it was written from the repository rather than from
+// the names, and the only thing that keeps that true over time is this: a renamed or deleted
+// crate fails the build instead of quietly becoming folklore she recites with confidence.
+const missingPaths = CODEX.filter((e) => e.path && !existsSync(join(REPO_ROOT, e.path)))
+check(
+  `every codex path exists on disk${missingPaths.length ? ` (missing: ${missingPaths.map((e) => e.path).join(', ')})` : ''}`,
+  missingPaths.length === 0,
+)
+
+const ids = codexIds()
+check('codex ids are unique', new Set(ids).size === ids.length)
+
+// A dangling `related` id renders as a broken cross-reference in a tool result, which the
+// model reads as a real area and then describes. Same failure class as a missing path.
+const dangling = CODEX.flatMap((e) =>
+  e.related.filter((r) => !codexEntry(r)).map((r) => `${e.id}->${r}`),
+)
+check(`every related id resolves${dangling.length ? ` (dangling: ${dangling.join(', ')})` : ''}`,
+  dangling.length === 0)
+
+check('every entry has a summary', CODEX.every((e) => e.summary.trim().length > 30))
+check('the codex covers Scematica Omni', codexEntry('scematica-omni') !== null)
+check('the codex covers the omni daemon Scylar actually calls', codexEntry('scema-daemon') !== null)
+check('the codex covers Scylar herself', codexEntry('scylar') !== null)
+check('the codex covers the psyche', codexEntry('scylar-psyche') !== null)
+
+// Search has to find the daemon from how an operator would ask for it, not only from its id.
+check('search finds the daemon from a sentence',
+  searchCodex('how does the omni daemon authenticate').some((e) => e.id === 'scema-daemon'))
+check('search finds the coherence breaker by concept',
+  searchCodex('epistemic breaker fail open').some((e) => e.id === 'coherence-breaker'))
+check('search finds the vault from "proof of reserve"',
+  searchCodex('proof of reserve').some((e) => e.id === 'escrow' || e.id === 'scematica-vault'))
+
+// The refusal is the point: a miss must not be answered from the name. This is the one
+// codex behaviour that, if it broke, would produce confident invention with no tell.
+const miss = lookup('quantum flux capacitor subsystem')
+check('a codex miss says so plainly', /has no entry/.test(miss))
+check('a codex miss offers the real areas instead', miss.includes('Bot crates:'))
+
+check('the codex map groups by kind', codexMap().includes('Omni crates:'))
+check('the codex map lists every id',
+  ids.every((id) => codexMap().includes(id)))
+
+console.log('\n\u2500\u2500 psyche \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500')
+
+const baseCtx = {
+  turn: 0,
+  utterance: 'what can you see right now?',
+  senses: { bot: 'live', omni: true, sealing: false, codex: true, tools: ['explain_project'] },
+  gate: { verdict: 'go', psi: 0.91, bottleneck: null },
+  provider: { id: 'groq', model: 'llama-3.3-70b-versatile' },
+  blocks: {},
+  budget: DEFAULT_BUDGET,
+}
+
+const composed = composePsyche(baseCtx)
+
+// The identity line the whole overhaul is about. Asserted verbatim: it is the one string a
+// well-meaning edit is most likely to "improve" into something that no longer says what she
+// is, and it is the first thing every turn is conditioned on.
+check('the identity layer states who she is, verbatim',
+  composed.text.startsWith('I am Scylar, the Scematica sentience AI assistant.'))
+
+check('identity comes before epistemics',
+  composed.active.indexOf('identity-core') < composed.active.indexOf('epistemic-core'))
+
+// Composition is pure: same context, same string. Without this nothing else here can be
+// pinned, and a turn that went wrong could not be reproduced from its header.
+check('composition is deterministic', composePsyche(baseCtx).text === composed.text)
+
+// The two layers that may never be budgeted out. The failure they prevent — a confident
+// fabrication in her own voice — is the one nobody can see from outside the process.
+const starved = composePsyche({ ...baseCtx, budget: 1 })
+check('identity survives a zero budget', starved.active.includes('identity-core'))
+check('epistemics survives a zero budget', starved.active.includes('epistemic-core'))
+check('a starved budget drops something rather than silently fitting',
+  starved.dropped.length > 0)
+
+// Interoception is the layer that makes "what can you see?" answerable rather than guessed.
+// Each bot state has to reach the prompt as a DIFFERENT sentence, because they are four
+// different next actions for the operator.
+const senseText = (bot) =>
+  composePsyche({ ...baseCtx, senses: { ...baseCtx.senses, bot } }).text
+check('a live bot reads as open', /Bot: OPEN/.test(senseText('live')))
+check('a toggled-off bot is not reported as a fault', /Bot: OFF/.test(senseText('off')))
+check('an unreachable bot is dark', /Bot: DARK/.test(senseText('unavailable')))
+check('a withheld bot is distinguished from an absent one',
+  /Bot: WITHHELD/.test(senseText('held')) && !/Bot: DARK/.test(senseText('held')))
+check('a simulated bot is labelled as simulated', /Bot: SIMULATED/.test(senseText('simulation')))
+
+// Ψ has to arrive as a number when measured and as the word when it is not — the same
+// distinction the gauge draws, stated in the one place the model reads.
+check('interoception carries a measured Ψ', composed.text.includes('0.91'))
+check('interoception says unmeasured rather than 0.00',
+  /\u03a8 unmeasured/.test(
+    composePsyche({ ...baseCtx, gate: { verdict: 'go', psi: null, bottleneck: null } }).text,
+  ))
+
+// Continuity is about *this* session, so it has nothing to say on the first turn and must
+// not claim a memory she does not have on any turn.
+check('continuity is absent on the first turn', !composed.active.includes('continuity'))
+check('continuity applies once there is history',
+  composePsyche({ ...baseCtx, turn: 3 }).active.includes('continuity'))
+check('first contact applies only on the first turn',
+  composed.active.includes('first-contact') &&
+    !composePsyche({ ...baseCtx, turn: 1 }).active.includes('first-contact'))
+
+// The self-model has to state the limit rather than leave it to be inferred: a model asked
+// whether it is conscious will otherwise overclaim or deflect, and both are worse than the
+// true answer. This is the layer that keeps a "sentience assistant" honest about the word.
+check('the self-model refuses to claim inner experience',
+  /not\s+a claim about inner experience/i.test(composed.text))
+check('the self-model names her own modules',
+  composed.text.includes('psyche.ts') && composed.text.includes('codex.ts'))
+
+// Situational blocks travel with their data and sit at the end — a rule stated beside the
+// thing it governs survives, one stated in a preamble is averaged away.
+const withBlocks = composePsyche({
+  ...baseCtx,
+  blocks: { botState: 'SCEMATICA STATE\npnl: +1.2', gateInstruction: 'GATE: caution' },
+})
+check('the state block lands after the identity',
+  withBlocks.text.indexOf('SCEMATICA STATE') > withBlocks.text.indexOf('I am Scylar'))
+check('a gate instruction survives a zero budget',
+  composePsyche({
+    ...baseCtx, budget: 1, blocks: { gateInstruction: 'GATE: caution' },
+  }).active.includes('gate-instruction'))
+
+// The budget exists so a future layer cannot silently push the state block out — not to
+// trim the present set. This is what turns that intent into something that fails the build:
+// every layer applicable, a live state block, a CAUTION gate, the tool list and the full
+// omni doctrine, and nothing may drop.
+const fullLoad = composePsyche({
+  ...baseCtx,
+  turn: 4,
+  senses: { ...baseCtx.senses, sealing: true },
+  gate: { verdict: 'caution', psi: 0.42, bottleneck: 'perception' },
+  blocks: {
+    botState: `SCEMATICA STATE (LIVE)
+${'x'.repeat(1400)}`,
+    gateNote: 'note '.repeat(20),
+    gateInstruction: 'GATE: caution '.repeat(20),
+    toolInstruction: 'tools '.repeat(60),
+    omniInstruction: OMNI_INSTRUCTION(['omni_simulate', 'omni_records', 'omni_verify'], true),
+  },
+})
+check(`a full-load turn drops nothing (${fullLoad.chars}/${DEFAULT_BUDGET} chars)`,
+  fullLoad.dropped.length === 0)
+check('a full-load turn still carries the codex map',
+  fullLoad.active.includes('codex-map') && fullLoad.active.includes('self-model'))
+
+check('every registered layer has a unique id',
+  new Set(PSYCHE.map((i) => i.id)).size === PSYCHE.length)
+check('the header reports what was injected',
+  composed.active.length > 0 && composed.active.every((id) => PSYCHE.some((i) => i.id === id)))
+
+console.log('\n\u2500\u2500 sigil \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500')
+
+// 0 degrees is twelve o'clock. Absorbed in `polar` so no call site has to think about SVG's
+// three-o'clock origin, and wrong here means every arc is rotated a quarter turn.
+const top = polar(50, 0)
+check('0 degrees is the top', Math.abs(top.x - 100) < 0.001 && top.y < 100)
+const right = polar(50, 90)
+check('90 degrees is the right', right.x > 100 && Math.abs(right.y - 100) < 0.001)
+
+// THE rule of this file, in its two halves. An unmeasured gauge and a measured zero must
+// not produce the same picture — that is the em-dash failure in vector form.
+const ghost = gaugeArc(null, 78, -135, 135)
+const zero = gaugeArc(0, 78, -135, 135)
+const half = gaugeArc(0.5, 78, -135, 135)
+check('an unmeasured gauge is not measured', ghost.measured === false)
+check('an unmeasured gauge reads as an em dash', ghost.label === '\u2014')
+check('a measured zero reads as 0.00', zero.label === '0.00' && zero.measured === true)
+check('an unmeasured gauge draws the full sweep, not nothing', ghost.d === ghost.track)
+check('a measured zero draws no arc', zero.d === '')
+check('unmeasured and measured-zero are visibly different', ghost.d !== zero.d)
+check('only an unmeasured gauge is ghosted', ghost.ghost === true && zero.ghost === false)
+check('a half gauge is shorter than the full track',
+  half.d.length > 0 && half.d !== half.track)
+check('a gauge clamps above 1 rather than wrapping past its own start',
+  gaugeArc(1.4, 78, -135, 135).d === gaugeArc(1, 78, -135, 135).d)
+check('a gauge clamps below 0', gaugeArc(-3, 78, -135, 135).label === '0.00')
+check('a NaN gauge is unmeasured, not zero', gaugeArc(NaN, 78, -135, 135).label === '\u2014')
+
+// A degenerate arc renders as nothing on some engines and as a full circle on others, and
+// a full circle is the single worst thing a zero gauge could draw.
+check('a zero-sweep arc is empty, never a full circle', arcPath(50, 90, 90) === '')
+check('a full sweep is drawn as two arcs', (arcPath(50, 0, 360).match(/A /g) || []).length === 2)
+
+// Coverage: one cell per term, never a proportional bar. A bar renders 2/5 and 4/10
+// identically, and the denominator is the number that matters.
+const cov = coverageCells(2, 9)
+check('coverage is one cell per term', cov.cells.length === 9)
+check('coverage fills only the measured cells',
+  cov.cells.filter(Boolean).length === 2 && cov.label === '2/9')
+check('2/5 and 4/10 are different meters',
+  coverageCells(2, 5).cells.length !== coverageCells(4, 10).cells.length)
+check('an absent coverage is null, not an empty meter', coverageCells(0, 0) === null)
+
+// Colour is a claim about trust, decided in one place. `held` must not collapse into
+// `dark`: a channel that read fine and was withheld is a different fact from one that
+// never answered, and only one of them is a fault.
+check('an open channel reads live', channelRole('open') === 'live')
+check('held is its own role, not dark', channelRole('held') !== channelRole('dark'))
+check('simulated is its own role', channelRole('simulated') === 'sim')
+
+// Motion is a claim, not decoration. An idle ring must be the slowest thing on the page and
+// must not pulse, or a stopped stream is indistinguishable from a running one.
+const mIdle = motionFor({ kind: 'idle' })
+const mThink = motionFor({ kind: 'thinking' })
+const mSpeak = motionFor({ kind: 'streaming', elapsedMs: 0 })
+check('idle is the slowest rotation', mIdle.spinSecs > mThink.spinSecs && mIdle.spinSecs > mSpeak.spinSecs)
+check('an idle ring does not pulse', mIdle.pulse === false && mThink.pulse === true)
+check('the counter-ring is slower than the ring it opposes',
+  mIdle.counterSecs > mIdle.spinSecs && mSpeak.counterSecs > mSpeak.spinSecs)
+check('intensity rises from idle to speaking', mSpeak.intensity > mIdle.intensity)
+
+// An idle trace that wiggles is a fabricated readout.
+const flat = tracePoints([], 84, 18)
+check('an empty trace is a flat line', flat.split(' ').length === 2 && flat.includes('9'))
+const live = tracePoints([1, 4, 2], 84, 18, 8)
+check('a live trace fills every slot', live.split(' ').length === 8)
+check('a short history pads flat on the left rather than stretching',
+  live.split(' ')[0].endsWith(',9'))
+
+// The status word: a HOLD outranks whatever the phase is doing, because it is a statement
+// about whether the answer being streamed can be trusted at all.
+const chans = [{ id: 'bot', label: 'BOT', state: 'dark', title: '' }]
+const viewHeld = sigilView({
+  phase: { kind: 'streaming', elapsedMs: 0 }, psi: 0.2, verdict: 'hold',
+  coverage: null, channels: chans, trace: [],
+})
+check('a hold outranks the phase in the status word', viewHeld.status === 'HELD')
+check('an all-dark ring says OFFLINE',
+  sigilView({
+    phase: { kind: 'idle' }, psi: null, verdict: null, coverage: null, channels: chans, trace: [],
+  }).status === 'OFFLINE')
+check('an absent coverage survives to the view as null',
+  sigilView({
+    phase: { kind: 'idle' }, psi: null, verdict: null, coverage: null, channels: chans, trace: [],
+  }).coverage === null)
+
+// Ticks and radii are shared constants so the component and these checks cannot disagree.
+// Layout collisions. The readouts stack in the column the Ψ arc leaves open at the bottom,
+// and a channel node landing in that column draws a two-letter label straight through a
+// number. Both are geometry, so both are checkable — and neither is visible in a diff.
+const bands = [READOUT.trace.y + READOUT.trace.h / 2, READOUT.coverage.y, READOUT.status.y]
+check('the readout bands stack without overlapping',
+  bands.every((y, i) => i === 0 || y > bands[i - 1]))
+check('the readout stack fits inside the viewBox', READOUT.status.y < 200)
+check('the Ψ figure sits above the portrait, clear of the stack', READOUT.psi.y < READOUT.trace.y)
+
+// Four channels on the diagonals. `Math.abs(x - CENTER) > half the trace width` is the
+// actual property: no node may sit in the column the trace, meter and status occupy.
+const nodes = channelPositions(4, RADIUS.channels, CHANNEL_START)
+check('no channel node sits in the readout column',
+  nodes.every((p) => Math.abs(p.x - CENTER) > READOUT.trace.w / 2 || p.y < READOUT.trace.y - 20))
+check('channel nodes are evenly spread', new Set(nodes.map((p) => Math.round(p.x))).size === 2)
+
+check('ticks are evenly spaced and marked', ticks(60, RADIUS.ticks).filter((t) => t.major).length === 12)
+check('the gauge sits inside the tick ring', RADIUS.gauge < RADIUS.ticks)
+check('the channel nodes sit inside the gauge', RADIUS.channels < RADIUS.gauge)
+
+console.log('\n\u2500\u2500 codex tools \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500')
+
+const codexOnly = { bot: false, omni: false, seal: false, codex: true }
+
+// The point of the codex group: a deployment with no bot and no daemon can still explain
+// the project. Before it existed, a stopped sniper meant she could not answer a question
+// about the repository — the exact moment an operator most wants one.
+check('the codex is available with nothing else running',
+  availableTools(codexOnly).length === 2)
+check('a codex-only deployment offers no bot or omni tools',
+  availableTools(codexOnly).every((t) => t.group === 'codex'))
+
+// A local tool has no path at all, which is stronger than hard-coding one: there is no URL
+// for a model to aim at, and no way for a later edit to give the codex one by accident.
+check('codex tools reach no URL',
+  TOOLS.filter((t) => t.group === 'codex').every((t) => !t.path && typeof t.local === 'function'))
+check('every non-local tool still has a path',
+  TOOLS.filter((t) => !t.local).every((t) => typeof t.path === 'string' && t.path.length > 0))
+
+const explained = await runTool('http://127.0.0.1:1', 'explain_project', '{"topic":"scema-daemon"}', codexOnly)
+check('explain_project answers without a network', explained.ok === true)
+check('explain_project returns the invariants, not just a summary',
+  explained.content.includes('Invariants'))
+check('explain_project reaches Scematica Omni',
+  explained.content.includes('loopback'))
+
+const missed = await runTool('http://127.0.0.1:1', 'explain_project', '{"topic":"flux capacitor"}', codexOnly)
+check('an unknown topic is refused rather than invented',
+  missed.ok === true && /has no entry/.test(missed.content))
+
+const areas = await runTool('http://127.0.0.1:1', 'list_project_areas', '{}', codexOnly)
+check('list_project_areas returns the map', areas.ok === true && areas.content.includes('Web products:'))
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)
 process.exit(failed === 0 ? 0 : 1)

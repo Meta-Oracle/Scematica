@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 
 import { usePortraits } from '@/lib/scylar/usePortraits'
@@ -9,6 +9,7 @@ import { ScylarMessage } from './ScylarMessage'
 import { useSpeech } from './useSpeech'
 import { helpText, parseCommand } from '@/lib/scylar/commands'
 import { type AvatarPhase, readsPositive } from '@/lib/scylar/expressions'
+import type { Channel, ChannelState } from '@/lib/scylar/sigil'
 import {
   type ToolUse,
   type Turn,
@@ -34,10 +35,27 @@ interface ProviderStatus {
   freeTierNote: string | null
   configured: string[]
   checked: string[]
+  /**
+   * Reported by `GET /api/scylar/chat`. Read here only to light the OMN node on the ring —
+   * whether a daemon is configured is a fact about the deployment, and one the operator
+   * otherwise has to discover by asking her and reading the answer carefully.
+   */
+  omni?: { configured: boolean; sealing: boolean }
 }
 
 /** History sent upstream. Matches MAX_HISTORY in the route; the route still enforces it. */
 const SEND_HISTORY = 20
+
+/**
+ * Trace bucket width, and how many buckets the ring shows.
+ *
+ * 120ms x 32 is a ~3.8s window — long enough to see a pause between sentences, short enough
+ * that the trace is about the answer being written rather than about the whole turn. The
+ * bucket is deliberately coarser than a frame: this is a readout of token arrival, not a
+ * waveform, and smoothing it into something prettier would be inventing detail.
+ */
+const TRACE_SLOT_MS = 120
+const TRACE_SLOTS = 32
 
 export function ScylarTerminal() {
   const [turns, setTurns] = useState<Turn[]>([])
@@ -55,6 +73,19 @@ export function ScylarTerminal() {
   // shows the pending state. `null` rather than a boolean: two proposals can be on screen.
   const [sealing, setSealing] = useState<number | null>(null)
   const [sealError, setSealError] = useState<string | null>(null)
+  // ── instrument-ring telemetry ────────────────────────────────────────────────
+  //
+  // Every field here is a reading, never a mood. `null` means the value was not measured
+  // this session and the ring draws it as such — see `lib/scylar/sigil.ts` for why an
+  // unmeasured gauge must not look like a measured zero.
+  const [psi, setPsi] = useState<number | null>(null)
+  const [verdict, setVerdict] = useState<'go' | 'caution' | 'hold' | null>(null)
+  const [coverage, setCoverage] = useState<{ measured: number; total: number } | null>(null)
+  // Token arrivals bucketed at TRACE_SLOT_MS. Held in a ref and flushed on a timer that only
+  // runs while streaming: a setState per delta would re-render the whole transcript at token
+  // rate, which is the one place this page cannot afford it.
+  const [trace, setTrace] = useState<number[]>([])
+  const traceRef = useRef<number[]>([])
   const speech = useSpeech(useVoice)
 
   // Speaking counts as busy. Letting the next message go out while she is mid-sentence
@@ -215,7 +246,21 @@ export function ScylarTerminal() {
               const notice = frame?.scylar
               if (notice) {
                 if (Array.isArray(notice.tools)) tools = [...tools, ...notice.tools]
-                if (typeof notice.gate === 'string') gate = notice.gate
+                if (typeof notice.gate === 'string') {
+                  gate = notice.gate
+                  if (gate === 'go' || gate === 'caution' || gate === 'hold') setVerdict(gate)
+                }
+                // Ψ arrives as a number or as null. `null` is a real answer — the gate was
+                // consulted and could not measure it — so it is stored rather than skipped,
+                // and only a value that is neither is ignored as malformed.
+                if (notice.psi === null || typeof notice.psi === 'number') setPsi(notice.psi)
+                if (
+                  notice.coverage &&
+                  typeof notice.coverage.measured === 'number' &&
+                  typeof notice.coverage.total === 'number'
+                ) {
+                  setCoverage({ measured: notice.coverage.measured, total: notice.coverage.total })
+                }
                 if (notice.sealProposal && typeof notice.sealProposal.goal === 'string') {
                   sealProposal = {
                     goal: notice.sealProposal.goal,
@@ -233,6 +278,12 @@ export function ScylarTerminal() {
               const delta = frame?.choices?.[0]?.delta?.content
               if (typeof delta === 'string' && delta) {
                 assembled += delta
+                // One count per arriving delta, into the newest bucket. The bucket itself is
+                // advanced by the timer below, so this stays O(1) and allocation-free on the
+                // hot path.
+                const buckets = traceRef.current
+                if (buckets.length === 0) buckets.push(0)
+                buckets[buckets.length - 1] += 1
               }
 
               if (notice || (typeof delta === 'string' && delta)) {
@@ -449,6 +500,55 @@ export function ScylarTerminal() {
     })
   }, [])
 
+  // Advance the trace one bucket per tick while she is streaming, and stop entirely when
+  // she is not. An idle page runs no timer at all, and the trace it leaves behind is the
+  // real shape of the answer that just arrived rather than a decaying animation.
+  const streamingNow = phase.kind === 'streaming'
+  useEffect(() => {
+    if (!streamingNow) return
+    traceRef.current = []
+    setTrace([])
+    const id = setInterval(() => {
+      const buckets = traceRef.current
+      buckets.push(0)
+      if (buckets.length > TRACE_SLOTS) buckets.splice(0, buckets.length - TRACE_SLOTS)
+      setTrace([...buckets])
+    }, TRACE_SLOT_MS)
+    return () => clearInterval(id)
+  }, [streamingNow])
+
+  // What the ring's channel nodes report. Derived, never stored: a cached copy of "is the
+  // bot reachable" is a second source of truth for something the last turn already answered.
+  const channels = useMemo((): Channel[] => {
+    const last = [...turns].reverse().find((t) => t.role === 'assistant' && t.context)
+    const ctx = last?.context
+    const botState: ChannelState = !useContext
+      ? 'dark'
+      : ctx === 'held'
+        ? 'held'
+        : ctx === 'simulation'
+          ? 'simulated'
+          : ctx === 'live'
+            ? 'open'
+            : 'dark'
+    return [
+      { id: 'bot', label: 'BOT', state: botState, title: 'Sniper state' },
+      {
+        id: 'omni',
+        label: 'OMN',
+        state: status?.omni?.configured ? 'open' : 'dark',
+        title: 'Scematica Omni daemon',
+      },
+      { id: 'codex', label: 'CDX', state: 'open', title: 'Project codex' },
+      {
+        id: 'llm',
+        label: 'LLM',
+        state: status?.ok ? 'open' : 'dark',
+        title: status?.model ?? 'No provider configured',
+      },
+    ]
+  }, [turns, useContext, status])
+
   return (
     // A device, not a document: the viewport is the chassis and only the transcript
     // scrolls inside it. Previously the page itself scrolled, which made the portrait's
@@ -497,7 +597,12 @@ export function ScylarTerminal() {
       <main className="mx-auto flex w-full min-h-0 max-w-[1400px] flex-1 flex-col gap-4 px-3 py-4 lg:flex-row">
         <section className="scylar-stage flex w-full max-w-[420px] shrink-0 flex-col items-center gap-3 self-center lg:self-start">
           <div className="scylar-panel scylar-projector overflow-hidden">
-            <ScylarAvatar phase={phase} size={420} portraits={portraits} />
+            <ScylarAvatar
+              phase={phase}
+              size={420}
+              portraits={portraits}
+              telemetry={{ psi, verdict, coverage, channels, trace }}
+            />
           </div>
           <p className="scylar-readout text-center text-[0.65rem] tracking-widest text-scylar-dim">
             {phase.kind === 'thinking' && 'THINKING'}

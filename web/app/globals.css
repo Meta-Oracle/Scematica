@@ -287,6 +287,13 @@ body:has(.alchem-root)::after {
   --s-text:      #ded3f0;
   --s-muted:     #a08cc4;
   --s-dim:       #6b5a8e;
+  /* Status hues, mirroring `scylar-green` / `scylar-red` in tailwind.config.ts. The amber
+     exists only for the instrument ring's `held` role and is deliberately not violet: a
+     channel that read fine and was withheld by the Ψ gate must not be the same colour as
+     one that answered, and it is not an error either. */
+  --s-green:     #2ee6a0;
+  --s-red:       #ff5c78;
+  --s-amber:     #ffb454;
 
   background: var(--s-black);
   color: var(--s-text);
@@ -485,6 +492,191 @@ body:has(.scylar-root)::after {
   99%           { opacity: 0.92; }
 }
 
+/* ── the instrument ring ───────────────────────────────────────────────────────
+   Scylar's telemetry, drawn as SVG around the portrait. `components/scylar/
+   ScylarSigil.tsx` places elements and names roles; every hex lives here, the same
+   split as `theme.rs` in the omni console and `toneFor` in lib/mesh.
+
+   Everything that moves is a CSS animation rather than SMIL, for three reasons:
+   `<animateTransform>` ignores `prefers-reduced-motion` entirely, CSS composites the
+   rotation on the GPU without a rAF loop, and one media query at the bottom of this
+   block switches the whole instrument still. The durations arrive as custom properties
+   because they are derived from state (`motionFor`), which CSS cannot compute. */
+
+.scylar-sigil-layer {
+  z-index: 2;                 /* over the sprites, under `.scylar-holo`'s scanlines */
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+}
+
+.scylar-sigil {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  /* Set by the component from `motionFor`. Falling back here rather than only in JS means
+     a ring rendered before hydration is slow and dim, not stopped and invisible. */
+  --sigil-spin: 96s;
+  --sigil-counter: 140s;
+  --sigil-intensity: 0.34;
+  opacity: calc(0.45 + 0.55 * var(--sigil-intensity));
+  transition: opacity 620ms ease-out;
+}
+
+.scylar-sigil-spin    { animation: scylarSigilSpin var(--sigil-spin) linear infinite; }
+.scylar-sigil-counter { animation: scylarSigilSpin var(--sigil-counter) linear infinite reverse; }
+
+@keyframes scylarSigilSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.scylar-sigil-rim {
+  stroke: var(--s-border);
+  stroke-width: 0.6;
+  opacity: 0.75;
+}
+
+.scylar-sigil-tick {
+  stroke: var(--s-violet-dim);
+  stroke-width: 0.6;
+  opacity: 0.45;
+}
+
+.scylar-sigil-tick.is-major {
+  stroke: var(--s-violet);
+  stroke-width: 0.9;
+  opacity: 0.8;
+}
+
+/* The scanner arc. Rides the same rotation as the ticks so it never drifts out of phase
+   with the marks it is passing over. */
+.scylar-sigil-sweep {
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.scylar-sigil-dash {
+  stroke: var(--s-violet-dim);
+  stroke-width: 0.7;
+  stroke-dasharray: 2 9;
+  opacity: 0.55;
+}
+
+/* ── the Ψ gauge ──────────────────────────────────────────────────────────────
+   The track is always drawn; the value arc sits on it. A ghost — an unmeasured Ψ — is the
+   FULL sweep, dashed and dim, and is the one case that must never be mistaken for a value.
+   A measured zero draws no arc at all, and the `Ψ —` vs `Ψ 0.00` readout is what tells the
+   two apart. Making them look alike would be the em-dash failure in vector form. */
+
+.scylar-sigil-track {
+  stroke: var(--s-hi);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.scylar-sigil-gauge {
+  stroke: var(--s-violet-hi);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: d 420ms ease-out;
+}
+
+.scylar-sigil-gauge.is-ghost {
+  stroke: var(--s-dim);
+  stroke-width: 1.6;
+  stroke-dasharray: 1.5 5;
+  opacity: 0.5;
+}
+
+.scylar-sigil-cap {
+  fill: var(--s-violet-hi);
+}
+
+.scylar-sigil-psi {
+  fill: var(--s-violet-hi);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── channel nodes ────────────────────────────────────────────────────────────
+   Four subsystems, four states, four roles. `held` is amber and not the same as `dark`:
+   a channel that read fine and was withheld by the gate is a different fact from one that
+   never answered, and this ring is one of two places that difference is visible without
+   reading a paragraph. */
+
+.scylar-sigil-node-ring { fill: none; stroke-width: 0.8; }
+.scylar-sigil-node-core { stroke: none; }
+
+.scylar-sigil-node-label {
+  font-size: 5.4px;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+.scylar-sigil-node[data-role='live'] .scylar-sigil-node-ring  { stroke: var(--s-green); opacity: 0.9; }
+.scylar-sigil-node[data-role='live'] .scylar-sigil-node-core  { fill: var(--s-green); }
+.scylar-sigil-node[data-role='live'] .scylar-sigil-node-label { fill: var(--s-green); }
+
+.scylar-sigil-node[data-role='idle'] .scylar-sigil-node-ring  { stroke: var(--s-border); opacity: 0.7; }
+.scylar-sigil-node[data-role='idle'] .scylar-sigil-node-core  { fill: var(--s-dim); }
+.scylar-sigil-node[data-role='idle'] .scylar-sigil-node-label { fill: var(--s-dim); }
+
+.scylar-sigil-node[data-role='warn'] .scylar-sigil-node-ring  { stroke: var(--s-amber); opacity: 0.9; }
+.scylar-sigil-node[data-role='warn'] .scylar-sigil-node-core  { fill: var(--s-amber); }
+.scylar-sigil-node[data-role='warn'] .scylar-sigil-node-label { fill: var(--s-amber); }
+
+.scylar-sigil-node[data-role='sim'] .scylar-sigil-node-ring  { stroke: var(--s-violet-dim); opacity: 0.85; }
+.scylar-sigil-node[data-role='sim'] .scylar-sigil-node-core  { fill: var(--s-violet-dim); }
+.scylar-sigil-node[data-role='sim'] .scylar-sigil-node-label { fill: var(--s-violet-dim); }
+
+/* ── readouts ─────────────────────────────────────────────────────────────────── */
+
+/* Token arrivals. Flat when nothing has streamed — `tracePoints` returns a straight line
+   rather than a plausible squiggle, because an idle trace that wiggles is a fabricated
+   readout and this whole system is built on not shipping one of those. */
+.scylar-sigil-trace {
+  stroke: var(--s-violet);
+  stroke-width: 0.9;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
+
+.scylar-sigil-status {
+  fill: var(--s-muted);
+  font-size: 6px;
+  letter-spacing: 0.3em;
+  font-weight: 600;
+}
+
+/* One cell per term, never a proportional bar — a bar renders 2/5 and 4/10 identically,
+   and the denominator is the number that matters. Same rule as the console's meter. */
+.scylar-sigil-cell        { fill: var(--s-border); }
+.scylar-sigil-cell.is-filled { fill: var(--s-violet); }
+
+.scylar-sigil-cov {
+  fill: var(--s-dim);
+  font-size: 5.2px;
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The pulse only runs while something is genuinely in flight; see `motionFor`. */
+.scylar-sigil-pulse {
+  stroke: var(--s-violet);
+  stroke-width: 0.8;
+  transform-origin: center;
+  animation: scylarSigilPulse 2.4s ease-out infinite;
+}
+
+@keyframes scylarSigilPulse {
+  0%   { transform: scale(0.86); opacity: 0.55; }
+  70%  { transform: scale(1.32); opacity: 0; }
+  100% { transform: scale(1.32); opacity: 0; }
+}
+
 /* The emitter. A light cone rising from the plinth into the panel above — the single
    strongest cue that the portrait is *projected* rather than framed, because it implies
    a source outside the image. Sits behind the panel via a negative z-index on a
@@ -596,6 +788,16 @@ body:has(.scylar-root)::after {
      most of the holographic read. Only the moving parts stop: the travelling sweep, the
      flicker and the beam's pulse. */
   .scylar-holo { animation: none; }
+  /* The ring holds its reading and stops moving. Every value it shows is still legible —
+     the arc, the nodes, the trace and the numbers are all static geometry, so nothing is
+     lost by switching the motion off. That is the test for whether motion was carrying
+     meaning, and here it was not: it was carrying emphasis. */
+  .scylar-sigil-spin,
+  .scylar-sigil-counter,
+  .scylar-sigil-pulse { animation: none; }
+  .scylar-sigil-gauge { transition: none; }
+  .scylar-sigil       { transition: none; }
+
   .scylar-stage::before { animation: none; }
 }
 

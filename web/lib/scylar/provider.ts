@@ -43,7 +43,7 @@ const CANDIDATES: Candidate[] = [
     id: 'groq',
     label: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-120b',
     envVar: 'GROQ_API_KEY',
     freeTierNote: '~30 req/min, 1k req/day — fastest free inference',
   },

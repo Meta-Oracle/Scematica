@@ -1,0 +1,342 @@
+THE BEGINNER'S HYPOTHESIS
+What happens if you build an agent that is allowed to say "I don't know"?
+
+Scematica Omni - an introduction for people who have never run it
+----------------------------------------------------------------------------
+
+
+THE HYPOTHESIS, IN ONE SENTENCE
+
+  Most of the damage done by autonomous software is not caused by bad
+  reasoning over good information. It is caused by ordinary reasoning over
+  information that was never there, because the system had no way to
+  represent its own absence.
+
+That is the claim. Everything else in this document is either an argument
+for it or a mechanism built on it.
+
+
+----------------------------------------------------------------------------
+1. THE THING YOU ALREADY KNOW IS WRONG
+
+Ask any current agent to evaluate something it cannot see, and watch what
+it returns. It does not return nothing. It returns a number.
+
+The number has the right type. It sits in the right column. It has two
+decimal places, like all the real ones. Downstream, nothing can tell it
+apart from a measurement - not the ranking function, not the log, not the
+dashboard, not the person reading the dashboard at 2am.
+
+This is not a hallucination problem in the usual sense. Nobody made up a
+fact. Something worse and quieter happened: a missing value was silently
+cast to a present one. A gap became a zero. "We could not read this" became
+"this is empty."
+
+An agent that cannot express ignorance will express something else instead.
+It has no choice. The type system underneath it has no shape for "unknown,"
+so the unknown gets rounded into the nearest shape that exists.
+
+
+----------------------------------------------------------------------------
+2. THE HYPOTHESIS RESTATED AS A DESIGN RULE
+
+  Every layer must be able to say "I don't know," and saying it must cost
+  nothing.
+
+The second half is the part people miss. It is easy to add a nullable field.
+It is hard to make sure that filling it in honestly does not penalise you -
+because the moment ignorance is expensive, every component in the stack
+quietly learns to guess instead.
+
+So the rule has two halves and both are load-bearing:
+
+  (a) There is a representation for "not measured" at every level - the raw
+      observation, the derived score, the specialist's opinion, and the
+      final printed line.
+
+  (b) Declaring it is neutral. Not fatal, not free-passing. Neutral. It does
+      not pin the system shut, and it does not vanish.
+
+Omni is what that rule looks like when you follow it all the way down and
+refuse to make an exception anywhere.
+
+
+----------------------------------------------------------------------------
+3. THE LOOP
+
+    observe -> hypothesise -> simulate -> score -> decide -> record -> remember
+       ^                                                                   |
+       +-------------------------------------------------------------------+
+
+Seven stages. It perceives an environment, proposes competing futures,
+projects each forward, ranks them under a stated preference, decides - or
+refuses to - and seals what it did into a record somebody else can check.
+
+No stage is magic. No stage is a language model. The whole pass is
+deterministic, which is the precondition for the last stage meaning anything
+at all.
+
+
+----------------------------------------------------------------------------
+4. FOUR WORDS YOU NEED BEFORE THE OUTPUT MAKES SENSE
+
+Almost every "wait, is it broken?" moment with this tool is one of four
+words you do not have yet. Each is a place where the CORRECT output looks
+like a malfunction.
+
+
+ 4.1  A SIGNAL IS A COUNT
+
+    SIGNALS
+      OPPORTUNITY  counted      0.22  11 marker(s) in `scema-tools`
+                                      | counted 11 marker(s)
+
+ "counted" means something was actually tallied, and the line underneath
+ says what. Omni does not have opinions about your code. It has counts, and
+ everything downstream is built out of them.
+
+ A signal marked "estimated" is a guess, and the runtime treats it very
+ differently: an estimate cannot produce a measured expected gain, so
+ branches built on one score at or below zero. That is the firewall. A guess
+ cannot launder itself into a decision by being cited.
+
+
+ 4.2  AN EM DASH IS NOT A ZERO
+
+  #  BRANCH                  GAIN   RISK   COST  UNCERT  REVERS  UTILITY  MEASURED
+  2  fix the flaky tests        -   0.40   0.10    0.00    0.70   -0.095       4/5
+
+ The dash means that term was not measured. It is not zero. It is not "no
+ gain." It is not "we checked and found nothing." Nobody looked, or nobody
+ could.
+
+ "0.00" in the same column would be a real observation: something was
+ measured and it came out at zero.
+
+ These are different claims about the world and the runtime never conflates
+ them. Read MEASURED before you read UTILITY. A utility of 0.91 computed
+ over two terms out of nine is a statement about ignorance, and the column
+ is there so you cannot miss it.
+
+
+ 4.3  GROUNDING IS ASSERTED, NEVER INFERRED
+
+ This is the one that catches everybody.
+
+    $ scema simulate "fix the flaky tests"
+
+ Your goal appears as a branch with a dash for expected gain and a negative
+ utility. Something else gets chosen, or the agent abstains entirely.
+
+ That is not the tool refusing to help. Nothing it observed supports what
+ you asked for, and an instruction is not evidence. Typing a sentence does
+ not make it true about your repository.
+
+ You link the two yourself, by signal id:
+
+    $ scema observe .                                    # lists the ids
+    $ scema simulate "fix the flaky tests" --ground untested:scema-cli
+
+ Omni will never guess this link. An earlier version did, by keyword
+ overlap, and its very first run grounded "add tests to the scema-cli crate"
+ in an unrelated crate's backlog - because "scema" is a substring of every
+ unit name in this repository. The branch inherited a measured gain from
+ evidence that had nothing to do with it.
+
+ That is the exact laundering the whole design exists to prevent. The
+ inference was removed and will not come back.
+
+
+ 4.4  ABSTENTION IS AN ANSWER
+
+    ABSTAINED  the best branch scores -0.095; acting is worse than not acting
+
+ "scema decide" exits 0 when it abstains. It did its job. The job's answer
+ was "don't."
+
+ That exit code is deliberate. A script that treats "the agent declined" as
+ a crash gets rewritten to ignore the exit code, and then it ignores real
+ crashes too.
+
+ There are five distinct reasons, and WHICH ONE is the actionable part:
+
+    NoCandidates        nothing was proposed at all
+    AllForbidden        your own constraints excluded everything
+    NoPositiveUtility   acting scores worse than not acting
+    TooLittleMeasured   too little was observed to rank on - this is about
+                        the observation, not the branches
+    Contested           a qualified specialist vetoed the top branch
+
+ Five different instructions to the operator. Collapsing them into "failed"
+ destroys the only useful thing an abstention carries.
+
+
+----------------------------------------------------------------------------
+5. THE PART THAT SURPRISES PEOPLE
+
+Here is a real ranking from a real run against the runtime's own source
+tree:
+
+  #   BRANCH                              GAIN   RISK   COST  UNCERT  REVERS  UTILITY  MEASURED
+> 1   take: 11 marker(s) in `scema-tools` 0.22   0.40   0.10    0.00    0.70    0.125       5/5
+  2   add tests to the scema-cli crate       -   0.40   0.10    0.00    0.70   -0.095       4/5
+
+Branch 2 is what the operator typed. It lost. It prints a dash for its
+expected gain, because nothing observed supports it, and it scores negative
+because acting on unsupported evidence is worse than not acting.
+
+The runtime chose something else, and it says so.
+
+The first instinct is that this is the tool being unhelpful. It is the tool
+being right, and it is the behaviour every other part of the design exists
+to protect. On a barely-perceived world, most branches project exactly zero
+and the agent abstains - and that is the correct output, not a bug to tune
+away.
+
+
+----------------------------------------------------------------------------
+6. FOUR KINDS OF WORLD, ONE LOOP
+
+"Domain-agnostic" is a cheap claim. What makes it true here is that a source
+repository, a running trading system, a set of on-chain oracle feeds and a
+web page are all the same type - a WorldState - and nothing above perception
+can tell which one it was looking at.
+
+    $ scema observe .                                         # a source tree
+    $ mesh-dashboard --world | scema simulate "..." --path -   # a running bot
+    $ alchem-link omni -n base | scema simulate "..." --path - # 66 oracle feeds
+    #  the browser extension posts a perceived web page
+
+Only the first is a filesystem walk inside the runtime. The other three are
+written in other languages, behind other dependency graphs. So the
+arrangement is inverted: the thing being observed describes itself in the
+runtime's vocabulary, and the runtime imports that.
+
+Which means teaching it to perceive something new - a Kubernetes cluster, a
+dataset, a CI pipeline, a document corpus - does not require changing the
+runtime. You write a producer that emits the same JSON, in whatever language
+that thing already lives in, and pipe it in.
+
+    $ my-tool --world | scema check -
+
+
+----------------------------------------------------------------------------
+7. WHAT A DECISION RECORD PROVES
+
+"scema decide" seals a JSON file containing the world that was observed
+(blind spots and unreadable things included), the branches, the projections,
+the weights, the outcome, and six SHA-256 digests binding all of it.
+
+Be precise about what that buys you:
+
+  IT PROVES         the record was not edited after sealing - and names the
+                    exact field that moved.
+
+  IT DOES NOT PROVE the world was really like that. An observer that misread
+                    your project produces a perfectly verifiable record of a
+                    wrong observation. Provenance carries that claim, which
+                    is why the world is committed whole.
+
+  IT DOES NOT PROVE this is the original record. Anybody holding the file
+                    can regenerate both it and its commitment. This is
+                    tamper-EVIDENT to a third party holding an earlier copy,
+                    not tamper-proof.
+
+Three claims, and the discipline of never letting the first be read as the
+other two is itself part of the hypothesis. A verifier that oversells what
+it verifies is a verifier people eventually stop believing.
+
+
+----------------------------------------------------------------------------
+8. WHAT WOULD FALSIFY THIS
+
+A hypothesis that cannot fail is not a hypothesis. Four ways this one could
+turn out to be wrong:
+
+  1. HONEST IGNORANCE IS UNUSABLE.
+     If a runtime that abstains this readily abstains on nearly everything
+     real, then the design produces a very rigorous tool nobody runs twice.
+     The test is whether measured signal accumulates fast enough on real
+     worlds to produce decisions rather than a permanent shrug.
+
+  2. THE COVERAGE COLUMN GETS IGNORED.
+     The whole apparatus depends on a human or a model reading MEASURED
+     before UTILITY. If people learn to skip it - the way they learned to
+     skip certificate warnings - the type system underneath has bought
+     nothing.
+
+  3. THE LAST MILE UNDOES IT.
+     A model summarising the output writes "expected gain: 0.00" where the
+     tool printed a dash, and the entire chain of honesty is destroyed in
+     one sentence, invisibly. This is the sharpest live threat and it is
+     addressed with prose instructions, which is a weaker mechanism than
+     types.
+
+  4. SOMEONE ADDS A HELPFUL DEFAULT.
+     Every failure this design guards against originally arrived as a
+     reasonable-looking convenience. Inferring grounding from keywords was
+     helpful. Defaulting a missing feature to zero was helpful. The
+     hypothesis fails the moment maintenance pressure reintroduces one.
+
+
+----------------------------------------------------------------------------
+9. FIFTEEN MINUTES
+
+    $ cargo install scema-cli
+    $ cd ~/some-project
+    $ scema quickstart
+
+"quickstart" walks the whole loop over code you already have, explains each
+stage as it prints, and writes nothing. It deliberately stops before
+sealing: a tutorial that writes a decision record on your behalf has taught
+you the wrong thing about the one command that leaves a trace.
+
+Then, in the order you will want them:
+
+    scema observe .              # the world, with every signal id
+    scema simulate "<goal>"      # rank branches. never writes
+    scema decide "<goal>"        # same computation, but seals a record
+    scema explain --list         # what has been sealed
+    scema verify --all           # re-check every record
+    scema policy                 # the weights, and which specialists loaded
+    scema doctor                 # installed, wired, or quietly broken
+
+"simulate" and "decide" compute exactly the same thing. The only difference
+is that "decide" leaves a trace. That is why they are two commands and not a
+flag.
+
+
+----------------------------------------------------------------------------
+10. WHAT IT DELIBERATELY DOES NOT DO
+
+Worth knowing before you plan around it.
+
+  NOTHING HERE WRITES to an environment it observed. "execute", "delegate",
+  "discover" and "pay" are registered verbs that exit non-zero and say what
+  is missing. They are in --help on purpose - a verb that silently did not
+  exist would be indistinguishable from one that failed.
+
+  The action path is last on purpose. The loop is worth trusting with a
+  keyboard only after it has been watched abstaining on real inputs for a
+  while.
+
+  There is no model-backed hypothesiser yet. A model proposing branches is
+  fine in principle and the slot exists for it, but its prompt, model id and
+  raw output have to be committed into the record or determinism - and with
+  it verifiability - is gone.
+
+
+----------------------------------------------------------------------------
+THE HYPOTHESIS, RESTATED
+
+  An agent's most valuable output is not its decision. It is a decision plus
+  an honest account of what it did not know when it made one - and the only
+  way to get the second thing is to build a system in which admitting
+  ignorance is structurally free.
+
+Everything above is an attempt to find out whether that is true by building
+it and running it on real worlds.
+
+Scematica Omni is 0.5.0 - beta, 262 tests, and public.
+
+    cargo install scema-cli

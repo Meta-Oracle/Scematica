@@ -13,8 +13,18 @@
 // path never quite does — the same reasoning as `lib/alchem/endpoint.ts` refusing an
 // `--rpc-url` equivalent.
 //
-// Everything here is a GET. No control routes, no POSTs, nothing that writes a file the
-// sniper reads. She can explain what the bot did; she cannot make it do anything.
+// Everything here is a GET or a compute-and-return POST, with exactly one exception:
+// `omni_seal`, which writes a decision record. No control routes, and nothing that writes a
+// file the sniper reads. She can explain what the bot did and she can record what she
+// concluded; she cannot make the bot do anything.
+//
+// That exception is narrow on purpose. A sealed record is the only write in this system
+// whose output can be checked *without trusting the writer* — six SHA-256 digests and a
+// root that anybody can re-derive offline. If she seals something wrong, the wrongness is
+// inspectable. A control route has no such property: it has a side effect on money and the
+// operator's only recourse is the transcript. `omni_seal` is also not advertised at all
+// unless the deployment enables it, because a listed tool that always fails teaches a model
+// to retry it.
 
 /** Hard cap on a serialised tool result. Beyond this the model just gets less useful. */
 const MAX_RESULT_CHARS = 6_000
@@ -22,8 +32,24 @@ const MAX_RESULT_CHARS = 6_000
 /** Rows returned to the model, regardless of what the caller asks for. */
 const MAX_ROWS = 40
 
+/**
+ * Which subsystem a tool reaches, and therefore what has to be up for it to work.
+ *
+ * `bot` tools read the sniper's state files through this site's API. `omni` tools run the
+ * reasoning loop against a source tree via the omni daemon. Keeping them apart matters
+ * because their availability is genuinely independent: the omni loop does not care whether
+ * the sniper is running, and the Ψ gate's HOLD is a statement about stale *bot* state that
+ * says nothing about a repository.
+ *
+ * Before this split, every tool was gated on the bot being reachable, which would have
+ * switched off reasoning about the codebase whenever the trading process was stopped — the
+ * exact moment an operator is most likely to be asking what to do about it.
+ */
+export type ToolGroup = 'bot' | 'omni'
+
 export interface ToolSpec {
   name: string
+  group: ToolGroup
   description: string
   /** OpenAI-style JSON schema for the arguments. */
   parameters: Record<string, unknown>
@@ -79,6 +105,7 @@ const listOf = (key: string, keys: string[]) => (data: unknown) => {
 export const TOOLS: ToolSpec[] = [
   {
     name: 'get_pool_decisions',
+    group: 'bot',
     description:
       'Per-pool accept/reject decisions from the filter pipeline, newest last. Use this ' +
       'to explain why a specific pool was skipped or taken — it carries the rejecting ' +
@@ -94,6 +121,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_recent_trades',
+    group: 'bot',
     description:
       'Executed buys, sells and arbs with realised PnL. Use for "what did we lose money ' +
       'on", "what was the last trade", or to reason about hold times.',
@@ -107,6 +135,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_pool_radar',
+    group: 'bot',
     description:
       'Pools currently being tracked, with score, size and age. Use for "what is it ' +
       'looking at right now".',
@@ -117,6 +146,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_tx_telemetry',
+    group: 'bot',
     description:
       'Per-transaction execution quality: attempts, compute-unit price, elapsed time, ' +
       'and the timeout / rate-limit / slippage / blockhash error counters. Use this for ' +
@@ -132,6 +162,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_logs',
+    group: 'bot',
     description:
       'Raw tail of the sniper log. Use as a last resort when the structured endpoints ' +
       'do not explain something — it is verbose and costs the most tokens.',
@@ -148,6 +179,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_nn_advice',
+    group: 'bot',
     description:
       'The Deep Q* agent\'s current action, per-action Q values, top reason and ' +
       'confidence. Use for "what does the agent think right now".',
@@ -156,6 +188,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_tournament',
+    group: 'bot',
     description:
       'The three DQ* variants (conservative/balanced/aggressive), their total rewards, ' +
       'epsilons, and which is promoted to primary.',
@@ -164,6 +197,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'run_counterfactual',
+    group: 'bot',
     description:
       'Re-apply different filter thresholds to the pools the bot actually measured, and ' +
       'report what would have changed. Use for "should I loosen/tighten X", "was that ' +
@@ -192,6 +226,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_calibration',
+    group: 'bot',
     description:
       'Your own track record: how often your past calls about specific mints turned out ' +
       'right, scored against realised trade PnL. Use when asked how reliable you are, ' +
@@ -204,17 +239,193 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_controls',
+    group: 'bot',
     description:
       'Current control state: rate mode, TP/SL, multiplier, sell/dump mode, high-speed ' +
       'and moon-chase flags. Read-only — you cannot change any of these.',
     parameters: { type: 'object', properties: {} },
     path: 'controls',
   },
+
+  // ── Scematica Omni ────────────────────────────────────────────────────────────
+  //
+  // The reasoning loop, as tools. These differ from everything above in kind: the tools
+  // above report what the bot measured, these rank what could be done about it and produce
+  // an artefact somebody else can check.
+  //
+  // Each description carries the rule the model gets wrong without it. That is not padding.
+  // The last layer of omni's whole design is prose written by a model, and a summary that
+  // reports an unmeasured term as a zero has undone the type system underneath it in one
+  // sentence, with nothing downstream able to tell.
+  {
+    name: 'omni_simulate',
+    group: 'omni',
+    description:
+      'Rank competing courses of action against a goal using the Scematica Omni loop, and ' +
+      'return the ranking as text. Writes nothing. Use when asked what should be done, ' +
+      'what to prioritise, or whether something is worth doing. ' +
+      'CRITICAL when reporting the result: quote the rendered matrix and verdict as given. ' +
+      'An em dash means the term was NOT MEASURED — it is not zero and not "no gain", and ' +
+      'writing 0.00 in its place is the one failure this whole system exists to prevent. ' +
+      'Always report the coverage (MEASURED) beside any utility you mention. ' +
+      'If it abstained, say so and say WHICH of the five reasons — that is the actionable ' +
+      'part. Abstention is an answer, not a failure. ' +
+      'Grounding is never inferred: if next_steps suggests --ground ids, relay them as a ' +
+      'suggestion for the operator to confirm, and never claim a goal is grounded yourself.',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: {
+          type: 'string',
+          description: 'What the operator wants, in their own words.',
+        },
+        ground: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Signal ids the OPERATOR has said this goal addresses. Only ever pass ids the ' +
+            'operator named. Never infer these from wording.',
+        },
+      },
+      required: ['goal'],
+    },
+    path: 'scylar/omni/simulate',
+    method: 'POST',
+    body: (a) => ({
+      goal: typeof a.goal === 'string' ? a.goal : '',
+      ground: Array.isArray(a.ground) ? a.ground.filter((x) => typeof x === 'string') : [],
+    }),
+  },
+  {
+    name: 'omni_records',
+    group: 'omni',
+    description:
+      'List the sealed decision records, newest first, or fetch one by id. Use when asked ' +
+      'what has been decided, or to look up a specific decision.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'A record id (hex). Omit to list.' },
+      },
+    },
+    path: 'scylar/omni/records',
+    query: (a): Record<string, string> =>
+      typeof a.id === 'string' && a.id.trim() ? { id: a.id.trim() } : {},
+  },
+  {
+    name: 'omni_verify',
+    group: 'omni',
+    description:
+      'Recompute a decision record\'s commitment and report whether it still matches. ' +
+      'CRITICAL when reporting: this proves the record was not edited after sealing, and ' +
+      'nothing else. It does NOT prove the world was as described (provenance carries ' +
+      'that), and it does NOT prove this is the original record — it is tamper-evident, ' +
+      'not tamper-proof. State all three; a reader who thinks it proves more than it does ' +
+      'is worse off than one who never checked.',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'The record id to verify.' } },
+      required: ['id'],
+    },
+    path: 'scylar/omni/records',
+    query: (a) => ({
+      id: typeof a.id === 'string' ? a.id.trim() : '',
+      verify: '1',
+    }),
+  },
 ]
 
+/**
+ * The tool that *proposes* a write, kept out of `TOOLS` so it is absent rather than
+ * listed-and-failing when the deployment has not enabled it.
+ *
+ * Same reasoning as `omni_decide` being missing from the Claude Code plugin's manifest: a
+ * model that finds a tool it is allowed to see but never allowed to use learns to retry it,
+ * and then to route around the refusal.
+ *
+ * ## Calling it does not seal anything
+ *
+ * This is the part worth being precise about, because the first version of it was wrong.
+ * The seal route requires `confirm: true`, and the tool body set `confirm: true`
+ * unconditionally — so the confirmation was satisfied by the thing asking for it, which is
+ * no confirmation at all. A comment claiming "the chat layer only reaches this once the
+ * operator has said yes" does not become true by being written down.
+ *
+ * So `runTool` intercepts this name and never calls the route. It records a *proposal* and
+ * tells the model so. The write happens only when the operator activates the confirmation
+ * the UI renders, which posts to `/api/scylar/omni/seal` directly. The model can ask; only
+ * a human can cause.
+ *
+ * Same shape as the console, where `enter` simulates and `D` decides behind a confirmation:
+ * the two paths compute exactly the same thing, and the only thing keeping a counterfactual
+ * from becoming a decision is that they are not the same gesture.
+ */
+export const SEAL_TOOL: ToolSpec = {
+  name: 'omni_seal',
+  group: 'omni',
+  description:
+    'Seal a decision record: run the loop and WRITE the result to disk, permanently. ' +
+    'This computes exactly what omni_simulate computes — the only difference is that it ' +
+    'leaves a trace. ' +
+    'Never call this unless the operator has explicitly asked you to record or seal a ' +
+    'decision in this turn. Simulating first and showing them the ranking is always the ' +
+    'right order. After sealing, give them the record id and tell them they can check it ' +
+    'with `scema verify <id>` or at /omni, without trusting you.',
+  parameters: {
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: 'The goal to decide on.' },
+      ground: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Signal ids the operator named. Never inferred.',
+      },
+    },
+    required: ['goal'],
+  },
+  // Recorded for completeness and asserted by `check:scylar`, but never fetched from here:
+  // `runTool` intercepts this tool by name. The path is where the *operator's* confirmation
+  // goes.
+  path: 'scylar/omni/seal',
+  method: 'POST',
+  body: (a) => ({
+    goal: typeof a.goal === 'string' ? a.goal : '',
+    ground: Array.isArray(a.ground) ? a.ground.filter((x) => typeof x === 'string') : [],
+  }),
+}
+
+/** A seal the model asked for and the operator has not yet allowed. */
+export interface SealProposal {
+  goal: string
+  ground: string[]
+}
+
+/**
+ * What this deployment can currently reach.
+ *
+ * Every field comes from the server's own configuration or from a live probe — never from
+ * the request body. A caller that could ask for the writing tool to be included would be
+ * the whole gate.
+ */
+export interface ToolAvailability {
+  /** The sniper's API answered, and the Ψ gate is not holding. */
+  bot: boolean
+  /** An omni daemon is configured. */
+  omni: boolean
+  /** Sealing is enabled here *and* on the daemon. */
+  seal: boolean
+}
+
+/** Every tool available for this request. */
+export function availableTools(a: ToolAvailability): ToolSpec[] {
+  const out = TOOLS.filter((t) => (t.group === 'bot' ? a.bot : a.omni))
+  if (a.omni && a.seal) out.push(SEAL_TOOL)
+  return out
+}
+
 /** OpenAI `tools` payload. */
-export function toolDefinitions() {
-  return TOOLS.map((t) => ({
+export function toolDefinitions(a: ToolAvailability) {
+  return availableTools(a).map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }))
@@ -225,6 +436,12 @@ export interface ToolOutcome {
   /** Serialised result handed back to the model. */
   content: string
   ok: boolean
+  /**
+   * Set when the model asked to seal a record. Nothing has been written; the UI renders a
+   * confirmation and the operator decides. Carried on the outcome rather than inferred from
+   * the tool name later, so the goal the model actually proposed is the one confirmed.
+   */
+  proposal?: SealProposal
 }
 
 /**
@@ -238,15 +455,19 @@ export async function runTool(
   origin: string,
   name: string,
   rawArgs: string,
+  availability: ToolAvailability,
 ): Promise<ToolOutcome> {
-  const spec = TOOLS.find((t) => t.name === name)
+  const available = availableTools(availability)
+  const spec = available.find((t) => t.name === name)
   if (!spec) {
     // Models occasionally invent a plausible-sounding tool. Naming the real ones back at
-    // them recovers the turn far more often than a bare error does.
+    // them recovers the turn far more often than a bare error does. A model that guessed
+    // `omni_seal` while sealing is off lands here too, and is told the truth: it is not on
+    // the list. Nothing hints that it exists elsewhere.
     return {
       name,
       ok: false,
-      content: `No such tool. Available: ${TOOLS.map((t) => t.name).join(', ')}.`,
+      content: `No such tool. Available: ${available.map((t) => t.name).join(', ')}.`,
     }
   }
 
@@ -255,6 +476,29 @@ export async function runTool(
     args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {}
   } catch {
     args = {}
+  }
+
+  // The write path stops here. See the note on `SEAL_TOOL`: a confirmation the caller can
+  // satisfy on its own behalf is not a confirmation, so this records what was asked for and
+  // returns. The operator's click is what reaches the route.
+  if (spec.name === SEAL_TOOL.name) {
+    const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+    if (!goal) {
+      return { name, ok: false, content: 'A seal needs a goal. Nothing was recorded.' }
+    }
+    const ground = Array.isArray(args.ground)
+      ? args.ground.filter((x): x is string => typeof x === 'string')
+      : []
+    return {
+      name,
+      ok: true,
+      proposal: { goal: goal.slice(0, 400), ground },
+      content:
+        'Nothing has been sealed. A confirmation has been put in front of the operator ' +
+        `for the goal "${goal}". Tell them what you are proposing to record and why, and ` +
+        'that it is theirs to confirm. Do not describe the record as written, and do not ' +
+        'invent an id — there is no record until they say so.',
+    }
   }
 
   const qs = spec.query ? '?' + new URLSearchParams(spec.query(args)).toString() : ''
@@ -272,7 +516,11 @@ export async function runTool(
       body: method === 'POST' ? JSON.stringify(spec.body ? spec.body(args) : {}) : undefined,
       cache: 'no-store',
       // Replay reads thousands of decision rows; the read tools answer from one file.
-      signal: AbortSignal.timeout(method === 'POST' ? 8_000 : 4_000),
+      // Omni observes a source tree before it ranks anything, which is a different order
+      // of work from reading a state file.
+      signal: AbortSignal.timeout(
+        spec.path.startsWith('scylar/omni/') ? 20_000 : method === 'POST' ? 8_000 : 4_000,
+      ),
     })
     if (!res.ok) {
       return { name, ok: false, content: `The bot API returned ${res.status} for ${spec.path}.` }

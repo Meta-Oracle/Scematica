@@ -119,8 +119,8 @@ export function holdExplanation(gate: GateReadout): string {
 export function holdInstruction(gate: GateReadout): string {
   return [
     '[COGNITIVE GATE: HOLD] You have no bot data this turn. No SCEMATICA STATE block was',
-    'attached and no tools are available to you, because the state on disk cannot be',
-    'trusted right now:',
+    'attached and no bot-reading tools are available to you, because the state on disk',
+    'cannot be trusted right now:',
     '',
     holdExplanation(gate),
     '',
@@ -129,6 +129,9 @@ export function holdInstruction(gate: GateReadout): string {
     'you have none, and any number earlier in this conversation is from a previous turn',
     'and is now stale. Questions that do not depend on live bot state — trading concepts,',
     'the Scematica codebase, anything general — answer normally.',
+    '',
+    'This verdict is about stale *bot* state and says nothing about a source tree. If the',
+    'omni tools are listed for you, they still work and are still trustworthy here.',
   ].join('\n')
 }
 

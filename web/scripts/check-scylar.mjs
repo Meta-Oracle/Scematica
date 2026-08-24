@@ -36,7 +36,7 @@ import {
 import { parseCommand } from '../lib/scylar/commands.ts'
 import { deserialise, serialise } from '../lib/scylar/session.ts'
 import { contextSystemMessage } from '../lib/scylar/context.ts'
-import { TOOLS, runTool, toolDefinitions } from '../lib/scylar/tools.ts'
+import { SEAL_TOOL, TOOLS, availableTools, runTool, toolDefinitions } from '../lib/scylar/tools.ts'
 import {
   cautionInstruction,
   holdExplanation,
@@ -303,6 +303,33 @@ check('round-trip preserves a finished exchange', (() => {
 check('incomplete assistant turns are not stored',
   deserialise(serialise([{ role: 'assistant', content: 'partial…' }])).length === 0)
 
+// A stored seal proposal drives a control that writes, so it is untrusted input in a way
+// the rest of the transcript is not: localStorage is writable by anything on the origin,
+// and the goal inside it is what would be sent if the operator clicked.
+check('a seal proposal survives a transcript round trip',
+  deserialise(serialise([{
+    role: 'assistant', content: 'shall I record that?', done: true,
+    sealProposal: { goal: 'clear the marker backlog', ground: ['markers:x'] },
+  }]))[0].sealProposal.goal === 'clear the marker backlog')
+check('a proposal with an empty goal is dropped',
+  deserialise(JSON.stringify([{
+    role: 'assistant', content: 'x', done: true, sealProposal: { goal: '  ', ground: [] },
+  }])).length === 0)
+check('a proposal with a non-string goal is dropped',
+  deserialise(JSON.stringify([{
+    role: 'assistant', content: 'x', done: true, sealProposal: { goal: 42, ground: [] },
+  }])).length === 0)
+check('a proposal with non-string grounds is dropped',
+  deserialise(JSON.stringify([{
+    role: 'assistant', content: 'x', done: true,
+    sealProposal: { goal: 'g', ground: [{ evil: true }] },
+  }])).length === 0)
+check('a sealed marker survives a round trip',
+  deserialise(serialise([{
+    role: 'assistant', content: 'done', done: true,
+    sealProposal: { goal: 'g', ground: [] }, sealed: { id: 'abc123', root: 'ff00' },
+  }]))[0].sealed.id === 'abc123')
+
 console.log('\n── context ───────────────────────────────────────────────')
 
 const simMsg = contextSystemMessage({ source: 'simulation', text: 'PnL 0.0000 SOL' })
@@ -327,9 +354,70 @@ check('every tool hard-codes its own path',
 check('no tool targets a control route',
   TOOLS.every((t) => !t.path.startsWith('controls/') && !t.path.startsWith('push')))
 // POST is allowed only for endpoints that compute and return. "Read-only" has to be a
-// property of the list, not of the verb, or the first POST tool quietly widens it.
-check('only the computing endpoint may POST',
-  TOOLS.filter((t) => t.method === 'POST').every((t) => t.path === 'replay'))
+// property of the list, not of the verb, or the first POST tool quietly widens it. The
+// allowlist is explicit rather than a pattern, so adding a writing endpoint is a decision
+// somebody has to make here in words.
+const COMPUTING_POSTS = ['replay', 'scylar/omni/simulate']
+check('only computing endpoints may POST',
+  TOOLS.filter((t) => t.method === 'POST').every((t) => COMPUTING_POSTS.includes(t.path)))
+
+// ── the write path ────────────────────────────────────────────────────────────
+//
+// Scylar was strictly read-only. Exactly one tool now writes, and these are the properties
+// that keep that from becoming two.
+check('the sealing tool is not in the general tool list',
+  !TOOLS.some((t) => t.name === SEAL_TOOL.name))
+check('sealing is absent unless the deployment enables it',
+  !availableTools({ bot: true, omni: true, seal: false }).some((t) => t.name === SEAL_TOOL.name))
+check('sealing requires omni, not just the flag',
+  !availableTools({ bot: true, omni: false, seal: true }).some((t) => t.name === SEAL_TOOL.name))
+check('sealing is offered when both are on',
+  availableTools({ bot: true, omni: true, seal: true }).some((t) => t.name === SEAL_TOOL.name))
+
+// The confirmation must not be satisfiable by the thing asking for it. An earlier version
+// set `confirm: true` in the tool body, which made the route's 428 decorative.
+check('the seal tool body cannot confirm itself',
+  SEAL_TOOL.body({ goal: 'x' }).confirm === undefined)
+
+// Calling it proposes; it does not write. `runTool` intercepts the name before any fetch.
+const proposed = await runTool('http://unused.invalid', SEAL_TOOL.name, JSON.stringify({ goal: 'tidy up' }),
+  { bot: false, omni: true, seal: true })
+check('asking to seal records a proposal instead of sealing',
+  proposed.ok === true && proposed.proposal?.goal === 'tidy up')
+check('a proposal tells the model nothing was written',
+  /nothing has been sealed/i.test(proposed.content))
+check('a seal with no goal is refused rather than proposed', (await runTool(
+  'http://unused.invalid', SEAL_TOOL.name, '{}', { bot: false, omni: true, seal: true },
+)).proposal === undefined)
+
+// ── tool groups ───────────────────────────────────────────────────────────────
+//
+// The omni loop reasons about a source tree and does not care whether the sniper is
+// running. Gating it on the bot would switch off reasoning about the codebase at exactly
+// the moment an operator is most likely to be asking what to do about it.
+check('every tool declares a group', TOOLS.every((t) => t.group === 'bot' || t.group === 'omni'))
+check('omni tools survive the bot being down',
+  availableTools({ bot: false, omni: true, seal: false }).every((t) => t.group === 'omni') &&
+  availableTools({ bot: false, omni: true, seal: false }).length > 0)
+check('bot tools are withheld when the bot is down',
+  !availableTools({ bot: false, omni: true, seal: false }).some((t) => t.group === 'bot'))
+check('no tools at all when neither subsystem is reachable',
+  availableTools({ bot: false, omni: false, seal: false }).length === 0)
+
+// Each omni tool description has to carry the rule the model gets wrong without it. This is
+// the last layer of omni's design and the only one with no type system under it.
+const omniTools = TOOLS.filter((t) => t.group === 'omni')
+check('the simulate tool warns that an em dash is not a zero',
+  /em dash/i.test(omniTools.find((t) => t.name === 'omni_simulate').description) &&
+  /0\.00/.test(omniTools.find((t) => t.name === 'omni_simulate').description))
+check('the simulate tool requires coverage beside the score',
+  /coverage|MEASURED/.test(omniTools.find((t) => t.name === 'omni_simulate').description))
+check('the simulate tool says abstention is an answer',
+  /abstention is an answer/i.test(omniTools.find((t) => t.name === 'omni_simulate').description))
+check('the simulate tool forbids inferring grounding',
+  /never infer|never inferred/i.test(omniTools.find((t) => t.name === 'omni_simulate').description))
+check('the verify tool states what a commitment does not prove',
+  /does NOT prove/.test(omniTools.find((t) => t.name === 'omni_verify').description))
 check('a POST tool builds its body from arguments, never passes them through',
   TOOLS.filter((t) => t.method === 'POST').every((t) => typeof t.body === 'function'))
 // The model supplies numbers; anything non-numeric must vanish rather than reach the API.
@@ -340,7 +428,7 @@ check('non-numeric replay arguments are dropped', (() => {
 })())
 check('tool names are unique', new Set(TOOLS.map((t) => t.name)).size === TOOLS.length)
 check('definitions are OpenAI-shaped',
-  toolDefinitions().every((d) => d.type === 'function' && d.function.name && d.function.parameters))
+  toolDefinitions({ bot: true, omni: true, seal: true }).every((d) => d.type === 'function' && d.function.name && d.function.parameters))
 
 // Models routinely ask for 500 rows. The clamp is what keeps one greedy call from
 // eating the whole context window.
@@ -361,12 +449,13 @@ check('shaping keeps the fields that answer questions',
 check('shaping drops the fields that do not', shaped[0].utc_hour === undefined)
 
 // An invented tool name must recover the turn, not end it.
-const bogus = await runTool('http://127.0.0.1:1', 'get_everything', '{}')
+const ALL = { bot: true, omni: true, seal: false }
+const bogus = await runTool('http://127.0.0.1:1', 'get_everything', '{}', ALL)
 check('an unknown tool is refused', bogus.ok === false)
 check('an unknown tool names the real ones', bogus.content.includes('get_pool_decisions'))
 
 // An unreachable bot is information, not an exception.
-const unreachable = await runTool('http://127.0.0.1:1', 'get_controls', '{}')
+const unreachable = await runTool('http://127.0.0.1:1', 'get_controls', '{}', ALL)
 check('an unreachable API returns a message, not a throw',
   unreachable.ok === false && /could not reach/i.test(unreachable.content))
 

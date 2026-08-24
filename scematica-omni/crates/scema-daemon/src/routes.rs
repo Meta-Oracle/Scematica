@@ -41,6 +41,7 @@
 use std::sync::Arc;
 
 use scema_agent::{Agent, Cycle};
+use scema_policy::render;
 use scema_tools::Workspace;
 use scema_verify::{verify, RecordStore};
 use scema_world::{Constraint, Goal, WorldState};
@@ -77,6 +78,34 @@ struct CycleRequest {
     ground: Vec<String>,
 }
 
+/// The authoritative rendering of a cycle, as text.
+///
+/// Shipped alongside the structured record because of what happens when it is not. A
+/// client receives `Term { value: 0.0, measured: false }` and has to decide how to print
+/// it — and the failure mode, paid for twice in this repository, is that it prints `0.00`.
+/// One sentence and the type system underneath has been undone: an unmeasured term is now
+/// indistinguishable from a measured zero, and nothing downstream can tell.
+///
+/// `scema_policy::render` is the only place in Rust a `Term` becomes a string, for the same
+/// reason `lib/mesh/view.ts::toneFor` is the only thing that picks a colour: a rule that
+/// encodes a claim about trust gets exactly one implementation. Handing every HTTP client
+/// the rendered form is how that rule reaches consumers that cannot link the crate — which
+/// is all of them.
+///
+/// The structured record is still there. A client that wants to compute rather than display
+/// should read `record`; a client that wants to *show a human* should print these.
+#[derive(Debug, Serialize)]
+struct Rendered {
+    /// The ranking table, including the MEASURED column.
+    matrix: String,
+    /// The chosen branch and why, or the abstention and which of the five reasons.
+    verdict: String,
+    /// What the operator can do about this outcome. Empty when there is nothing to say.
+    next_steps: String,
+    /// Which specialists were consulted and which declined.
+    evaluators: String,
+}
+
 #[derive(Debug, Serialize)]
 struct CycleResponse {
     record: scema_verify::DecisionRecord,
@@ -86,6 +115,8 @@ struct CycleResponse {
     /// `--ground` ids naming no signal in the world. The simulator drops them; a client
     /// that never sees the list cannot tell a typo from a disagreement.
     dangling_grounds: Vec<String>,
+    /// The same cycle as text, rendered by the one implementation allowed to do it.
+    rendered: Rendered,
 }
 
 fn ok_json<T: Serialize>(value: &T) -> Response {
@@ -154,12 +185,19 @@ fn world_for(state: &State, r: &CycleRequest) -> Result<WorldState, Response> {
 }
 
 fn cycle_response(cycle: Cycle, dangling: Vec<String>) -> Response {
+    let rendered = Rendered {
+        matrix: render::matrix(&cycle.decision, &cycle.projections),
+        verdict: render::verdict(&cycle.decision),
+        next_steps: render::next_steps(&cycle.world, &cycle.record.goal, &cycle.decision),
+        evaluators: render::evaluators(&cycle.decision),
+    };
     ok_json(&CycleResponse {
         persisted: cycle.record_path.is_some(),
         record_path: cycle.record_path.as_ref().map(|p| p.display().to_string()),
         remembered: cycle.remembered,
         record: cycle.record,
         dangling_grounds: dangling,
+        rendered,
     })
 }
 
@@ -496,6 +534,45 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(v["persisted"], serde_json::json!(false));
         assert!(RecordStore::new(root.clone()).ids().unwrap().is_empty());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_cycle_ships_the_authoritative_rendering_beside_the_record() {
+        // Every HTTP client is a client that cannot link `scema-policy`, which means every
+        // HTTP client would otherwise have to decide for itself how to print a `Term` — and
+        // the failure mode, paid for twice here, is that an unmeasured one prints as `0.00`.
+        let root = scratch();
+        let s = state(&root, true);
+        let body = r#"{"locator":".","goal":"tidy up"}"#;
+        let r = handle(&s, req("POST", "/simulate", Some(&s.token), body));
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+
+        let matrix = v["rendered"]["matrix"].as_str().unwrap();
+        assert!(matrix.contains("MEASURED"), "the coverage column must survive: {matrix}");
+        // The goal here is ungrounded, so its expected gain is unmeasured and must render
+        // as an em dash. If this ever reads `0.00`, the guarantee is gone.
+        assert!(matrix.contains('—'), "an unmeasured term must render as an em dash: {matrix}");
+        assert!(!v["rendered"]["verdict"].as_str().unwrap().is_empty());
+
+        // The structured record is still there for clients that compute rather than display.
+        assert!(v["record"]["commitment"]["root"].is_string());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_ungrounded_simulation_is_told_what_to_ground_against() {
+        // The adoption fix reaches every surface, not just the CLI, because it is rendered
+        // by the same function. A chat client that showed an abstention with no next step
+        // would reproduce the exact confusion the CLI used to.
+        let root = scratch();
+        let s = state(&root, true);
+        let body = r#"{"locator":".","goal":"make the tests faster"}"#;
+        let r = handle(&s, req("POST", "/simulate", Some(&s.token), body));
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let next = v["rendered"]["next_steps"].as_str().unwrap();
+        assert!(next.contains("--ground"), "expected a grounding hint, got: {next}");
         fs::remove_dir_all(&root).ok();
     }
 

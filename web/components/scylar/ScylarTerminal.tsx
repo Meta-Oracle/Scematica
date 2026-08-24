@@ -51,6 +51,10 @@ export function ScylarTerminal() {
   const portraits = usePortraits()
   const [useVoice, setUseVoice] = useState(false)
   const [hydrated, setHydrated] = useState(false)
+  // Index of the turn whose seal is in flight, so only one can run and the right button
+  // shows the pending state. `null` rather than a boolean: two proposals can be on screen.
+  const [sealing, setSealing] = useState<number | null>(null)
+  const [sealError, setSealError] = useState<string | null>(null)
   const speech = useSpeech(useVoice)
 
   // Speaking counts as busy. Letting the next message go out while she is mid-sentence
@@ -177,6 +181,10 @@ export function ScylarTerminal() {
         let assembled = ''
         let tools: ToolUse[] = []
         let gate: string | undefined
+        // A seal she asked for. Nothing is written by the time this arrives — the server
+        // intercepts that tool and records the request — so this only ever produces a
+        // control for the operator to act on.
+        let sealProposal: { goal: string; ground: string[] } | undefined
         // Set by a mid-stream `scylar.error` frame. Tracked separately from the `error`
         // state because the generic "empty response" fallback below must not overwrite
         // it — a rate-limit message is the one fact worth showing, and losing it behind
@@ -208,6 +216,14 @@ export function ScylarTerminal() {
               if (notice) {
                 if (Array.isArray(notice.tools)) tools = [...tools, ...notice.tools]
                 if (typeof notice.gate === 'string') gate = notice.gate
+                if (notice.sealProposal && typeof notice.sealProposal.goal === 'string') {
+                  sealProposal = {
+                    goal: notice.sealProposal.goal,
+                    ground: Array.isArray(notice.sealProposal.ground)
+                      ? notice.sealProposal.ground.filter((g: unknown) => typeof g === 'string')
+                      : [],
+                  }
+                }
                 if (typeof notice.error === 'string') {
                   streamError = notice.error
                   setError(notice.error)
@@ -228,6 +244,7 @@ export function ScylarTerminal() {
                     context: contextUsed,
                     tools,
                     gate,
+                    sealProposal,
                   }
                   return next
                 })
@@ -253,6 +270,7 @@ export function ScylarTerminal() {
             context: contextUsed,
             tools,
             gate,
+            sealProposal,
           }
           return next
         })
@@ -366,6 +384,70 @@ export function ScylarTerminal() {
   }, [busy, stop])
 
   const contextBadge = badgeFor(turns)
+
+  /**
+   * Write the record she proposed.
+   *
+   * This is the only place in the client that causes a write, and it runs from a click.
+   * The model can put a proposal on screen; it cannot press this. The route independently
+   * requires `confirm: true` and re-checks that sealing is enabled, so a forged call from
+   * elsewhere on the origin still meets a server-side gate — but the gate that matters to
+   * the operator is this one, because it is the one they can see.
+   */
+  const confirmSeal = useCallback(
+    async (index: number) => {
+      const turn = turns[index]
+      if (!turn?.sealProposal || turn.sealed) return
+      setSealing(index)
+      setSealError(null)
+      try {
+        const res = await fetch('/api/scylar/omni/seal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            goal: turn.sealProposal.goal,
+            ground: turn.sealProposal.ground,
+            confirm: true,
+          }),
+        })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          // The route distinguishes its refusals — sealing disabled, daemon unreachable,
+          // the daemon itself refusing. Passing the detail through means the operator can
+          // act on it instead of retrying a button that will never work.
+          setSealError(data?.detail ?? `The seal was refused (${res.status}).`)
+          return
+        }
+        setTurns((t) => {
+          const next = [...t]
+          const target = next[index]
+          if (target) {
+            next[index] = { ...target, sealed: { id: data.id, root: data.root } }
+          }
+          return next
+        })
+      } catch {
+        setSealError('Could not reach the seal endpoint.')
+      } finally {
+        setSealing(null)
+      }
+    },
+    [turns],
+  )
+
+  /** Drop a proposal without writing. Declining is a normal outcome, not an error. */
+  const dismissSeal = useCallback((index: number) => {
+    setSealError(null)
+    setTurns((t) => {
+      const next = [...t]
+      const target = next[index]
+      if (target) {
+        const { sealProposal: _dropped, ...rest } = target
+        next[index] = rest
+      }
+      return next
+    })
+  }, [])
 
   return (
     // A device, not a document: the viewport is the chassis and only the transcript
@@ -597,6 +679,72 @@ export function ScylarTerminal() {
                           {t.name.replace(/^get_/, '').replace(/_/g, ' ').toUpperCase()}
                         </span>
                       ))}
+                    </div>
+                  )}
+
+                  {/* A decision record she has asked to write.
+                      Nothing has been written at this point: the server intercepts the
+                      sealing tool and records the request. This control is the only path
+                      to the write, which is the whole reason it exists — a confirmation
+                      the model can satisfy on its own behalf is not a confirmation. Same
+                      split as the console, where `enter` simulates and `D` decides. */}
+                  {turn.role === 'assistant' && turn.done && turn.sealProposal && (
+                    <div className="space-y-2 border border-scylar-accent/40 bg-scylar-accent/5 p-3 text-xs">
+                      {turn.sealed ? (
+                        <>
+                          <p className="text-scylar-muted">
+                            Sealed as{' '}
+                            <span className="text-scylar-accent">{turn.sealed.id}</span>.
+                          </p>
+                          <p className="text-scylar-muted">
+                            Check it yourself:{' '}
+                            <code className="text-scylar-text">
+                              scema verify {turn.sealed.id}
+                            </code>{' '}
+                            — or drop the record into /omni, which verifies in your browser
+                            and sends it nowhere.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="tracking-widest text-scylar-accent">
+                            SEAL A DECISION RECORD?
+                          </p>
+                          <p className="text-scylar-muted">
+                            She is proposing to record this permanently. Nothing has been
+                            written yet.
+                          </p>
+                          <p className="break-words text-scylar-text">
+                            {turn.sealProposal.goal}
+                          </p>
+                          {turn.sealProposal.ground.length > 0 && (
+                            <p className="text-scylar-muted">
+                              grounded in {turn.sealProposal.ground.join(', ')}
+                            </p>
+                          )}
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              onClick={() => confirmSeal(i)}
+                              disabled={sealing !== null}
+                              className="border border-scylar-accent/50 px-2 py-0.5 tracking-widest
+                                         transition-colors hover:text-scylar-accent
+                                         disabled:opacity-30"
+                            >
+                              {sealing === i ? 'SEALING…' : 'SEAL'}
+                            </button>
+                            <button
+                              onClick={() => dismissSeal(i)}
+                              disabled={sealing !== null}
+                              className="border border-scylar-border px-2 py-0.5 tracking-widest
+                                         text-scylar-muted transition-colors
+                                         hover:text-scylar-text disabled:opacity-30"
+                            >
+                              DISMISS
+                            </button>
+                          </div>
+                          {sealError && <p className="text-scylar-red">{sealError}</p>}
+                        </>
+                      )}
                     </div>
                   )}
 

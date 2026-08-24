@@ -1,0 +1,962 @@
+PROVENANCE BEFORE VALUE
+
+A thesis on machine decision-making under acknowledged ignorance, and on the
+runtime built to test it.
+
+Scematica Omni 0.5.0
+============================================================================
+
+
+                              ABSTRACT
+
+  Autonomous software fails in a characteristic way that is not usually
+  described as a failure at all. Presented with an environment it cannot
+  fully read, it does not report the gap. It emits a value of the correct
+  type in the correct field, and every layer downstream - the ranking
+  function, the log, the audit trail, the human reading the audit trail -
+  treats that value as a measurement, because nothing in the representation
+  distinguishes it from one.
+
+  This thesis argues that the missing-value cast is the dominant safety
+  problem in agentic systems, that it is a representational defect rather
+  than a reasoning defect, and that it is therefore fixable by construction
+  rather than by tuning. It argues further that a decision is only
+  meaningfully auditable when the record of it commits to the observer's
+  ignorance as well as the observer's data.
+
+  Scematica Omni is the implementation. It is an agent runtime in which
+  every layer can say "I don't know" and saying so costs nothing: an
+  observation carries provenance before it carries a value, a score carries
+  a measured flag before it carries a number, a specialist carries an
+  applicability judgement before it carries an opinion, and no renderer may
+  print an aggregate without the fraction of its inputs that were actually
+  measured. Abstention is a first-class outcome with a taxonomy. Decisions
+  are sealed into commitments a third party can recompute.
+
+  The thesis is stated in a form that can fail, and section IX describes
+  what failure would look like.
+
+
+----------------------------------------------------------------------------
+                          TABLE OF CONTENTS
+
+  I.    The problem: the missing-value cast
+  II.   Four failures, measured, in one codebase
+  III.  The proposition
+  IV.   The apparatus
+          1. Provenance
+          2. Term, and the neutral element
+          3. Coverage
+          4. Why the utility equation is additive
+          5. Applicability: how a specialist declines
+          6. The abstention taxonomy
+          7. The counterfactual asymmetry
+  V.    Universality: inverting perception
+  VI.   Verifiability: what a commitment binds
+  VII.  The last mile: prose as an unsound layer
+  VIII. Non-capability as a design position
+  IX.   Objections, and what would falsify this
+  X.    Conclusion
+
+
+============================================================================
+I.  THE PROBLEM: THE MISSING-VALUE CAST
+============================================================================
+
+Consider a scoring pipeline of any kind - a risk model, a trading filter, a
+code auditor, a planner. It reads N inputs from the environment and combines
+them into a decision. Now suppose input k cannot be read: the endpoint timed
+out, the file was permission-denied, the iframe was cross-origin, the sensor
+is not installed, the subsystem was never built.
+
+There are, in practice, exactly three things a conventional implementation
+does with input k:
+
+  (a) It substitutes a zero. The pipeline continues, the score moves, and
+      nothing anywhere records that a substitution happened.
+
+  (b) It substitutes a neutral or optimistic default. Same as (a), but the
+      score moves in the other direction, and the choice of direction was
+      made by whoever wrote the line, at a moment when they were thinking
+      about types and not about consequences.
+
+  (c) It throws. The pipeline stops. This is honest and, in a system with
+      many partially-readable inputs, it renders the system unusable, which
+      is why (a) and (b) are what actually ships.
+
+All three are wrong, and the reason they are all wrong is the same: the
+representation has no arm for "this was not read." Missingness is not a
+value in the domain of the quantity. It is a statement about the observer,
+not about the observed, and forcing it into the observed's type is a
+category error committed at the moment of assignment, hours or months before
+the consequence.
+
+The consequence is specific and worth naming precisely. It is not that the
+system produces a wrong number. Wrong numbers are recoverable; you find them
+and you fix them. It is that the system produces an UNMARKED wrong number -
+a value that is indistinguishable, at every subsequent layer and in every
+subsequent artifact, from a value somebody actually measured. The wrongness
+is not merely present, it is unlocatable.
+
+Call this the missing-value cast.
+
+The reason it dominates in agentic systems specifically is that agents are
+defined by acting on environments they only partially perceive. A batch job
+over a fixed dataset can assert its inputs. An agent cannot: partial
+perception is not an edge case of the workload, it IS the workload. So the
+representation defect fires constantly, and it fires hardest exactly where
+the stakes are highest, because the parts of an environment that are hard to
+read - a permission-denied config, a cross-origin frame, an unresponsive
+peer, an unbuilt subsystem - are disproportionately the parts that matter.
+
+And there is a second-order effect that makes it worse than a plain bug. A
+system that fabricates on missing input trains its operators. Every score it
+emits looks equally confident, so operators calibrate on the population of
+scores, most of which are fine. When a fabricated score finally causes harm,
+the operator's prior - built over months of scores that looked identical -
+is that the number is real. The representation defect does not just produce
+bad decisions; it produces bad decisions that human review is structurally
+unable to catch.
+
+The claim of this thesis is that this is fixable, that fixing it is a
+type-level and not a heuristic exercise, and that a system built this way is
+usable rather than merely correct.
+
+
+============================================================================
+II.  FOUR FAILURES, MEASURED, IN ONE CODEBASE
+============================================================================
+
+The design that follows is not derived from first principles. Every rule in
+it is a scar. The four below were each paid for in this repository, and each
+one is a different face of the same defect.
+
+
+II.1  THE GATE PINNED AT ZERO, TWICE
+
+A cognitive-coherence index in an adjacent subsystem was defined as a
+PRODUCT over perception channels. One channel was never instrumented. It
+therefore scored zero. The product of anything and zero is zero, so the
+index read 0.00 permanently, and the gate that consumed it was shut forever
+against every possible state of the world.
+
+This is the missing-value cast in its purest form, and note the shape:
+nobody wrote a wrong number. Somebody wrote a multiplication. The absent
+channel arrived as the additive identity in a multiplicative context, which
+is the annihilator, and a system-wide gate closed on a subsystem that did
+not exist.
+
+It happened a second time, independently, in a different subsystem. A
+literal reading of an architecture specification required all nine terms of
+an agreement metric; four had no implementation; the metric was defined
+multiplicatively; the gate pinned shut. Two teams, two contexts, same trap.
+
+The lesson is not "avoid multiplication." It is that AN UNMEASURED DIMENSION
+MUST CONTRIBUTE THE NEUTRAL ELEMENT OF ITS OPERATION, and that the neutral
+element is a property of the operation, not a constant you pick. In an
+additive combination it is 0.0. In a multiplicative one it is 1.0. Getting
+this wrong in one direction pins the system shut; getting it wrong in the
+other has the system assert certainty it does not have. There is no safe
+default that is not operation-aware, which is precisely why it has to be a
+type-level obligation and not a coding convention.
+
+
+II.2  GROUNDING BY KEYWORD OVERLAP
+
+An early version of Omni linked an operator's stated goal to observed
+evidence by textual similarity. On its first real run, the goal "add tests
+to the scema-cli crate" was grounded in a backlog belonging to a completely
+different crate - because "scema" is a substring of every unit name in this
+repository.
+
+The branch then inherited a MEASURED expected gain from evidence that had
+nothing to do with it. Not an estimate. Not a flagged guess. A measured
+term, correctly typed, carrying the measured bit set to true, propagating
+into a ranking and eligible to be sealed into a verifiable record.
+
+That is laundering: an inference wearing the credentials of an observation.
+It is the most dangerous failure available in this design, because the
+apparatus that makes measurements trustworthy is exactly what makes a
+successfully-laundered guess trustworthy. The heuristic was deleted. The
+runtime now requires the operator to assert the link explicitly, by signal
+id, and will never infer it.
+
+The general rule: AN INSTRUCTION IS NOT EVIDENCE. What a user typed is a
+statement of intent, which is data about the user, not data about the world.
+A system that lets intent become evidence has built a channel by which
+anyone who can phrase a request can manufacture support for it.
+
+
+II.3  THE VERIFIER THAT CRIED TAMPER
+
+A decision record was sealed inside a local daemon and re-read over HTTP.
+The verifier reported INVALID on a byte nobody had touched.
+
+    in memory   0.40066666666666667
+    serialised  "0.40066666666666667"     <- byte-identical text
+    parsed back 0.4006666666666666        <- one ULP low
+
+The JSON serialiser's formatter is exact. Its parser is not correctly
+rounded for every 17-significant-digit input. The record was honest, the
+transport was honest, and the commitment - taken over raw IEEE-754 bits -
+did not survive a round trip through the only medium such a record ever
+travels in.
+
+This is the missing-value cast's sibling: not fabricated presence, but
+fabricated ALARM. And it is worse than it looks, because of what humans do
+with a verifier that produces false positives. They stop reading it. A
+verifier that cries tamper on an honest round trip is worse than no verifier
+at all, because it converts a security control into noise and then trains
+its audience to ignore the noise.
+
+The fix is fixed-point: floats are hashed as round(v * 1e9) in i64, and the
+commitment binds values to 1e-9. That is an explicit, stated, tested trade.
+An edit at or above 1e-9 is caught. An edit below it is not - and cannot
+move any gate in the policy layer, which is the second half of the deal and
+is pinned by tests on both sides. Bit-exact float agreement between two
+processes is engineered, not achieved by care.
+
+
+II.4  THE SPECIALIST ANSWERING A QUESTION IT DID NOT UNDERSTAND
+
+A trained reinforcement-learning agent - a Dueling Double-DQN with 24
+features over pool age, liquidity, buy/sell ratio and position PnL, with a
+real measured edge on its own domain - is available to this runtime as a
+policy evaluator.
+
+Ask it to rank a software refactor and it will answer. It will emit five
+finite Q-values, correctly shaped, correctly normalised, entirely
+meaningless. There is no error. The network is a total function on its input
+space; hand it a vector and it returns a vector. It has no mechanism for
+declining, so it does not decline.
+
+A specialist that cannot decline is a specialist that will confidently
+misapply itself the first time it is pointed somewhere new, and the output
+will be indistinguishable in shape from its output on the domain it is
+actually good at. Note the recursion here: this is the missing-value cast
+again, one level up. The missing thing is not an input but the applicability
+of the model itself, and the same silent cast happens - an inapplicable
+opinion is emitted as an applicable one because the type has no arm for the
+difference.
+
+
+============================================================================
+III.  THE PROPOSITION
+============================================================================
+
+  Every layer of an agent must be able to say "I don't know," and saying it
+  must cost nothing.
+
+The first clause is a representation requirement. The second is an incentive
+requirement, and it is the one that is usually skipped.
+
+It is easy to add a nullable field. It is hard to ensure that populating it
+honestly does not penalise the component that does. The moment declaring
+ignorance is expensive - the moment an honest "unmeasured" scores worse than
+a plausible guess, or crashes the pipeline, or makes a component look bad in
+a comparison - every component in the stack learns to guess. Not through
+malice, through gradient. The unhonest path is smoother, so it is the path
+that gets taken, and it gets taken by well-intentioned engineers who each
+individually made a defensible local call.
+
+Hence "costs nothing," which unpacks into three enforced properties:
+
+  NEUTRAL, NOT FATAL. An unmeasured term contributes the neutral element of
+  the aggregation. It does not pin the score shut (failure II.1), and it
+  does not silently vanish into an assumed value.
+
+  VISIBLE, NOT SILENT. Ignorance is recorded and surfaced beside every
+  aggregate it affected. The score and its coverage are one object, and no
+  renderer may separate them.
+
+  ACTIONABLE, NOT UNIFORM. "I could not see this" and "I saw this and it is
+  zero" and "this is not my domain" and "this is my domain but I am missing
+  an input" are four different statements implying four different next
+  actions by the operator. Collapsing them destroys the only useful thing
+  ignorance carries.
+
+There is a corollary that is worth stating separately because it is the part
+people resist:
+
+  ON A BARELY-PERCEIVED WORLD, THE CORRECT OUTPUT IS ABSTENTION.
+
+Not a low score. Not a hedged recommendation. Not a best guess with a
+caveat. If the runtime observed little, the honest output is that it cannot
+rank, and it must be structurally comfortable saying so - including on the
+first run, including in front of a new user, including when abstaining looks
+like the product not working.
+
+
+============================================================================
+IV.  THE APPARATUS
+============================================================================
+
+Seven mechanisms. Each is small. The design is in the fact that none of them
+has an exception anywhere in the stack.
+
+
+IV.1  PROVENANCE COMES BEFORE VALUE
+
+An observation is not a number. It is a number wearing an account of how it
+was obtained:
+
+    Live    { age_secs }                 read from a real source, in budget
+    Stale   { age_secs, budget_secs }    real, and older than its budget
+    Absent                               does not exist, or could not be read
+    Simulated                            produced by a simulator, not observed
+
+Four facts about this enum carry most of the weight.
+
+Absent CARRIES NO VALUE. That is not an oversight, it is the entire point of
+it being an arm. There is no field to accidentally read as zero, because
+there is no field. The cast in section I is not discouraged; it is
+unspellable.
+
+Stale KEEPS ITS VALUE, AND ITS AGE, AND ITS BUDGET. A stale reading is not
+missing data - it was true once, and that is genuinely useful. What it must
+never be is presented as current. Dropping it loses information; promoting
+it fabricates currency. So it is kept, labelled, and carries the two numbers
+that let a reader judge for themselves.
+
+BUDGETS ARE PER-SOURCE AND MEASURED, NEVER A SHARED CONSTANT. A DOM read is
+stale in seconds. A git history is not stale in a day. An oracle feed's
+budget is its published heartbeat, which differs per feed per chain. A
+global staleness constant is a fabricated measurement about every source it
+is applied to, and it produces exactly the flag-fatigue that trains
+operators to ignore staleness entirely.
+
+Simulated IS DISTINCT FROM Live BY CONSTRUCTION. Not because a simulation is
+untrustworthy, but because the entire stack rests on simulated output being
+labelled at every point it surfaces. Fold it into Live "for convenience" -
+which is a one-line change, and always looks reasonable - and you have built
+a channel through which a projection can be re-observed as a fact.
+
+
+IV.2  TERM, AND THE NEUTRAL ELEMENT
+
+Above the observation layer, every scalar in the system is:
+
+    Term { value: f64, measured: bool, note: String }
+
+The invariant, enforced everywhere, is: AN UNMEASURED TERM CONTRIBUTES THE
+NEUTRAL ELEMENT OF ITS AGGREGATION AND IS FLAGGED.
+
+This is failure II.1 encoded as a type. The neutral element is chosen by the
+operation, so this obligation cannot be discharged by a global constant, and
+that is why it must live at the type level: it forces the person adding the
+aggregation to answer the question at the moment they write it.
+
+"note" is not documentation. It is the audit trail of the flag. A term
+marked unmeasured with an empty note is a term nobody can act on; the note
+is what turns "I don't know" into "I don't know BECAUSE the aggregator
+timed out at 3s, and here is the endpoint."
+
+
+IV.3  COVERAGE TRAVELS WITH THE SCORE
+
+Every aggregate ships a measured fraction, and the rule is stated in the
+strongest available form:
+
+  NO RENDERER MAY PRINT THE SCORE WITHOUT THE COVERAGE.
+
+A utility of 0.91 computed over two terms out of nine is not a good score
+with a caveat. It is a statement about ignorance that happens to be shaped
+like a score, and it must LOOK like one at the point a human reads it.
+
+The rendering rules follow, and they are as much a part of the design as the
+arithmetic:
+
+  An unmeasured term prints an em dash. Never 0.00. A measured zero prints
+  0.00, because that is a real observation and it deserves to be legible as
+  one. These two states must be visually distinct at every surface, forever.
+
+  The coverage meter is one cell per term, not a proportional bar. A
+  proportional bar renders 2/5 and 4/10 identically, and the DENOMINATOR IS
+  THE NUMBER THAT MATTERS - a score over ten terms of which four were
+  measured is a different epistemic situation from a score over five of
+  which two were, and a bar erases that difference.
+
+  An empty coverage renders as a distinct symbol, never as an empty meter.
+  An empty meter reads as "measured, and it came out at nothing," which is
+  the exact confusion the whole mechanism exists to prevent.
+
+  Colour is never the message. Every state carries a word or a symbol as
+  well as a hue, so a pipe, a monochrome terminal and a screenshot all
+  produce the same claim. A test walks every role in mono and fails any that
+  is distinguishable by colour alone.
+
+And one architectural rule that makes the others enforceable: THERE IS
+EXACTLY ONE FUNCTION IN THE RUNTIME THAT TURNS A TERM INTO A STRING. Every
+surface - CLI, console, MCP server - calls it. A rule that encodes a claim
+about trust gets one implementation, because the second implementation is
+the one that drifts, and a drifted renderer is a lie told in the runtime's
+own voice.
+
+Three ports of that rule exist outside Rust - a browser extension, a web
+verifier, a mesh dashboard - and each is separately tested against the
+original. The RULE is shared. The code is not, because it cannot be. A copy
+that drifts is worse than no copy.
+
+
+IV.4  WHY THE UTILITY EQUATION IS ADDITIVE
+
+    U = R - L1*K - L2*C - L3*U + L4*V
+
+Expected gain, minus weighted risk, cost and uncertainty, plus a weighted
+bonus for reversibility.
+
+A multiplicative form is more expressive. It is also the trap in II.1, and
+this repository has paid for it twice. Under a multiplicative form an
+unmeasured factor is either 1.0 - and the equation now asserts certainty
+nobody has - or 0.0, and the score is annihilated by dimensions nobody
+built. There is no third option and no amount of care avoids the choice.
+
+Additive terms with a 0.0 neutral make IGNORANCE SILENT RATHER THAN FATAL,
+AND VISIBLE IN THE COVERAGE RATHER THAN SMUGGLED INTO THE NUMBER. That is a
+deliberate trade of expressiveness for a safety property, and it is the
+right trade for a system whose primary failure mode is misrepresented
+confidence rather than insufficient modelling power.
+
+Three further properties of the equation matter:
+
+THE WEIGHTS ARE A STATED PREFERENCE, NOT A FITTED PARAMETER. Defaults are
+risk 0.6, cost 0.3, uncertainty 0.3, reversibility 0.25 - risk outweighing
+cost roughly two to one, uncertainty weighted as heavily as cost because in
+this design "we did not look properly" is a real objection to acting and not
+a rounding error. Fitting these to outcomes would make the system's
+preferences a function of its own history, which is how a runtime talks
+itself into tolerating risk it once refused.
+
+REVERSIBILITY IS A GENUINE BONUS, AND IT IS THE ONLY MECHANISM THAT LETS THE
+AGENT ACT WHILE UNSURE. A plan you can walk back from is worth taking on
+thinner evidence. That is the pressure valve that stops the design from
+being paralysed by its own honesty - and it is principled rather than
+expedient, because it buys action with recoverability rather than with
+fabricated confidence.
+
+REVERSIBILITY IS A PROPERTY OF THE DOMAIN, AND GETTING IT WRONG IS THE
+CLASSIC WAY AN AGENT TALKS ITSELF INTO SOMETHING IRREVERSIBLE. It was once a
+match statement in the hypothesiser with a catch-all "unknown" fallback -
+fine while there were four domains, quietly wrong the moment producers could
+name their own, since every new domain would land on the fallback without
+anyone rereading that function. It is now a table on the domain type. That
+move also corrected a real understatement: trading is IRREVERSIBLE, not
+unknown. A filled order cannot be unfilled. An unrecognised domain stays
+unknown, which propagates to an unmeasured term and shows up in the coverage
+- because an optimistic default there is precisely how an agent reasons its
+way into an action it cannot undo.
+
+Finally: the weights are hashed into every sealed record, so a ranking can
+be re-read months later against the preferences that produced it, rather
+than against whatever the defaults have since become.
+
+
+IV.5  APPLICABILITY: HOW A SPECIALIST DECLINES
+
+Failure II.4, encoded. A policy evaluator answers a question BEFORE it
+answers the question: does this world fall within my competence?
+
+    OutOfDomain    permanent, and fine. Not my kind of world.
+    Insufficient   my kind of world, missing specific inputs.
+
+The distinction is the operator's next action, which is why collapsing it
+into a boolean destroys the mechanism. OutOfDomain means stop asking.
+Insufficient means go and supply a named thing. Same refusal, opposite
+instructions.
+
+The trained trading network is wired in under this interface as ONE
+evaluator among several. On a software world it returns OutOfDomain with a
+readable reason. Presented with a partial or stale state vector in its own
+domain, it returns Insufficient rather than defaulting the missing feature
+to 0.0 - which the network would read as a genuine observation of an empty
+pool, and would act on.
+
+Two rules govern what happens to an opinion that IS offered:
+
+  SPECIALIST SCORES ARE ATTACHED, NEVER AVERAGED INTO THE RANKING. A general
+  utility and a normalised Q-value are not the same quantity, and averaging
+  incommensurable numbers produces a third number that measures nothing. A
+  veto is legible; a weighted blend of incommensurables is not.
+
+  A QUALIFIED SPECIALIST'S MEASURED NEGATIVE VETOES THE TOP BRANCH OUTRIGHT.
+  An UNMEASURED specialist opinion is silence and carries no veto. That
+  asymmetry is the whole point: the runtime can be stopped by something that
+  knows, and cannot be stopped by something that merely returned a value.
+
+
+IV.6  THE ABSTENTION TAXONOMY
+
+Abstention is a first-class outcome with five reasons:
+
+    NoCandidates       nothing was proposed at all
+    AllForbidden       the operator's own constraints excluded everything
+    NoPositiveUtility  acting scores worse than not acting
+    TooLittleMeasured  too little was observed to rank on
+    Contested          a qualified specialist vetoed the top branch
+
+These are five different instructions to the operator, and TooLittleMeasured
+is the load-bearing one: it is a statement about the OBSERVATION, not about
+the branches, and it is the only outcome that tells you the problem is
+upstream of everything you were looking at.
+
+Two implementation choices matter more than they appear to.
+
+THE PROCESS EXITS 0 ON ABSTENTION. A script that treats "the agent declined"
+as a crash gets rewritten by its author to ignore the exit code, and then it
+ignores real crashes too. Making the honest outcome look like a failure to
+the surrounding automation is exactly the "ignorance is expensive" trap from
+section III, expressed in POSIX.
+
+EACH REASON RENDERS A DIFFERENT NEXT COMMAND. This exists because two
+CORRECT behaviours read as malfunctions on a first run. An ungrounded goal
+abstains - right at every step, and indistinguishable from the tool being
+broken. And a grounded evidence branch outranking the operator's typed goal
+looks like success while reading as the goal being silently ignored.
+
+Both were rendering defects, not logic defects, and the distinction matters:
+the fix was to explain, never to act. The runtime lists the signal ids an
+ungrounded goal could have used, and explains a goal that lost - and it
+still does not fill in the grounding, because filling it in "because it
+looked plausible" is failure II.2 returning with a friendlier face.
+
+
+IV.7  THE COUNTERFACTUAL ASYMMETRY
+
+The runtime remembers every branch it declined, along with what was
+projected for it. The realised outcome of those branches almost never
+exists, because nobody ran them.
+
+  UNRESOLVED COUNTERFACTUALS ARE COUNTED, NEVER SCORED.
+
+    CALIBRATION
+      branches not taken, recorded   1
+      of those, later resolved       0
+      unresolved                     1
+      mean |projected - realised|    -  (nothing resolved; a branch nobody
+                                         ran has no outcome)
+
+Mean absolute error is absent, not 0.0, when nothing has resolved. The
+temptation to impute those outcomes - from a model, from a neighbouring
+case, from a prior - is strong precisely because the resulting dataset would
+be so much more useful. It is also the point at which the system begins
+generating its own training signal, and every subsequent decision tunes
+itself to a fiction that no external event will ever contradict.
+
+The same asymmetry appears in the trading system this runtime grew out of.
+Re-applying tighter thresholds to a decision log yields an exact profit
+delta, because those trades really happened. Loosening them admits positions
+nobody took, for which no outcome exists and none is estimated. Honest
+counterfactual reasoning is unavoidably one-sided, and a system that hides
+that has stopped doing counterfactual reasoning.
+
+
+============================================================================
+V.  UNIVERSALITY: INVERTING PERCEPTION
+============================================================================
+
+"Domain-agnostic" is the cheapest claim in this field. Almost every agent
+framework makes it, and almost every one means "you can register a tool."
+
+The operational test is stricter: CAN ANY LAYER ABOVE PERCEPTION TELL WHAT
+KIND OF WORLD IT IS LOOKING AT? If the simulator has a branch for
+repositories, the claim is false regardless of the marketing.
+
+Here, four unrelated things - a source repository, a running trading system,
+a set of on-chain oracle feeds across eleven networks, and a live web page -
+are all one type, and nothing above perception distinguishes them.
+
+Only one of those is a filesystem walk inside the runtime. The other three
+live behind a lockfile pinned around an old blockchain SDK, a stdlib-only
+Python package, and a browser sandbox. Linking any of them would make the
+perception crate a hub of domain dependencies - and, worse, would make one
+domain structurally privileged, which is the failure that ends
+universality regardless of what the docs say.
+
+So the arrangement is inverted. THE THING BEING OBSERVED DESCRIBES ITSELF IN
+THE RUNTIME'S VOCABULARY, and the runtime imports that description. The
+contract is a JSON shape rather than a trait, because only one of the four
+producers can link the crate that defines it.
+
+    Producer                  Language                Emits
+    -----------------------   ---------------------   ----------------------
+    RepoObserver              Rust, in-process        a source tree
+    perceive.js               JS, no build step       a DOM
+    mesh omni module          Rust, other workspace   a running system
+    alchem_link.omni          Python, stdlib only     one network's feeds
+
+Four rules hold on every producer, and they are the same four rules from
+section IV expressed at the boundary:
+
+  AN UNREADABLE THING IS A BLIND SPOT, NEVER A ZERO. An absent node, an
+  aggregator that did not answer, a cross-origin iframe. Blind spots become
+  MEASURED UNCERTAINTY downstream - which is the arithmetic that makes this
+  claim real rather than rhetorical. The agent is less sure about that
+  world, and can say so with a number that came from somewhere.
+
+  STALE IS NOT FRESH, AND IT KEEPS ITS VALUE. A veto from a stale node is
+  not counted as blocking. A feed past its heartbeat is stale with its age
+  and budget attached - not dropped, not presented as current.
+
+  EVERY SIGNAL IS A COUNT. "measured: true" is a claim that somebody counted
+  something, and it is what permits a real expected gain downstream. A
+  "system health score" or an "oracle health score" invented inside a
+  producer would be a hallucination with a decimal point on it, laundered
+  into a verifiable record - II.2 at the perimeter.
+
+  A CAPPED OR UNREGISTERED READ REPORTS AN UNKNOWN DENOMINATOR. Not a
+  numerator over a smaller total, which would claim over 100% coverage.
+
+Three of the four producers are hand-written against a JSON shape with no
+compiler between them and it, so the rules are enforced TWICE. Each producer
+restates the importer's validation on its own side and fails its own tests -
+notably on a signal claiming to be measured while citing no evidence, which
+is a guess wearing a measurement's clothes. And the runtime holds REAL
+CAPTURED OUTPUT from all three as fixtures, asserted against the importer.
+
+The two mechanisms catch different bugs, and this is the general shape of
+cross-language contract enforcement: a self-check catches a bug in one
+producer; a fixture catches the case where both sides were changed and only
+one of them was right. One of these self-checks caught a real extent bug the
+first time it ran.
+
+Two decisions in 0.5.0 turn the universality claim from aspiration into
+mechanism:
+
+THE CONTRACT IS VERSIONED. A world that does not declare its schema is
+refused on import. There is no compiler anywhere between a producer and this
+format, so without a version the next format change degrades into a silent
+misread rather than an error. The importer distinguishes missing, malformed,
+foreign, newer and older - because "you are out of date" and "I am out of
+date" are opposite instructions to the reader. The version field is optional
+in the serialisation, which is load-bearing: records sealed before it
+existed still verify, and a verifier that cried tamper on untouched history
+is the one failure that teaches a reader to stop believing it.
+
+THE VOCABULARIES ARE OPEN. Domain and entity kind were closed enums, which
+meant a perceived web page and a set of oracle feeds BOTH had to report
+"unknown" - two entirely different worlds, indistinguishable to every
+specialist downstream, and no way to add a third without releasing the
+crate. They are now known names plus anything else, carried verbatim so a
+record round-trips byte for byte. Parsing normalises case and padding and
+deliberately does NOT guess synonyms, so two spellings stay two domains and
+the known names are published to be picked from rather than coined. An
+unfamiliar name is a warning, never a failure - failing on one would push
+authors straight back to "unknown," which is what opening the enum was for.
+
+And one rule about whose word a world is: an imported world's observer field
+is rewritten to "imported:<name>", exactly as the daemon rewrites a
+wire-supplied world to "client:<name>". A record can never claim that a
+world which arrived as a file was observed locally. The importer validates
+the SHAPE, never the CLAIMS - a producer reporting a stale feed as live is
+lying, and no parser catches that. The prefix is what tells a reader whose
+word this is, which is the only defence available.
+
+
+============================================================================
+VI.  VERIFIABILITY: WHAT A COMMITMENT BINDS
+============================================================================
+
+Sealing a decision produces a record containing the world that was observed
+- blind spots, absent arms and all - the branches, the projections, the
+weights, the outcome, and six SHA-256 digests binding all of it plus a root
+binding those with their field names.
+
+The precision of the claim is the point:
+
+  IT PROVES the record was not edited after sealing, and names the field
+  that moved.
+
+  IT DOES NOT PROVE the world was really like that. An observer that misread
+  a repository produces a perfectly verifiable record of a wrong
+  observation. Provenance carries that claim - which is exactly why the
+  world state is committed WHOLE, absent arms and blind spots included. A
+  record that committed only to the data would be a commitment to the
+  observer's successes with its failures edited out.
+
+  IT DOES NOT PROVE the record is the original. Whoever holds the file can
+  regenerate both it and its commitment. This is tamper-EVIDENT to a third
+  party holding an earlier copy, not tamper-proof, until the root is
+  anchored somewhere the author does not control.
+
+Three claims, and refusing to let the first be read as the other two is
+itself a design commitment. It is also unusual: most systems in this space
+have a commercial incentive to blur exactly this boundary. A verifier that
+oversells what it verifies produces a population of users who believe
+something false about their own audit trail, which is strictly worse than a
+population who believe nothing.
+
+Two implementation notes carry the argument.
+
+CANONICAL ENCODING IS STRICTER THAN JSON. Sorted keys, tagged types,
+normalised negative zero and NaN, because standard serialiser output is not
+stable enough to hash. Note the integer/float tag distinction is real
+information: a round trip through parse-and-restringify collapses 0.0 to 0
+and writes it back without the fraction, moving it from the float tag to the
+integer tag and changing the digest. Nothing would be wrong with the record;
+the round trip destroyed information the encoding depends on. The web
+verifier therefore hashes the RAW TEXT and never a re-serialised object -
+and that hazard is pinned by a test, because it is the kind of thing that
+gets "cleaned up" by someone who does not know.
+
+FIXED-POINT FLOATS ARE NOT A SHORTCUT. Section II.3 is the derivation. Both
+halves of the 1e-9 trade are tested on both sides. This is the second
+independent subsystem in this codebase to hit that wall and reach the same
+conclusion.
+
+Ports of the encoding exist - one in TypeScript for the offline browser
+verifier - and Rust is authoritative. The parity check re-derives the
+digests of a REAL sealed record and compares them to the ones Rust wrote
+into it, so drift fails a check rather than surfacing to a reader as an
+untampered record reported INVALID. That is the correct direction to point a
+test: at the authoritative answer, not at a snapshot of the port's own
+output, which would pin the port's bugs in place.
+
+One structural note on the verifier's independence. The browser extension
+DELIBERATELY VERIFIES NOTHING ITSELF, despite it being easy to add. A fourth
+implementation of the canonical encoding is a fourth thing that will drift,
+and an overlay reporting an untampered record as INVALID is the single most
+damaging failure available. It exports bytes instead, byte-identical to what
+the record store wrote. Restraint about where a verification lives is part
+of the verification.
+
+
+============================================================================
+VII.  THE LAST MILE: PROSE AS AN UNSOUND LAYER
+============================================================================
+
+Everything above is types, and types compose. Then a language model reads
+the output and writes a paragraph for a human, and that paragraph is not
+typed at all.
+
+A model that writes "expected gain: 0.00" where the tool printed an em dash
+has undone the entire apparatus in a single sentence, and NOTHING DOWNSTREAM
+CAN TELL. This is the missing-value cast, reintroduced at the one layer
+where it cannot be prevented by construction, by a component whose training
+objective rewards fluent completeness over faithful incompleteness.
+
+The honest position is that this layer is currently defended by prose, and
+prose is a weaker mechanism than types. Three things reduce the exposure,
+none of which eliminates it:
+
+  ADVERTISED ABSENCE. A tool that is listed and always fails teaches a model
+  to retry it, so the write-capable tool is not advertised at all unless
+  explicitly enabled. Absent, rather than present-and-failing, is the
+  configuration a model reasons about correctly.
+
+  REFUSALS ARE RESULTS, NOT ERRORS. A path outside the workspace comes back
+  as a tool result marked as an error, never as a protocol-level error.
+  Clients render the latter as "the server broke," and a model told that
+  stops trying - where a model told "that path is outside the workspace,
+  which is X" corrects itself and continues. The distinction is not
+  politeness; it determines whether the guard produces a corrected action or
+  an abandoned task.
+
+  THE INSTRUCTIONS STATE THE TWO THINGS A MODEL OTHERWISE GETS WRONG. An em
+  dash is not a zero, and grounding is never inferred. Stated at
+  initialisation, where they are in context for every subsequent turn.
+
+Alongside those, the assistant plugin carries a SKILL rather than only a
+config file, and the skill is five things not to do - each a failure paid
+for at least once here: an em dash is not a zero; coverage never leaves the
+score it qualifies; abstention is an answer and which one is the actionable
+part; grounding is asserted, never inferred from wording; a verified
+commitment proves one thing and not two others.
+
+This is the least satisfying section of the thesis and it should be. The
+design's claim is that ignorance can be made structurally free, and the last
+layer between the structure and the reader is a component that cannot be
+structurally constrained. It is a real limit, stated as one.
+
+There is a related open problem. A model-backed hypothesiser - a model
+PROPOSING branches, with the simulator still refusing to score an ungrounded
+one - is sound in principle and the slot exists for it. But its prompt,
+model id and raw output would have to be committed into the record, or
+determinism goes, and with determinism goes verifiability. That is a design
+question about what a commitment to a stochastic component even means, not a
+wiring question, and it is why the slot is still empty.
+
+
+============================================================================
+VIII.  NON-CAPABILITY AS A DESIGN POSITION
+============================================================================
+
+  NOTHING IN THIS RUNTIME WRITES TO AN ENVIRONMENT IT OBSERVED.
+
+Not "not yet by accident." By construction, and stated in the documentation
+as a property rather than a roadmap item.
+
+Execute, delegate, discover and pay are REGISTERED verbs that exit non-zero
+and say what is missing. They appear in the help output on purpose: the
+shape of the runtime includes an action path, an agent-to-agent path and a
+payment path, and finding that out from the tool beats finding it out later.
+A verb that silently did not exist would be indistinguishable from one that
+failed - which is section I applied to an interface rather than to a number.
+
+What each is waiting for is specific:
+
+  THE ACTION PATH needs an approval model in front of it: risk declared per
+  tool so a new tool cannot arrive unclassified, no-terminal-means-deny so
+  piped invocations and CI cannot treat silence as consent, and secrets
+  refused BEFORE the prompt rather than by it - because a tool result goes
+  to a third-party model, so reading an env file is a disclosure, not a
+  read, and no grant should be able to authorise it. That model exists,
+  built and tested in a sibling project. It has not been wired here.
+
+  PAY needs a spend policy first. A runtime that can spend without one is a
+  runtime nobody should install.
+
+The ordering is the argument. The loop is worth trusting with a keyboard
+only after it has been watched abstaining on real inputs for a while - which
+means the observation phase is not a prelude to the product, it IS the
+product, until the record of abstentions is long enough to be evidence.
+
+Two supporting boundaries follow the same logic:
+
+WHERE AND WHETHER ARE SEPARATE QUESTIONS. The workspace confinement answers
+only WHERE: paths resolve fully - symlinks followed, parent traversals
+collapsed - and are THEN compared against the roots, because a string scan
+for ".." passes a symlink pointing at the filesystem root. Whether an action
+is permitted is a different mechanism entirely. Merging the two is how a
+grant given for one silently becomes a grant for the other.
+
+The confinement is not paranoia about a hostile model. It is that a
+COOPERATIVE model asked to audit a project will reason its way to the SSH
+directory, that being genuinely relevant to an audit.
+
+THE LOCAL DAEMON'S NETWORK POSTURE IS FOUR GUARDS IN ORDER: a loopback bind
+that is deliberately not configurable (the one thing that reliably happens
+to a bind flag is somebody setting it to all-interfaces); a Host header
+check, because DNS rebinding is how a web page becomes same-origin with a
+localhost service and gets to read its replies; a constant-time 256-bit
+bearer token, because every local process and every web page can reach the
+loopback interface; and workspace confinement. No cross-origin headers are
+ever emitted and no preflight is handled, so a page cannot read a reply even
+if it guesses a route.
+
+And one concurrency note that is really an epistemics note: the simulate
+endpoint builds its own non-persisting agent rather than flipping a flag on
+the shared one. A shared mutable flag is a race whose failure mode is A
+SIMULATION QUIETLY SEALING A RECORD - the counterfactual becoming a decision
+by accident. For the same reason, in the console, one key simulates and a
+different key decides, with a confirmation. The two paths compute exactly
+the same thing; the only thing keeping a counterfactual from later reading
+as a decision is that they are not the same keystroke.
+
+
+============================================================================
+IX.  OBJECTIONS, AND WHAT WOULD FALSIFY THIS
+============================================================================
+
+OBJECTION 1: "This is just null-safety with extra steps."
+
+Partly, and that is not a small thing - but it is not sufficient. Null
+safety gives you an option type. It does not give you: a neutral element
+chosen per operation; a coverage fraction that no renderer may separate from
+its score; a distinction between out-of-domain and insufficient; five
+distinct abstention reasons; a commitment that binds the observer's blind
+spots; or an incentive structure in which declaring the null is free. A
+codebase can be entirely null-safe and still commit every failure in section
+II - the second Ψ incident happened in a language with no nulls at all.
+
+OBJECTION 2: "An agent that abstains this often is useless."
+
+This is the strongest objection and it is an empirical question, not a
+philosophical one. The design's answer is that abstention is bounded by
+PERCEPTION, not by caution: perceive more and the abstentions convert into
+decisions. The reversibility bonus is the explicit pressure valve, letting
+the agent act on thin evidence exactly when the action can be undone. But if
+the conversion rate is bad on real worlds, the objection lands. See below.
+
+OBJECTION 3: "Fixed-point hashing at 1e-9 is a weakened commitment."
+
+Yes, deliberately, and the trade is stated rather than hidden. Below 1e-9
+the runtime cannot detect an edit - and the second half of the deal is that
+an edit below 1e-9 cannot move any gate in the policy layer, which is tested
+on both sides. The alternative is a bit-exact commitment that reports
+INVALID on honest transport, which is not a stronger guarantee. It is a
+guarantee people stop reading.
+
+OBJECTION 4: "The domain-agnostic claim is undermined by shipping a trading
+specialist."
+
+It would be, if the specialist were privileged. It is one evaluator behind
+an interface that lets it decline, it declines on every non-trading world,
+and its opinion is attached rather than averaged into the ranking. The
+architectural constraint is enforced at the dependency level: nothing in the
+runtime may depend on the trading core or anything downstream of it, so the
+trading domain cannot become structurally privileged even if someone wants
+it to be.
+
+WHAT WOULD FALSIFY THE THESIS
+
+  1. THE CONVERSION RATE. If, across many real worlds, the runtime abstains
+     on nearly everything - if perceived signal does not accumulate fast
+     enough to produce ranked decisions - then honest ignorance is
+     rigorous and useless, and the thesis is wrong in the way that matters.
+     This is measurable: abstention reasons are recorded, and a corpus
+     dominated by TooLittleMeasured is the falsifying observation.
+
+  2. COVERAGE BLINDNESS. The apparatus depends on a reader consulting
+     coverage before utility. If operators learn to skip it the way they
+     learned to skip certificate warnings, the type-level work has bought
+     nothing at the layer where it was supposed to pay off. Also
+     measurable, by watching what people do with the output.
+
+  3. THE LAST MILE. Section VII. If models summarising this runtime's
+     output reliably flatten em dashes into zeroes despite instruction,
+     then honesty cannot survive the interface humans actually read, and
+     the design needs a machine-checkable output contract rather than
+     prose.
+
+  4. REGRESSION UNDER MAINTENANCE PRESSURE. Every failure in section II
+     originally arrived as a reasonable-looking convenience. If the rules
+     erode over time - if grounding-by-similarity comes back because users
+     kept asking why the tool "ignored" their goal - the thesis is right
+     about the mechanism and wrong about whether it is sustainable, which
+     for a real system amounts to the same thing.
+
+
+============================================================================
+X.  CONCLUSION
+============================================================================
+
+The argument in one line:
+
+  AN AGENT'S MOST VALUABLE OUTPUT IS NOT ITS DECISION. It is a decision plus
+  an honest, checkable account of what it did not know when it made one -
+  and the only way to obtain the second thing is to build a system in which
+  admitting ignorance is structurally free at every layer.
+
+Everything in the runtime follows from refusing to make an exception to
+that. Provenance before value, so an unread thing has no field to be
+misread. Term before score, so no number stands on nothing silently.
+Coverage welded to every aggregate, so a confident score over two of nine
+terms cannot look confident. An additive equation, so ignorance is neutral
+rather than annihilating. Applicability before opinion, so a specialist can
+decline in a way its caller can act on. Five abstention reasons, because
+"don't" is an answer and which "don't" is the useful part. Counterfactuals
+counted and never scored, so the system cannot generate its own training
+signal. Commitments that bind the blind spots along with the data, and a
+verifier that says precisely what it proves and what it does not.
+
+The failure it is built against is not exotic. It is the most ordinary event
+in software: a value was missing, and something reasonable was substituted.
+What makes it the central safety problem of agentic systems is that agents
+run continuously against environments they only partially perceive, so the
+substitution is not an edge case, it is the steady state - and the
+substituted value is, by construction, the one nobody can find later.
+
+The runtime is beta. It is 262 tests, eleven crates, five surfaces over one
+loop, four producers on an open contract, and a deliberate refusal to write
+to anything it observes. It is a bet that a system which is honest about
+ignorance is more useful than one that is fluent about everything, and it is
+arranged so that if the bet is wrong, that will show up in the record rather
+than in the marketing.
+
+    cargo install scema-cli
+    cd ~/some-project && scema quickstart
+
+----------------------------------------------------------------------------
+Scematica Omni 0.5.0 - beta. The JSON world contract, the canonical encoding
+and verification are stable for beta; the Rust trait shapes below the CLI
+are not yet.

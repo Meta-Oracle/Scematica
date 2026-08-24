@@ -8,7 +8,9 @@ import {
   providerEnvVars,
   resolveProvider,
 } from '@/lib/scylar/provider'
-import { TOOLS, runTool, toolDefinitions } from '@/lib/scylar/tools'
+import { SEAL_TOOL, TOOLS, availableTools, runTool, toolDefinitions } from '@/lib/scylar/tools'
+import type { ToolAvailability, ToolOutcome } from '@/lib/scylar/tools'
+import { OMNI_INSTRUCTION, omniConfig, sealingAllowed } from '@/lib/scylar/omni'
 
 // Scylar's chat endpoint — streams tokens from whichever free provider has a key, and
 // runs her read-only tool calls against the operator's bot in between.
@@ -160,14 +162,34 @@ export async function POST(request: NextRequest) {
     if (gate?.note) systemParts.push(gate.note)
     if (gate?.verdict === 'caution') systemParts.push(cautionInstruction(gate))
   }
-  if (useTools) {
-    systemParts.push(
-      'You can call read-only tools for anything the state block does not cover: ' +
-        `${TOOLS.map((t) => t.name).join(', ')}. Call one when the question needs ` +
-        'per-pool, per-trade or per-transaction detail. Do not call one for general ' +
-        'questions about trading or code. You cannot change the bot — there is no ' +
-        'tool that writes.',
-    )
+  // Availability is per-subsystem, because the two are genuinely independent. The omni
+  // loop reasons about a source tree and does not care whether the sniper is running — and
+  // a Ψ HOLD is a statement about stale *bot* state, which says nothing about a repository.
+  // Gating everything on the bot would switch off reasoning about the codebase at exactly
+  // the moment an operator is most likely to be asking what to do about it.
+  const availability: ToolAvailability = {
+    bot: useTools,
+    omni: omniConfig() !== null,
+    seal: sealingAllowed(),
+  }
+  const anyTools = availableTools(availability)
+
+  if (anyTools.length > 0) {
+    const botNames = anyTools.filter((t) => t.group === 'bot').map((t) => t.name)
+    const omniNames = anyTools.filter((t) => t.group === 'omni').map((t) => t.name)
+
+    if (botNames.length) {
+      systemParts.push(
+        'You can call read-only tools for anything the state block does not cover: ' +
+          `${botNames.join(', ')}. Call one when the question needs per-pool, per-trade ` +
+          'or per-transaction detail. Do not call one for general questions about ' +
+          'trading or code. You cannot change the bot — no tool here writes to it.',
+      )
+    }
+
+    if (omniNames.length) {
+      systemParts.push(OMNI_INSTRUCTION(omniNames, availability.seal))
+    }
   }
 
   const messages: Record<string, unknown>[] = [
@@ -191,7 +213,9 @@ export async function POST(request: NextRequest) {
         temperature: 0.75,
         max_tokens: 900,
         messages: msgs,
-        ...(useTools ? { tools: toolDefinitions(), tool_choice: 'auto' } : {}),
+        ...(anyTools.length
+          ? { tools: toolDefinitions(availability), tool_choice: 'auto' }
+          : {}),
       }),
       signal: controller.signal,
     })
@@ -300,8 +324,8 @@ export async function POST(request: NextRequest) {
             })),
           })
 
-          const outcomes = await Promise.all(
-            toolCalls.map((t) => {
+          const outcomes: ToolOutcome[] = await Promise.all(
+            toolCalls.map((t): Promise<ToolOutcome> => {
               const sig = `${t.name}:${t.args}`
               if (served.has(sig)) {
                 return Promise.resolve({
@@ -313,7 +337,7 @@ export async function POST(request: NextRequest) {
                 })
               }
               served.add(sig)
-              return runTool(origin, t.name, t.args)
+              return runTool(origin, t.name, t.args, availability)
             }),
           )
           for (let i = 0; i < outcomes.length; i++) {
@@ -329,6 +353,13 @@ export async function POST(request: NextRequest) {
           // An answer sourced from `get_pool_decisions` and one sourced from nothing
           // read identically, and only one of them is checkable.
           send({ scylar: { tools: outcomes.map((o) => ({ name: o.name, ok: o.ok })) } })
+
+          // A seal the model asked for. Nothing has been written — `runTool` intercepts
+          // that tool and records the request instead. This puts the proposal in front of
+          // the operator, whose confirmation is the only thing that reaches the write.
+          for (const o of outcomes) {
+            if (o.proposal) send({ scylar: { sealProposal: o.proposal } })
+          }
 
           const next = await call(messages)
           if (!next.ok || !next.body) {
@@ -370,7 +401,11 @@ export async function POST(request: NextRequest) {
       // perfectly well and been withheld, and badging that turn LIVE would be a lie of
       // exactly the kind this header exists to prevent.
       'X-Scylar-Context': !wantContext ? 'off' : held ? 'held' : briefing.source,
-      'X-Scylar-Tools': useTools ? 'on' : 'off',
+      'X-Scylar-Tools': anyTools.length ? 'on' : 'off',
+      // Surfaced per-turn for the same reason the context badge is: an operator has to
+      // be able to tell whether an answer had the loop behind it or was reasoning from
+      // the persona alone, and a header is checkable where a paragraph is not.
+      'X-Scylar-Omni': availability.omni ? (availability.seal ? 'seal' : 'read') : 'off',
       'X-Scylar-Gate': gate?.verdict ?? 'off',
     },
   })
@@ -468,6 +503,19 @@ export async function GET() {
     freeTierNote: provider?.freeTierNote ?? null,
     configured: configuredProviders(),
     checked: providerEnvVars(),
-    tools: TOOLS.map((t) => t.name),
+    // Reported by group, and with the omni state spelled out. "Which tools exist" was a
+    // useful diagnostic when they all reached the same subsystem; now that they do not, a
+    // flat list cannot distinguish "the daemon is not configured" from "the daemon is fine
+    // and sealing is off", which are different things to go and fix.
+    tools: {
+      bot: TOOLS.filter((t) => t.group === 'bot').map((t) => t.name),
+      omni: TOOLS.filter((t) => t.group === 'omni').map((t) => t.name),
+      seal: SEAL_TOOL.name,
+    },
+    omni: {
+      configured: omniConfig() !== null,
+      sealing: sealingAllowed(),
+      envVars: ['SCEMA_OMNID_URL', 'SCEMA_OMNID_TOKEN', 'SCYLAR_ALLOW_DECIDE'],
+    },
   })
 }

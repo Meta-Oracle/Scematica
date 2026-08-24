@@ -30,6 +30,16 @@ export interface Turn {
   tools?: ToolUse[]
   /** Cognitive gate in force for this answer — `go`, `caution`, or absent. */
   gate?: string
+  /**
+   * A decision record she asked to seal, and the operator has not yet allowed.
+   *
+   * Held on the turn rather than in component state so it survives a reload: a proposal the
+   * operator wanted to think about should still be there when they come back, and one they
+   * already actioned should not reappear as if it were pending.
+   */
+  sealProposal?: { goal: string; ground: string[] }
+  /** Set once the operator confirmed the proposal above and a record was written. */
+  sealed?: { id: string; root: string }
 }
 
 const KEY = 'scylar.transcript.v1'
@@ -63,8 +73,37 @@ function isTurn(v: unknown): v is Turn {
     (t.done === undefined || typeof t.done === 'boolean') &&
     (t.context === undefined || typeof t.context === 'string') &&
     (t.gate === undefined || typeof t.gate === 'string') &&
-    (t.tools === undefined || (Array.isArray(t.tools) && t.tools.every(isToolUse)))
+    (t.tools === undefined || (Array.isArray(t.tools) && t.tools.every(isToolUse))) &&
+    (t.sealProposal === undefined || isSealProposal(t.sealProposal)) &&
+    (t.sealed === undefined || isSealed(t.sealed))
   )
+}
+
+/**
+ * A stored seal proposal.
+ *
+ * Checked field by field like everything else here, and for a sharper reason than the rest:
+ * this one drives a control that writes. `localStorage` is writable by anything else on the
+ * origin, so a stored proposal is untrusted input, and the goal in it is what would be sent
+ * to the seal route if the operator clicked. A wrong *shape* would throw during render; a
+ * wrong *value* would seal something nobody asked for. The route still requires its own
+ * confirmation, but that is the second line, not the first.
+ */
+function isSealProposal(v: unknown): v is { goal: string; ground: string[] } {
+  if (!v || typeof v !== 'object') return false
+  const p = v as Record<string, unknown>
+  return (
+    typeof p.goal === 'string' &&
+    p.goal.trim().length > 0 &&
+    Array.isArray(p.ground) &&
+    p.ground.every((g) => typeof g === 'string')
+  )
+}
+
+function isSealed(v: unknown): v is { id: string; root: string } {
+  if (!v || typeof v !== 'object') return false
+  const p = v as Record<string, unknown>
+  return typeof p.id === 'string' && typeof p.root === 'string'
 }
 
 /** Parse a stored transcript. Pure, so it can be tested without a browser. */

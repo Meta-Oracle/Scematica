@@ -71,12 +71,18 @@ class WorldShape(unittest.TestCase):
         self.assertNotIn("Infinity", text)
         json.loads(text)
 
-    def test_the_domain_is_unknown_so_a_specialist_can_decline(self):
+    def test_the_domain_is_named_so_a_specialist_can_decline(self):
         # ``Domain`` exists so a domain-specific evaluator can decline rather than pretend.
         # The bot's Deep Q* net reads pool and position data; asked about an oracle set it
         # would still emit five finite Q-values, correctly shaped and entirely meaningless.
+        #
+        # This asserted ``unknown`` while the vocabulary was closed, which was the weaker
+        # claim: a web page and a set of price feeds both reported ``unknown``, so a
+        # specialist could tell it was not being handed a market but not what it *was*
+        # being handed. What matters is that the domain is named and is not ``trading``.
         w = omni.world([reading()], network="base")
-        self.assertEqual(w["domain"], "unknown")
+        self.assertEqual(w["domain"], "data")
+        self.assertNotEqual(w["domain"], "trading")
 
     def test_scalars_use_the_externally_tagged_form(self):
         w = omni.world([reading()], network="base")
@@ -330,6 +336,11 @@ class SelfValidation(unittest.TestCase):
 
     def test_a_counted_signal_with_no_evidence_is_refused(self):
         bad = {
+            # Declared, because `_check` refuses an undeclared world before it looks at
+            # anything else. Without this the test passes for the wrong reason: it sees a
+            # ValueError, which is all `assertRaises` asks for, and never reaches the
+            # evidence rule it is named after.
+            "schema": omni.WORLD_SCHEMA,
             "observer": "x",
             "entity": {"kind": "service", "locator": "l", "label": "x"},
             "domain": "unknown",

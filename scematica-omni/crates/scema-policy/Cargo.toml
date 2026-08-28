@@ -27,14 +27,17 @@ serde_json = { workspace = true }
 # workspaces here is safe (see the note in the workspace manifest).
 # `version` as well as `path` is required to publish: a path-only dependency cannot be
 # resolved by anyone who installs this from the registry. In-workspace the path wins;
-# published, consumers get scematica-nn 1.25.0 from crates.io. `default-features = false`
+# published, consumers get scematica-nn from crates.io. `default-features = false`
 # drops its ratatui viewer, leaving serde/tracing/chrono/rand/anyhow and no solana-sdk.
-# `1.25.0` is a CARET requirement (^1.25.0), not a pin, and it is deliberately left at
-# 1.25.0 while the bot workspace moves to 1.26.0. That is what lets this workspace publish
-# *first*: 1.25.0 is already on crates.io and satisfies the requirement, so omni does not
-# have to wait behind a bot release. Consumers resolve to 1.26.0 once it lands.
-# Raising it to 1.26.0 before that version is published makes every omni crate below
-# `scema-policy` unpublishable, with an error that names a dependency nobody changed.
+# `1.25.0` is a CARET requirement (^1.25.0), not a pin, and it is deliberately left at the
+# oldest version that carries the API this crate uses rather than tracking the bot
+# workspace's current number. That is what lets omni publish *first*: the requirement is
+# already satisfiable on crates.io, so a release here never waits behind a bot release,
+# and consumers resolve to whatever newer 1.x is available (1.26.0 today, 1.27.0 when the
+# current tree ships). Raising the floor to a version that is not yet published makes
+# every omni crate below `scema-policy` unpublishable, with an error naming a dependency
+# nobody changed — so this line moves only when omni needs an API that the floor lacks,
+# and only after that version is live.
 scematica-nn = { version = "1.25.0", path = "../../../crates/scematica-nn", default-features = false, optional = true }
 
 [features]

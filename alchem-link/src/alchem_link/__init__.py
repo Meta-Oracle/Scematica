@@ -50,7 +50,7 @@ The package implements :func:`keccak256` itself — ``hashlib`` ships SHA3-256, 
 padding differs — so function selectors are computed rather than trusted.
 """
 
-__version__ = "0.23.24"
+__version__ = "0.24.0"
 
 from .abi import (
     AbiError,

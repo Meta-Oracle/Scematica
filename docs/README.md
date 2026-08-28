@@ -102,7 +102,7 @@ those as point-in-time references, not always current to the latest release.
 
 ## Architecture & vision
 - [WHITEPAPER.md](WHITEPAPER.md) — system architecture and design. **Stamped
-  `workspace v1.25.0 · verified against source 2026-08-11`.**
+  `workspace v1.27.0 · verified against source 2026-08-11 (at v1.25.0)`.**
 - [ROADMAP.md](ROADMAP.md) — Q1 2026 → Q2 2027. Both a plan and a **record**: every
   milestone from the original 2026 plan carries a DELIVERED / PARTIAL / NOT STARTED /
   DROPPED verdict against the actual codebase.

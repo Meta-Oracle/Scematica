@@ -34,5 +34,5 @@ tracing-subscriber = { workspace = true }
 
 # Optional x402 auto-pay (feature `pay`). Pulls the pinned solana-sdk â€” only when
 # explicitly enabled, so the default install stays lean.
-scematica-protocol = { version = "1.26.0", path = "../scematica-protocol", optional = true }
+scematica-protocol = { version = "1.27.0", path = "../scematica-protocol", optional = true }
 solana-sdk = { workspace = true, optional = true }

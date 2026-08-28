@@ -31,7 +31,7 @@ sha2 = { workspace = true }
 
 # Optional: the real Scematica Deep Q* agent as the RoutePolicy. Light, publishable
 # (no solana-sdk). Pinned by version so the crate can publish; path wins in-workspace.
-scematica-nn = { version = "1.26.0", path = "../scematica-nn", optional = true, default-features = false }
+scematica-nn = { version = "1.27.0", path = "../scematica-nn", optional = true, default-features = false }
 # Optional: HTTP transport for the `ai` (LLM) and `net` (peer mesh) features.
 reqwest = { workspace = true, optional = true }
 

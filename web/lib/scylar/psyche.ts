@@ -596,8 +596,13 @@ export function composePsyche(ctx: PsycheContext): ComposedPsyche {
  * the present set. `check:scylar` pins the full-load case at zero drops, so a layer that
  * grows past the headroom fails the build rather than quietly costing her the codex map.
  *
- * Against a 900-token answer cap and up to 20 turns of history this still sits inside every
- * free tier here; Groq's llama-3.3-70b carries 128k of context.
+ * This is the budget for a provider with room to spare, and it is no longer what every
+ * provider gets. Context window was never the binding constraint — gpt-oss-120b carries
+ * 131k and llama-3.3-70b carried 128k, and this prompt is nowhere near either. What binds
+ * is the free tier's **tokens per minute**, against a route that re-sends the whole prompt
+ * on every tool round. So the active budget comes from `Provider.promptBudget`, and the
+ * provider on the smallest allowance gets a smaller one; this constant is the ceiling the
+ * layer set is designed to fit inside, and what `check:scylar` pins at zero drops.
  */
 export const DEFAULT_BUDGET = 16000
 

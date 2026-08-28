@@ -1,6 +1,6 @@
 # Scematica Roadmap
 
-**Workspace v1.25.0 · verified against source 2026-08-11**
+**Workspace v1.27.0 · verified against source 2026-08-11 (at v1.25.0)**
 
 ---
 

@@ -1,6 +1,6 @@
 # SCEMATICA: Autonomous AI Trading Infrastructure for Solana
 
-### Technical Whitepaper — workspace v1.25.0 · verified against source 2026-08-11
+### Technical Whitepaper — workspace v1.27.0 · verified against source 2026-08-11 (at v1.25.0)
 
 **Contract Address:** `HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump`  
 **Token:** $SCEMA (Token-2022, Solana Mainnet)  

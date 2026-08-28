@@ -1,4 +1,4 @@
-# Scematica v1.25.0
+# Scematica v1.27.0
 
 **CA: HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump**
 
@@ -83,34 +83,50 @@ The bot stack moves as one version, set once in `[workspace.package]` — every
 rest again. The ScemaDEX SDK family and the playground version independently and
 are still pre-1.0.
 
-> **Why 1.25.0 and not 1.16.0.** The workspace number jumped 1.15.0 → 1.24.0 in one
-> commit and then kept taking features without moving again — the sentience crate, the
-> coherence breaker, replay, calibration, the Scylar terminal, the BOT Chain port and the
-> neural mesh all landed after that bump. Nine intermediate minors were never cut and
-> nothing describes them, so v1.25.0 folds the whole span into one release rather than
-> inventing a history for numbers that never shipped. Internal crate dependencies had
-> also drifted, still pinning `1.15.0` against crates that had moved to 1.24.0 — caret
-> semver hid it, so the build never complained while the manifests said something false.
+> **Why 1.27.0, and what happened to 1.26.0.** 1.26.0 was published to crates.io on
+> 2026-08-21 and never described anywhere — no changelog entry, no README, and every doc
+> in the tree still said 1.25.0. It is the same drift v1.25.0 was cut to end, caught one
+> release later and from the other direction: last time the manifests ran ahead of the
+> docs, this time a *published artifact* did. 1.26.0 stays where it is, because a
+> published version is a fact and cannot be folded away; v1.27.0 is the release that
+> describes it, together with everything that has landed since — Scematica Mesh, the
+> Escrow Market, the Omni runtime reaching 0.5.0, and the Scylar terminal's move to a
+> reasoning model. The rule that survives both incidents: the version is not the number in
+> `Cargo.toml`, it is the number in `Cargo.toml` **and** every place that repeats it.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scematica-suite` | 1.25.0 | `scematica` | launcher + umbrella lib |
-| `scematica-dashboard` | 1.25.0 | `dashboard` | bin + lib |
-| `scematica-sniper` | 1.25.0 | `sniper`, `backtest` | bin + lib |
-| `scematica-arb` | 1.25.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
-| `scematica-protocol` | 1.25.0 | `protocol` | bin + lib |
-| `scematica-ai` | 1.25.0 | — | library |
-| `scematica-executor` | 1.25.0 | — | library |
-| `scematica-core` | 1.25.0 | — | library |
-| `scematica-nn` | 1.25.0 | `scema-ddqn` | bin + lib |
-| `scematica-sentience` | 1.25.0 | — | library (Ψ/Ω cognitive gate; no binary) |
-| `scemadex-sdk` | 0.3.0 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
-| `scemadex-mcp` | 0.1.2 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
-| `scemadex-settle` | 0.1.2 | — | devnet reference settler |
-| `scema-agent-playground` | 0.1.0 | `playground` | bin |
+| `scematica-suite` | 1.27.0 | `scematica` | launcher + umbrella lib |
+| `scematica-dashboard` | 1.27.0 | `dashboard` | bin + lib |
+| `scematica-sniper` | 1.27.0 | `sniper`, `backtest` | bin + lib |
+| `scematica-arb` | 1.27.0 | `arb` | bin + lib (cross-DEX arbitrage; program-less) |
+| `scematica-protocol` | 1.27.0 | `protocol` | bin + lib |
+| `scematica-ai` | 1.27.0 | — | library |
+| `scematica-executor` | 1.27.0 | — | library |
+| `scematica-core` | 1.27.0 | — | library |
+| `scematica-nn` | 1.27.0 | `scema-ddqn` | bin + lib |
+| `scematica-sentience` | 1.27.0 | — | library (Ψ/Ω cognitive gate; no binary) |
+| `scemadex-sdk` | 0.3.1 | `scemadex` | bin + lib (incl. zkML + real SNARK backend) |
+| `scemadex-mcp` | 0.1.3 | `scemadex-mcp` | MCP server (LLM agents buy intelligence over x402) |
+| `scemadex-settle` | 0.1.3 | — | devnet reference settler |
+| `scema-agent-playground` | 0.1.1 | `playground` | bin |
+
+Scematica Omni versions on its own track — it is a separate workspace on a modern HTTP
+stack, kept out of the bot's lockfile on purpose (see `CLAUDE.md`), and it is pre-1.0
+because the world contract is still moving.
+
+| Crate | Version | Installs | Kind |
+|---|---|---|---|
+| `scema-cli` | 0.5.0 | `scema` | bin (the loop + the sibling launcher) |
+| `scema-tui` | 0.5.0 | `scema-tui` | bin (the console) |
+| `scema-daemon` | 0.5.0 | `scema-omnid` | bin (loopback HTTP) |
+| `scema-mcp` | 0.5.0 | `scema-mcp` | bin (MCP over stdio) |
+| `scema-world` `-tools` `-memory` `-sim` `-policy` `-verify` `-agent` | 0.5.0 | — | libraries |
+
+`alchem-link` (Python, PyPI) versions independently again at **0.24.0**.
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
-sourced from `web/package.json` (**1.25.0**). The mobile build reads it at build time to
+sourced from `web/package.json` (**1.27.0**). The mobile build reads it at build time to
 set the app's `versionName`/`versionCode` and names the artifact **`scematica-v<version>.apk`**
 — bump `web/package.json` to version the app. See [docs/mobile-app.md](docs/mobile-app.md).
 
@@ -122,7 +138,7 @@ library with `<crate> = "<x.y>"`. Library embedders who want a lean build
 
 ## Changelog
 
-Full version history (v0.5.0 → v1.25.0) now lives in [CHANGELOG.md](CHANGELOG.md).
+Full version history (v0.5.0 → v1.27.0) now lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## The ScemaDEX rail — agent-accessible intelligence
 

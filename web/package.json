@@ -1,6 +1,6 @@
 {
   "name": "scematica-web",
-  "version": "1.25.0",
+  "version": "1.27.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

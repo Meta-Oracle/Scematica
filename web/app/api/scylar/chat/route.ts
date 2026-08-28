@@ -48,9 +48,6 @@ import { OMNI_INSTRUCTION, omniConfig, sealingAllowed } from '@/lib/scylar/omni'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-/** Cap on conversation history sent upstream, newest-first. */
-const MAX_HISTORY = 20
-
 /** Upstream timeout. Free tiers occasionally hang rather than refusing outright. */
 const UPSTREAM_TIMEOUT_MS = 45_000
 
@@ -61,6 +58,14 @@ const UPSTREAM_TIMEOUT_MS = 45_000
  * short enough that a model stuck in a loop costs three requests, not a rate limit. The
  * cap is announced to her when hit, so the last answer is written knowingly rather than
  * cut off.
+ *
+ * What a round actually costs is the whole conversation again — system prompt, history,
+ * every tool result so far — so the price of this number is quadratic in tokens, not
+ * linear in requests. That is now the binding constraint rather than a footnote: Groq's
+ * free tier for gpt-oss-120b allows ~8k tokens/min, so a full three-round turn on a loaded
+ * prompt can reach the per-minute ceiling on its own. It is left at three because the
+ * alternative is amputating the "notice a mint, then go and read it" path that the tools
+ * exist for; a 429 is at least legible, and `freeTierNote` is on the error.
  */
 const MAX_TOOL_ROUNDS = 3
 
@@ -118,7 +123,12 @@ export async function POST(request: NextRequest) {
   // Drop any client-supplied system turns: the persona is set here, and letting the
   // browser prepend its own system prompt is how a public endpoint becomes someone
   // else's free LLM proxy.
-  const history = (raw as ChatMessage[]).filter((m) => m.role !== 'system').slice(-MAX_HISTORY)
+  // The window is the provider's, not a constant here: history is re-sent on every tool
+  // round, so on a token-metered free tier it is the one part of the request size this
+  // route gets to choose. See `Provider.maxHistory`.
+  const history = (raw as ChatMessage[])
+    .filter((m) => m.role !== 'system')
+    .slice(-provider.maxHistory)
 
   if (history.length === 0) {
     return NextResponse.json({ ok: false, error: 'No messages to answer.' }, { status: 400 })
@@ -215,8 +225,9 @@ export async function POST(request: NextRequest) {
   // One system message, not five.
   //
   // Llama 3.x's chat template is trained on a single system turn; consecutive ones are
-  // out of distribution, and everything here lands in front of up to 20 turns of history.
-  // Measured against llama-3.3-70b with a real state block and eight turns of history:
+  // out of distribution, and everything here lands in front of the history window.
+  // Measured against llama-3.3-70b (the provider default before gpt-oss-120b) with a real
+  // state block and eight turns of history:
   // four separate system messages recovered the session PnL 5/5 and the agent's
   // train-step count 4/5, concatenated into one both were 5/5. A small margin, but free,
   // and the failure it removes is the model silently ignoring the block rather than
@@ -244,12 +255,15 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: provider.model,
         stream: true,
-        temperature: 0.75,
-        max_tokens: 900,
         messages: msgs,
         ...(anyTools.length
           ? { tools: toolDefinitions(availability), tool_choice: 'auto' }
           : {}),
+        // Sampling and reasoning options are the provider's, not this route's — they are
+        // not portable across the four candidates and the active one is a reasoning model
+        // where the others are not. Spread last so a provider can override anything above
+        // it. See `Provider.params` in lib/scylar/provider.ts.
+        ...provider.params,
       }),
       signal: controller.signal,
     })
@@ -280,18 +294,29 @@ export async function POST(request: NextRequest) {
     // Surface the upstream text: on a free tier this is usually the rate-limit reason,
     // which is the single most useful thing to show rather than a generic failure.
     const detail = await upstream.text().catch(() => '')
+    const retryAfter = upstream.headers.get('retry-after')
     return NextResponse.json(
       {
         ok: false,
         error: `${provider.label} returned ${upstream.status}.`,
         detail: detail.slice(0, 600),
         provider: provider.id,
+        model: provider.model,
         hint:
           upstream.status === 429
-            ? `Free-tier limit reached (${provider.freeTierNote}). Wait, or configure another provider.`
+            ? `Free-tier limit reached (${provider.freeTierNote}).` +
+              (retryAfter ? ` Retry in ${retryAfter}s.` : '') +
+              ' The upstream message above names which limit — a per-minute *token* ' +
+              'ceiling is hit by one large request and will repeat on every turn, where a ' +
+              'per-day one clears on its own. Wait, or configure another provider.'
             : undefined,
       },
-      { status: upstream.status === 429 ? 429 : 502 },
+      {
+        status: upstream.status === 429 ? 429 : 502,
+        // Passed through rather than invented. A number the provider gave is worth
+        // showing; one this route made up would be a guess about somebody else's meter.
+        ...(retryAfter ? { headers: { 'Retry-After': retryAfter } } : {}),
+      },
     )
   }
 
@@ -307,6 +332,13 @@ export async function POST(request: NextRequest) {
    * each round is a whole request against a 30/min free tier, which is how a single
    * question ends in a 429 with nothing rendered. Answering the repeat with a pointer
    * back to the data costs nothing and breaks the cycle.
+   *
+   * Kept for gpt-oss-120b without re-measuring it. Whether that model has the same habit
+   * is unknown here, and this is the cheap side of the bet: if it never repeats a call the
+   * set is dead weight, and if it does, the failure is a rate-limited turn that renders
+   * nothing. Do not delete it on the grounds that the new model "probably" behaves — that
+   * is a guess about a model, which is the one kind of claim this whole file is built to
+   * refuse.
    */
   const served = new Set<string>()
 
@@ -486,6 +518,15 @@ export async function POST(request: NextRequest) {
  * Tool-call arguments arrive in fragments across many frames and are keyed by `index`,
  * not by `id` — the id appears once, on the first fragment. Accumulating by index is the
  * part that is easy to get wrong and produces truncated JSON when it is.
+ *
+ * **Only `delta.content` is forwarded, and that is load-bearing now that the default
+ * provider is a reasoning model.** gpt-oss puts its chain of thought in a sibling
+ * `delta.reasoning` field, which this ignores by construction — the provider also asks for
+ * it not to be generated (`include_reasoning: false`), so the guarantee is made twice.
+ * Forwarding it would put her working-out on screen and drive the mouth sprite with it,
+ * and worse, it would reach `recordAnswer` and be scored as something she claimed. If
+ * reasoning ever needs showing, it belongs in its own `{"scylar":{...}}` frame with its own
+ * label, never merged into the spoken text.
  */
 async function pump(
   res: Response,

@@ -101,6 +101,13 @@ Channel-Specific Cuts
 
 Trim the above to fit each venue. Same facts, different length.
 
+The cuts below are the **v1.25.0** announcement, kept as worked examples rather than
+updated to the current version. Re-stamping them with a new number would be the cheapest
+possible lie: the coherence breaker and the epistemic layer they describe are real, and
+they shipped in 1.25.0, so a 1.27.0 headline over the same sentences announces old work
+as new. Write the current release's copy from its own CHANGELOG entry — for 1.27.0 that
+is Scematica Mesh, the Escrow Market, and the Omni world contract.
+
 For an X or Twitter thread opener: Scematica 1.25.0 is live. Every trading bot halts after it loses money. This one halts before — when its own safety checks stop resolving, it stops buying. Then a thread. Close the first post with cargo install scematica-suite then scematica dashboard --demo.
 
 For a short Discord or Telegram post: Scematica 1.25.0 is live. The coherence breaker halts buys when RPC-bound filters stop resolving, so a degraded node can no longer turn the filter pipeline into a pass-through that still reports "passed". The Psi gate does the same for the API: stale state returns 409 instead of a confident paragraph of old numbers. Plus counterfactual replay and the Scylar terminal. Try it with cargo install scematica-suite then scematica dashboard --demo.

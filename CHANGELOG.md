@@ -2,6 +2,137 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## What's New in v1.27.0
+
+### 1.26.0 shipped without a description, and that is the story of this release
+
+1.26.0 was published to crates.io on 2026-08-21 and documented nowhere. No changelog
+entry, no README line, and every version-bearing document in the tree — README,
+QUICKSTART, ROADMAP, WHITEPAPER, EQUATIONS, the thesis, `web/package.json` — still said
+1.25.0. That is the same drift v1.25.0 was cut to end, arriving one release later from the
+opposite direction: last time the manifests ran ahead of the prose, this time a *published
+artifact* did.
+
+1.26.0 is not folded away. A published version is a fact, and the tree has moved past it
+anyway — `scematica-mesh` gained the Omni world emitter after that publish. **v1.27.0 is
+the release that describes both**: what 1.26.0 shipped, and everything since.
+
+The rule that survives both incidents: the version is not the number in `Cargo.toml`, it
+is that number **and every place that repeats it**.
+
+### Scematica Mesh — the running system's own topology
+
+`scematica-mesh` collects the File-Based IPC files into a graph of decision-making units
+and serves it read-only — no writes, no locks, safe against a live bot. `mesh-dashboard`
+renders it as a terminal graph; `/mesh` renders it on the web behind `GET /api/mesh`.
+
+It also implements the agentic-architecture spec's Ψ = C·K·(1−R) over the *observed* mesh,
+because no subsystem can measure its own agreement with the others. Every term carries
+`measured: bool`, and **an unmeasured dimension contributes the neutral element, never
+zero** — the literal reading of the spec pins the gate shut on subsystems nobody has
+built, which is the same trap that once jammed the sentience Ψ at 0. Ω stays `None` until
+one of its five subsystems exists.
+
+`/mesh` has no simulation branch, for a sharper reason than the other pages: a simulated
+metric is a fake number wearing a badge, but a simulated *topology* asserts that a
+particular set of units exists and is wired a particular way on the operator's machine.
+There is no honest way to badge that, so it 503s when no bot is paired — which is not the
+same as an empty mesh, and the two render differently.
+
+### The Escrow Market — non-custodial, and provably so
+
+`programs/scemadex-vault` time-locks any SPL token against a reserve asset. Four
+instructions and **no privileged role at all**: no admin, no sweeper, no pause. Two traps
+that only appear with a Token-2022 mint, which is the product's central case: it uses
+`token_interface` rather than legacy `anchor_spl::token`, and deposits credit the
+**measured balance delta** rather than the requested amount, because a transfer fee
+otherwise books reserve that never arrived. Each instruction carries one token program
+*per leg*, so a Token-2022 mint can be backed by legacy-SPL wBTC — a single shared
+`token_program` account made every such pair unconstructible.
+
+The custody guarantee depends on a deploy step invisible in the source:
+`set-upgrade-authority --final`. Until `solana program show` reports `Authority: none`, a
+PDA vault is fully custodial no matter how `lib.rs` reads.
+
+`/escrow` reads it. `balance >= recorded`, never `==` — anyone can transfer tokens into
+any account, so a surplus is normal and permanently stuck, giving three verdicts
+(`backed` / `donated` / `SHORTFALL`) rather than a boolean. No price, no USD, no "percent
+backed": the program consults no oracle and neither does the page. Decimals come from the
+mint account, never a token list, because a wrong `decimals` is a wrong *quantity of
+money*, not a wrong label.
+
+### Scematica Omni 0.5.0 — the world contract opened
+
+Omni versions on its own track and reached 0.5.0. `WorldState` now carries
+`schema: "scema.world/1"` and an undeclared version is refused on import — the contract is
+JSON implemented in four languages with no compiler between a producer and it, so without
+a version the next format change is a silent misread rather than an error. The field is
+`Option` + `skip_serializing_if`, which is load-bearing: records sealed before it existed
+must keep verifying, and a verifier that cries tamper on untouched history is the one
+failure that teaches a reader to stop believing it.
+
+`Domain` and `EntityKind` became **open** enums. Closing them was the largest limit on
+universality — a perceived web page and a set of Chainlink feeds both reported `unknown`,
+so two entirely different worlds were indistinguishable to every specialist.
+
+Also: `scema quickstart`, and the fix for two correct behaviours that read as
+malfunctions on a first run. An ungrounded `simulate` abstains, which is right at every
+step and looked like the tool refusing; and a grounded signal branch outranking the
+operator's goal looked like the goal being ignored. Both were rendering bugs, not logic
+ones — `next_steps` now renders each abstention reason as a different next command, and
+**suggests without ever acting**.
+
+### Scylar moved to a reasoning model
+
+The terminal's Groq provider is now `openai/gpt-oss-120b`. Sampling and reasoning options
+moved from the route to the provider, because they are not portable — `reasoning_effort`
+and `include_reasoning` exist on gpt-oss and nowhere else in the list, and an unrecognised
+field is a 400 on some OpenAI-compatible servers rather than an ignored key.
+
+Three things had to change with it. The completion cap is no longer 900: gpt-oss reasons
+before it answers and those tokens bill against the same budget, so the old cap could be
+spent entirely on thinking and stream back nothing — indistinguishable from an outage. The
+history window dropped from 20 turns to 8 on that provider, because the free tier meters
+~8k tokens/min and every tool round re-sends the whole conversation. And `pump` forwards
+only `delta.content`, which is now load-bearing: the chain of thought arrives in a sibling
+field, and forwarding it would put her working-out on screen, drive the mouth sprite with
+it, and feed it to `recordAnswer` as something she claimed.
+
+The system prompt was **not** cut, and that was measured rather than assumed. Squeezing it
+to fit drops `metacognition` first — the layer that makes her say whether a claim was READ
+or GUESSED — because `composePsyche` ranks situational data above doctrine on purpose.
+~700 tokens is not worth the rule the assistant is built around.
+
+### alchem-link 0.24.0
+
+Emits the opened world contract: the declared `schema`, and a real `domain` of `data`
+instead of collapsing to `unknown`. Two of its own tests were still asserting the closed
+form and had been failing since the contract moved — one of them passing for the wrong
+reason, catching a `ValueError` from the schema check while claiming to test an evidence
+rule. Both fixed; 622 tests pass.
+
+### Version surfaces reconciled
+
+Bot workspace **1.27.0** (all `scematica-*` crates inherit it). `web/package.json`
+**1.27.0**, which is also the Android `versionName`/`versionCode` source (→ 12700).
+`alchem-link` **0.24.0**. Scematica Omni stays at **0.5.0** — only tests and docs changed
+after its publish, and bumping a version that shipped nothing is the same sin as not
+bumping one that did.
+
+Two drifts fixed along the way: the browser extension's `package.json` said 0.1.0 while
+its own `manifest.json` said 0.5.0, and the README's ScemaDEX rows were a full patch
+behind what was actually on crates.io (`scemadex-sdk` 0.3.1, `scemadex-mcp` /
+`scemadex-settle` 0.1.3, `scema-agent-playground` 0.1.1). The Omni family now appears in
+the README's version table at all, which it did not before.
+
+Documents whose header carries a version but whose contents were **not** re-verified now
+say so — `verified against source 2026-08-11 (at v1.25.0)`. Bumping the number on an
+unaudited document is how a stale claim acquires a fresh date.
+
+`scema-botchain` and `scema-bot-mesh` remain separate workspaces at 0.1.0 on their own
+track. The ScemaDEX family is unchanged since its last publish and stays independently
+pre-1.0.
+
 ## What's New in v1.25.0
 
 ### One version again — 1.16 through 1.24 were never a release

@@ -1,4 +1,4 @@
-# Scematica v1.25.0 - Quick Start Guide
+# Scematica v1.27.0 - Quick Start Guide
 
 > **How much SOL do I need?** Minimum viable **0.5 SOL**, recommended **0.7–1.0 SOL**,
 > scaling **2–3 SOL** (plus 250k SCEMA for the token gate). Computed from the real trade

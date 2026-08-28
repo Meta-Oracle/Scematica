@@ -616,7 +616,7 @@ const baseCtx = {
   utterance: 'what can you see right now?',
   senses: { bot: 'live', omni: true, sealing: false, codex: true, tools: ['explain_project'] },
   gate: { verdict: 'go', psi: 0.91, bottleneck: null },
-  provider: { id: 'groq', model: 'llama-3.3-70b-versatile' },
+  provider: { id: 'groq', model: 'openai/gpt-oss-120b' },
   blocks: {},
   budget: DEFAULT_BUDGET,
 }
@@ -861,6 +861,46 @@ check('an unknown topic is refused rather than invented',
 
 const areas = await runTool('http://127.0.0.1:1', 'list_project_areas', '{}', codexOnly)
 check('list_project_areas returns the map', areas.ok === true && areas.content.includes('Web products:'))
+
+console.log('')
+console.log('── provider ──────────────────────────────────────────')
+
+// The request body is assembled from two places - this route's defaults and the provider's
+// own `params` - and the mistakes that combination makes are all silent 400s from a vendor,
+// which reach the operator as "the provider is down". Each check below is one of them.
+//
+// A key is planted so `resolveProvider` will answer. Nothing is sent anywhere.
+process.env.GROQ_API_KEY = 'check-scylar-not-a-real-key'
+const { resolveProvider } = await import('../lib/scylar/provider.ts')
+const groq = resolveProvider()
+
+check('the first provider with a key is the one selected', groq?.id === 'groq')
+check('Groq runs the gpt-oss model', groq?.model === 'openai/gpt-oss-120b')
+
+// gpt-oss rejects `reasoning_format` outright, and it is mutually exclusive with the
+// parameter that does work. Reaching for the more familiar name is the obvious mistake.
+check('the reasoning switch is include_reasoning, not reasoning_format',
+  groq !== null && !('reasoning_format' in groq.params) && groq.params.include_reasoning === false)
+
+check('reasoning effort is set, and low for latency', groq?.params.reasoning_effort === 'low')
+
+// Both names mean the same thing, and sending both is undefined across these vendors.
+// Exactly one must be present, or the completion cap is whichever the server prefers.
+const caps = ['max_tokens', 'max_completion_tokens'].filter((k) => k in (groq?.params ?? {}))
+check('exactly one completion cap is declared', caps.length === 1)
+
+// The cap covers reasoning tokens *plus* the answer. Set it near the 900 sized for a
+// non-reasoning model and a hard question spends the whole allowance thinking, then streams
+// back nothing - which is indistinguishable from an outage.
+check('the completion cap leaves room for reasoning and an answer',
+  typeof groq?.params.max_completion_tokens === 'number' && groq.params.max_completion_tokens >= 1200)
+
+check('history is trimmed on the tightest token tier',
+  typeof groq?.maxHistory === 'number' && groq.maxHistory > 0 && groq.maxHistory <= 10)
+
+// The operator meets this string on a 429, and it is the only place the ceiling is named.
+check('the free-tier note names the token ceiling, not just requests',
+  (groq?.freeTierNote ?? '').includes('tokens/min'))
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)
 process.exit(failed === 0 ? 0 : 1)

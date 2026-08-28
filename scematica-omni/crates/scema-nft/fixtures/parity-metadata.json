@@ -1,0 +1,69 @@
+{
+  "attributes": [
+    {
+      "trait_type": "Domain",
+      "value": "software"
+    },
+    {
+      "trait_type": "Entity kind",
+      "value": "repository"
+    },
+    {
+      "trait_type": "Observer",
+      "value": "repo:pärity"
+    },
+    {
+      "trait_type": "Extent",
+      "value": "6/9"
+    },
+    {
+      "trait_type": "Legibility",
+      "value": "0.50"
+    },
+    {
+      "trait_type": "Objects",
+      "value": 6
+    },
+    {
+      "trait_type": "Signals counted",
+      "value": 3
+    },
+    {
+      "trait_type": "Signals estimated",
+      "value": 2
+    },
+    {
+      "trait_type": "Blind spots",
+      "value": 3
+    },
+    {
+      "trait_type": "Live",
+      "value": 3
+    },
+    {
+      "trait_type": "Stale",
+      "value": 1
+    },
+    {
+      "trait_type": "Absent",
+      "value": 1
+    },
+    {
+      "trait_type": "Simulated",
+      "value": 1
+    },
+    {
+      "trait_type": "World schema",
+      "value": "scema.world/1"
+    }
+  ],
+  "description": "A Scematica Omni world plate: the state of `/srv/parity & co` as one observer found it at unix 1700000000, drawn to scale. Every mark is a measurement or the absence of one. Dashed means nobody measured it; a notch in the outer ring is something the observer could not read; a hollow cap is a magnitude that was estimated rather than counted. The commitment binds this plate to that world file. It does not prove the world was as described — provenance carries that — and it does not prove this is the only plate for it. 3 blind spot(s) were reported and are drawn as notches.",
+  "external_url": "/srv/parity & co",
+  "image": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJTY2VtYXRpY2EgT21uaSB3b3JsZCBwbGF0ZSBmb3IgcGFyaXR5ICZsdDtmaXh0dXJlJmd0OyAmYW1wOyBjbyAocmVwb3NpdG9yeSksIG9ic2VydmVkIGJ5IHJlcG86cMOkcml0eSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjUxMiIgaGVpZ2h0PSI1MTIiIGZpbGw9IiMwODA2MGYiLz48cmVjdCB4PSI4IiB5PSI4IiB3aWR0aD0iNDk2IiBoZWlnaHQ9IjQ5NiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmQ0MGM0IiBzdHJva2Utd2lkdGg9IjEiLz48dGV4dCB4PSIyNCIgeT0iMzQiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjE4IiBmaWxsPSIjY2JhNmZmIiB0ZXh0LWFuY2hvcj0ic3RhcnQiPnBhcml0eSAmbHQ7Zml4dHVyZSZndDsgJmFtcDsgY288L3RleHQ+PHRleHQgeD0iMjQiIHk9IjUyIiBmb250LWZhbWlseT0idWktbW9ub3NwYWNlLFNGTW9uby1SZWd1bGFyLE1lbmxvLENvbnNvbGFzLG1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzhhODFhOCIgdGV4dC1hbmNob3I9InN0YXJ0Ij5yZXBvc2l0b3J5IMK3IHNvZnR3YXJlIMK3IHJlcG86cMOkcml0eTwvdGV4dD48Y2lyY2xlIGN4PSIyNTYiIGN5PSIyNTYiIHI9IjE4MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmExZjQ1IiBzdHJva2Utd2lkdGg9IjUiLz48cGF0aCBkPSJNIDI1NiA3NiBBIDE4MCAxODAgMCAxIDEgMTAwLjExNSAzNDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2E5NmJmZiIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0iYnV0dCIvPjxwYXRoIGQ9Ik0gMjU2IDg4IEwgMjU2IDY0IiBzdHJva2U9IiM2ZjY2OTAiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWRhc2hhcnJheT0iMyAzIi8+PHBhdGggZD0iTSA0MDEuNDkyIDM0MCBMIDQyMi4yNzcgMzUyIiBzdHJva2U9IiM2ZjY2OTAiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWRhc2hhcnJheT0iMyAzIi8+PHBhdGggZD0iTSAxMTAuNTA4IDM0MCBMIDg5LjcyMyAzNTIiIHN0cm9rZT0iIzZmNjY5MCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtZGFzaGFycmF5PSIzIDMiLz48cGF0aCBkPSJNIDI1NiAxNTYgTCAyNTYgOTgiIHN0cm9rZT0iI2ZmN2I5YyIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTSAyNTYgOTMgTCAyNTAuNTU2IDEwMC4wOTUgTCAyNjEuNDQ0IDEwMC4wOTUgWiIgZmlsbD0iI2ZmN2I5YyIgc3Ryb2tlPSIjZmY3YjljIiBzdHJva2Utd2lkdGg9IjEuNSIvPjxwYXRoIGQ9Ik0gMzUxLjEwNiAyMjUuMDk4IEwgMzUxLjEwNiAyMjUuMDk4IiBzdHJva2U9IiM4NmU1YzAiIHN0cm9rZS13aWR0aD0iMiIvPjxjaXJjbGUgY3g9IjM1MS4xMDYiIGN5PSIyMjUuMDk4IiByPSIzLjUiIGZpbGw9IiM4NmU1YzAiIHN0cm9rZT0iIzg2ZTVjMCIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48cGF0aCBkPSJNIDMxNC43NzkgMzM2LjkwMiBMIDMyNy41NjMgMzU0LjQ5OCIgc3Ryb2tlPSIjZmY3YjljIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjQgMyIvPjxwYXRoIGQ9Ik0gMzMwLjUwMiAzNTguNTQzIEwgMzI5LjcyNSAzNTAuMzY0IEwgMzIyLjk2MyAzNTUuMjc3IFoiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmN2I5YyIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48cGF0aCBkPSJNIDE5Ny4yMjEgMzM2LjkwMiBMIDE4MC4xNzYgMzYwLjM2MyIgc3Ryb2tlPSIjODZlNWMwIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjQgMyIvPjxjaXJjbGUgY3g9IjE4MC4xNzYiIGN5PSIzNjAuMzYzIiByPSIzLjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg2ZTVjMCIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48cGF0aCBkPSJNIDE2MC44OTQgMjI1LjA5OCBMIDE0Mi41MDggMjE5LjEyNCIgc3Ryb2tlPSIjODZlNWMwIiBzdHJva2Utd2lkdGg9IjIiLz48Y2lyY2xlIGN4PSIxNDIuNTA4IiBjeT0iMjE5LjEyNCIgcj0iMy41IiBmaWxsPSIjODZlNWMwIiBzdHJva2U9IiM4NmU1YzAiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHBhdGggZD0iTSAyNTYgMTY4IEEgODggODggMCAwIDEgMjU2IDM0NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjODZlNWMwIiBzdHJva2Utd2lkdGg9IjMiLz48cGF0aCBkPSJNIDI1NiAzNDQgQSA4OCA4OCAwIDAgMSAxNzkuNzkgMzAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmMmIxNWMiIHN0cm9rZS13aWR0aD0iMyIvPjxwYXRoIGQ9Ik0gMTc5Ljc5IDMwMCBBIDg4IDg4IDAgMCAxIDE3OS43OSAyMTIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzdkZDNmYyIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtZGFzaGFycmF5PSI0IDQiLz48cGF0aCBkPSJNIDE3OS43OSAyMTIgQSA4OCA4OCAwIDAgMSAyNTYgMTY4IiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZjY2OTAiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWRhc2hhcnJheT0iNCA0Ii8+PGNpcmNsZSBjeD0iMjU2IiBjeT0iMjU2IiByPSIyOSIgZmlsbD0iI2E5NmJmZiIgZmlsbC1vcGFjaXR5PSIwLjE4IiBzdHJva2U9IiNhOTZiZmYiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHRleHQgeD0iMjU2IiB5PSIyNjEiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjE2IiBmaWxsPSIjZTZlMGY1IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj4wLjUwPC90ZXh0Pjx0ZXh0IHg9IjI0IiB5PSI0NjAiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjOGE4MWE4IiB0ZXh0LWFuY2hvcj0ic3RhcnQiPkVYVEVOVCA2Lzk8L3RleHQ+PHRleHQgeD0iNDg4IiB5PSI0NjAiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjNmY2NjkwIiB0ZXh0LWFuY2hvcj0iZW5kIj4zIEJMSU5EIFNQT1QoUyk8L3RleHQ+PHRleHQgeD0iMjQiIHk9IjQ3OCIgZm9udC1mYW1pbHk9InVpLW1vbm9zcGFjZSxTRk1vbm8tUmVndWxhcixNZW5sbyxDb25zb2xhcyxtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiM4YTgxYTgiIHRleHQtYW5jaG9yPSJzdGFydCI+Q09WRVJBR0UgMy81PC90ZXh0PjxyZWN0IHg9IjQ0NSIgeT0iNDcwIiB3aWR0aD0iNyIgaGVpZ2h0PSI3IiBmaWxsPSIjYTk2YmZmIi8+PHJlY3QgeD0iNDU0IiB5PSI0NzAiIHdpZHRoPSI3IiBoZWlnaHQ9IjciIGZpbGw9IiNhOTZiZmYiLz48cmVjdCB4PSI0NjMiIHk9IjQ3MCIgd2lkdGg9IjciIGhlaWdodD0iNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNTQ0YzZjIiBzdHJva2Utd2lkdGg9IjEiLz48cmVjdCB4PSI0NzIiIHk9IjQ3MCIgd2lkdGg9IjciIGhlaWdodD0iNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNTQ0YzZjIiBzdHJva2Utd2lkdGg9IjEiLz48cmVjdCB4PSI0ODEiIHk9IjQ3MCIgd2lkdGg9IjciIGhlaWdodD0iNyIgZmlsbD0iI2E5NmJmZiIvPjx0ZXh0IHg9IjI0IiB5PSI0OTYiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjN2RkM2ZjIiB0ZXh0LWFuY2hvcj0ic3RhcnQiPndvcmxkIGYyZjnCt2ZhYzXCt2I2Njg8L3RleHQ+PHRleHQgeD0iNDg4IiB5PSI0OTYiIGZvbnQtZmFtaWx5PSJ1aS1tb25vc3BhY2UsU0ZNb25vLVJlZ3VsYXIsTWVubG8sQ29uc29sYXMsbW9ub3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjOGE4MWE4IiB0ZXh0LWFuY2hvcj0iZW5kIj5MMyBTMSBBMSBNMTwvdGV4dD48L3N2Zz4=",
+  "name": "Omni world · parity <fixture> & co",
+  "scema": {
+    "observed_at": 1700000000,
+    "schema": "scema.world/1",
+    "world_commitment": "f2f9fac5b6687cd9df170d528edd5bdd2ee5d0fda1e635b246903b765ccb7348"
+  }
+}

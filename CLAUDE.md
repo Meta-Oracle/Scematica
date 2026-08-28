@@ -39,7 +39,7 @@ cargo run --release -p mesh-dashboard -- --json       # raw mesh
 # `scematica-*` line. Install without a checkout:
 cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 262 tests
+cd scematica-omni ; cargo test --workspace          # 309 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -47,6 +47,8 @@ cd scematica-omni ; cargo test --workspace          # 262 tests
 ./scematica-omni/target/release/scema explain --list ; scema verify --all
 ./scematica-omni/target/release/scema policy        # weights, observers, specialists
 ./scematica-omni/target/release/scema check world.json   # does a producer's output conform
+./scematica-omni/target/release/scema nft world.json --out plate.svg --metadata plate.json
+                                                    # a world drawn: deterministic, self-contained SVG
 ./scematica-omni/target/release/scema check --vocabulary # the open domain / entity-kind lists
 ./scematica-omni/target/release/scema init          # create .scema/ (self-ignoring)
 ./scematica-omni/target/release/scema doctor        # installed / wired / quietly broken
@@ -67,7 +69,7 @@ cd scematica-omni ; cargo test --workspace          # 262 tests
 ./scematica-omni/target/release/scema-tui --palette        # what colour this terminal carries
 
 cd scematica-omni/plugins/scema-web ; npm test                 # extension (44 hermetic)
-cd web ; npm run check:omni                                    # Rust<->TS commitment parity
+cd web ; npm run check:omni                                    # Rust<->TS commitment + plate parity
 
 # Omni perceives more than a source tree. The observed thing emits a WorldState; omni's
 # ImportObserver reads it. Four producers on that contract, one loop above them.
@@ -231,17 +233,18 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         wire format), scema-tools (perception + Workspace confinement),
                         scema-memory (four memories), scema-sim (counterfactual projection),
                         scema-policy (utility + pluggable evaluators + the ONE renderer),
-                        scema-verify (proof-carrying decision records), scema-agent (the
+                        scema-verify (proof-carrying decision records), scema-nft (a world
+                        drawn — deterministic SVG plate + token metadata), scema-agent (the
                         loop), scema-cli (bin `scema` — the loop, plus the sibling launcher,
-                        `init`/`doctor`/`connect`/`completions`), scema-tui (bin `scema-tui`,
-                        the console), scema-daemon (bin `scema-omnid`), scema-mcp (bin
-                        `scema-mcp`). Plus plugins/scema-web (MV3 browser extension, no
+                        `init`/`doctor`/`connect`/`completions`/`nft`), scema-tui (bin
+                        `scema-tui`, the console), scema-daemon (bin `scema-omnid`), scema-mcp
+                        (bin `scema-mcp`). Plus plugins/scema-web (MV3 browser extension, no
                         build step), plugins/claude-code (a Claude Code plugin over the MCP
                         server, referenced by `.claude-plugin/marketplace.json` at the repo
-                        root) and `/omni` in web/ (offline record verifier). Tests:
-                        `cargo test --workspace` (262), plus 54 in plugins/scema-web
+                        root) and `/omni` in web/ (offline record verifier + plate renderer).
+                        Tests: `cargo test --workspace` (309), plus 54 in plugins/scema-web
                         (9 of them wire tests that skip without a live daemon) and
-                        `npm run check:omni` in web/ (17). See scematica-omni/README.md.
+                        `npm run check:omni` in web/ (30). See scematica-omni/README.md.
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -541,7 +544,7 @@ collects. Four constraints:
 
 **`/omni` is the seventh product on the same site** — the Scematica Omni decision-record
 console (`components/omni/`, `lib/omni/`) with its own amber palette (`omni-*` tokens +
-`.omni-root`). It renders and verifies a record sealed by `scematica-omni`. Four
+`.omni-root`). It renders, verifies, and **draws** a record sealed by `scematica-omni`. Five
 constraints, and the first is stronger than anywhere else on the site:
 
 - **There is no server side at all.** No `/api/omni` route, no entry in
@@ -566,6 +569,27 @@ constraints, and the first is stronger than anywhere else on the site:
   carries that), and it does **not** prove this is the original record (tamper-evident, not
   tamper-proof, until the root is anchored somewhere the author does not control). The
   `Limits` component renders all three, twice.
+- **`lib/omni/nft.ts` must produce the same BYTES as `scema-nft`, not merely the same
+  rule.** This is a stronger contract than `view.ts`, where three implementations share a
+  rule and each is tested alone. The plate is derived from the record, so an image that
+  depends on which runtime drew it is not a derivative of anything — the CLI and the browser
+  would mint two different artefacts for one world. `check:omni` compares against
+  `scematica-omni/crates/scema-nft/fixtures/parity-plate.svg`, which carries **Rust's**
+  output, and fails on one differing character. Four things make that possible and each is a
+  place the obvious code diverges silently: **no trigonometry** (`sin`/`cos` are not
+  correctly rounded by IEEE-754, so both sides index the same integer sine table at whole
+  degrees), **no decimal formatting of floats** (`{:.3}` ties-to-even, `toFixed` does not —
+  coordinates are integers in thousandths and are formatted by integer arithmetic),
+  **rounding is half away from zero** spelled out on both sides because `Math.round` rounds
+  half toward +∞, and **text is code points, base64 is UTF-8 bytes** (`length`/`slice` count
+  UTF-16 units and `btoa` mangles above U+00FF). Also **no clock**: a "minted at" field would
+  make every regeneration a different token, and both suites assert its absence — along with
+  the absence of any score, rank or rarity, because a ranking invented from these counts
+  would be a number of the right shape with nothing behind it, laundered through a signed
+  artefact. The plate is drawn from the **raw text** for the same reason the digest is, and a
+  record contributes its *stored* `commitment.world` rather than a recomputed one, so an
+  edited record yields a plate whose digest does not match its own world — that mismatch is
+  the tamper signal, and recomputing would repair the evidence.
 
 `lib/omni/view.ts::cell` is the TS copy of the one render rule — an unmeasured term prints
 `—`, never `0.00`. Three implementations exist (Rust `scema_policy::render`, the extension
@@ -575,7 +599,8 @@ than no copy.
 `npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
 determinism, path tracing, URL rooting, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
 captured from a real `cargo run --example dump`. `npm run check:omni` pins the
-Rust↔TS commitment arithmetic (17 checks) against a real sealed record — including the
+Rust↔TS commitment arithmetic and the SVG plate (30 checks) against a real sealed record
+and a real rendered plate — including the
 1e-9 float binding, the integer/float tag distinction, byte-wise key ordering, and the
 `JSON.stringify` hazard above. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching

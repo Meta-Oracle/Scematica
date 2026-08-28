@@ -64,9 +64,23 @@ export interface Extent {
 }
 
 export interface WorldState {
+  /**
+   * The world contract version, `scema.world/1`.
+   *
+   * Optional because records sealed before the field existed must keep verifying — it is
+   * `skip_serializing_if` on the Rust side for exactly that reason, and a verifier that
+   * cried tamper on untouched history is the one failure that teaches a reader to stop
+   * believing it. Absent is distinct from unrecognised.
+   */
+  schema?: string | null
   observer: string
   entity: { kind: string; locator: string; label: string }
-  domain: 'software' | 'infrastructure' | 'trading' | 'unknown'
+  /**
+   * Open, not a union. `Domain` and `EntityKind` became open enums in the 0.5.0 contract —
+   * a closed list here would mean a perceived web page and a set of price feeds are
+   * indistinguishable again, which was the largest single limit on universality.
+   */
+  domain: string
   observed_at: number
   objects: WorldObject[]
   facts: unknown[]

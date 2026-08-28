@@ -1,0 +1,23 @@
+[package]
+name = "scema-nft"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — a WorldState drawn as a deterministic, self-contained SVG plate with ERC-721 token metadata. Same bytes in Rust and in the browser."
+keywords = ["agent", "svg", "nft", "provenance", "deterministic"]
+categories = ["visualization"]
+
+[lib]
+name = "scema_nft"
+path = "src/lib.rs"
+
+[dependencies]
+scema-world = { workspace = true }
+scema-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

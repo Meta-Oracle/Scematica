@@ -166,6 +166,7 @@ believing it.
 | `scema-sim` | counterfactual projection. Refuses to invent a number. |
 | `scema-policy` | `U = R − λ₁K − λ₂C − λ₃U + λ₄V`, plus pluggable evaluators that may decline. |
 | `scema-verify` | canonical hashing and proof-carrying decision records. |
+| `scema-nft` | a world drawn — a deterministic, self-contained SVG plate plus token metadata. Byte-identical to `web/lib/omni/nft.ts`. |
 | `scema-agent` | the orchestration loop. |
 | `scema-cli` | the `scema` binary — the loop, plus the launcher, `doctor` and `connect`. |
 | `scema-tui` | `scema-tui` — the console. Black and violet, soft blue for a claim. |
@@ -502,6 +503,58 @@ One trap it pins: the page verifies the **raw text**, never a re-serialised obje
 fraction, moving it from the float tag to the integer tag and changing the digest. Nothing
 would be wrong with the record — the round trip destroys information the encoding depends
 on.
+
+It also **draws** the record's world, with the same code the CLI uses. See below.
+
+### `scema nft` — a world, drawn
+
+```bash
+scema observe . --json | scema nft - --out plate.svg --metadata plate.json
+scema nft .scema/decisions/<id>.json --out plate.svg
+```
+
+A `WorldState` rendered as a self-contained SVG — no fonts to fetch, no image host, no
+script — with ERC-721-shaped token metadata alongside it. `/omni` produces the identical
+file in the browser from a dropped record, and offers both as downloads.
+
+**Identical is meant literally.** `web/lib/omni/nft.ts` is a port of `scema-nft`, and unlike
+the render rule in `view.ts` — where three implementations share a *rule* and each is tested
+separately — these two must emit the **same bytes**. An image that depends on which runtime
+drew it is not a derivative of anything: the CLI and the browser would produce two different
+artefacts for one world. `check:omni` compares against a fixture carrying Rust's output and
+fails on one differing character.
+
+That is not achievable by care, which this repository learned in `canonical.rs`. There is no
+trigonometry (`sin`/`cos` are not correctly rounded by IEEE-754 and may differ in the last
+place — both sides index the same integer sine table at whole degrees), no decimal
+formatting of floats (`{:.3}` and `toFixed(3)` break ties differently — coordinates are
+integers in thousandths of a unit), rounding is half away from zero spelled out on both
+sides, text is measured in code points, and base64 encodes UTF-8 bytes rather than going
+through `btoa`. There is also **no clock**: a "minted at" field would make every
+regeneration a different token.
+
+The plate is an instrument. The rule that shapes it is the em-dash rule in vector form —
+**an unmeasured gauge must not look like a measured zero** — because both would otherwise be
+a zero-length arc, which is the same picture. So a gauge nobody measured draws its full
+sweep *dashed*, and a gauge measured at zero draws *nothing* and prints `0.00`. Blind spots
+cut visible notches through the extent ring, because ignorance should be a hole rather than
+blank space. Estimated magnitudes get hollow caps. Coverage is one cell per signal, never a
+proportional bar.
+
+The sharpest case is `legibility`, which returns `0.0` both for a world whose objects are
+all unreadable and for a world with no objects at all — `world.rs` says so in its own doc
+comment. The number cannot tell them apart; the picture must, so nothing-to-read draws a
+dashed ghost outline and `∅` while a measured zero draws no disc and prints `0.00`.
+
+Two things it does not do. It **does not score the world** — no rarity, tier or rank, and
+both test suites assert the absence, because a ranking invented here would be a number of
+exactly the right shape with nothing behind it, laundered through a signed artefact. And it
+**does not mint, sign or spend**: it writes files, and where they go next is your decision,
+not this runtime's.
+
+Handed a sealed record it uses the *stored* `commitment.world` rather than recomputing one,
+so an edited record produces a plate whose digest does not match its own world. That
+mismatch is the tamper signal; recomputing would quietly repair the evidence.
 
 ## Why its own cargo workspace
 

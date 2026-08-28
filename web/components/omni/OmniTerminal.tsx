@@ -40,12 +40,29 @@ import {
   provenanceLabel,
   truncate,
 } from '@/lib/omni/view'
+import { dataUri, metadataFor, plateSourceFromText, renderSvg } from '@/lib/omni/nft'
+
+/**
+ * The plate, drawn from the same text the verifier hashed.
+ *
+ * `null` when the record's world could not be drawn at all, which is a different state from
+ * "the world is empty" — an empty world draws a perfectly good plate saying nothing was
+ * read. The panel is simply absent rather than showing a blank frame that would read as a
+ * measurement.
+ */
+interface Plate {
+  svg: string
+  href: string
+  metadata: string
+  digest: string
+}
 
 interface Loaded {
   name: string
   text: string
   record: DecisionRecord
   verification: Verification
+  plate: Plate | null
 }
 
 type LoadError = { name: string; message: string }
@@ -70,7 +87,26 @@ export function OmniTerminal() {
         )
       }
       const verification = await verifyRecordText(text, webSha256)
-      setLoaded({ name, text, record: parsed, verification })
+
+      // The plate is drawn from `text` for the same reason the verifier hashes it: a
+      // `JSON.parse` round trip collapses Rust's `0.0` to `0`, and the digest printed on
+      // the plate has to be the record's, not one derived from a re-serialised object.
+      // A failure here must not lose the verification, which is the point of the page.
+      let plate: Plate | null = null
+      try {
+        const source = await plateSourceFromText(text, webSha256)
+        const svg = renderSvg(source.world, source.digest)
+        plate = {
+          svg,
+          href: dataUri(svg),
+          metadata: JSON.stringify(metadataFor(source.world, svg, source.digest), null, 2),
+          digest: source.digest,
+        }
+      } catch {
+        plate = null
+      }
+
+      setLoaded({ name, text, record: parsed, verification, plate })
     } catch (e) {
       setLoaded(null)
       setError({ name, message: e instanceof Error ? e.message : String(e) })
@@ -333,9 +369,95 @@ function RecordView({ loaded }: { loaded: Loaded }) {
 
       <VerdictPanel record={record} byId={byId} />
       <EvaluatorPanel record={record} />
+      {loaded.plate && <PlatePanel plate={loaded.plate} name={loaded.name} />}
       <CommitmentPanel record={record} v={verification} />
       <Limits />
     </div>
+  )
+}
+
+/**
+ * The world, drawn.
+ *
+ * Two decisions worth stating, because both look like details and are not.
+ *
+ * It renders through `<img src="data:...">` rather than inlining the markup. The SVG is
+ * built by escaped code and injecting it would probably be safe, but "probably safe" is the
+ * wrong standard for a page whose entire pitch is that it trusts nothing — and an `<img>`
+ * is also a live demonstration of the claim being made about the file: it is self-contained,
+ * so it renders with no fetch, no font and no script.
+ *
+ * The legend is not decoration either. The plate is an instrument, and an instrument whose
+ * dashed-versus-solid distinction is only documented in a Rust doc comment is a picture
+ * people will read confidently and wrongly. The three lines below are the whole key.
+ */
+function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
+  const base = name.replace(/\.json$/i, '')
+  return (
+    <Panel title="PLATE">
+      <div className="flex flex-col gap-5 md:flex-row md:items-start">
+        <img
+          src={plate.href}
+          alt="The world of this record, drawn: an extent ring notched by blind spots, one spoke per signal, and a legibility core."
+          width={512}
+          height={512}
+          className="w-full max-w-[320px] shrink-0 rounded border border-omni-border"
+        />
+        <div className="min-w-0 flex-1 space-y-3">
+          <p className="text-omni-muted">
+            The world this record committed to, drawn to scale. Every mark is a measurement
+            or the absence of one, and the picture is a pure function of the world — the
+            same file always produces the same bytes, here and from{' '}
+            <code className="text-omni-text">scema nft</code>.
+          </p>
+          <ul className="space-y-1 text-omni-dim">
+            <li>
+              <span className="text-omni-text">Dashed</span> — nobody measured it. An outer
+              ring dashed all the way round is an extent whose denominator is unknown, not a
+              full one.
+            </li>
+            <li>
+              <span className="text-omni-text">A notch</span> in the outer ring — something
+              the observer tried to read and could not. Ignorance is a hole, not blank space.
+            </li>
+            <li>
+              <span className="text-omni-text">A hollow cap</span> on a spoke — a magnitude
+              that was estimated rather than counted. Triangles are risks, discs are
+              opportunities.
+            </li>
+          </ul>
+          <p className="text-omni-dim">
+            A gauge measured at zero draws <em>nothing</em> and prints{' '}
+            <span className="text-omni-text">0.00</span>; a gauge nobody measured draws its
+            full sweep dashed. They are never the same picture — the same rule as the{' '}
+            <span className="text-omni-unmeasured">—</span> in the matrix above.
+          </p>
+          <Row k="world commitment" v={<span className="break-all">{plate.digest}</span>} />
+          <div className="flex flex-wrap gap-3 pt-1">
+            <a
+              href={plate.href}
+              download={`${base}.svg`}
+              className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"
+            >
+              Download SVG
+            </a>
+            <a
+              href={`data:application/json;charset=utf-8,${encodeURIComponent(plate.metadata)}`}
+              download={`${base}.metadata.json`}
+              className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"
+            >
+              Download token metadata
+            </a>
+          </div>
+          <p className="text-omni-dim">
+            Both were produced in this tab and nothing was uploaded. The metadata carries no
+            score, rank or rarity: every trait on it is a count an observer reported, and a
+            ranking invented here would be a number of the right shape with nothing behind
+            it.
+          </p>
+        </div>
+      </div>
+    </Panel>
   )
 }
 

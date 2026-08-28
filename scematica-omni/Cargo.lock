@@ -660,6 +660,7 @@ dependencies = [
  "clap_complete",
  "scema-agent",
  "scema-memory",
+ "scema-nft",
  "scema-policy",
  "scema-sim",
  "scema-tools",
@@ -705,6 +706,17 @@ name = "scema-memory"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "scema-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "scema-nft"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "scema-verify",
  "scema-world",
  "serde",
  "serde_json",

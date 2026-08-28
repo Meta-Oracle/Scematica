@@ -22,6 +22,7 @@ scema-memory = { workspace = true }
 scema-sim = { workspace = true }
 scema-policy = { workspace = true }
 scema-verify = { workspace = true }
+scema-nft = { workspace = true }
 scema-agent = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

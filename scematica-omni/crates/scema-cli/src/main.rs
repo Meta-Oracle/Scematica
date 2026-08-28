@@ -30,6 +30,7 @@
 //! differ, which is why they share one code path with a flag rather than being two.
 
 mod check;
+mod nft;
 mod quickstart;
 mod connect;
 mod doctor;
@@ -251,6 +252,33 @@ enum Command {
         vocabulary: bool,
     },
 
+    /// Draw a world as a self-contained SVG plate, with token metadata.
+    ///
+    /// Takes a `WorldState` (what `observe --json` prints, and what every producer emits) or
+    /// a sealed record, and writes an SVG that depends on nothing outside itself. The plate
+    /// is deterministic — the same world always produces the same bytes, here and in the
+    /// browser — so it is a derivative of the record rather than an illustration of it.
+    ///
+    /// It writes files and nothing else: no minting, no signing, no spend. Where the SVG
+    /// goes next is your decision, not this runtime's.
+    Nft {
+        /// A `.json` world or record, or `-` for stdin.
+        #[arg(default_value = "-")]
+        locator: String,
+        /// Write the SVG here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Also write ERC-721 token metadata here.
+        #[arg(long)]
+        metadata: Option<PathBuf>,
+        /// Point the metadata at this image URI instead of inlining the SVG.
+        ///
+        /// For a deployment that pins the plate somewhere content-addressed. Without it the
+        /// image is a `data:` URI and the token is complete on its own.
+        #[arg(long)]
+        image: Option<String>,
+    },
+
     /// What is installed, what is wired up, and what is quietly broken. Changes nothing.
     Doctor,
 
@@ -376,6 +404,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(check::vocabulary());
             }
             check::run(locator, cli.json)
+        }
+        Command::Nft { locator, out, metadata, image } => {
+            nft::run(locator, out.as_ref(), metadata.as_ref(), image.as_deref())
         }
         Command::Observe { locator } => {
             let agent = agent_for(false);

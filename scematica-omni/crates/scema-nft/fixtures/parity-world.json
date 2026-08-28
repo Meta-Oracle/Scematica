@@ -1,0 +1,150 @@
+{
+  "schema": "scema.world/1",
+  "observer": "repo:pärity",
+  "entity": {
+    "kind": "repository",
+    "locator": "/srv/parity & co",
+    "label": "parity <fixture> & co"
+  },
+  "domain": "software",
+  "observed_at": 1700000000,
+  "objects": [
+    {
+      "id": "live-1",
+      "kind": "file",
+      "label": "live-1",
+      "attrs": {
+        "size": {
+          "t": "int",
+          "v": 42
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "live-2",
+      "kind": "file",
+      "label": "live-2",
+      "attrs": {},
+      "provenance": {
+        "kind": "live",
+        "age_secs": 12
+      }
+    },
+    {
+      "id": "live-3",
+      "kind": "file",
+      "label": "live-3",
+      "attrs": {},
+      "provenance": {
+        "kind": "live",
+        "age_secs": 30
+      }
+    },
+    {
+      "id": "stale-1",
+      "kind": "file",
+      "label": "stale-1",
+      "attrs": {},
+      "provenance": {
+        "kind": "stale",
+        "age_secs": 7200,
+        "budget_secs": 3600
+      }
+    },
+    {
+      "id": "absent-1",
+      "kind": "file",
+      "label": "absent-1",
+      "attrs": {},
+      "provenance": {
+        "kind": "absent"
+      }
+    },
+    {
+      "id": "sim-1",
+      "kind": "file",
+      "label": "sim-1",
+      "attrs": {},
+      "provenance": {
+        "kind": "simulated"
+      }
+    }
+  ],
+  "facts": [],
+  "signals": [
+    {
+      "id": "sig-risk-full",
+      "polarity": "risk",
+      "label": "a counted risk at full magnitude",
+      "detail": "",
+      "magnitude": 1.0,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted in fixture"
+      ]
+    },
+    {
+      "id": "sig-opp-zero",
+      "polarity": "opportunity",
+      "label": "a counted opportunity at zero",
+      "detail": "",
+      "magnitude": 0.0,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted in fixture"
+      ]
+    },
+    {
+      "id": "sig-risk-est",
+      "polarity": "risk",
+      "label": "an estimated risk",
+      "detail": "",
+      "magnitude": 0.375,
+      "measured": false,
+      "targets": [],
+      "evidence": [
+        "counted in fixture"
+      ]
+    },
+    {
+      "id": "sig-opp-est",
+      "polarity": "opportunity",
+      "label": "an estimated opportunity",
+      "detail": "",
+      "magnitude": 0.5,
+      "measured": false,
+      "targets": [],
+      "evidence": [
+        "counted in fixture"
+      ]
+    },
+    {
+      "id": "sig-opp-odd",
+      "polarity": "opportunity",
+      "label": "an awkward magnitude",
+      "detail": "",
+      "magnitude": 0.3333333333,
+      "measured": true,
+      "targets": [],
+      "evidence": [
+        "counted in fixture"
+      ]
+    }
+  ],
+  "extent": {
+    "observed": 6,
+    "total": 9,
+    "note": "6 of 9 reached"
+  },
+  "blind_spots": [
+    "could not read /srv/parity/.git",
+    "permission denied on /srv/parity/secret",
+    "cross-origin frame"
+  ]
+}

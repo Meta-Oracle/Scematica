@@ -6,6 +6,7 @@ members = [
     "crates/scema-sim",
     "crates/scema-policy",
     "crates/scema-verify",
+    "crates/scema-nft",
     "crates/scema-agent",
     "crates/scema-cli",
     "crates/scema-tui",
@@ -49,6 +50,7 @@ scema-memory = { path = "crates/scema-memory", version = "0.5.0" }
 scema-sim = { path = "crates/scema-sim", version = "0.5.0" }
 scema-policy = { path = "crates/scema-policy", version = "0.5.0" }
 scema-verify = { path = "crates/scema-verify", version = "0.5.0" }
+scema-nft = { path = "crates/scema-nft", version = "0.5.0" }
 scema-agent = { path = "crates/scema-agent", version = "0.5.0" }
 scema-tui = { path = "crates/scema-tui", version = "0.5.0" }
 scema-daemon = { path = "crates/scema-daemon", version = "0.5.0" }

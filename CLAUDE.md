@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 309 tests
+cd scematica-omni ; cargo test --workspace          # 329 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -247,7 +247,9 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         scema-memory (four memories), scema-sim (counterfactual projection),
                         scema-policy (utility + pluggable evaluators + the ONE renderer),
                         scema-verify (proof-carrying decision records), scema-nft (a world
-                        drawn — deterministic SVG plate + token metadata), scema-agent (the
+                        drawn — deterministic SVG plate + token metadata), scema-trust
+                        (whether an action may happen — a port of alchem-link's approval
+                        model, conformance-checked against its vectors), scema-agent (the
                         loop), scema-cli (bin `scema` — the loop, plus the sibling launcher,
                         `init`/`doctor`/`connect`/`completions`/`nft`), scema-tui (bin
                         `scema-tui`, the console), scema-daemon (bin `scema-omnid`), scema-mcp
@@ -982,12 +984,16 @@ verification — which is why the safety argument is made once.
 - **`/omni` in web/** — see the web-products section above.
 
 `scema_tools::Workspace` is shared by the daemon and MCP and answers **where** only; whether
-is `Goal`'s constraints and (when there is ever a write path) an approval policy. Merging
-the two is how a grant for one silently becomes a grant for the other. It resolves fully
-(symlinks followed, `..` collapsed) and *then* compares against roots — a string scan for
-`..` passes a symlink pointing at `/`. Note what it does not cover: `RepoObserver` reads
-file contents to count tests and markers and has no `PROTECTED_PATTERNS` equivalent yet. It
-emits only counts, never contents, but point `--allow` at a project, not a home directory.
+is `Goal`'s constraints and `scema-trust`'s approval policy. Merging the two is how a grant
+for one silently becomes a grant for the other. It resolves fully (symlinks followed, `..`
+collapsed) and *then* compares against roots — a string scan for `..` passes a symlink
+pointing at `/`. It also refuses `PROTECTED_PATTERNS` **by name, after canonicalisation and
+before the root test**, so a symlink cannot launder a protected target and the refusal reads
+as "this is a secret" rather than "widen your roots". That closes a real gap: `RepoObserver`
+reads file contents to count tests and markers, and a count derived from a private key is
+still a read of one. The list is checked against Python's by
+`cargo test -p scema-tools --test protected_vectors`. Still point `--allow` at a project
+rather than a home directory — a name-based refusal is a backstop, not a boundary.
 
 State lives in `.scema/` under the working directory (`decisions/<id>.json`,
 `memory/*.jsonl`), gitignored — machine-local and full of absolute paths.

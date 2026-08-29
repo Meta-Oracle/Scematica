@@ -1,0 +1,21 @@
+[package]
+name = "scema-trust"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — whether an action may happen: risk declared per tool, a fixed preflight order, session-scoped grants, and a refusal that says why. Conformance-checked against a cross-language vector file."
+keywords = ["agent", "approval", "policy", "sandbox", "security"]
+categories = ["config"]
+
+[lib]
+name = "scema_trust"
+path = "src/lib.rs"
+
+# No dependencies, deliberately. This is the gate in front of every action the runtime will
+# ever take, and it is meant to be readable end to end by somebody deciding whether to trust
+# it. The glob matcher is thirty lines rather than a crate for the same reason.
+[dependencies]

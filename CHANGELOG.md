@@ -46,6 +46,48 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Omni 0.7 groundwork — the trust model, in Rust, checked against Python
+
+The other half of the same arc. `scema-trust` is a port of `alchem_link.approvals` against
+the specification written for it, and `cargo test -p scema-trust` runs the same twenty
+vectors Python runs. All twenty agree.
+
+No dependencies, deliberately: this is the gate in front of every action the runtime will
+ever take, and it should be readable end to end by somebody deciding whether to trust it.
+The glob matcher is thirty lines rather than a crate, and it is iterative with backtracking
+because the naive recursive form overflows the stack on `*a*a*a*a*b` — and these patterns
+match paths a model chose.
+
+`preflight` is a pure function from a policy and a request to a decision or "ask", which is
+what makes it checkable against a file at all. `Risk` is closed where `Domain` is open, and
+for the opposite reason: an unrecognised domain should degrade to a warning so producers can
+describe new worlds, but an unrecognised *risk* has no safe default — `Read` understates and
+`Execute` makes the vocabulary unusable — so the caller decides. Grants live behind a
+private field so one can only arrive through `grant` or `remember`, past the settling rule.
+And `Refusal` distinguishes `Policy` from `Declined`, because saying "the user declined"
+when no prompt was shown describes a decision nobody made.
+
+**`scema_tools::Workspace` now refuses `PROTECTED_PATTERNS` by name**, closing a gap CLAUDE.md
+had recorded as open: `RepoObserver` reads file contents to count tests and markers, and
+nothing stopped it reading a keypair. It emits only counts, but a count derived from a
+private key is still a read of one, and the daemon and MCP server take their paths from a
+browser extension and a language model. The check runs *after* canonicalisation and *before*
+the root test, so a symlink cannot launder a protected target and the refusal reads as "this
+is a secret" rather than "widen your roots". `cargo test -p scema-tools --test
+protected_vectors` holds that list against Python's.
+
+Both vector tests **skip** when the sibling tree is absent — a published crate does not carry
+it — and announce the skip, because a conformance suite that quietly runs zero cases is worse
+than one that fails.
+
+One bug, in the harness rather than the library, worth recording because it is the shape of
+mistake these files exist to catch. Two vectors failed on first run; the library was right
+and the reader was wrong. A grant key is `tool:dirname` and therefore contains a colon, so
+splitting on the *first* one produced the key `"write_file` and silently installed no grant —
+the case then fell through to the standing configuration, and the vector accused the library.
+
+329 omni tests, clippy clean.
+
 ### alchem-link: the trust model becomes a specification
 
 The first step of the alchem-link 1.0 line, and it goes first because Scematica Omni cannot

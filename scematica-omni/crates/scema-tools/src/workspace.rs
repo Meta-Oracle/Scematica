@@ -25,6 +25,105 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
+/// Names that are never resolved, matched case-insensitively against the file name and
+/// against the whole path.
+///
+/// Ported from `alchem_link.workspace.PROTECTED_PATTERNS`; the shared list is checked
+/// against Python by `scema-trust`'s vector test. The reasoning is in
+/// `alchem-link/docs/TRUST-MODEL.md` and it is worth restating in one line:
+///
+/// > A user cannot meaningfully consent to a disclosure they have not been shown.
+///
+/// So this refuses **before** any approval prompt, and it refuses **reads** as much as
+/// writes. `RepoObserver` counts markers by reading file contents, and until now nothing
+/// stopped it reading a keypair — it emits only counts, never contents, but a count derived
+/// from a private key is still a read of one, and the daemon and MCP server take their
+/// paths from a browser extension and a language model respectively.
+pub const PROTECTED_PATTERNS: &[&str] = &[
+    // Environment and secret files
+    ".env",
+    ".env.*",
+    "*.env",
+    "secrets*",
+    "*.secret",
+    "*.secrets",
+    "credentials",
+    "credentials.*",
+    "*credentials.json",
+    "*-credentials",
+    "*_credentials",
+    // Keys and certificates
+    "*.pem",
+    "*.key",
+    "*.pfx",
+    "*.p12",
+    "*.jks",
+    "*.keystore",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    "*.ppk",
+    // Wallets and keypairs — this runtime ships inside a trading repository
+    "*keypair*.json",
+    "wallet*.json",
+    "*.wallet",
+    "id.json",
+    // Cloud and tool credentials
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    "_netrc",
+    ".git-credentials",
+    ".htpasswd",
+    "*.kdbx",
+];
+
+/// `fnmatch`-style glob: `*` spans any run, `?` matches one character.
+///
+/// Iterative with backtracking rather than recursive — the naive recursive form overflows
+/// the stack on a pattern like `*a*a*a*a*b`, and these patterns are matched against paths
+/// that arrive from outside.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star, mut mark) = (usize::MAX, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = pi;
+            mark = ti;
+            pi += 1;
+        } else if star != usize::MAX {
+            pi = star + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Is this path one the runtime must never open?
+///
+/// Checked on the file name and on the full path, both lowercased, so that a pattern
+/// catches `secrets.toml` and `config/secrets.toml` alike. Path separators are normalised
+/// to `/` first: the patterns are written with forward slashes and this runs on Windows.
+pub fn is_protected(path: &Path) -> bool {
+    let full = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let name = full.rsplit('/').next().unwrap_or("").to_string();
+    PROTECTED_PATTERNS
+        .iter()
+        .any(|pat| glob_match(pat, &name) || glob_match(pat, &full))
+}
+
 /// A set of directories a front end may look inside.
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -88,6 +187,17 @@ impl Workspace {
         let resolved = std::fs::canonicalize(&joined)
             .map_err(|e| anyhow!("cannot resolve `{locator}`: {e}"))?;
 
+        // Checked after canonicalisation and before the root test, so that a symlink named
+        // innocently cannot launder a protected target — and so that the refusal reason is
+        // "this is a secret" rather than "this is outside the workspace", which would send
+        // the operator to widen the roots.
+        if is_protected(&resolved) {
+            return Err(anyhow!(
+                "`{locator}` is a protected path (matched by name against \
+                 PROTECTED_PATTERNS) and is never read, whatever the workspace allows"
+            ));
+        }
+
         if self.roots.iter().any(|r| resolved.starts_with(r)) {
             Ok(resolved)
         } else {
@@ -113,6 +223,59 @@ fn strip_verbatim(p: &Path) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_protected_name_is_refused_whatever_the_roots_allow() {
+        // The gap CLAUDE.md recorded: `RepoObserver` reads file contents to count markers,
+        // and nothing stopped it reading a keypair. A count derived from a private key is
+        // still a read of one.
+        for name in [
+            ".env",
+            ".env.local",
+            "id_rsa",
+            "server.pem",
+            "cluster.key",
+            "credentials.json",
+            "aws-credentials",
+            ".npmrc",
+            "wallet.json",
+            "my-keypair.json",
+        ] {
+            assert!(is_protected(Path::new(name)), "{name} must be protected");
+        }
+    }
+
+    #[test]
+    fn documentation_about_secrets_stays_readable() {
+        // The patterns refuse the secret, not the writing about it. A runtime that cannot
+        // read `docs/env-setup.md` is one whose confinement gets switched off.
+        for name in [
+            "src/main.rs",
+            "docs/env-setup.md",
+            "environment.md",
+            "README.md",
+            "src/keys/README.md",
+            "credentials-guide.md",
+        ] {
+            assert!(!is_protected(Path::new(name)), "{name} must not be protected");
+        }
+    }
+
+    #[test]
+    fn a_protected_name_is_caught_anywhere_in_the_path() {
+        // Matched on the file name *and* the whole path, with separators normalised, so
+        // this holds on Windows where the resolved form uses backslashes.
+        assert!(is_protected(Path::new("/home/x/project/config/.env")));
+        assert!(is_protected(Path::new(r"C:\users\x\project\id_rsa")));
+        assert!(is_protected(Path::new("/HOME/X/SECRETS.TOML")));
+    }
+
+    #[test]
+    fn the_glob_matcher_survives_a_pathological_pattern() {
+        // These run against paths that arrive from a browser extension or a model.
+        let text = "a".repeat(2_000);
+        assert!(!glob_match("*a*a*a*a*a*a*b", &text));
+    }
 
     fn scratch() -> PathBuf {
         let p = std::env::temp_dir().join(format!(

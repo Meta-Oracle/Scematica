@@ -753,6 +753,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "scema-trust"
+version = "0.6.0"
+
+[[package]]
 name = "scema-tui"
 version = "0.6.0"
 dependencies = [

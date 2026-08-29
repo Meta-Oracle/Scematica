@@ -41,8 +41,8 @@ Embedding the loop rather than running it:
 
 ```toml
 [dependencies]
-scema-agent  = "0.5"   # the whole loop
-scema-world  = "0.5"   # just the types, if you only need the wire format
+scema-agent  = "0.6"   # the whole loop
+scema-world  = "0.6"   # just the types, if you only need the wire format
 ```
 
 Beta. What is stable and what is not is spelled out in
@@ -166,6 +166,7 @@ believing it.
 | `scema-sim` | counterfactual projection. Refuses to invent a number. |
 | `scema-policy` | `U = R − λ₁K − λ₂C − λ₃U + λ₄V`, plus pluggable evaluators that may decline. |
 | `scema-verify` | canonical hashing and proof-carrying decision records. |
+| `scema-trust` | whether an action may happen — risk per tool, a fixed preflight order, session-scoped grants. Checked against alchem-link's vectors. |
 | `scema-nft` | a world drawn — a deterministic, self-contained SVG plate plus token metadata. Byte-identical to `web/lib/omni/nft.ts`. |
 | `scema-agent` | the orchestration loop. |
 | `scema-cli` | the `scema` binary — the loop, plus the launcher, `doctor` and `connect`. |

@@ -23,14 +23,24 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn check_or_write(name: &str, actual: &str) {
-    let dir = fixtures_dir();
-    fs::create_dir_all(&dir).expect("create fixtures dir");
-    let path = dir.join(name);
+    let path = fixtures_dir().join(name);
 
+    // Note what is *not* done here: the directory is not created and nothing is written
+    // unless a write is actually called for. This test runs from the packaged crate too —
+    // `cargo publish` builds it out of a registry source directory that may be read-only,
+    // and a comparison that panics because it could not create a directory it did not need
+    // would fail the publish of a crate whose fixtures were present and correct.
     let bless = std::env::var_os("SCEMA_NFT_BLESS").is_some();
+    let write = |contents: &str| {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixtures dir");
+        }
+        fs::write(&path, contents).expect("write fixture");
+    };
+
     match fs::read_to_string(&path) {
         Ok(existing) if existing.replace("\r\n", "\n") == actual => {}
-        Ok(_) if bless => fs::write(&path, actual).expect("bless fixture"),
+        Ok(_) if bless => write(actual),
         Ok(_) => panic!(
             "fixture {} is out of date.\n\
              The plate changed. If that was deliberate, re-run with SCEMA_NFT_BLESS=1 and \
@@ -39,7 +49,7 @@ fn check_or_write(name: &str, actual: &str) {
              parity failure into a green build.",
             path.display()
         ),
-        Err(_) => fs::write(&path, actual).expect("write fixture"),
+        Err(_) => write(actual),
     }
 }
 

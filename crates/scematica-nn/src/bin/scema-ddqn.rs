@@ -184,7 +184,11 @@ impl App {
 }
 
 fn main() -> Result<()> {
-    for arg in std::env::args().skip(1) {
+    // At most one argument is meaningful: every branch below ends the process, so a loop
+    // over the arguments could never reach a second one. It was written as a `for` and read
+    // as though it validated all of them — `clippy::never_loop` is deny-by-default, so this
+    // also failed `cargo clippy --workspace` outright rather than merely warning.
+    if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_help();

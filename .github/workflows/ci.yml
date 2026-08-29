@@ -14,6 +14,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# ── What this covers, and why it is arranged in these jobs ────────────────────
+#
+# The repository is FIVE cargo workspaces, not one. `cargo test --workspace` at the root
+# reaches only the bot: `scematica-omni`, `scema-botchain` and `scema-bot-mesh` are in the
+# root `exclude` list for lockfile reasons documented in Cargo.toml, which means a job that
+# runs only the root workspace silently tests none of them. Each excluded tree therefore
+# needs its own job — that is the cost of the split, and paying it here is cheaper than
+# discovering an untested tree after a publish.
+#
+# There is no `cargo fmt --check` outside `scemadex-sdk`. That is deliberate: the other
+# trees are not formatted to rustfmt defaults (the root workspace alone differs in ~780
+# places), and a gate nobody can pass is a gate people delete along with the pipeline.
+
 jobs:
   # ── The published crate: cross-platform, no solana-sdk by default. This is the
   #    always-green guardian for the examples + doctests shipped to crates.io. ──
@@ -88,9 +101,77 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
 
-  # ── TypeScript relay client typechecks under strict mode. ──
+  # ── Scematica Omni. Its own workspace and in the root `exclude` list, so nothing
+  #    above reaches it. Ubuntu rather than Windows: omni is deliberately free of
+  #    platform-specific paths, and this is also the cheapest place to notice if
+  #    that ever stops being true. ──
+  omni:
+    name: scematica-omni (ubuntu)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scematica-omni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: omni
+          workspaces: scematica-omni
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      # The plate fixtures are what `web`'s check:omni compares the TypeScript port
+      # against, and the test above rewrites them when they are missing. A dirty tree
+      # here means a committed fixture disagrees with the code that generates it, which
+      # would let a real Rust/TS parity failure reach main looking green.
+      - name: Parity fixtures are committed and current
+        run: git diff --exit-code -- crates/scema-nft/fixtures
+
+  # ── The two EVM-side workspaces, also excluded at the root. ──
+  meshes:
+    name: bot-mesh + botchain (ubuntu)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tree: [scema-bot-mesh, scema-botchain]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.tree }}
+          workspaces: ${{ matrix.tree }}
+
+      - name: Tests
+        working-directory: ${{ matrix.tree }}
+        run: cargo test --workspace
+
+      - name: Clippy
+        working-directory: ${{ matrix.tree }}
+        run: cargo clippy --workspace --all-targets
+
+  # ── The web app: typecheck plus every parity suite.
+  #
+  #    Node 22, not 20: the check scripts run TypeScript directly under
+  #    `--experimental-strip-types`, which does not exist before 22. Running them on 20
+  #    fails at startup, which is why they were not here before.
+  #
+  #    These are not incidental tests. `check:omni` and `check:mesh` are what keep the
+  #    TypeScript ports byte-identical to the Rust they mirror, and a drift there reports
+  #    an untampered record as INVALID — the one failure that teaches a reader to stop
+  #    believing the verifier. ──
   web:
-    name: web / ts client
+    name: web (typecheck + parity)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,8 +180,42 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install deps
         run: npm ci || npm install
-      - name: Typecheck
-        run: npx tsc --noEmit
+      - name: Typecheck and all parity checks
+        run: npm run check
+
+  # ── The browser extension. No build step and no dependencies; the 9 wire tests
+  #    skip without a live daemon, which is the intended CI shape. ──
+  extension:
+    name: scema-web extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scematica-omni/plugins/scema-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: npm test
+
+  # ── alchem-link. Stdlib-only and entirely offline, so there is nothing to install
+  #    and no reason for this job to be flaky. ──
+  alchem-link:
+    name: alchem-link (python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: alchem-link
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests

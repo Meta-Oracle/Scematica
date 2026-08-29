@@ -89,15 +89,60 @@ pub fn run(root: &Path, project: &Path) -> Vec<Finding> {
     out
 }
 
+/// Ask an installed component what version it is.
+///
+/// `None` when it could not be run or said nothing parseable — which is `Unknown`, not a
+/// mismatch. A component that will not answer is a different claim from one that answers
+/// wrongly, and only the second is an accusation.
+fn component_version(path: &Path) -> Option<String> {
+    let out = std::process::Command::new(path).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Every component prints `<name> <semver>`; take the last whitespace-separated token so
+    // this does not depend on how the name is spelled.
+    let text = String::from_utf8_lossy(&out.stdout);
+    let token = text.split_whitespace().last()?;
+    token
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c.is_ascii_alphanumeric() || c == '-' || c == '+')
+        .then(|| token.to_string())
+}
+
 fn components() -> Vec<Finding> {
+    let mine = env!("CARGO_PKG_VERSION");
     launch::inventory()
         .into_iter()
         .map(|(c, path)| match path {
-            Some(p) => Finding::new(
-                Verdict::Ok,
-                format!("component `{}`", c.bin),
-                p.display().to_string(),
-            ),
+            // A component that is present but a *different version* is the failure this
+            // whole command exists to catch, and until now it reported `ok` on existence
+            // alone. It is not cosmetic: `Domain` and `EntityKind` became open enums in
+            // 0.5.0, so a pre-0.5.0 `scema-omnid` beside a current `scema` refuses every
+            // world the browser extension (`domain: "web"`) or alchem-link
+            // (`domain: "data"`) produces, with `unknown variant` — two of the four
+            // producers, rejected at the door, by an installation that looked healthy.
+            //
+            // They are separate crates so that `cargo install scema-cli` on a CI box does
+            // not drag in a terminal stack, and the cost of that split is exactly this:
+            // nothing makes them move together except the operator. So this says so.
+            Some(p) => match component_version(&p) {
+                Some(v) if v == mine => Finding::new(
+                    Verdict::Ok,
+                    format!("component `{}`", c.bin),
+                    format!("{v}  {}", p.display()),
+                ),
+                Some(v) => Finding::new(
+                    Verdict::Fail,
+                    format!("component `{}`", c.bin),
+                    format!("version {v}, but `scema` is {mine} — {}", p.display()),
+                )
+                .fix(format!("cargo install {} --force", c.krate)),
+                None => Finding::new(
+                    Verdict::Unknown,
+                    format!("component `{}`", c.bin),
+                    format!("could not read a version from {}", p.display()),
+                ),
+            },
             // A missing surface is a warning and not a failure: `scema verify` in CI needs
             // none of them, and reporting a broken installation to somebody who deliberately
             // installed one binary would train them to ignore this whole report.
@@ -459,5 +504,24 @@ mod tests {
         assert_eq!(worst(&[f(Verdict::Ok), f(Verdict::Warn)]), Verdict::Warn);
         assert_eq!(worst(&[f(Verdict::Warn), f(Verdict::Unknown)]), Verdict::Unknown);
         assert_eq!(worst(&[f(Verdict::Unknown), f(Verdict::Fail)]), Verdict::Fail);
+    }
+
+    #[test]
+    fn a_component_that_will_not_answer_is_unknown_not_a_mismatch() {
+        // "Could not be read" and "does not match" are different claims and only the second
+        // is an accusation — the same distinction the four verdicts exist for. A path that
+        // is not an executable must not be reported as the wrong version.
+        assert_eq!(component_version(Path::new("definitely-not-a-real-binary-xyz")), None);
+    }
+
+    #[test]
+    fn the_version_is_the_last_token_so_the_binary_may_rename_itself() {
+        // Every component prints `<name> <semver>`, but the name varies (`scema-omnid` is
+        // produced by the crate `scema-daemon`). Parsing by position rather than by
+        // matching the name means a rename cannot silently turn into a version mismatch.
+        let token = |line: &str| line.split_whitespace().last().unwrap().to_string();
+        assert_eq!(token("scema 0.6.0"), "0.6.0");
+        assert_eq!(token("scema-omnid 0.6.0"), "0.6.0");
+        assert_eq!(token("scema-tui 0.6.0-rc.1"), "0.6.0-rc.1");
     }
 }

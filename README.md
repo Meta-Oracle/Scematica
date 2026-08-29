@@ -117,11 +117,19 @@ because the world contract is still moving.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scema-cli` | 0.5.0 | `scema` | bin (the loop + the sibling launcher) |
-| `scema-tui` | 0.5.0 | `scema-tui` | bin (the console) |
-| `scema-daemon` | 0.5.0 | `scema-omnid` | bin (loopback HTTP) |
-| `scema-mcp` | 0.5.0 | `scema-mcp` | bin (MCP over stdio) |
-| `scema-world` `-tools` `-memory` `-sim` `-policy` `-verify` `-agent` | 0.5.0 | — | libraries |
+| `scema-cli` | 0.6.0 | `scema` | bin (the loop, the sibling launcher, `nft`) |
+| `scema-tui` | 0.6.0 | `scema-tui` | bin (the console) |
+| `scema-daemon` | 0.6.0 | `scema-omnid` | bin (loopback HTTP) |
+| `scema-mcp` | 0.6.0 | `scema-mcp` | bin (MCP over stdio) |
+| `scema-world` `-tools` `-memory` `-sim` `-policy` `-verify` `-nft` `-agent` | 0.6.0 | — | libraries |
+
+> **Install the 0.6.0 line, and upgrade every component together.** `Domain` and
+> `EntityKind` became open enums in 0.5.0. The browser extension emits `domain: "web"` and
+> `alchem-link` emits `domain: "data"`, so a `scema` or `scema-omnid` built before that
+> rejects both at the door — *unknown variant `web`, expected one of `software`,
+> `infrastructure`, `trading`, `unknown`* — which is two of the four producers. They are
+> separate crates but one runtime; a new `scema` beside an old `scema-omnid` fails the same
+> way. `scema --version` and `scema doctor` are the fastest checks.
 
 `alchem-link` (Python, PyPI) versions independently again at **0.24.0**.
 

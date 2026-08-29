@@ -1,16 +1,23 @@
 {
   "manifest_version": 3,
   "name": "Scematica Omni",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Perceive the current page as a world state and run the Scematica Omni loop against it. Reads nothing until you ask.",
   "minimum_chrome_version": "102",
-
-  "permissions": ["storage", "activeTab", "scripting", "downloads", "tabs"],
-
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
-
-  "background": { "service_worker": "src/background.js" },
-
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "downloads",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
   "action": {
     "default_title": "Scematica Omni",
     "default_popup": "src/popup.html",
@@ -19,16 +26,18 @@
       "32": "icons/omni-32.png"
     }
   },
-
   "commands": {
     "perceive-page": {
-      "suggested_key": { "default": "Alt+Shift+O" },
+      "suggested_key": {
+        "default": "Alt+Shift+O"
+      },
       "description": "Perceive this page and open the Omni overlay"
     }
   },
-
-  "options_ui": { "page": "src/options.html", "open_in_tab": true },
-
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  },
   "icons": {
     "16": "icons/omni-16.png",
     "32": "icons/omni-32.png",

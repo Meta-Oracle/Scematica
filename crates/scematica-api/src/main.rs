@@ -376,8 +376,30 @@ fn read_last_n_lines(path: &str, n: usize) -> Vec<String> {
     if file.seek(SeekFrom::Start(start)).is_err() {
         return vec![];
     }
-    let reader = BufReader::new(file);
-    let all: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let mut reader = BufReader::new(file);
+
+    // The seek above lands on an arbitrary byte, so whatever follows it up to the first
+    // newline is the tail of a line, not a line. Two things go wrong if it is not discarded
+    // at the *byte* level:
+    //
+    // 1. A fragment gets served as though it were a complete log entry. The dashboard
+    //    renders it beside real lines with nothing marking it as half a sentence.
+    // 2. That byte may be the middle of a multi-byte UTF-8 sequence, in which case reading
+    //    it as a line is an `InvalidData` error rather than text — which is what made the
+    //    original `filter_map(|l| l.ok())` dangerous. `Lines` is permitted to yield `Err`
+    //    forever, and `filter_map` skips errors and keeps asking, so a persistent read
+    //    error turns a log tail into a hung request thread. `map_while` stops instead, but
+    //    only reaches the good lines because the fragment is consumed here first — swapping
+    //    one for the other without this would truncate the whole tail to nothing whenever
+    //    the seek split a character.
+    if start > 0 {
+        let mut fragment = Vec::new();
+        if reader.read_until(b'\n', &mut fragment).is_err() {
+            return vec![];
+        }
+    }
+
+    let all: Vec<String> = reader.lines().map_while(Result::ok).collect();
     all.into_iter().rev().take(n).rev().collect()
 }
 
@@ -1326,4 +1348,75 @@ async fn main() -> anyhow::Result<()> {
     info!("Scematica API listening on http://{}", addr);
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::read_last_n_lines;
+
+    /// Write a file of `count` lines, each exactly 21 bytes including the newline.
+    ///
+    /// Fixed-width on purpose: the seek offset `read_last_n_lines` computes is then
+    /// predictable, which is what lets these tests assert *where* it lands rather than
+    /// hoping it lands somewhere interesting.
+    fn write_fixture(name: &str, line: &str, count: usize) -> String {
+        assert_eq!(line.len() + 1, 21, "fixture lines must be 21 bytes with the newline");
+        let path = std::env::temp_dir().join(name);
+        let body: String = (0..count).map(|_| format!("{line}\n")).collect();
+        std::fs::write(&path, body).expect("write fixture");
+        path.display().to_string()
+    }
+
+    #[test]
+    fn a_short_file_is_returned_whole() {
+        // start == 0, so nothing is discarded: the first line here is a real first line.
+        let p = write_fixture("scematica-tail-short.log", &"a".repeat(20), 3);
+        let got = read_last_n_lines(&p, 10);
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|l| l.len() == 20));
+    }
+
+    #[test]
+    fn the_last_n_lines_come_back_in_order() {
+        let path = std::env::temp_dir().join("scematica-tail-order.log");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").expect("write");
+        let got = read_last_n_lines(&path.display().to_string(), 2);
+        assert_eq!(got, vec!["three".to_string(), "four".to_string()]);
+    }
+
+    #[test]
+    fn the_fragment_left_by_the_seek_is_never_served_as_a_line() {
+        // 100 lines of 21 bytes = 2100. With n = 3 the chunk is 600, so the seek lands at
+        // byte 1500 — which is 9 bytes into line 71, not on a boundary. Everything after it
+        // up to the newline is the tail of a line, and serving it beside real entries puts
+        // half a sentence in the dashboard with nothing marking it as such.
+        let p = write_fixture("scematica-tail-fragment.log", &"a".repeat(20), 100);
+        let got = read_last_n_lines(&p, 3);
+        assert_eq!(got.len(), 3);
+        assert!(
+            got.iter().all(|l| l.len() == 20),
+            "a short line means the fragment was served: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_seek_into_the_middle_of_a_utf8_character_still_returns_the_tail() {
+        // The case that makes the bounded iterator safe to use at all. Ten two-byte chars
+        // plus a newline is 21 bytes, so the same offset 1500 lands on the *second* byte of
+        // a character — reading from there as text is `InvalidData`, not a line.
+        //
+        // The old code skipped that error and kept asking, and `Lines` is permitted to
+        // produce `Err` forever, which is a hung request thread. Simply bounding the
+        // iterator instead would truncate the whole tail to nothing here. Both are wrong;
+        // consuming the fragment as bytes first is what makes the tail correct AND finite.
+        let p = write_fixture("scematica-tail-utf8.log", &"é".repeat(10), 100);
+        let got = read_last_n_lines(&p, 3);
+        assert_eq!(got.len(), 3, "a split character must not empty the tail: {got:?}");
+        assert!(got.iter().all(|l| l.chars().count() == 10));
+    }
+
+    #[test]
+    fn a_missing_file_is_empty_rather_than_an_error() {
+        assert!(read_last_n_lines("scematica-tail-does-not-exist.log", 5).is_empty());
+    }
 }

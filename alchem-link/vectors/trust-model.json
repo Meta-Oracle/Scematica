@@ -1,0 +1,203 @@
+{
+  "$comment": [
+    "Conformance vectors for docs/TRUST-MODEL.md. Every implementation of the trust",
+    "model runs these; whichever side disagrees is the wrong one.",
+    "",
+    "`expected` is the result of preflight ALONE: 'allow', 'deny', or 'ask' meaning the",
+    "policy has no answer and a human must be asked. 'ask' is a real outcome and not a",
+    "placeholder — an implementation that resolves it early is broken even if the final",
+    "answer happens to match.",
+    "",
+    "Cases are chosen for where a wrong implementation still looks plausible. A vector",
+    "may only change when the behaviour is meant to change, never to make a build pass."
+  ],
+  "version": 1,
+  "cases": [
+    {
+      "name": "a read is allowed without asking",
+      "why": "Rank 0 and non-mutating. It is still a disclosure, which is why it is its own risk and can be refused by rule.",
+      "policy": {},
+      "request": { "tool": "read_file", "risk": "read", "path": "src/main.rs" },
+      "expected": "allow"
+    },
+    {
+      "name": "a network read is allowed without asking",
+      "why": "Rank 0 like read, but a distinct risk so a deployment can refuse one without the other.",
+      "policy": {},
+      "request": { "tool": "get_price", "risk": "network", "path": "" },
+      "expected": "allow"
+    },
+    {
+      "name": "a write asks by default",
+      "why": "The default posture prompts rather than allowing or refusing. Neither extreme is a safe default.",
+      "policy": {},
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "ask"
+    },
+    {
+      "name": "a write is allowed when writes are allowed",
+      "policy": { "allow_writes": true },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "allow"
+    },
+    {
+      "name": "execute is refused until explicitly enabled",
+      "why": "Not 'ask'. Shell access is off, and a prompt would let one keystroke turn it on.",
+      "policy": {},
+      "request": { "tool": "run", "risk": "execute", "path": "" },
+      "expected": "deny"
+    },
+    {
+      "name": "execute asks once enabled",
+      "why": "Enabling execution removes the hard refusal; it does not remove the prompt.",
+      "policy": { "allow_execute": true },
+      "request": { "tool": "run", "risk": "execute", "path": "" },
+      "expected": "ask"
+    },
+    {
+      "name": "read_only refuses every mutation",
+      "policy": { "read_only": true, "allow_writes": true },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "deny",
+      "why": "allow_writes is set and loses. A hard refusal is not a preference to be weighed."
+    },
+    {
+      "name": "read_only still permits reads",
+      "policy": { "read_only": true },
+      "request": { "tool": "read_file", "risk": "read", "path": "src/main.rs" },
+      "expected": "allow"
+    },
+    {
+      "name": "a session grant does not survive a hard refusal",
+      "why": "The central ordering property. A grant for writes must never become a grant for execution, and read_only must not be reversible by anything a user clicked earlier.",
+      "policy": {
+        "read_only": true,
+        "session_grants": { "write_file:docs": "allow" }
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "deny"
+    },
+    {
+      "name": "an explicit rule outranks a session grant",
+      "why": "A rule is the deployment's stated policy; a grant is one person's convenience during one session.",
+      "policy": {
+        "rules": [{ "tool": "write_file", "path": "*", "decision": "deny" }],
+        "session_grants": { "write_file:docs": "allow" }
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "deny"
+    },
+    {
+      "name": "a deny_always grant outranks a permissive configuration",
+      "why": "allow_writes is set. A grant the user gave is consulted before the standing config, so their 'no' holds.",
+      "policy": {
+        "allow_writes": true,
+        "session_grants": { "write_file:secretsdir": "deny" }
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "secretsdir/a.md" },
+      "expected": "deny"
+    },
+    {
+      "name": "a grant is keyed by directory, not by file",
+      "why": "Approving one write into a directory covers the rest of it. Prompting per file is what makes people approve without reading.",
+      "policy": { "session_grants": { "write_file:docs": "allow" } },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/other.md" },
+      "expected": "allow"
+    },
+    {
+      "name": "a grant does not leak into a sibling directory",
+      "why": "The other half of the same rule. Directory-scoped, not workspace-scoped.",
+      "policy": { "session_grants": { "write_file:docs": "allow" } },
+      "request": { "tool": "write_file", "risk": "write", "path": "src/other.rs" },
+      "expected": "ask"
+    },
+    {
+      "name": "a grant does not leak across tools",
+      "policy": { "session_grants": { "write_file:docs": "allow" } },
+      "request": { "tool": "delete_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "ask"
+    },
+    {
+      "name": "a pathless request is keyed by tool alone",
+      "policy": { "allow_execute": true, "session_grants": { "run": "allow" } },
+      "request": { "tool": "run", "risk": "execute", "path": "" },
+      "expected": "allow"
+    },
+    {
+      "name": "a rule matching tool but not path does not fire",
+      "why": "A rule with a path glob is scoped by it. Matching on tool alone would silently widen every scoped rule.",
+      "policy": {
+        "rules": [{ "tool": "write_file", "path": "src/*", "decision": "deny" }],
+        "allow_writes": true
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "allow"
+    },
+    {
+      "name": "a rule matching both tool and path fires",
+      "policy": {
+        "rules": [{ "tool": "write_file", "path": "src/*", "decision": "deny" }],
+        "allow_writes": true
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "src/main.rs" },
+      "expected": "deny"
+    },
+    {
+      "name": "a tool glob matches a family of tools",
+      "policy": {
+        "rules": [{ "tool": "write_*", "path": "*", "decision": "deny" }]
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "deny"
+    },
+    {
+      "name": "the first matching rule wins",
+      "why": "Order is part of the policy. A later, broader rule must not override an earlier, narrower one.",
+      "policy": {
+        "rules": [
+          { "tool": "write_file", "path": "docs/*", "decision": "allow" },
+          { "tool": "write_file", "path": "*", "decision": "deny" }
+        ]
+      },
+      "request": { "tool": "write_file", "risk": "write", "path": "docs/a.md" },
+      "expected": "allow"
+    },
+    {
+      "name": "a rule can allow execution that configuration refuses — and loses",
+      "why": "Hard refusals precede rules. Execution being off is not a default a rule may edit; it is a posture the operator set on the command line.",
+      "policy": {
+        "rules": [{ "tool": "run", "path": "*", "decision": "allow" }]
+      },
+      "request": { "tool": "run", "risk": "execute", "path": "" },
+      "expected": "deny"
+    }
+  ],
+  "protected_paths": {
+    "$comment": [
+      "Workspace-level, not policy-level: these are refused before any prompt, for READS",
+      "as well as writes, and are omitted from listings entirely. A user cannot consent to",
+      "a disclosure they have not been shown."
+    ],
+    "refused": [
+      ".env",
+      ".env.local",
+      "config/.env.production",
+      "id_rsa",
+      "id_ed25519.pub",
+      "server.pem",
+      "cluster.key",
+      "credentials.json",
+      "aws-credentials",
+      ".npmrc",
+      "wallet.json",
+      "keypair.json"
+    ],
+    "allowed": [
+      "src/main.rs",
+      "docs/env-setup.md",
+      "environment.md",
+      "README.md",
+      "src/keys/README.md"
+    ]
+  }
+}

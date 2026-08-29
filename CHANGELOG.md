@@ -46,6 +46,43 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### alchem-link: the trust model becomes a specification
+
+The first step of the alchem-link 1.0 line, and it goes first because Scematica Omni cannot
+grow an action path until it exists. `approvals.py` and `workspace.py` are the only working
+approval model in this repository, and omni's own docs name that model as the precondition
+for `execute`. Writing it a second time from memory is how two implementations end up
+disagreeing about which refusals are overridable.
+
+`docs/TRUST-MODEL.md` states it in a language-neutral form: two gates asked in order and
+kept separate (`Workspace` answers *where*, `TrustPolicy` answers *whether*), risk declared
+per tool so a new tool cannot arrive unclassified, the fixed preflight order — hard refusals,
+explicit rules, session grants, standing configuration — and why that order is the point.
+Grants are session-scoped and never persisted, keyed by directory rather than file. No
+terminal means deny. Secrets are refused before the prompt, for reads as well as writes, and
+omitted from listings entirely, because a user cannot consent to a disclosure they have not
+been shown.
+
+`vectors/trust-model.json` is what actually binds two implementations: twenty cases as
+(policy, request) -> allow / deny / **ask**, chosen for where a wrong implementation still
+looks plausible — a grant that must not survive a hard refusal, a `deny_always` that must
+outrank a permissive configuration, a rule matching on tool but not path, a rule that tries
+to enable execution the operator turned off. All twenty passed against Python on the first
+run. `ask` is asserted to be exercised, because a vector file where nothing asks would pass
+against an implementation that never prompts.
+
+Writing the vectors found one real gap and one bad test. `PROTECTED_PATTERNS` covered
+`credentials` and `.aws/` but not a flat `aws-credentials` exported beside somebody's source;
+it now covers `*-credentials` and `*_credentials`, anchored as suffixes so that a document
+*about* credentials stays readable — the point is to refuse the secret, not its
+documentation. And the new test asserting `Workspace` agrees with the vectors originally
+wrapped `resolve` in `assertRaises(Exception)`, which passed for every path because none of
+them existed in the temporary root: a missing file and a refused secret are different
+outcomes, and a test that cannot tell them apart would keep passing after the protection was
+removed. It asks `is_protected` directly now.
+
+627 tests.
+
 ### One age rule, not three
 
 The first thing `measure` found, acted on. `CachedPool::open_time` is usually absent —

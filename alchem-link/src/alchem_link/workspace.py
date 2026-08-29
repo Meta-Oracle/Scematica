@@ -59,6 +59,13 @@ PROTECTED_PATTERNS: Sequence[str] = (
     # Environment and secret files
     ".env", ".env.*", "*.env", "secrets*", "*.secret", "*.secrets",
     "credentials", "credentials.*", "*credentials.json",
+    # Prefixed forms: `aws-credentials`, `gcp_credentials`. The bare `credentials` rule
+    # above and the `.aws` entry in PROTECTED_DIRS cover the canonical locations; these
+    # cover the flat file somebody exported beside their source. Suffix-anchored rather
+    # than `*credentials*` on purpose, so that a document *about* credentials —
+    # `credentials-guide.md` — stays readable. The point is to refuse the secret, not the
+    # documentation for it.
+    "*-credentials", "*_credentials",
     # Keys and certificates
     "*.pem", "*.key", "*.pfx", "*.p12", "*.jks", "*.keystore",
     "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.ppk",

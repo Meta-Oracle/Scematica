@@ -35,9 +35,13 @@ cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipea
 cargo run --release -p mesh-dashboard -- --json       # raw mesh
 
 # Scematica Omni — the agent runtime (own workspace; cd first)
-# Published to crates.io as `scema-*` crates (0.5.0 beta), independent of the bot's
+# Published to crates.io as `scema-*` crates (0.6.0 beta), independent of the bot's
 # `scematica-*` line. Install without a checkout:
 cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
+# Upgrade these together. Pre-0.5.0 builds carry the CLOSED Domain enum and refuse any
+# world with domain `web` (the extension) or `data` (alchem-link) — two of the four
+# producers, rejected at the door with `unknown variant`. `scema doctor` names what is
+# installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
 cd scematica-omni ; cargo test --workspace          # 309 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
@@ -83,6 +87,15 @@ cargo run --release --bin scemadex-relay          # peer-mesh + signal-oracle HT
 
 # Backtester (replays JSONL pool history through filter pipeline + TP/SL sim)
 cargo run --release --bin backtest -- --pools historical-pools.jsonl --tp 100 --sl 15
+
+# Measure — audit the bot's own decision log. Read-only, safe against a live bot.
+cargo run --release --bin measure                        # one window over all history
+cargo run --release --bin measure -- --split 2026-08-05  # before vs after a change
+cargo run --release --bin measure -- --since 2026-08-01  # recent history only
+# ALWAYS prefer --split. An aggregate over the whole log is a claim about HISTORY and
+# reads as a claim about the BOT: the momentum gate looks like the largest cause of
+# rejection ever recorded until you split on the day its veto was removed, at which
+# point it is 28.3% of one window and 0.4% of the next.
 
 # Tests (no integration test dirs; tests are inline `#[test]` / `#[tokio::test]` in src files)
 cargo test --workspace
@@ -999,6 +1012,7 @@ The sniper and dashboard are separate processes that communicate exclusively thr
 | `scematica-rate-mode.json` | dashboard | sniper (live_params) | Active rate mode + TP/SL |
 | `scematica-sell-mode.json` | dashboard / drawdown guard | sniper | Pauses buys, sells positions |
 | `scematica-dump-mode.json` | dashboard | sniper | Force-sell with `min_out = 0` |
+| `scematica-coherence.jsonl` | sniper | `measure` | Coherence sample every 30s: resolved/unresolved RPC-bound checks, Ψ, and whether the breaker had enough samples to judge. Sampled on a timer rather than per pool because the breaker keeps a rolling window, not a monotonic counter — so a per-pool delta is unsafe, and threading a per-evaluation context through the buy path is not worth it for a diagnostic. `measure` therefore reports resolution *around* a decision, never *for* it. |
 | `pool-cache.json` | sniper, pool-seeder | sniper | Pool → mint lookup for sells |
 
 **Writer convention:** always write to `<file>.tmp` then `rename` for atomic visibility (see `FilterStats::write_to_file` in `crates/scematica-sniper/src/filters.rs`).

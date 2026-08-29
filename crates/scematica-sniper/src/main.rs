@@ -562,6 +562,51 @@ async fn main() -> Result<()> {
 
     // Dump-mode file watcher — checks scematica-dump-mode.json every 5 s.
     // On activation: sets dump_mode (min_out=0) and calls auto_dump immediately.
+    // ── Coherence sampler ──────────────────────────────────────────────────────
+    //
+    // Appends what the breaker currently sees to `scematica-coherence.jsonl`, so that
+    // afterwards somebody can ask the question the decision log cannot answer on its own:
+    // was the pipeline acting on measurements, or on checks that failed open?
+    //
+    // Sampled on a timer rather than recorded per pool. The breaker keeps a rolling window
+    // and not a monotonic counter, so a per-pool delta is not safe to take, and threading a
+    // per-evaluation context through the buy path is not a change worth making for a
+    // diagnostic. The cost is that a sample describes the resolution *around* a decision
+    // rather than *for* it, and `measure` says so rather than presenting it as exact.
+    //
+    // Writes nothing when the breaker is disabled: an empty file is honest there, and a row
+    // of zeroes would be indistinguishable from a pipeline that resolved nothing.
+    {
+        use std::io::Write;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if !scematica_sniper::coherence::global().enabled() {
+                    continue;
+                }
+                let c = scematica_sniper::coherence::evaluate();
+                // `decisive` is carried through rather than dropped: below MIN_SAMPLES the
+                // breaker declines to judge, and a reader must not average those samples in
+                // as if they were verdicts.
+                let line = serde_json::json!({
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "psi": c.psi,
+                    "resolution_rate": c.resolution_rate,
+                    "resolved": c.resolved,
+                    "unresolved": c.unresolved,
+                    "feed_age_secs": c.feed_age_secs,
+                    "decisive": c.decisive,
+                });
+                let path = artifact_path(scematica_core::metrics::COHERENCE_FILE);
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        });
+    }
+
     // While still active: re-calls auto_dump every 30 s so positions that failed
     // the first time (e.g. pool lookup timeout) are retried automatically.
     {

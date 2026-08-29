@@ -2,6 +2,113 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## Unreleased
+
+Bot workspace stays at **1.27.0** — nothing here is a release yet. Scematica Omni moves to
+**0.6.0**, and that move is the point of the entry.
+
+### `measure` — the bot audits its own decision log
+
+First step of the Measure phase, and the reason it goes before anything else: the recurring
+failure recorded in this repository's own history is tuning a threshold before checking that
+the quantity it compares against is capable of varying.
+
+`scematica measure` reads `scematica-pool-decisions.jsonl` and `scematica-trades.jsonl`,
+writes nothing, and is safe against a live bot. It reports the rejection funnel, a
+dead-signal audit, realised PnL, and coverage.
+
+**`--split` is the point.** An aggregate over the whole log is a claim about *history* and
+reads as a claim about the *bot*. Building this tool immediately demonstrated why: over all
+9,214 records the momentum gate is the single largest cause of rejection ever recorded,
+1,747 pools turned away on `inflow_rate=0.000`. Split on 2026-08-05 — the day that veto was
+removed — and it is 28.3% of one window and 0.4% of the next, with buy-ready rising 1.1% →
+11.3%. Both numbers are correct; only the second is about the bot as it stands. That fix had
+never been measured.
+
+**What the audit found that is still live.** Four fields are written into every decision and
+have never once carried a non-zero value across all 9,214 records, in either window:
+`velocity_sol_per_sec`, `pumpfun_score`, `dex_boost_usd`, `social_count` —
+plus `pool_age_secs`, non-zero twice. The report deliberately says **never varied** rather
+than "always zero": measured-and-zero and never-populated are different facts and the log
+cannot tell them apart. Reading the producers settles it, and two consequences are already
+visible — `sniper.rs` composes the DQ\* state with `price_velocity` derived from
+`velocity_sol_per_sec`, so at least one of the net's 24 input features is a constant; and
+`main.rs` gates on `pool_score >= 90 || pumpfun_score >= 90 || inflow_rate >= 1.5 ||
+velocity >= 2.618`, an OR whose second and fourth terms can never be true.
+
+**Coverage now accrues.** The share of RPC-bound checks that resolved was never written per
+decision — the coherence breaker counts it process-globally — so for every existing record it
+is unmeasured, and the report prints `—`. Never `0`, and PnL is never attributed to a
+coverage band nobody recorded. The sniper now appends `scematica-coherence.jsonl` every 30s
+so the question becomes answerable going forward. Timer-sampled rather than per-pool, because
+the breaker keeps a rolling window rather than a monotonic counter and threading a
+per-evaluation context through the buy path is not a change worth making for a diagnostic;
+`measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
+the breaker declined to judge are counted and never averaged.
+
+### Omni 0.6.0 — because a published 0.5.0 could not carry the fix
+
+`Domain` and `EntityKind` became open enums in 0.5.0, and two of the four producers depend
+on it: the browser extension emits `domain: "web"` and `alchem-link` emits `domain: "data"`.
+A component built before that refuses both outright —
+
+```
+unknown variant `web`, expected one of `software`, `infrastructure`, `trading`, `unknown`
+```
+
+— which is what an operator running an older `scema-omnid` beside a current extension
+actually sees. The components are separate crates so `cargo install scema-cli` on a CI box
+does not drag in a terminal stack, and the cost of that split is that nothing makes them
+move together except the operator.
+
+So three things changed. The family is at **0.6.0**, which is what lets the corrected CLI
+and daemon be published at all — 0.5.0 is already on the registry and a published version
+is a fact. `scema doctor` now **runs each component and compares its version to its own**,
+reporting `FAIL` with `cargo install <crate> --force` rather than the `ok` it used to give
+on existence alone; the command exists to find quietly-broken installations and this was
+the one it could not see. And the README says to install the line, not a crate.
+
+The browser extension and the Claude Code plugin move to 0.6.0 with it. They did not change,
+but they version with the runtime they talk to, and the drift v1.27.0 closed was exactly
+these numbers disagreeing.
+
+### `scema-nft` — a world, drawn
+
+New crate. A `WorldState` becomes a self-contained SVG plate plus ERC-721 metadata, via
+`scema nft` or in the browser on `/omni`. The same world produces the same **bytes** in Rust
+and in `web/lib/omni/nft.ts`, which is what makes the plate a derivative of the record
+rather than an illustration of it — an image that depended on which runtime drew it would
+mean two artefacts for one world.
+
+That required no trigonometry (a shared integer sine table; `sin`/`cos` are not correctly
+rounded by IEEE-754), no decimal formatting of floats, rounding spelled out as half away
+from zero, code points rather than UTF-16 units, base64 over UTF-8 bytes rather than `btoa`,
+and no clock. The same wall `canonical.rs` hit, and the same conclusion.
+
+The plate is an instrument: the em-dash rule in vector form. A gauge nobody measured draws
+its full sweep dashed; a gauge measured at zero draws nothing and prints `0.00`. Blind spots
+cut visible notches, because ignorance should be a hole rather than blank space. There is no
+rarity, tier or rank, and both test suites assert the absence.
+
+### Two real bugs in the bot workspace
+
+**`cargo clippy --workspace` did not compile.** `scema-ddqn`'s argument loop tripped
+`clippy::never_loop`, which is deny-by-default, so a documented command failed outright. The
+loop could never reach a second argument — every arm ends the process — and now says so.
+
+**The API's log tail could hang, and served a fragment as a line.** `read_last_n_lines`
+seeks to an arbitrary byte and then read lines with `filter_map(|l| l.ok())`. `Lines` may
+yield `Err` forever, and `filter_map` skips errors and keeps asking, so a persistent read
+error turned a log tail into a stuck request thread. The seek also lands mid-line — and can
+land mid-UTF-8-character — so the first line was a fragment served as though it were a whole
+entry. The fragment is now discarded at the byte level and the iterator is bounded.
+
+### `npm run lint` in web/ opened an installer
+
+ESLint was never declared or installed, so `next lint` prompted interactively — a surprise in
+a terminal and a hang in CI. Replaced with `npm run typecheck` and `npm run check`, the
+latter running the typecheck plus all five parity suites in one command.
+
 ## What's New in v1.27.0
 
 ### 1.26.0 shipped without a description, and that is the story of this release

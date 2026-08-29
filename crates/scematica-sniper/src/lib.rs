@@ -14,6 +14,7 @@ pub mod grief_breaker;
 pub mod jup_oracle;
 pub mod kelly;
 pub mod listener;
+pub mod measure;
 pub mod multi_rpc;
 pub mod pool_scorer;
 pub mod pumpfun;

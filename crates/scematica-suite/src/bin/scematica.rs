@@ -21,6 +21,7 @@ const COMMANDS: &[(&str, &str, &str, &str)] = &[
     ("dashboard", "dashboard", "scematica-dashboard", "Terminal monitoring dashboard (try: dashboard --demo)"),
     ("sniper", "sniper", "scematica-sniper", "New-pool sniper engine (needs keypair + RPC)"),
     ("backtest", "backtest", "scematica-sniper", "Replay pool history through the filter + TP/SL sim"),
+    ("measure", "measure", "scematica-sniper", "Audit the decision log: funnel, dead signals, coverage (read-only)"),
     ("protocol", "protocol", "scematica-protocol", "x402 HTTP 402 payment facilitator server"),
     ("mesh", "mesh-dashboard", "mesh-dashboard", "The system's own topology as a live graph (--once for text)"),
     ("ddqn", "scema-ddqn", "scematica-nn", "Deep Q* agent live training viewer"),

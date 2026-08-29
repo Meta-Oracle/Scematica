@@ -19,6 +19,10 @@ path = "src/main.rs"
 name = "backtest"
 path = "src/bin/backtest.rs"
 
+[[bin]]
+name = "measure"
+path = "src/bin/measure.rs"
+
 [dependencies]
 scematica-core = { version = "1.27.0", path = "../scematica-core" }
 # Coherence breaker (src/coherence.rs) — shares one definition of Ψ with the API's

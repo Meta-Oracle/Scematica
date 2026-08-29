@@ -22,6 +22,19 @@ pub const POOL_DECISIONS_FILE: &str = "scematica-pool-decisions.jsonl";
 /// and error-shape data for buy/sell/arb execution quality analysis.
 pub const TX_TELEMETRY_FILE: &str = "scematica-tx-telemetry.jsonl";
 
+/// Append-only coherence samples: how much of what the pipeline checked came back.
+///
+/// Its own file rather than a field on `PoolDecisionEvent`, and that is a compromise worth
+/// naming. Per-pool coverage would be exact, but the breaker keeps a rolling window rather
+/// than a monotonic counter, so a per-pool delta is not safe to take — and threading a
+/// per-evaluation context through the buy path is not a change to make casually in a live
+/// trading loop. Sampling on a timer costs nothing on that path and gives coverage that a
+/// reader can join to a decision by time.
+///
+/// What that buys is weaker than per-pool attribution and must be reported as such: it says
+/// what resolution looked like *around* a decision, not *for* it.
+pub const COHERENCE_FILE: &str = "scematica-coherence.jsonl";
+
 /// Default path for the strategy agent snapshot file
 pub const STRATEGY_FILE: &str = "scematica-strategy.json";
 

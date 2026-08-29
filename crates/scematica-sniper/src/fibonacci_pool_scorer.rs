@@ -57,19 +57,11 @@ impl FibonacciPoolScorer {
             .unwrap_or_default()
             .as_secs();
 
-        let effective_open_time = if pool.open_time > 0 {
-            pool.open_time
-        } else if detected_at_secs > 0 && detected_at_secs >= now_secs.saturating_sub(60) {
-            detected_at_secs
-        } else {
-            0
-        };
-
-        let age_secs = if effective_open_time > 0 && effective_open_time <= now_secs {
-            now_secs.saturating_sub(effective_open_time)
-        } else {
-            0
-        };
+        // One implementation, in `crate::pool_age`. This rule was written out three times —
+        // here, in `pool_scorer`, and inline in `sniper.rs` where it disagreed with both and
+        // quietly flattened five downstream signals to constants.
+        let age_secs =
+            crate::pool_age::age_secs(pool.open_time, detected_at_secs, now_secs).unwrap_or(0);
 
         // Calculate velocity — same fallback logic as pool_scorer.rs:
         // when open_time=0 (all pump.fun migrations), use a conservative 30s age

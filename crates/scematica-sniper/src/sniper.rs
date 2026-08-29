@@ -1245,16 +1245,33 @@ impl Sniper {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let pool_age_secs = if pool.open_time > 0 && pool.open_time <= detected_at_secs {
-            detected_at_secs.saturating_sub(pool.open_time)
-        } else {
-            0
-        };
-        let historical_velocity_sol_per_sec = if pool_age_secs > 0 {
-            upfront_pool_size_sol / pool_age_secs as f64
-        } else {
-            0.0
-        };
+        // Age and velocity come from `crate::pool_age` so that this agrees with the two
+        // scorers. It previously did not, and the disagreement was invisible and expensive:
+        // this site used a bare `else { 0 }`, and across 9,214 logged decisions
+        // `pool_age_secs` carried a non-zero value twice and the velocity below never once.
+        // The DQ* state's `price_velocity` derives from that velocity, so one of the net's
+        // twenty-four inputs was a constant nobody noticed. See `pool_age` for the full
+        // account; `scematica measure` is what surfaces this class of defect now.
+        let pool_age = crate::pool_age::age_secs(pool.open_time, detected_at_secs, detected_at_secs);
+        let historical_velocity = crate::pool_age::velocity_sol_per_sec(
+            upfront_pool_size_sol,
+            pool.open_time,
+            detected_at_secs,
+            detected_at_secs,
+        );
+
+        // Flattened to the numeric types the twenty-odd call sites below and the decision
+        // log expect. Both zeros are lossy in the same way and it is worth being exact
+        // about it: an unknown age becomes `0`, which is also what a pool detected this
+        // second reports, and an unknown velocity becomes `0.0`, which is also what a
+        // genuinely stalled pool reports. The *gates* are unaffected — every one of them is
+        // guarded on `pool_age_secs > 0`, so an unknown velocity cannot satisfy a threshold
+        // — but the *log* cannot currently tell the two apart, which is precisely what makes
+        // this defect so hard to see from the outside. Making the log carry `Option` is the
+        // right next change and touches every writer, so it is deliberately not bundled in
+        // with a behavioural fix.
+        let pool_age_secs = pool_age.unwrap_or(0);
+        let historical_velocity_sol_per_sec = historical_velocity.unwrap_or(0.0);
         let buy_pressure_ratio = if upfront_base_vault_lamports > 0 {
             upfront_pool_size_lamports as f64 / upfront_base_vault_lamports as f64
         } else {

@@ -46,6 +46,36 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### One age rule, not three
+
+The first thing `measure` found, acted on. `CachedPool::open_time` is usually absent —
+pump.fun migrations and whale-copy pools set it to `0` outright and Raydium often leaves it
+unset on new pools, which are the only pools this bot trades. Both scorers already knew
+that and fall back to the detection timestamp, treating an unusable value as unknown rather
+than as zero; `pool_scorer`'s own comment says returning `0.0` velocity there *"would read
+as measured, and stalled, and penalise the pool."*
+
+`sniper.rs` computed its own age inline with a bare `else { 0 }` and no fallback, and that
+value — not the scorers' — is what reached the decision log, the Deep Q\* state and two
+gates. It is now one implementation in `pool_age`, with `None` for an age nobody can
+establish and for a timestamp far enough in the future to be nonsense. `pool_scorer` keeps
+its own skew handling on top, deliberately: it is ranking, and a pool whose clock cannot be
+believed should rank like a stale one rather than vanish from the comparison.
+
+Two limits are recorded rather than papered over. There is **no source of true age** for an
+`open_time = 0` pool — nothing stores when the pool was first seen, so the fallback yields
+"observed zero seconds ago", which is honest and not an age. And the decision log still
+carries `f64`, so an unknown age and a pool detected this second both write `0`. The gates
+are unaffected — every one is guarded on `pool_age_secs > 0`, so an unknown velocity cannot
+satisfy a threshold — but the log cannot tell the two apart, which is exactly what made this
+invisible for months. Making the log carry `Option` touches every writer and is the next
+change, kept separate from a behavioural one.
+
+The Deep Q\* net has no way to express an unmeasured input: `price_velocity` takes `0.0`
+when velocity is unknown, which the net reads as an observation of a stalled pool. Fixing it
+means a mask feature and a `STATE_DIM` change that invalidates every checkpoint, so it
+belongs to the Learn phase where that cost is acceptable.
+
 ### Omni 0.6.0 — because a published 0.5.0 could not carry the fix
 
 `Domain` and `EntityKind` became open enums in 0.5.0, and two of the four producers depend

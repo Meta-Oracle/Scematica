@@ -53,13 +53,18 @@ impl PoolScorer {
             .unwrap_or_default()
             .as_secs();
 
-        let effective_open_time = if pool.open_time > 0 {
-            pool.open_time
-        } else if detected_at_secs > 0 && detected_at_secs >= now_secs.saturating_sub(60) {
-            detected_at_secs
-        } else {
-            0
-        };
+        // The fallback rule itself lives in `crate::pool_age` — it was written out three
+        // times, and the third copy (inline in `sniper.rs`) disagreed with these two and
+        // flattened five downstream signals to constants for months.
+        //
+        // The skew branch below is *not* shared, deliberately. `pool_age::age_secs` reports
+        // a future timestamp as `None`, because "this timestamp is nonsense" and "this pool
+        // is very old" are different claims. A scorer is the one caller that legitimately
+        // wants to collapse them: it is ranking, and a pool whose clock cannot be believed
+        // should rank like a stale one rather than vanish from the comparison.
+        let effective_open_time =
+            crate::pool_age::effective_open_time(pool.open_time, detected_at_secs, now_secs)
+                .unwrap_or(0);
 
         let age_secs = if effective_open_time > 0 && effective_open_time <= now_secs {
             now_secs.saturating_sub(effective_open_time)

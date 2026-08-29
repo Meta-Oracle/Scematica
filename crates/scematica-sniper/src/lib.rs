@@ -16,6 +16,7 @@ pub mod kelly;
 pub mod listener;
 pub mod measure;
 pub mod multi_rpc;
+pub mod pool_age;
 pub mod pool_scorer;
 pub mod pumpfun;
 pub mod pumpfun_trending;

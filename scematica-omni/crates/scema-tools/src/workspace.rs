@@ -277,14 +277,24 @@ mod tests {
         assert!(!glob_match("*a*a*a*a*a*a*b", &text));
     }
 
+    /// A private directory for one test.
+    ///
+    /// The unique part is a process-wide counter, not a timestamp. It was a timestamp, and
+    /// that is a flake rather than a style preference: Windows advances the system clock on
+    /// the timer interrupt, roughly every 15 ms, so two tests entering this function in the
+    /// same tick get the **same** path. They then share a directory, and whichever finishes
+    /// first deletes it out from under the other — which surfaces as a resolve failing for
+    /// no visible reason, in a test that passes on its own.
+    ///
+    /// It only started firing when this module grew more tests, which is the worst shape of
+    /// flake: it arrives looking like a regression in whatever was added last.
     fn scratch() -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let p = std::env::temp_dir().join(format!(
             "scema-omni-ws-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&p).unwrap();
         fs::canonicalize(&p).unwrap()

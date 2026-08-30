@@ -51,6 +51,7 @@ use scema_world::{Polarity, WorldState};
 
 use crate::geom::{div_round, fmt, pt, step, Pt, UNIT, VIEW};
 use crate::palette::Role;
+use crate::raster::{Anchor, Prim};
 
 /// Where the trunk starts, in milliunits.
 const ROOT: Pt = Pt { x: (VIEW * UNIT) / 2, y: 492 * UNIT };
@@ -276,6 +277,12 @@ struct Canvas<'a> {
     /// Terminal marks, drawn after the branches so they sit on top.
     tips: Vec<(Pt, usize)>,
     severed: usize,
+    /// The same drawing, as primitives.
+    ///
+    /// Accumulated alongside the SVG string rather than replacing it, so the raster backend
+    /// walks the identical growth without the SVG output changing by a byte — which the
+    /// parity fixture would catch immediately if it did.
+    prims: Vec<Prim>,
     /// Positions-within-level to cut, chosen before drawing.
     cuts: Vec<usize>,
     /// The one level cuts land on.
@@ -288,6 +295,13 @@ impl Canvas<'_> {
             return;
         }
         self.segments += 1;
+        self.prims.push(Prim::Line {
+            a: (a.x, a.y),
+            b: (b.x, b.y),
+            width_mu: width_mu.max(400),
+            role,
+            dashed,
+        });
         let dash = if dashed { " stroke-dasharray=\"3 4\"" } else { "" };
         self.out.push_str(&format!(
             "<path d=\"M {} L {}\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" fill=\"none\"{dash}/>",
@@ -372,16 +386,31 @@ impl Canvas<'_> {
             };
             let fill = if sig.measured { role.hex() } else { "none".to_string() };
             match sig.polarity {
-                Polarity::Opportunity => self.out.push_str(&format!(
+                Polarity::Opportunity => {
+                    self.prims.push(Prim::Disc {
+                        c: (p.x, p.y),
+                        r_mu: 2_600,
+                        role,
+                        filled: sig.measured,
+                    });
+                    self.out.push_str(&format!(
                     "<circle cx=\"{}\" cy=\"{}\" r=\"2.6\" fill=\"{fill}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
                     fmt(p.x),
                     fmt(p.y),
                     role.hex()
-                )),
+                ))
+                }
                 Polarity::Risk => {
                     let a = Pt { x: p.x, y: p.y - 3 * UNIT };
                     let b = Pt { x: p.x - 2600, y: p.y + 1800 };
                     let c = Pt { x: p.x + 2600, y: p.y + 1800 };
+                    self.prims.push(Prim::Tri {
+                        a: (a.x, a.y),
+                        b: (b.x, b.y),
+                        c: (c.x, c.y),
+                        role,
+                        filled: sig.measured,
+                    });
                     self.out.push_str(&format!(
                         "<path d=\"M {} L {} L {} Z\" fill=\"{fill}\" stroke=\"{}\" stroke-width=\"1.2\"/>",
                         pt(a),
@@ -400,6 +429,21 @@ impl Canvas<'_> {
 /// `digest_hex` seeds the form and is printed on it. It is never recomputed here — a picture
 /// that derived its own commitment could not be used to check anything.
 pub fn render(world: &WorldState, digest_hex: &str) -> String {
+    scene(world, digest_hex).0
+}
+
+/// The same growth as a PNG.
+///
+/// Rasterised from the identical primitive list the SVG is built from, so the two cannot
+/// depict different trees. See `raster` for why the rasteriser and the PNG encoder are
+/// written here rather than taken from a library.
+pub fn render_png(world: &WorldState, digest_hex: &str, size: usize) -> Vec<u8> {
+    let (_, prims) = scene(world, digest_hex);
+    crate::raster::render_png(&prims, VIEW, size, Role::Ground)
+}
+
+/// Draw the growth once, returning both renderings' inputs.
+fn scene(world: &WorldState, digest_hex: &str) -> (String, Vec<Prim>) {
     let g = growth_of(world);
     let mut rng = Rng::from_digest(digest_hex);
     let cuts = cut_set(&g, &mut rng);
@@ -412,6 +456,7 @@ pub fn render(world: &WorldState, digest_hex: &str) -> String {
         segments: 0,
         tips: Vec::new(),
         severed: 0,
+        prims: Vec::new(),
         cuts,
         cut_at,
     };
@@ -440,91 +485,117 @@ pub fn render(world: &WorldState, digest_hex: &str) -> String {
         Role::Frame.hex()
     ));
 
+    // The frame, as primitives too. It is chrome rather than data, but the claim this
+    // module makes is that the two renderings depict the same thing — and a border present
+    // in one and absent in the other is a small, avoidable way for that to be false.
+    let (lo, hi) = (8 * UNIT, (VIEW - 8) * UNIT);
+    for (a, b) in [
+        ((lo, lo), (hi, lo)),
+        ((hi, lo), (hi, hi)),
+        ((hi, hi), (lo, hi)),
+        ((lo, hi), (lo, lo)),
+    ] {
+        c.prims.push(Prim::Line { a, b, width_mu: 1_000, role: Role::Frame, dashed: false });
+    }
+
     // The growth itself.
     s.push_str(&c.out);
 
     // The legend is small and factual. A form this suggestive needs its terms stated, or a
-    // viewer reads whatever they already believed into it.
-    s.push_str(&text(24, 34, 17, Role::Heading, "start", &crate::plate::truncate(&world.entity.label, 30)));
-    s.push_str(&text(
-        24,
-        52,
-        10,
-        Role::Label,
-        "start",
-        &format!(
-            "{} · {} · {}",
-            world.entity.kind.as_str(),
-            world.domain.as_str(),
-            crate::plate::truncate(&world.observer, 28)
-        ),
-    ));
-
+    // viewer reads whatever they already believed into it — which is also why it is built
+    // through `text_pair`: the SVG element and the raster primitive are produced together,
+    // so a legend cannot appear in one rendering and not the other.
     let extent = match world.extent.total {
         Some(t) => format!("EXTENT {}/{}", world.extent.observed, t),
         None => format!("EXTENT {} · UNBOUNDED", world.extent.observed),
     };
-    s.push_str(&text(24, 460, 10, Role::Label, "start", &extent));
-    s.push_str(&text(
-        (VIEW - 24) * UNIT / UNIT,
-        460,
-        10,
-        if world.blind_spots.is_empty() { Role::Label } else { Role::Absent },
-        "end",
-        &if world.blind_spots.is_empty() {
-            "NO BLIND SPOTS".to_string()
-        } else {
-            {
-                let (_, capped) = planned_cuts(&g);
-                if capped {
-                    format!(
-                        "{} BLIND SPOT(S) · {} LIMB(S) CUT (CAPPED)",
-                        world.blind_spots.len(),
-                        c.severed
-                    )
-                } else {
-                    format!(
-                        "{} BLIND SPOT(S) · {} LIMB(S) CUT",
-                        world.blind_spots.len(),
-                        c.severed
-                    )
-                }
-            }
-        },
-    ));
-
+    let (planned, capped) = planned_cuts(&g);
+    let _ = planned;
+    let blind = if world.blind_spots.is_empty() {
+        "NO BLIND SPOTS".to_string()
+    } else if capped {
+        format!(
+            "{} BLIND SPOT(S) · {} LIMB(S) CUT (CAPPED)",
+            world.blind_spots.len(),
+            c.severed
+        )
+    } else {
+        format!("{} BLIND SPOT(S) · {} LIMB(S) CUT", world.blind_spots.len(), c.severed)
+    };
     let measured = world.signals.iter().filter(|s| s.measured).count();
-    s.push_str(&text(
-        24,
-        478,
-        10,
-        Role::Label,
-        "start",
-        &if world.signals.is_empty() {
-            "COVERAGE ∅".to_string()
-        } else {
-            format!("COVERAGE {}/{}", measured, world.signals.len())
-        },
-    ));
-    s.push_str(&text(
-        VIEW - 24,
-        478,
-        10,
-        Role::Label,
-        "end",
-        &format!("depth {} · arity {} · spread {}°", g.depth, g.arity, g.spread),
-    ));
-    s.push_str(&text(
-        24,
-        496,
-        10,
-        Role::Claim,
-        "start",
-        &format!("world {}", crate::plate::short_digest(digest_hex)),
-    ));
+    let coverage = if world.signals.is_empty() {
+        "COVERAGE ∅".to_string()
+    } else {
+        format!("COVERAGE {}/{}", measured, world.signals.len())
+    };
+
+    let legend: Vec<(i64, i64, i64, Role, Anchor, String)> = vec![
+        (24, 34, 17, Role::Heading, Anchor::Start, crate::plate::truncate(&world.entity.label, 30)),
+        (
+            24,
+            52,
+            10,
+            Role::Label,
+            Anchor::Start,
+            format!(
+                "{} · {} · {}",
+                world.entity.kind.as_str(),
+                world.domain.as_str(),
+                crate::plate::truncate(&world.observer, 28)
+            ),
+        ),
+        (24, 460, 10, Role::Label, Anchor::Start, extent),
+        (
+            VIEW - 24,
+            460,
+            10,
+            if world.blind_spots.is_empty() { Role::Label } else { Role::Absent },
+            Anchor::End,
+            blind,
+        ),
+        (24, 478, 10, Role::Label, Anchor::Start, coverage),
+        (
+            VIEW - 24,
+            478,
+            10,
+            Role::Label,
+            Anchor::End,
+            format!("depth {} · arity {} · spread {}°", g.depth, g.arity, g.spread),
+        ),
+        (
+            24,
+            496,
+            10,
+            Role::Claim,
+            Anchor::Start,
+            format!("world {}", crate::plate::short_digest(digest_hex)),
+        ),
+    ];
+    for (x, y, size, role, anchor, body) in legend {
+        let (el, prim) = text_pair(x, y, size, role, anchor, &body);
+        s.push_str(&el);
+        c.prims.push(prim);
+    }
 
     s.push_str("</svg>");
-    s
+    (s, c.prims)
+}
+
+/// A text element, and the primitive that mirrors it.
+///
+/// Returned as a pair so the caller cannot emit one without the other — a legend that
+/// appeared in the SVG and not in the PNG would leave the raster looking like a picture
+/// rather than a reading.
+fn text_pair(x: i64, y: i64, size: i64, role: Role, anchor: Anchor, body: &str) -> (String, Prim) {
+    let a = match anchor {
+        Anchor::Start => "start",
+        Anchor::Middle => "middle",
+        Anchor::End => "end",
+    };
+    (
+        text(x, y, size, role, a, body),
+        Prim::Text { at: (x * UNIT, y * UNIT), size, role, anchor, body: body.to_string() },
+    )
 }
 
 fn text(x: i64, y: i64, size: i64, role: Role, anchor: &str, body: &str) -> String {
@@ -728,5 +799,41 @@ mod tests {
             let grown = svg.matches(&format!("stroke=\"{}\"", Role::Measured.hex())).count();
             assert!(grown > 20, "{n} blind spots left only {grown} live branches");
         }
+    }
+
+    #[test]
+    fn the_png_is_deterministic_and_depicts_the_same_growth() {
+        // Rasterised from the identical primitive list the SVG is built from, so the two
+        // cannot show different trees.
+        let w = parity_world();
+        let d = crate::world_digest(&w);
+        let a = render_png(&w, &d, 128);
+        let b = render_png(&w, &d, 128);
+        assert_eq!(a, b);
+        assert_eq!(&a[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    }
+
+    #[test]
+    fn a_different_world_produces_a_different_png() {
+        let a = parity_world();
+        let mut b = parity_world();
+        b.blind_spots.push("one more".into());
+        assert_ne!(
+            render_png(&a, &crate::world_digest(&a), 128),
+            render_png(&b, &crate::world_digest(&b), 128)
+        );
+    }
+
+    #[test]
+    fn the_svg_and_the_png_carry_the_same_legend() {
+        // `text_pair` produces the element and the primitive together, so a legend line
+        // cannot reach one rendering and not the other. Asserted because that pairing is
+        // easy to bypass by adding a bare `text(...)` call later.
+        let w = parity_world();
+        let d = crate::world_digest(&w);
+        let (svg, prims) = scene(&w, &d);
+        let texts: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Text { .. })).collect();
+        assert_eq!(texts.len(), svg.matches("<text").count());
+        assert!(texts.len() >= 7, "the legend lost lines: {}", texts.len());
     }
 }

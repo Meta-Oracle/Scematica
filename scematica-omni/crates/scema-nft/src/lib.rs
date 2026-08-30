@@ -61,6 +61,7 @@ pub mod geom;
 pub mod metadata;
 pub mod palette;
 pub mod plate;
+pub mod raster;
 
 /// What a loaded JSON document turned out to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

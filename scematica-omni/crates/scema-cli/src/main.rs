@@ -313,6 +313,17 @@ enum Command {
         /// image is a `data:` URI and the token is complete on its own.
         #[arg(long)]
         image: Option<String>,
+        /// Also write a PNG here, rasterised from the same growth.
+        ///
+        /// The rasteriser and the PNG encoder are written by hand for the same reason the
+        /// rest of this crate is: a library rasteriser antialiases differently from a
+        /// browser canvas, and an image that depends on who rendered it is not a derivative
+        /// of the record.
+        #[arg(long)]
+        png: Option<PathBuf>,
+        /// Edge of the PNG in pixels. Square, like the SVG's viewBox.
+        #[arg(long, default_value = "1024")]
+        png_size: usize,
         /// Draw the instrument plate instead of the fractal growth.
         ///
         /// Same data, read a different way: the plate is gauges and a coverage meter, the
@@ -477,9 +488,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             check::run(locator, cli.json)
         }
-        Command::Nft { locator, out, metadata, image, plate } => {
-            nft::run(locator, out.as_ref(), metadata.as_ref(), image.as_deref(), *plate)
-        }
+        Command::Nft { locator, out, metadata, image, png, png_size, plate } => nft::run(
+            locator,
+            out.as_ref(),
+            metadata.as_ref(),
+            image.as_deref(),
+            png.as_ref(),
+            *png_size,
+            *plate,
+        ),
         Command::Observe { locator } => {
             let agent = agent_for(false);
             let w = agent.observe(locator)?;

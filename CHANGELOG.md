@@ -46,6 +46,42 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### PNG export, rasterised by hand
+
+`scema nft --png` writes the growth as a PNG. The rasteriser, the font and the PNG encoder
+are all written here, which needs a reason, and the reason is the one the crate already
+rests on: **the same world produces the same bytes.** `resvg` and a browser canvas antialias
+differently, so a library PNG would depend on which runtime made it — two artefacts with one
+name. The same call this crate already made for base64, the glob matcher and the sine table.
+
+Antialiasing is a 3× supersample followed by an integer box downsample with a stated
+rounding rule, so every pixel is a sum of integers over a constant — a value two runtimes
+cannot disagree about. No analytic coverage, no floats.
+
+The zlib stream uses **stored** deflate blocks. A real compressor's output depends on its
+heuristics, and a heuristic is exactly what two implementations differ about; stored blocks
+make the byte stream a pure function of the pixels. Files are larger — 787 KB at 512px — and
+that is the right trade for an artefact whose entire value is reproducibility. Validated
+against a real zlib decoder: signature, per-chunk CRCs, IHDR, and an inflated length that
+matches exactly.
+
+The legend is drawn with a 5×7 bitmap font written out by hand, including glyphs for `·`,
+`°`, `—` and `∅` — the empty set especially, because that is how an unmeasured coverage is
+written everywhere else here and a fallback box would turn a specific statement into a
+missing-character marker. An unknown character draws a visible box rather than nothing: a
+silently dropped glyph makes a label read as something it is not.
+
+Both renderings walk one primitive list. `text_pair` produces the SVG element and the raster
+primitive together so a legend line cannot reach one and not the other, and a test asserts
+the counts match. The SVG output is byte-identical after the refactor, which the parity
+fixture confirmed rather than my believing it.
+
+CLI only for now. The browser still exports the SVG, so there is no two-runtime divergence to
+have — the rasteriser would need porting first, and claiming parity before that would be the
+kind of unearned confidence the rest of this stack exists to refuse.
+
+402 omni tests, 37 parity checks, clippy clean.
+
 ### Arrive, step one: the pipeline can time itself
 
 The repository's own notes call the central product problem structural — **the bot arrives

@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 391 tests
+cd scematica-omni ; cargo test --workspace          # 402 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -53,6 +53,14 @@ cd scematica-omni ; cargo test --workspace          # 391 tests
 ./scematica-omni/target/release/scema check world.json   # does a producer's output conform
 ./scematica-omni/target/release/scema nft world.json --out growth.svg --metadata token.json
 ./scematica-omni/target/release/scema nft world.json --plate --out plate.svg
+./scematica-omni/target/release/scema nft world.json --out g.svg --png g.png --png-size 1024
+# PNG export rasterises the SAME primitive list the SVG is built from, with a hand-written
+# rasteriser, 5x7 bitmap font and PNG encoder. A library rasteriser or a browser canvas
+# would antialias differently, and an image that depends on who rendered it is not a
+# derivative of the record. Antialiasing is 3x supersample + integer box downsample; the
+# zlib stream uses STORED deflate blocks, so the bytes are a pure function of the pixels —
+# larger files, which is the right trade for an artefact whose value is reproducibility.
+# CLI only: the browser still exports the SVG, so no two-runtime divergence exists.
 # A world drawn. The FRACTAL GROWTH is the default: depth from extent, spread from the
 # risk/opportunity balance, decay from legibility, and ONE SEVERED LIMB PER BLIND SPOT —
 # a count, never a rate. A per-node probability compounds down the recursion (three blind

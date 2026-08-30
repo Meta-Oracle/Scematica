@@ -52,6 +52,8 @@ pub fn run(
     out: Option<&PathBuf>,
     metadata_out: Option<&PathBuf>,
     image: Option<&str>,
+    png: Option<&PathBuf>,
+    png_size: usize,
     plate: bool,
 ) -> Result<ExitCode> {
     let (text, from) = read(locator)?;
@@ -78,6 +80,18 @@ pub fn run(
             lock.write_all(svg.as_bytes())?;
             lock.write_all(b"\n")?;
         }
+    }
+
+    if let Some(p) = png {
+        // Rasterised from the same primitives the SVG is built from, so the two cannot
+        // depict different trees. The plate has no raster backend — it is an instrument to
+        // be read, not an image to be held.
+        if plate {
+            bail!("--png renders the growth; it does not apply to --plate");
+        }
+        let bytes = scema_nft::fractal::render_png(&source.world, &source.digest, png_size);
+        std::fs::write(p, &bytes).with_context(|| format!("writing {}", p.display()))?;
+        eprintln!("wrote {} ({} bytes, {png_size}x{png_size})", p.display(), bytes.len());
     }
 
     if let Some(p) = metadata_out {

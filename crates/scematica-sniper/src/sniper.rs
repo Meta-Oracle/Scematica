@@ -859,6 +859,10 @@ impl Sniper {
         let now = chrono::Utc::now();
         PoolDecisionEvent {
             timestamp: now,
+            // Consuming: a pool decided twice would otherwise report the span to the first
+            // decision both times. `None` when the listener never marked it — a restart
+            // mid-flight, or a path that does not mark — which is unmeasured, not instant.
+            decide_latency_ms: crate::latency::since_seen_ms(&pool.id.to_string()),
             mint: pool.base_mint.to_string(),
             pool: pool.id.to_string(),
             quote_mint: pool.quote_mint.to_string(),
@@ -977,6 +981,10 @@ impl Sniper {
                 // any filtering, so a silent listener is distinguishable from a listener
                 // whose pools are all being rejected.
                 crate::coherence::record_pool_seen();
+                // And start the detection-to-decision clock. Marked here, before any
+                // filtering, so the span covers the whole pipeline rather than whichever
+                // part of it happened to run.
+                crate::latency::mark_seen(&pool.id.to_string());
                 self.on_new_pool(pool).await;
             }
             ListenerEvent::WalletUpdate {

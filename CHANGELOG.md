@@ -46,6 +46,38 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Arrive, step one: the pipeline can time itself
+
+The repository's own notes call the central product problem structural — **the bot arrives
+post-pump** — and no amount of filter tuning touches it. Attacking it from the latency side
+needs a number that did not exist.
+
+The execution path was already instrumented: `TxTelemetryEvent` carries `elapsed_ms`,
+`blockhash_fetch_ms_total`, `send_confirm_ms_total`. Nothing measured the part *before* that,
+where the filter round trips live. `decide_latency_ms` now records the span from the listener
+seeing a pool to the decision being written, and `measure` reports it as a nearest-rank
+distribution — every figure printed is a span that was actually measured, never one
+interpolated between two that were.
+
+`Option` and `skip_serializing_if`, for the reason every optional field here is: a build that
+did not record it and a pipeline that decided in zero milliseconds are different facts. Zero
+would read as *arrives instantly*, which is the most flattering possible reading of exactly
+the thing under investigation, so it is the one value that must not appear by default. All
+9,214 historical records honestly report `—`.
+
+Marked through a bounded side table in `latency.rs` rather than threaded through
+`write_pool_decision`'s twenty-six call sites. That is a deliberate trade: a large diff in a
+live buy path is how a trading bug gets introduced by a diagnostic. The table is bounded and
+prunes stale entries, because it is fed by an unbounded event stream and is not drained on
+every path — a leak in a report is a leak in the process that holds the money. Reading a span
+consumes it, so a pool decided twice cannot report the first decision's span both times.
+
+This is the baseline, not the fix. Block-level listening, leader-schedule-aware submission and
+bundle routing are the Arrive phase proper, and they need a live connection to evaluate —
+which is precisely why the measurement lands first.
+
+460 bot tests, clippy clean.
+
 ### The NFT is a fractal now
 
 `scema nft` grows the world instead of gauging it. The instrument plate is still there behind

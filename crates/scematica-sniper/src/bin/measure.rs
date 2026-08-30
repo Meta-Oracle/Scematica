@@ -24,8 +24,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scematica_sniper::measure::{
-    audit, coverage, funnel, read_jsonl, realised, split_at, CoherenceSample, CoverageReport,
-    Decision, Realised, SignalAudit, StageCount, Trade, AUDIT_FIELDS,
+    audit, coverage, funnel, latency, read_jsonl, realised, split_at, CoherenceSample,
+    CoverageReport, Decision, Latency, Realised, SignalAudit, StageCount, Trade, AUDIT_FIELDS,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -257,9 +257,45 @@ fn window(
     println!("\nREALISED");
     println!("  {}", realised_line(&r));
 
+    println!("
+ARRIVAL   detection to decision");
+    print_latency(&latency(&owned));
+
     let cs: Vec<CoherenceSample> = samples.iter().map(|c| (*c).clone()).collect();
     println!("\nCOVERAGE");
     print_coverage(&coverage(&cs));
+}
+
+/// How long the pipeline took to arrive, or an em dash when nobody measured it.
+///
+/// The central product problem is that the bot arrives post-pump, and no amount of filter
+/// tuning touches it. This is the baseline that has to exist before that can be attacked
+/// from the latency side — and until records carry the span, the honest report is a dash.
+fn print_latency(l: &Latency) {
+    if !l.any() {
+        println!("  {:>7}   no decision in this window recorded how long it took", "—");
+        println!("            Unmeasured, not instant. The sniper records the span from the");
+        println!("            listener seeing a pool to the decision being written; records");
+        println!("            older than that instrumentation carry nothing.");
+        return;
+    }
+    println!(
+        "  median {:>5} ms   p90 {:>6} ms   worst {:>7} ms",
+        l.median_ms.unwrap_or(0),
+        l.p90_ms.unwrap_or(0),
+        l.worst_ms.unwrap_or(0)
+    );
+    match l.coverage() {
+        Some(c) => println!(
+            "            measured on {} of {} record(s) ({:.0}%)",
+            l.measured,
+            l.total,
+            c * 100.0
+        ),
+        None => println!("            nothing in this window"),
+    }
+    println!("            Percentiles are nearest-rank: every figure above is a span that");
+    println!("            was actually measured, not one interpolated between two that were.");
 }
 
 /// What the coherence samples say, or an em dash when nobody sampled.

@@ -381,6 +381,65 @@ pub fn coverage(samples: &[CoherenceSample]) -> CoverageReport {
     r
 }
 
+
+/// How long the pipeline took to arrive at a decision, over a window.
+///
+/// Every field is `Option` because the honest answer for every record written before the
+/// span was instrumented is that nobody looked. A latency report defaulting to `0` would
+/// claim the bot arrives instantly — the most flattering possible reading of the exact thing
+/// the Arrive phase exists to investigate.
+#[derive(Debug, Clone, Default)]
+pub struct Latency {
+    /// Records that carried a span at all.
+    pub measured: usize,
+    /// Records in the window, measured or not.
+    pub total: usize,
+    pub median_ms: Option<u64>,
+    pub p90_ms: Option<u64>,
+    pub worst_ms: Option<u64>,
+}
+
+impl Latency {
+    pub fn any(&self) -> bool {
+        self.measured > 0
+    }
+
+    /// Share of the window that carried a span, or `None` when the window is empty.
+    pub fn coverage(&self) -> Option<f64> {
+        if self.total == 0 {
+            return None;
+        }
+        Some(self.measured as f64 / self.total as f64)
+    }
+}
+
+/// Summarise detection-to-decision latency over a window.
+///
+/// Percentiles by nearest rank on the sorted samples — no interpolation, because an
+/// interpolated percentile is a number that was never measured, and this report is about
+/// distinguishing what was measured from what was not.
+pub fn latency(rows: &[Decision]) -> Latency {
+    let mut samples: Vec<u64> = rows
+        .iter()
+        .filter_map(|r| r.num("decide_latency_ms"))
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| v as u64)
+        .collect();
+    let mut l = Latency { measured: samples.len(), total: rows.len(), ..Default::default() };
+    if samples.is_empty() {
+        return l;
+    }
+    samples.sort_unstable();
+    let at = |q: f64| -> u64 {
+        let idx = ((samples.len() as f64 - 1.0) * q).round() as usize;
+        samples[idx.min(samples.len() - 1)]
+    };
+    l.median_ms = Some(at(0.5));
+    l.p90_ms = Some(at(0.9));
+    l.worst_ms = samples.last().copied();
+    l
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,5 +619,57 @@ mod tests {
         let r = coverage(&[s]);
         assert!(r.measured());
         assert_eq!(r.mean_resolution, Some(0.0));
+    }
+
+    #[test]
+    fn latency_over_records_that_never_carried_it_is_unmeasured_not_zero() {
+        // Every record written before the span was instrumented. Reporting 0 would claim
+        // the bot arrives instantly, which is the most flattering possible reading of the
+        // thing under investigation.
+        let rows = vec![dec("2026-01-01", "filters", &[("pool_score", 1.0)])];
+        let l = latency(&rows);
+        assert_eq!(l.measured, 0);
+        assert_eq!(l.total, 1);
+        assert!(!l.any());
+        assert_eq!(l.median_ms, None);
+        assert_eq!(l.coverage(), Some(0.0), "0 of 1 measured is a real ratio");
+    }
+
+    #[test]
+    fn latency_percentiles_are_values_that_were_actually_measured() {
+        // Nearest rank, no interpolation: an interpolated percentile is a number nobody
+        // observed, and this whole report is about telling those apart.
+        let rows: Vec<Decision> = [10.0, 20.0, 30.0, 40.0, 1000.0]
+            .iter()
+            .map(|v| dec("2026-01-01", "filters", &[("decide_latency_ms", *v)]))
+            .collect();
+        let l = latency(&rows);
+        assert_eq!(l.measured, 5);
+        assert_eq!(l.median_ms, Some(30));
+        assert_eq!(l.worst_ms, Some(1000));
+        assert_eq!(l.coverage(), Some(1.0));
+        for v in [l.median_ms, l.p90_ms, l.worst_ms] {
+            assert!([10, 20, 30, 40, 1000].contains(&v.unwrap()), "{v:?} was never measured");
+        }
+    }
+
+    #[test]
+    fn a_partly_instrumented_window_reports_its_own_coverage() {
+        // The common case during rollout: some records carry the span, most do not. The
+        // median is over what was measured, and the coverage says how much that was.
+        let mut rows = vec![dec("2026-01-01", "filters", &[("decide_latency_ms", 50.0)])];
+        rows.push(dec("2026-01-01", "filters", &[("pool_score", 1.0)]));
+        rows.push(dec("2026-01-01", "filters", &[("pool_score", 1.0)]));
+        let l = latency(&rows);
+        assert_eq!(l.measured, 1);
+        assert_eq!(l.total, 3);
+        assert_eq!(l.median_ms, Some(50));
+        assert!((l.coverage().unwrap() - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_empty_window_has_no_coverage_rather_than_zero_coverage() {
+        let l = latency(&[]);
+        assert_eq!(l.coverage(), None, "0 of 0 is undefined, not 0%");
     }
 }

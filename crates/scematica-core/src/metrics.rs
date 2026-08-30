@@ -304,6 +304,18 @@ pub struct PoolDecisionEvent {
     pub dq_action: String,
     pub dq_confidence: f64,
     pub utc_hour: u8,
+    /// Milliseconds from the listener seeing this pool to this decision being written.
+    ///
+    /// `Option`, and omitted from the JSON when absent, for the reason every other optional
+    /// field in this repository is: a build that did not record it and a pipeline that
+    /// decided in zero milliseconds are different facts, and `0` would read as the second.
+    /// Zero here is also the most flattering possible reading of the exact thing being
+    /// investigated — the bot arriving late — so it is the one value that must not appear
+    /// by default.
+    ///
+    /// `skip_serializing_if` keeps records written before this existed byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decide_latency_ms: Option<u64>,
 }
 
 impl PoolDecisionEvent {

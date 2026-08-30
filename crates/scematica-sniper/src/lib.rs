@@ -13,6 +13,7 @@ pub mod filters;
 pub mod grief_breaker;
 pub mod jup_oracle;
 pub mod kelly;
+pub mod latency;
 pub mod listener;
 pub mod measure;
 pub mod multi_rpc;

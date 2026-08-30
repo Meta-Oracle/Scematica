@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import { canonicalBytes, parseCanonical, toFixed, toHex } from '../lib/omni/canonical.ts'
 import { verifyRecordText } from '../lib/omni/verify.ts'
 import { cell, abstentionHeadline } from '../lib/omni/view.ts'
+import { renderFractal, growthOf, plannedCuts } from '../lib/omni/fractal.ts'
 import {
   arcPath,
   base64,
@@ -250,6 +251,7 @@ await check('every abstention reason has a headline', () => {
 const nftDir = join(here, '..', '..', 'scematica-omni', 'crates', 'scema-nft', 'fixtures')
 const plateWorld = JSON.parse(readFileSync(join(nftDir, 'parity-world.json'), 'utf8'))
 const platePath = join(nftDir, 'parity-plate.svg')
+const fractalPath = join(nftDir, 'parity-fractal.svg')
 
 await check('the Rust plate and the TypeScript plate are byte-identical', () => {
   const want = readFileSync(platePath, 'utf8').replace(/\r\n/g, '\n').trimEnd()
@@ -326,7 +328,10 @@ await check('base64 encodes UTF-8 bytes, matching the Rust encoder', () => {
 await check('the Rust metadata and the TypeScript metadata agree', () => {
   const want = JSON.parse(readFileSync(join(nftDir, 'parity-metadata.json'), 'utf8'))
   const digest = readFileSync(join(nftDir, 'parity-digest.txt'), 'utf8').trim()
-  const svg = renderSvg(plateWorld, digest)
+  // The fractal, not the plate: `scema nft` embeds the growth now, so the metadata's
+  // `image` data URI is built from it. Using the plate here would pass on attributes and
+  // fail on the image, which is exactly what it did when this was first wired.
+  const svg = renderFractal(plateWorld, digest)
   const got = metadataFor(plateWorld, svg, digest)
   assert(
     JSON.stringify(got.attributes) === JSON.stringify(want.attributes),
@@ -392,6 +397,69 @@ await check('anything else is refused rather than drawn', async () => {
     assert(e.message.includes('WorldState'), 'the error should name both accepted shapes')
   }
   assert(threw, 'a document that is neither must be refused')
+})
+
+await check('the Rust fractal and the TypeScript fractal are byte-identical', () => {
+  // Harder than the plate: a recursion amplifies any disagreement, so a one-ULP difference
+  // at the root is a visibly different tree by the fourth level. That is why there is no
+  // float arithmetic in the growth and the RNG is 32-bit.
+  const want = readFileSync(fractalPath, 'utf8').replace(/\r\n/g, '\n').trimEnd()
+  const digest = readFileSync(join(nftDir, 'parity-digest.txt'), 'utf8').trim()
+  const got = renderFractal(plateWorld, digest)
+  if (got !== want) {
+    let i = 0
+    while (i < Math.min(got.length, want.length) && got[i] === want[i]) i += 1
+    throw new Error(
+      `fractals diverge at byte ${i}\n  rust: ${JSON.stringify(want.slice(i, i + 80))}\n  ts:   ${JSON.stringify(got.slice(i, i + 80))}`
+    )
+  }
+})
+
+await check('the growth parameters are read from the world, not invented', () => {
+  const g = growthOf(plateWorld)
+  assert(g.depth >= 3 && g.depth <= 9, `depth ${g.depth}`)
+  assert(g.arity >= 2, `arity ${g.arity}`)
+  // Six observed of nine, three blind spots, three counted signals of five.
+  assert(g.cuts === plateWorld.blind_spots.length, 'cuts must equal blind spots')
+})
+
+await check('blind spots cut exactly as many limbs as were reported', () => {
+  // A per-node probability compounds down the recursion: three blind spots cut twenty-six
+  // limbs in the first version. That is the form claiming more ignorance than the observer
+  // did, which is the same class of error as rendering an unmeasured term as 0.00.
+  for (const n of [1, 2, 3, 5]) {
+    const w = { ...plateWorld, blind_spots: Array.from({ length: n }, (_, i) => `spot ${i}`) }
+    const svg = renderFractal(w, 'deadbeef')
+    const cut = (svg.match(/stroke="#6f6690"/g) || []).length
+    assert(cut === n, `${n} blind spot(s) produced ${cut} cut(s)`)
+    assert(svg.includes(`${n} LIMB(S) CUT`), `footer must report ${n}`)
+  }
+})
+
+await check('cutting never annihilates the form', () => {
+  // Three blind spots fit exactly on level one of an arity-3 tree, and cutting all three
+  // deletes the canopy — reporting "three of six unreadable" as "nothing was observed".
+  for (const n of [1, 3, 6, 9]) {
+    const w = { ...plateWorld, blind_spots: Array.from({ length: n }, (_, i) => `spot ${i}`) }
+    const svg = renderFractal(w, 'deadbeef')
+    const grown = (svg.match(/stroke="#a96bff"/g) || []).length
+    assert(grown > 20, `${n} blind spots left only ${grown} live branches`)
+    const [, capped] = plannedCuts(growthOf(w))
+    if (capped) assert(svg.includes('(CAPPED)'), 'a capped cut count must say so')
+  }
+})
+
+await check('the same world grows the same form and a different digest does not', () => {
+  assert(renderFractal(plateWorld, 'aaaaaaaa') === renderFractal(plateWorld, 'aaaaaaaa'))
+  assert(renderFractal(plateWorld, 'aaaaaaaa') !== renderFractal(plateWorld, 'bbbbbbbb'))
+})
+
+await check('a zero seed does not collapse the rng', () => {
+  // xorshift has a fixed point at zero and would return zero forever, quietly collapsing
+  // every world onto one form.
+  const a = renderFractal(plateWorld, '00000000')
+  const b = renderFractal(plateWorld, '00000001')
+  assert(a !== b, 'a zero seed must not be a special case')
 })
 
 console.log(`\n${checks - failures}/${checks} checks passed`)

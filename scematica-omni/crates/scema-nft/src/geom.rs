@@ -110,6 +110,20 @@ pub fn polar(radius_mu: i64, deg: i64) -> Pt {
     }
 }
 
+/// One step of `len_mu` from `origin`, in the direction `deg`.
+///
+/// The same convention as [`polar`] — 0° is up, angles increase clockwise — but from an
+/// arbitrary point, which is what a branching structure needs. Integer throughout: the
+/// error of a step does not accumulate differently between runtimes, because there is no
+/// rounding either of them can disagree about.
+pub fn step(origin: Pt, len_mu: i64, deg: i64) -> Pt {
+    let a = deg - 90;
+    Pt {
+        x: origin.x + div_round(len_mu * cos_micro(a), MICRO),
+        y: origin.y + div_round(len_mu * sin_micro(a), MICRO),
+    }
+}
+
 /// Convert a fraction in `[0, 1]` to a span of milliunits.
 ///
 /// `f64` multiplication is correctly rounded and therefore safe to share; the result is

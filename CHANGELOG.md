@@ -46,6 +46,52 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### The NFT is a fractal now
+
+`scema nft` grows the world instead of gauging it. The instrument plate is still there behind
+`--plate` and still tested — it is the same data read as measurements — but the default is a
+form whose *shape* is the reading.
+
+Nothing about it is decoration laid over numbers. Depth comes from `Extent`, branching from
+the signal count, spread from the balance of risk against opportunity, decay from legibility,
+and the exact form is seeded by the world's own commitment, so two worlds are visibly
+distinct and the same world never is.
+
+**Ignorance is a severed limb.** A blind spot does not fade a branch or tint it — it cuts it
+off, leaving a stub and a void in the canopy. A world nobody could read grows visibly
+mutilated, which is an accurate report and is meant to be uncomfortable.
+
+Three attempts were needed to make that honest, and each failure is worth recording because
+each was the form asserting something the data did not.
+
+The first made severing a per-node *probability* of `blind_spots / observed`, which compounds
+down the recursion: **three reported blind spots cut twenty-six limbs.** That is the same
+class of error as rendering an unmeasured term as `0.00`. It is a count now, chosen up front.
+
+The second cut at whatever depth was convenient, so a cut could sit inside another cut's
+subtree and never be reached — three blind spots rendered as two limbs cut. Every cut now
+lands on **one level**, where nesting is impossible and the count is exact.
+
+The third chose the shallowest level that could *hold* the cuts, and three cuts fit exactly on
+level one of an arity-3 tree — so all three level-one limbs were cut and the entire canopy
+disappeared, rendering "three of six objects were unreadable" as "nothing was observed at
+all". The level now needs three nodes per cut, and when even the deepest level cannot hold
+them the footer says `(CAPPED)` rather than quietly under-reporting.
+
+Determinism survived, which fractals make harder rather than easier: a recursion amplifies
+any disagreement, so a one-ULP difference at the root is a visibly different tree by the
+fourth level. There is no float arithmetic in the growth — integer milliunits, whole-degree
+angles through the shared sine table, and a **32-bit** xorshift because `Math.imul` and
+`>>> 0` reproduce u32 wrapping exactly where u64 would need `BigInt`. The recursion order is
+fixed and the RNG is consumed in that order.
+
+`web/lib/omni/fractal.ts` is the port and it matched byte for byte on the first run.
+`check:omni` pins it, along with the cut count across seeds and that cutting never
+annihilates the form. `/omni` renders the growth now, with a legend, because a form this
+suggestive needs its terms stated or a viewer reads whatever they already believed into it.
+
+391 omni tests, 37 parity checks, clippy clean.
+
 ### Scematica Omni 1.0 — the freeze
 
 On a verification runtime, 1.0 is not a maturity badge. It is one sentence: **a record sealed

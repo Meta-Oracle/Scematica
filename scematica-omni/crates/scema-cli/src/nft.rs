@@ -52,13 +52,19 @@ pub fn run(
     out: Option<&PathBuf>,
     metadata_out: Option<&PathBuf>,
     image: Option<&str>,
+    plate: bool,
 ) -> Result<ExitCode> {
     let (text, from) = read(locator)?;
     let value: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("parsing {from} as JSON"))?;
 
     let source = load(&value)?;
-    let svg = render_svg(&source.world, &source.digest);
+    // The growth by default; the plate is the same data read as an instrument.
+    let svg = if plate {
+        scema_nft::plate::render(&source.world, &source.digest)
+    } else {
+        render_svg(&source.world, &source.digest)
+    };
 
     match out {
         Some(p) => {

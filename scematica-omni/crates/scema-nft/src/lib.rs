@@ -56,6 +56,7 @@ use scema_world::WorldState;
 use serde_json::Value;
 
 pub mod fixtures;
+pub mod fractal;
 pub mod geom;
 pub mod metadata;
 pub mod palette;
@@ -118,9 +119,14 @@ pub fn load(value: &Value) -> Result<Source> {
     )
 }
 
-/// Draw the plate.
+/// Draw a world.
+///
+/// The fractal growth is the default rendering. The plate in [`plate`] is still there and
+/// still tested — it is the instrument reading of the same data, reachable with
+/// `scema nft --plate` — but the growth is what the world *is*, and the plate is what it
+/// measures.
 pub fn render_svg(world: &WorldState, digest_hex: &str) -> String {
-    plate::render(world, digest_hex)
+    fractal::render(world, digest_hex)
 }
 
 /// Token metadata, with the plate inlined as a `data:` URI unless `image` overrides it.

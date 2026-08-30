@@ -40,7 +40,8 @@ import {
   provenanceLabel,
   truncate,
 } from '@/lib/omni/view'
-import { dataUri, metadataFor, plateSourceFromText, renderSvg } from '@/lib/omni/nft'
+import { dataUri, metadataFor, plateSourceFromText } from '@/lib/omni/nft'
+import { renderFractal } from '@/lib/omni/fractal'
 
 /**
  * The plate, drawn from the same text the verifier hashed.
@@ -95,7 +96,7 @@ export function OmniTerminal() {
       let plate: Plate | null = null
       try {
         const source = await plateSourceFromText(text, webSha256)
-        const svg = renderSvg(source.world, source.digest)
+        const svg = renderFractal(source.world, source.digest)
         plate = {
           svg,
           href: dataUri(svg),
@@ -398,39 +399,41 @@ function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
       <div className="flex flex-col gap-5 md:flex-row md:items-start">
         <img
           src={plate.href}
-          alt="The world of this record, drawn: an extent ring notched by blind spots, one spoke per signal, and a legibility core."
+          alt="The world of this record, grown as a fractal: depth from how much was observed, spread from the balance of risk against opportunity, and a severed limb for every blind spot."
           width={512}
           height={512}
           className="w-full max-w-[320px] shrink-0 rounded border border-omni-border"
         />
         <div className="min-w-0 flex-1 space-y-3">
           <p className="text-omni-muted">
-            The world this record committed to, drawn to scale. Every mark is a measurement
-            or the absence of one, and the picture is a pure function of the world — the
-            same file always produces the same bytes, here and from{' '}
+            The world this record committed to, grown. The shape is the reading: how deep it
+            reaches is how much the observer saw, how wide it spreads is the balance of risk
+            against opportunity, and the form is seeded by the world&rsquo;s own commitment —
+            so the same file always grows the same tree, here and from{' '}
             <code className="text-omni-text">scema nft</code>.
           </p>
           <ul className="space-y-1 text-omni-dim">
             <li>
-              <span className="text-omni-text">Dashed</span> — nobody measured it. An outer
-              ring dashed all the way round is an extent whose denominator is unknown, not a
-              full one.
+              <span className="text-omni-text">A severed limb</span> — a blind spot. One cut
+              per reported blind spot, never a rate, so the void in the canopy is exactly the
+              ignorance the observer declared. Ignorance is a missing branch, not a faded one.
             </li>
             <li>
-              <span className="text-omni-text">A notch</span> in the outer ring — something
-              the observer tried to read and could not. Ignorance is a hole, not blank space.
+              <span className="text-omni-text">Dashed growth at the frontier</span> — an
+              extent whose denominator is unknown. The observer never said where it ends, so
+              the outermost growth is drawn as unfinished rather than as complete.
             </li>
             <li>
-              <span className="text-omni-text">A hollow cap</span> on a spoke — a magnitude
-              that was estimated rather than counted. Triangles are risks, discs are
-              opportunities.
+              <span className="text-omni-text">A hollow mark</span> — a magnitude that was
+              estimated rather than counted. Triangles are risks, discs are opportunities.
             </li>
           </ul>
           <p className="text-omni-dim">
-            A gauge measured at zero draws <em>nothing</em> and prints{' '}
-            <span className="text-omni-text">0.00</span>; a gauge nobody measured draws its
-            full sweep dashed. They are never the same picture — the same rule as the{' '}
-            <span className="text-omni-unmeasured">—</span> in the matrix above.
+            Nothing here is decoration laid over numbers. Every property of the form is a
+            quantity somebody counted, and a world nobody could read grows into something
+            visibly mutilated — which is an accurate report, and is meant to be uncomfortable
+            to look at. Same rule as the <span className="text-omni-unmeasured">—</span> in
+            the matrix above, in the language of growth rather than of gauges.
           </p>
           <Row k="world commitment" v={<span className="break-all">{plate.digest}</span>} />
           <div className="flex flex-wrap gap-3 pt-1">

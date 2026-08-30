@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 374 tests
+cd scematica-omni ; cargo test --workspace          # 391 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -51,8 +51,13 @@ cd scematica-omni ; cargo test --workspace          # 374 tests
 ./scematica-omni/target/release/scema explain --list ; scema verify --all
 ./scematica-omni/target/release/scema policy        # weights, observers, specialists
 ./scematica-omni/target/release/scema check world.json   # does a producer's output conform
-./scematica-omni/target/release/scema nft world.json --out plate.svg --metadata plate.json
-                                                    # a world drawn: deterministic, self-contained SVG
+./scematica-omni/target/release/scema nft world.json --out growth.svg --metadata token.json
+./scematica-omni/target/release/scema nft world.json --plate --out plate.svg
+# A world drawn. The FRACTAL GROWTH is the default: depth from extent, spread from the
+# risk/opportunity balance, decay from legibility, and ONE SEVERED LIMB PER BLIND SPOT —
+# a count, never a rate. A per-node probability compounds down the recursion (three blind
+# spots cut twenty-six limbs in the first version), which is the form claiming more
+# ignorance than the observer reported. `--plate` is the same data as an instrument.
 ./scematica-omni/target/release/scema check --vocabulary # the open domain / entity-kind lists
 ./scematica-omni/target/release/scema anchor                          # batch every sealed record
 ./scematica-omni/target/release/scema anchor --proof <id> > proof.json
@@ -255,7 +260,8 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         scema-memory (four memories), scema-sim (counterfactual projection),
                         scema-policy (utility + pluggable evaluators + the ONE renderer),
                         scema-verify (proof-carrying decision records), scema-nft (a world
-                        drawn — deterministic SVG plate + token metadata), scema-trust
+                        drawn — a deterministic fractal growth, or the instrument plate
+                        with --plate, plus token metadata), scema-trust
                         (whether an action may happen — a port of alchem-link's approval
                         model, conformance-checked against its vectors), scema-effect (what
                         the agent actually DID — a sealed record of an attempted effect,
@@ -626,7 +632,7 @@ than no copy.
 `npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
 determinism, path tracing, URL rooting, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
 captured from a real `cargo run --example dump`. `npm run check:omni` pins the
-Rust↔TS commitment arithmetic and the SVG plate (30 checks) against a real sealed record
+Rust↔TS commitment arithmetic, the fractal growth and the SVG plate (37 checks) against a real sealed record
 and a real rendered plate — including the
 1e-9 float binding, the integer/float tag distinction, byte-wise key ordering, and the
 `JSON.stringify` hazard above. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,

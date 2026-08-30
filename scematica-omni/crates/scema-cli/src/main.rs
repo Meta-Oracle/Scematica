@@ -309,10 +309,17 @@ enum Command {
         metadata: Option<PathBuf>,
         /// Point the metadata at this image URI instead of inlining the SVG.
         ///
-        /// For a deployment that pins the plate somewhere content-addressed. Without it the
+        /// For a deployment that pins the image somewhere content-addressed. Without it the
         /// image is a `data:` URI and the token is complete on its own.
         #[arg(long)]
         image: Option<String>,
+        /// Draw the instrument plate instead of the fractal growth.
+        ///
+        /// Same data, read a different way: the plate is gauges and a coverage meter, the
+        /// growth is the world's shape. Both are byte-identical between Rust and the
+        /// browser; the growth is the default.
+        #[arg(long)]
+        plate: bool,
     },
 
     /// What is installed, what is wired up, and what is quietly broken. Changes nothing.
@@ -470,8 +477,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             check::run(locator, cli.json)
         }
-        Command::Nft { locator, out, metadata, image } => {
-            nft::run(locator, out.as_ref(), metadata.as_ref(), image.as_deref())
+        Command::Nft { locator, out, metadata, image, plate } => {
+            nft::run(locator, out.as_ref(), metadata.as_ref(), image.as_deref(), *plate)
         }
         Command::Observe { locator } => {
             let agent = agent_for(false);

@@ -16,7 +16,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use scema_nft::{fixtures::parity_world, render_metadata, render_svg, world_digest};
+use scema_nft::{fixtures::parity_world, fractal, plate, render_metadata, world_digest};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
@@ -57,14 +57,18 @@ fn check_or_write(name: &str, actual: &str) {
 fn the_parity_fixture_is_current() {
     let w = parity_world();
     let d = world_digest(&w);
-    let svg = render_svg(&w, &d);
+    let svg = fractal::render(&w, &d);
+    let plate = plate::render(&w, &d);
     let meta = render_metadata(&w, &svg, &d, None);
 
     // The world itself, so the port renders from the same input rather than from a
     // hand-copied approximation of it.
     let world_json = serde_json::to_string_pretty(&w).expect("serialise world");
     check_or_write("parity-world.json", &format!("{world_json}\n"));
-    check_or_write("parity-plate.svg", &format!("{svg}\n"));
+    // Both renderings are pinned. The fractal is what `scema nft` produces now; the plate is
+    // still reachable with `--plate`, is still a port, and can still drift.
+    check_or_write("parity-fractal.svg", &format!("{svg}\n"));
+    check_or_write("parity-plate.svg", &format!("{plate}\n"));
     check_or_write(
         "parity-metadata.json",
         &format!("{}\n", serde_json::to_string_pretty(&meta).expect("serialise metadata")),

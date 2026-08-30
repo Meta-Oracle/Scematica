@@ -8,6 +8,7 @@ members = [
     "crates/scema-verify",
     "crates/scema-trust",
     "crates/scema-effect",
+    "crates/scema-anchor",
     "crates/scema-nft",
     "crates/scema-agent",
     "crates/scema-cli",
@@ -55,6 +56,7 @@ scema-verify = { path = "crates/scema-verify", version = "0.6.0" }
 scema-nft = { path = "crates/scema-nft", version = "0.6.0" }
 scema-trust = { path = "crates/scema-trust", version = "0.6.0" }
 scema-effect = { path = "crates/scema-effect", version = "0.6.0" }
+scema-anchor = { path = "crates/scema-anchor", version = "0.6.0" }
 scema-agent = { path = "crates/scema-agent", version = "0.6.0" }
 scema-tui = { path = "crates/scema-tui", version = "0.6.0" }
 scema-daemon = { path = "crates/scema-daemon", version = "0.6.0" }

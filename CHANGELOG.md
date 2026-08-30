@@ -46,6 +46,41 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Omni 0.9 — a root somebody else can hold
+
+`scema verify` has always ended its own limits with the same clause: tamper-evident, not
+tamper-proof, *until the root is anchored somewhere the author does not control*. `scema-anchor`
+is the half that batches and proves. Record roots — decisions **and** effects — go into one
+Merkle tree, and any single record gets an inclusion proof a third party can check holding
+neither the batch nor the other records.
+
+**SHA-256, and that is not a compromise.** `mesh-attest` uses keccak and matching it would let
+the two share a verifier, but Omni's commitments are SHA-256: changing the hash would mean every
+record already sealed on disk stops verifying, and a verifier that rejects untouched history is
+the one failure that teaches a reader to stop believing it. It costs nothing, because EVM
+exposes SHA-256 as precompile `0x02` — a contract can check these proofs directly. The algorithm
+is recorded in the batch and checked on verification rather than assumed.
+
+Two details that are cheap to get wrong and were not. **Leaves and internal nodes are
+domain-separated** (`H(0x00‖bytes)` versus `H(0x01‖left‖right)`); without the tags an internal
+node is a valid leaf preimage and membership can be proven for something never submitted. And
+**an odd node is promoted, never duplicated** — padding by duplication is the widespread
+implementation and lets two leaf sets share a root, the CVE-2012-2459 shape, which here would
+mean a batch presented as covering a record it never covered. Both are pinned by tests that fail
+if the property is lost.
+
+**Anchors are a list, and empty means unanchored — said in those words.** The plan is one chain
+whose economics we control and one with an audience, each independently checkable. Nothing here
+reaches a chain: `--record` writes down that a root was published and states plainly that it did
+not check, because reaching a chain is a network act with a key behind it and recording an anchor
+that was never submitted would be the fabrication the rest of this runtime exists to refuse. A
+reader follows the reference themselves — an anchor taken on the author's word is not an anchor.
+
+Editing a batch is caught: `--list` reports `ROOT DOES NOT MATCH ITS LEAVES`, which is the edit
+that would let a record be claimed as covered by an anchor that never included it.
+
+372 omni tests, clippy clean.
+
 ### Omni 0.8 — the loop can act
 
 `execute` no longer exits 2. `scema-effect` records what was *done*, `scema-trust` says

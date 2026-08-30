@@ -35,6 +35,7 @@
 //! record and appends memory. Both compute exactly the same thing; only the side effects
 //! differ, which is why they share one code path with a flag rather than being two.
 
+mod anchor;
 mod check;
 mod execute;
 mod nft;
@@ -176,6 +177,34 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Batch sealed records under one Merkle root, and pin it somewhere else.
+    ///
+    /// `verify` proves a record was not edited; it does not prove it is the original,
+    /// because whoever holds the only copy can seal a different one. This is the half that
+    /// batches and issues per-record inclusion proofs. Publishing the root needs a chain and
+    /// a key, and nothing here does it — an anchor recorded but never submitted would be the
+    /// fabrication the rest of this runtime exists to refuse.
+    Anchor {
+        /// List batches and where each has been published.
+        #[arg(long)]
+        list: bool,
+        /// Print the inclusion proof for one record id.
+        #[arg(long = "proof")]
+        proof: Option<String>,
+        /// Note a publication that happened: `<chain>=<reference>`. Asserted, not verified.
+        #[arg(long)]
+        record: Option<String>,
+        /// Which batch `--record` refers to, by root prefix.
+        #[arg(long)]
+        batch: Option<String>,
+        /// Verify a proof file, offline.
+        #[arg(long)]
+        check: Option<PathBuf>,
+        /// The Merkle root `--check` should verify against.
+        #[arg(long = "root-hash")]
+        root_hash: Option<String>,
+    },
+
     /// What the agent has retained.
     Remember {
         /// Per-kind counts and projection calibration.
@@ -655,6 +684,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Anchor { list, proof, record, batch, check, root_hash } => anchor::run(
+            &cli.root,
+            *list,
+            proof.as_deref(),
+            record.as_deref(),
+            batch.as_deref(),
+            check.as_deref(),
+            root_hash.as_deref(),
+        ),
         Command::Policy => {
             let agent = agent_for(false);
             let w = agent.config.weights;

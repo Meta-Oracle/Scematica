@@ -1,0 +1,22 @@
+[package]
+name = "scema-anchor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — batch sealed decision records into one Merkle root with per-record inclusion proofs, so a commitment can be pinned somewhere its author does not control."
+keywords = ["merkle", "anchor", "commitment", "audit", "agent"]
+categories = ["cryptography"]
+
+[lib]
+name = "scema_anchor"
+path = "src/lib.rs"
+
+[dependencies]
+scema-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

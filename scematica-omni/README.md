@@ -167,6 +167,7 @@ believing it.
 | `scema-policy` | `U = R − λ₁K − λ₂C − λ₃U + λ₄V`, plus pluggable evaluators that may decline. |
 | `scema-verify` | canonical hashing and proof-carrying decision records. |
 | `scema-trust` | whether an action may happen — risk per tool, a fixed preflight order, session-scoped grants. Checked against alchem-link's vectors. |
+| `scema-anchor` | batch sealed records under one Merkle root with per-record inclusion proofs, so a commitment can be pinned somewhere its author does not control. |
 | `scema-effect` | what the agent actually did — a sealed record of an attempted effect, with an explicit arm for a result nobody could observe. |
 | `scema-nft` | a world drawn — a deterministic, self-contained SVG plate plus token metadata. Byte-identical to `web/lib/omni/nft.ts`. |
 | `scema-agent` | the orchestration loop. |

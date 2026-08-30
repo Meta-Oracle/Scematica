@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 357 tests
+cd scematica-omni ; cargo test --workspace          # 372 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -54,6 +54,9 @@ cd scematica-omni ; cargo test --workspace          # 357 tests
 ./scematica-omni/target/release/scema nft world.json --out plate.svg --metadata plate.json
                                                     # a world drawn: deterministic, self-contained SVG
 ./scematica-omni/target/release/scema check --vocabulary # the open domain / entity-kind lists
+./scematica-omni/target/release/scema anchor                          # batch every sealed record
+./scematica-omni/target/release/scema anchor --proof <id> > proof.json
+./scematica-omni/target/release/scema anchor --check proof.json --root-hash <root>
 ./scematica-omni/target/release/scema execute effect.json            # DRY RUN — both gates, touches nothing
 ./scematica-omni/target/release/scema execute effect.json --commit --allow-writes --intent <id>
 # Dry run by DEFAULT. The two paths compute the same thing up to the last step, which is
@@ -257,7 +260,8 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         model, conformance-checked against its vectors), scema-effect (what
                         the agent actually DID — a sealed record of an attempted effect,
                         with an explicit `Unknown` arm for a result nobody could observe),
-                        scema-agent (the
+                        scema-anchor (batch record roots into one Merkle root with per-record
+                        inclusion proofs), scema-agent (the
                         loop), scema-cli (bin `scema` — the loop, plus the sibling launcher,
                         `init`/`doctor`/`connect`/`completions`/`nft`), scema-tui (bin
                         `scema-tui`, the console), scema-daemon (bin `scema-omnid`), scema-mcp

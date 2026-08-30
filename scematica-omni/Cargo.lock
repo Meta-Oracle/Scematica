@@ -652,6 +652,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scema-anchor"
+version = "0.6.0"
+dependencies = [
+ "scema-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "scema-cli"
 version = "0.6.0"
 dependencies = [
@@ -659,6 +669,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "scema-agent",
+ "scema-anchor",
  "scema-effect",
  "scema-memory",
  "scema-nft",

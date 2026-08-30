@@ -1,6 +1,6 @@
 {
   "name": "scema-web",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Scematica Omni browser extension (MV3). No build step, no dependencies, no bundler.",
   "scripts": {

@@ -41,13 +41,14 @@ Embedding the loop rather than running it:
 
 ```toml
 [dependencies]
-scema-agent  = "0.6"   # the whole loop
-scema-world  = "0.6"   # just the types, if you only need the wire format
+scema-agent  = "1.0"   # the whole loop
+scema-world  = "1.0"   # just the types, if you only need the wire format
 ```
 
-Beta. What is stable and what is not is spelled out in
-[CHANGELOG.md](CHANGELOG.md#what-is-stable-in-beta-and-what-is-not) — the JSON contract, the
-canonical encoding and `verify` are; the Rust trait shapes below the CLI are not yet.
+**1.0.** What is frozen and what is not is spelled out in
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), and enforced by `corpus/` — real records
+sealed by builds that no longer exist, re-verified on every commit. The JSON contract, the
+canonical encoding and `verify` are frozen; the Rust trait shapes below the CLI are not.
 
 ## The one idea
 

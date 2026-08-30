@@ -35,7 +35,7 @@ cargo run --release -p mesh-dashboard -- --once       # one frame as text (pipea
 cargo run --release -p mesh-dashboard -- --json       # raw mesh
 
 # Scematica Omni — the agent runtime (own workspace; cd first)
-# Published to crates.io as `scema-*` crates (0.6.0 beta), independent of the bot's
+# Published to crates.io as `scema-*` crates (1.0.0), independent of the bot's
 # `scematica-*` line. Install without a checkout:
 cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
 # Upgrade these together. Pre-0.5.0 builds carry the CLOSED Domain enum and refuse any
@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 372 tests
+cd scematica-omni ; cargo test --workspace          # 374 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing

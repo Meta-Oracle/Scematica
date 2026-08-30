@@ -1,0 +1,691 @@
+{
+  "id": "07aecde6",
+  "at": 1788106029,
+  "runtime": "scema-omni/0.6.0",
+  "world": {
+    "schema": "scema.world/1",
+    "observer": "repo",
+    "entity": {
+      "kind": "repository",
+      "locator": "C:\\Users\\deads\\AppData\\Local\\Temp\\claude\\c--Users-deads-OneDrive-Documents-AGI-scematica\\a8ae2dfc-7a73-42e7-8e84-b7b8d710e555\\scratchpad\\anch",
+      "label": "anch"
+    },
+    "domain": "software",
+    "observed_at": 1788106029,
+    "objects": [
+      {
+        "id": "unit:",
+        "kind": "crate",
+        "label": "anch",
+        "attrs": {
+          "documented": {
+            "t": "bool",
+            "v": false
+          },
+          "files": {
+            "t": "int",
+            "v": 2
+          },
+          "lines": {
+            "t": "int",
+            "v": 5
+          },
+          "markers": {
+            "t": "int",
+            "v": 1
+          },
+          "tests": {
+            "t": "int",
+            "v": 0
+          }
+        },
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      }
+    ],
+    "facts": [
+      {
+        "subject": "C:\\Users\\deads\\AppData\\Local\\Temp\\claude\\c--Users-deads-OneDrive-Documents-AGI-scematica\\a8ae2dfc-7a73-42e7-8e84-b7b8d710e555\\scratchpad\\anch",
+        "predicate": "is_git_repository",
+        "object": "false",
+        "confidence": 1.0,
+        "evidence": [
+          ".git directory presence"
+        ],
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      }
+    ],
+    "signals": [
+      {
+        "id": "untested:anch",
+        "polarity": "risk",
+        "label": "`anch` has no tests",
+        "detail": "2 source file(s), 5 line(s), zero test attributes found",
+        "magnitude": 0.0016666666666666668,
+        "measured": true,
+        "targets": [
+          "unit:"
+        ],
+        "evidence": [
+          "counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)"
+        ]
+      },
+      {
+        "id": "markers:anch",
+        "polarity": "opportunity",
+        "label": "1 marker(s) in `anch`",
+        "detail": "TODO / FIXME / HACK left in source",
+        "magnitude": 0.02,
+        "measured": true,
+        "targets": [
+          "unit:"
+        ],
+        "evidence": [
+          "counted 1 marker(s)"
+        ]
+      },
+      {
+        "id": "undocumented:anch",
+        "polarity": "opportunity",
+        "label": "`anch` has no README or module doc",
+        "detail": "no README and no `//!` / docstring found in its sources",
+        "magnitude": 0.001,
+        "measured": true,
+        "targets": [
+          "unit:"
+        ],
+        "evidence": [
+          "presence check over the unit's files"
+        ]
+      }
+    ],
+    "extent": {
+      "observed": 2,
+      "total": 2,
+      "note": "walked 2 directories"
+    },
+    "blind_spots": []
+  },
+  "goal": {
+    "id": "goal",
+    "statement": "clear the marker backlog",
+    "constraints": [],
+    "horizon": null,
+    "grounded_in": [
+      "markers:demo"
+    ]
+  },
+  "hypotheses": [
+    {
+      "id": "h-goal",
+      "statement": "clear the marker backlog",
+      "rationale": "the operator asserts this addresses: markers:demo",
+      "origin": {
+        "kind": "human"
+      },
+      "actions": [
+        {
+          "id": "a0",
+          "verb": "write",
+          "target": "C:\\Users\\deads\\AppData\\Local\\Temp\\claude\\c--Users-deads-OneDrive-Documents-AGI-scematica\\a8ae2dfc-7a73-42e7-8e84-b7b8d710e555\\scratchpad\\anch",
+          "detail": "clear the marker backlog",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "markers:demo"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-untested-anch",
+      "statement": "mitigate: `anch` has no tests",
+      "rationale": "2 source file(s), 5 line(s), zero test attributes found — counted 0 of `#[test]`/`#[tokio::test]`/`def test_`/`it(` across 2 file(s)",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (untested:anch)"
+      },
+      "actions": [
+        {
+          "id": "a0",
+          "verb": "write",
+          "target": "unit:",
+          "detail": "address ``anch` has no tests`",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "untested:anch"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-markers-anch",
+      "statement": "take: 1 marker(s) in `anch`",
+      "rationale": "TODO / FIXME / HACK left in source — counted 1 marker(s)",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (markers:anch)"
+      },
+      "actions": [
+        {
+          "id": "a1",
+          "verb": "write",
+          "target": "unit:",
+          "detail": "address `1 marker(s) in `anch``",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "markers:anch"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-undocumented-anch",
+      "statement": "take: `anch` has no README or module doc",
+      "rationale": "no README and no `//!` / docstring found in its sources — presence check over the unit's files",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (undocumented:anch)"
+      },
+      "actions": [
+        {
+          "id": "a2",
+          "verb": "write",
+          "target": "unit:",
+          "detail": "address ``anch` has no README or module doc`",
+          "reversibility": "recoverable"
+        }
+      ],
+      "grounded_in": [
+        "undocumented:anch"
+      ],
+      "tags": {}
+    }
+  ],
+  "projections": [
+    {
+      "hypothesis": "h-goal",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.0,
+        "measured": false,
+        "note": "hypothesis cites no signal in this world; no observed basis for a gain"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.4,
+        "measured": true,
+        "note": "worst declared action class Write; no counted risk signal on its targets"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [],
+      "shadow": {
+        "touched_objects": [
+          "C:\\Users\\deads\\AppData\\Local\\Temp\\claude\\c--Users-deads-OneDrive-Documents-AGI-scematica\\a8ae2dfc-7a73-42e7-8e84-b7b8d710e555\\scratchpad\\anch"
+        ],
+        "addresses_signals": [
+          "markers:demo"
+        ],
+        "unaddressed_risks": [
+          "untested:anch"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 4,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-untested-anch",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.0016666666666666668,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): untested:anch"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.4008333333333334,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`anch` has no tests",
+          "detail": "2 source file(s), 5 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0016666666666666668,
+            "measured": true,
+            "note": "counted signal untested:anch"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:"
+        ],
+        "addresses_signals": [
+          "untested:anch"
+        ],
+        "unaddressed_risks": []
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-markers-anch",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.02,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): markers:anch"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.4008333333333334,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`anch` has no tests",
+          "detail": "2 source file(s), 5 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0016666666666666668,
+            "measured": true,
+            "note": "counted signal untested:anch"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:"
+        ],
+        "addresses_signals": [
+          "markers:anch"
+        ],
+        "unaddressed_risks": [
+          "untested:anch"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-undocumented-anch",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.001,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): undocumented:anch"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.4008333333333334,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.7,
+        "measured": true,
+        "note": "least reversible declared step is Recoverable"
+      },
+      "failure_modes": [
+        {
+          "label": "`anch` has no tests",
+          "detail": "2 source file(s), 5 line(s), zero test attributes found",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0016666666666666668,
+            "measured": true,
+            "note": "counted signal untested:anch"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "unit:"
+        ],
+        "addresses_signals": [
+          "undocumented:anch"
+        ],
+        "unaddressed_risks": [
+          "untested:anch"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 5,
+        "total": 5
+      }
+    }
+  ],
+  "decision": {
+    "chosen": null,
+    "ranked": [
+      {
+        "hypothesis": "h-markers-anch",
+        "statement": "take: 1 marker(s) in `anch`",
+        "utility": {
+          "value": -0.07550000000000007,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.02,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): markers:anch"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.24050000000000002,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-untested-anch",
+        "statement": "mitigate: `anch` has no tests",
+        "utility": {
+          "value": -0.09383333333333338,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.0016666666666666668,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): untested:anch"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.24050000000000002,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-undocumented-anch",
+        "statement": "take: `anch` has no README or module doc",
+        "utility": {
+          "value": -0.09450000000000003,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.001,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): undocumented:anch"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.24050000000000002,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): untested:anch"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 5,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-goal",
+        "statement": "clear the marker backlog",
+        "utility": {
+          "value": -0.09500000000000003,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.0,
+              "measured": false,
+              "note": "hypothesis cites no signal in this world; no observed basis for a gain"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.24,
+              "measured": true,
+              "note": "worst declared action class Write; no counted risk signal on its targets"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.175,
+              "measured": true,
+              "note": "least reversible declared step is Recoverable"
+            }
+          ],
+          "coverage": {
+            "measured": 4,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      }
+    ],
+    "excluded": [],
+    "abstention": {
+      "reason": "no_positive_utility",
+      "best": -0.07550000000000007
+    },
+    "config": {
+      "weights": {
+        "risk": 0.6,
+        "cost": 0.3,
+        "uncertainty": 0.3,
+        "reversibility": 0.25
+      },
+      "min_coverage": 0.4,
+      "veto_at_or_below": 0.0
+    },
+    "evaluator_status": [
+      {
+        "evaluator": "dqstar",
+        "about": "Scematica Deep Q* (Dueling Double-DQN) — ranks trading branches by their position in the current Q spread. Trading worlds only.",
+        "applicability": {
+          "kind": "out_of_domain",
+          "note": "world domain is Software; the 24-feature state is pool and position data and has no reading of this"
+        }
+      }
+    ],
+    "coverage": {
+      "measured": 19,
+      "total": 20
+    }
+  },
+  "commitment": {
+    "world": "a5dd5713967bcff48ae3d3eee795027b15795d2789d36bfa874681f80d3d69c4",
+    "goal": "e6df00729ad8d9562d37e44d6a836a24d1c54b5cce5efe0c51f6553aee85a276",
+    "hypotheses": "de1623161ed7eb55761aac7e85bf29b6521d98fb55e5efbd873fa4922c12561f",
+    "projections": "fd2288a84f22c6b5713de3559b802621b418e15791878945677a06cf6ae7737e",
+    "policy": "3a20eee9fc5978968228bc7fdd0a2e0ebac63bf3f1321328bbf25658ff97612a",
+    "decision": "f92e1a1230d2270a8ff4ef5684982cd84e5f9ffac5b88a9e34291b42121f7f21",
+    "root": "07aecde6906ee6bf6a262cdb0bebda9dd820c6bfa90ea34c8493d02fde91a378"
+  }
+}

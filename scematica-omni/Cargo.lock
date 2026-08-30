@@ -638,7 +638,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "scema-agent"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "scema-memory",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "scema-anchor"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "scema-verify",
  "serde",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "scema-cli"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "scema-daemon"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "scema-effect"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "scema-tools",
  "scema-trust",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "scema-mcp"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "scema-memory"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "scema-world",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "scema-nft"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "scema-verify",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "scema-policy"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "scema-sim",
  "scema-world",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "scema-sim"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "scema-world",
  "serde",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "scema-tools"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "scema-world",
@@ -778,11 +778,11 @@ dependencies = [
 
 [[package]]
 name = "scema-trust"
-version = "0.6.0"
+version = "1.0.0"
 
 [[package]]
 name = "scema-tui"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "scema-verify"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "scema-policy",
@@ -813,7 +813,7 @@ dependencies = [
 
 [[package]]
 name = "scema-world"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",

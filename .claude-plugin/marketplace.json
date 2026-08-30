@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Plugins from the Scematica project.",
-    "version": "0.6.0"
+    "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "scema-omni",
       "source": "./scematica-omni/plugins/claude-code",
       "description": "Perceive a project as a world state, rank competing branches under a stated preference, and read back decision records anyone can verify. Wraps the scema-mcp server with commands and a skill that teach a model not to report an unmeasured term as a zero.",
-      "version": "0.6.0",
+      "version": "1.0.0",
       "category": "productivity",
       "keywords": ["agent", "mcp", "verifiable", "decision-records", "observability"],
       "strict": false

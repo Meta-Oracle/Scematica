@@ -1,0 +1,673 @@
+{
+  "id": "9365761b",
+  "at": 1787284682,
+  "runtime": "scema-omni/0.2.0",
+  "world": {
+    "observer": "client:page",
+    "entity": {
+      "kind": "website",
+      "locator": "https://github.com/Meta-Oracle/Scematica",
+      "label": "Meta-Oracle/Scematica: Scematica is going to be designed to be an autonomous Claude enabled trading bot built fully on open-source foundations. The Idea is to have a fully interactive and scalable trading bot that is fully reactive and prediction based. With the code being built from the ground up. It will inherently integrate proper x402, and many other agentic systems."
+    },
+    "domain": "unknown",
+    "observed_at": 1787284636,
+    "objects": [
+      {
+        "id": "script-origin:https://github.githubassets.com",
+        "kind": "script-origin",
+        "label": "https://github.githubassets.com",
+        "attrs": {
+          "scripts": {
+            "t": "int",
+            "v": 8
+          }
+        },
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      },
+      {
+        "id": "document",
+        "kind": "document",
+        "label": "Meta-Oracle/Scematica: Scematica is going to be designed to be an autonomous Claude enabled trading bot built fully on open-source foundations. The Idea is to have a fully interactive and scalable trading bot that is fully reactive and prediction based. With the code being built from the ground up. It will inherently integrate proper x402, and many other agentic systems.",
+        "attrs": {
+          "controls": {
+            "t": "int",
+            "v": 1
+          },
+          "elements": {
+            "t": "int",
+            "v": 3746
+          },
+          "forms": {
+            "t": "int",
+            "v": 0
+          },
+          "frames": {
+            "t": "int",
+            "v": 0
+          },
+          "headings": {
+            "t": "int",
+            "v": 55
+          },
+          "https": {
+            "t": "bool",
+            "v": true
+          },
+          "images": {
+            "t": "int",
+            "v": 8
+          },
+          "inline_handlers": {
+            "t": "int",
+            "v": 0
+          },
+          "links": {
+            "t": "int",
+            "v": 299
+          },
+          "mixed_content": {
+            "t": "int",
+            "v": 0
+          },
+          "off_origin_links": {
+            "t": "int",
+            "v": 13
+          }
+        },
+        "provenance": {
+          "kind": "live",
+          "age_secs": 0
+        }
+      }
+    ],
+    "facts": [],
+    "signals": [
+      {
+        "id": "third-party-scripts",
+        "polarity": "risk",
+        "label": "1 third-party script origin(s)",
+        "detail": "https://github.githubassets.com",
+        "magnitude": 0.1,
+        "measured": true,
+        "targets": [
+          "script-origin:https://github.githubassets.com"
+        ],
+        "evidence": [
+          "counted 1 distinct third-party origin(s) across 8 off-origin script tag(s), of 8 with a src"
+        ]
+      },
+      {
+        "id": "third-party-scripts-without-sri",
+        "polarity": "risk",
+        "label": "8 third-party script(s) load without an integrity hash",
+        "detail": "Whatever that origin serves next runs here, with this page’s privileges.",
+        "magnitude": 0.8,
+        "measured": true,
+        "targets": [
+          "script-origin:https://github.githubassets.com"
+        ],
+        "evidence": [
+          "counted 8 of 8 off-origin script tag(s) with no integrity attribute"
+        ]
+      },
+      {
+        "id": "target-blank-without-noopener",
+        "polarity": "risk",
+        "label": "1 link(s) open a new tab without rel=noopener",
+        "detail": "The opened page receives a handle to this one via window.opener.",
+        "magnitude": 0.1,
+        "measured": true,
+        "targets": [],
+        "evidence": [
+          "counted 1 of 299 link(s) with target=_blank and no noopener"
+        ]
+      }
+    ],
+    "extent": {
+      "observed": 3746,
+      "total": 3746,
+      "note": "scanned 3746 element(s)"
+    },
+    "blind_spots": []
+  },
+  "goal": {
+    "id": "goal",
+    "statement": "",
+    "constraints": [],
+    "horizon": null,
+    "grounded_in": [
+      "third-party-scripts",
+      "third-party-scripts-without-sri",
+      "target-blank-without-noopener"
+    ]
+  },
+  "hypotheses": [
+    {
+      "id": "h-third-party-scripts",
+      "statement": "mitigate: 1 third-party script origin(s)",
+      "rationale": "https://github.githubassets.com — counted 1 distinct third-party origin(s) across 8 off-origin script tag(s), of 8 with a src",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (third-party-scripts)"
+      },
+      "actions": [
+        {
+          "id": "a0",
+          "verb": "write",
+          "target": "script-origin:https://github.githubassets.com",
+          "detail": "address `1 third-party script origin(s)`",
+          "reversibility": "unknown"
+        }
+      ],
+      "grounded_in": [
+        "third-party-scripts"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-third-party-scripts-without-sri",
+      "statement": "mitigate: 8 third-party script(s) load without an integrity hash",
+      "rationale": "Whatever that origin serves next runs here, with this page’s privileges. — counted 8 of 8 off-origin script tag(s) with no integrity attribute",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (third-party-scripts-without-sri)"
+      },
+      "actions": [
+        {
+          "id": "a1",
+          "verb": "write",
+          "target": "script-origin:https://github.githubassets.com",
+          "detail": "address `8 third-party script(s) load without an integrity hash`",
+          "reversibility": "unknown"
+        }
+      ],
+      "grounded_in": [
+        "third-party-scripts-without-sri"
+      ],
+      "tags": {}
+    },
+    {
+      "id": "h-target-blank-without-noopener",
+      "statement": "mitigate: 1 link(s) open a new tab without rel=noopener",
+      "rationale": "The opened page receives a handle to this one via window.opener. — counted 1 of 299 link(s) with target=_blank and no noopener",
+      "origin": {
+        "kind": "heuristic",
+        "rule": "one branch per counted signal (target-blank-without-noopener)"
+      },
+      "actions": [
+        {
+          "id": "a2",
+          "verb": "write",
+          "target": "https://github.com/Meta-Oracle/Scematica",
+          "detail": "address `1 link(s) open a new tab without rel=noopener`",
+          "reversibility": "unknown"
+        }
+      ],
+      "grounded_in": [
+        "target-blank-without-noopener"
+      ],
+      "tags": {}
+    }
+  ],
+  "projections": [
+    {
+      "hypothesis": "h-third-party-scripts",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.1,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): third-party-scripts"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.8,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): third-party-scripts, third-party-scripts-without-sri, target-blank-without-noopener"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.0,
+        "measured": false,
+        "note": "at least one step is unclassified; the plan cannot be called reversible"
+      },
+      "failure_modes": [
+        {
+          "label": "unclassified step",
+          "detail": "a step nobody has classified may be the irreversible one",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0,
+            "measured": false,
+            "note": "unclassified by construction"
+          }
+        },
+        {
+          "label": "1 third-party script origin(s)",
+          "detail": "https://github.githubassets.com",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.1,
+            "measured": true,
+            "note": "counted signal third-party-scripts"
+          }
+        },
+        {
+          "label": "8 third-party script(s) load without an integrity hash",
+          "detail": "Whatever that origin serves next runs here, with this page’s privileges.",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.8,
+            "measured": true,
+            "note": "counted signal third-party-scripts-without-sri"
+          }
+        },
+        {
+          "label": "1 link(s) open a new tab without rel=noopener",
+          "detail": "The opened page receives a handle to this one via window.opener.",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.1,
+            "measured": true,
+            "note": "counted signal target-blank-without-noopener"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "script-origin:https://github.githubassets.com"
+        ],
+        "addresses_signals": [
+          "third-party-scripts"
+        ],
+        "unaddressed_risks": [
+          "third-party-scripts-without-sri",
+          "target-blank-without-noopener"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 4,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-third-party-scripts-without-sri",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.8,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): third-party-scripts-without-sri"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.8,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): third-party-scripts, third-party-scripts-without-sri, target-blank-without-noopener"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.0,
+        "measured": false,
+        "note": "at least one step is unclassified; the plan cannot be called reversible"
+      },
+      "failure_modes": [
+        {
+          "label": "unclassified step",
+          "detail": "a step nobody has classified may be the irreversible one",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0,
+            "measured": false,
+            "note": "unclassified by construction"
+          }
+        },
+        {
+          "label": "1 third-party script origin(s)",
+          "detail": "https://github.githubassets.com",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.1,
+            "measured": true,
+            "note": "counted signal third-party-scripts"
+          }
+        },
+        {
+          "label": "8 third-party script(s) load without an integrity hash",
+          "detail": "Whatever that origin serves next runs here, with this page’s privileges.",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.8,
+            "measured": true,
+            "note": "counted signal third-party-scripts-without-sri"
+          }
+        },
+        {
+          "label": "1 link(s) open a new tab without rel=noopener",
+          "detail": "The opened page receives a handle to this one via window.opener.",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.1,
+            "measured": true,
+            "note": "counted signal target-blank-without-noopener"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "script-origin:https://github.githubassets.com"
+        ],
+        "addresses_signals": [
+          "third-party-scripts-without-sri"
+        ],
+        "unaddressed_risks": [
+          "third-party-scripts",
+          "target-blank-without-noopener"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 4,
+        "total": 5
+      }
+    },
+    {
+      "hypothesis": "h-target-blank-without-noopener",
+      "simulator": "structural",
+      "expected_gain": {
+        "symbol": "R",
+        "name": "expected gain",
+        "value": 0.1,
+        "measured": true,
+        "note": "mean magnitude of 1 counted signal(s): target-blank-without-noopener"
+      },
+      "risk": {
+        "symbol": "K",
+        "name": "hazard of acting",
+        "value": 0.45,
+        "measured": true,
+        "note": "worst declared action class Write, escalated by counted risk(s): target-blank-without-noopener"
+      },
+      "cost": {
+        "symbol": "C",
+        "name": "cost",
+        "value": 0.1,
+        "measured": true,
+        "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+      },
+      "uncertainty": {
+        "symbol": "U",
+        "name": "uncertainty",
+        "value": 0.0,
+        "measured": true,
+        "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+      },
+      "reversibility": {
+        "symbol": "V",
+        "name": "reversibility",
+        "value": 0.0,
+        "measured": false,
+        "note": "at least one step is unclassified; the plan cannot be called reversible"
+      },
+      "failure_modes": [
+        {
+          "label": "unclassified step",
+          "detail": "a step nobody has classified may be the irreversible one",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.0,
+            "measured": false,
+            "note": "unclassified by construction"
+          }
+        },
+        {
+          "label": "1 link(s) open a new tab without rel=noopener",
+          "detail": "The opened page receives a handle to this one via window.opener.",
+          "likelihood": {
+            "symbol": "p",
+            "name": "likelihood",
+            "value": 0.1,
+            "measured": true,
+            "note": "counted signal target-blank-without-noopener"
+          }
+        }
+      ],
+      "shadow": {
+        "touched_objects": [
+          "https://github.com/Meta-Oracle/Scematica"
+        ],
+        "addresses_signals": [
+          "target-blank-without-noopener"
+        ],
+        "unaddressed_risks": [
+          "third-party-scripts",
+          "third-party-scripts-without-sri"
+        ]
+      },
+      "forbidden_by": null,
+      "coverage": {
+        "measured": 4,
+        "total": 5
+      }
+    }
+  ],
+  "decision": {
+    "chosen": "h-third-party-scripts-without-sri",
+    "ranked": [
+      {
+        "hypothesis": "h-third-party-scripts-without-sri",
+        "statement": "mitigate: 8 third-party script(s) load without an integrity hash",
+        "utility": {
+          "value": 0.29000000000000004,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.8,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): third-party-scripts-without-sri"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.48,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): third-party-scripts, third-party-scripts-without-sri, target-blank-without-noopener"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.0,
+              "measured": false,
+              "note": "at least one step is unclassified; the plan cannot be called reversible"
+            }
+          ],
+          "coverage": {
+            "measured": 4,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-target-blank-without-noopener",
+        "statement": "mitigate: 1 link(s) open a new tab without rel=noopener",
+        "utility": {
+          "value": -0.2,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.1,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): target-blank-without-noopener"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.27,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): target-blank-without-noopener"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.0,
+              "measured": false,
+              "note": "at least one step is unclassified; the plan cannot be called reversible"
+            }
+          ],
+          "coverage": {
+            "measured": 4,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      },
+      {
+        "hypothesis": "h-third-party-scripts",
+        "statement": "mitigate: 1 third-party script origin(s)",
+        "utility": {
+          "value": -0.41000000000000003,
+          "contributions": [
+            {
+              "symbol": "R",
+              "effect": 0.1,
+              "measured": true,
+              "note": "mean magnitude of 1 counted signal(s): third-party-scripts"
+            },
+            {
+              "symbol": "K",
+              "effect": -0.48,
+              "measured": true,
+              "note": "worst declared action class Write, escalated by counted risk(s): third-party-scripts, third-party-scripts-without-sri, target-blank-without-noopener"
+            },
+            {
+              "symbol": "C",
+              "effect": -0.03,
+              "measured": true,
+              "note": "1 declared step(s), normalised at 10; no effort or spend estimate exists"
+            },
+            {
+              "symbol": "U",
+              "effect": -0.0,
+              "measured": true,
+              "note": "0% of observed objects unreadable or stale, 0 blind spot(s), extent bounded"
+            },
+            {
+              "symbol": "V",
+              "effect": 0.0,
+              "measured": false,
+              "note": "at least one step is unclassified; the plan cannot be called reversible"
+            }
+          ],
+          "coverage": {
+            "measured": 4,
+            "total": 5
+          }
+        },
+        "evaluations": []
+      }
+    ],
+    "excluded": [],
+    "abstention": null,
+    "config": {
+      "weights": {
+        "risk": 0.6,
+        "cost": 0.3,
+        "uncertainty": 0.3,
+        "reversibility": 0.25
+      },
+      "min_coverage": 0.4,
+      "veto_at_or_below": 0.0
+    },
+    "evaluator_status": [
+      {
+        "evaluator": "dqstar",
+        "about": "Scematica Deep Q* (Dueling Double-DQN) — ranks trading branches by their position in the current Q spread. Trading worlds only.",
+        "applicability": {
+          "kind": "out_of_domain",
+          "note": "world domain is Unknown; the 24-feature state is pool and position data and has no reading of this"
+        }
+      }
+    ],
+    "coverage": {
+      "measured": 12,
+      "total": 15
+    }
+  },
+  "commitment": {
+    "world": "96d4822c9062b8c39f0e687e95d72d0adac301c519f343929ebebc6ed7a3b9b8",
+    "goal": "821e99c22d00d968170e08f19a73be04c50365e3a9075aa2611fc13edec58d20",
+    "hypotheses": "fb5d94fcf6da8a0ef87d1084be565caa6f4636eef3de1b8d7f5942074c7ff09b",
+    "projections": "b150fa14616f5a4df96bde021e378fad27d6afa8d04f7403f1b8cce2fb789d34",
+    "policy": "3a20eee9fc5978968228bc7fdd0a2e0ebac63bf3f1321328bbf25658ff97612a",
+    "decision": "7bbc0ea47b25c9f9acecce52a674e9ecf493c6fca016ea8de8b750d653e20ef2",
+    "root": "9365761b00cff3e25e04be5397041d4aba859b7484c578b645dd8dc511fc1833"
+  }
+}

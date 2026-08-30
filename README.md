@@ -111,19 +111,23 @@ are still pre-1.0.
 | `scemadex-settle` | 0.1.3 | — | devnet reference settler |
 | `scema-agent-playground` | 0.1.1 | `playground` | bin |
 
-Scematica Omni versions on its own track — it is a separate workspace on a modern HTTP
-stack, kept out of the bot's lockfile on purpose (see `CLAUDE.md`), and it is pre-1.0
-because the world contract is still moving.
+Scematica Omni versions on its own track — a separate workspace on a modern HTTP stack, kept
+out of the bot's lockfile on purpose (see `CLAUDE.md`). It is at **1.0**, and on a
+verification runtime that number is a promise rather than a maturity badge: *a record sealed
+today still verifies tomorrow.* What is frozen, what stays open, and what is deliberately not
+covered are in [`scematica-omni/docs/COMPATIBILITY.md`](scematica-omni/docs/COMPATIBILITY.md)
+— enforced by `scematica-omni/corpus/`, real records sealed by builds that no longer exist
+and re-verified on every commit.
 
 | Crate | Version | Installs | Kind |
 |---|---|---|---|
-| `scema-cli` | 0.6.0 | `scema` | bin (the loop, the sibling launcher, `nft`) |
-| `scema-tui` | 0.6.0 | `scema-tui` | bin (the console) |
-| `scema-daemon` | 0.6.0 | `scema-omnid` | bin (loopback HTTP) |
-| `scema-mcp` | 0.6.0 | `scema-mcp` | bin (MCP over stdio) |
-| `scema-world` `-tools` `-memory` `-sim` `-policy` `-verify` `-nft` `-agent` | 0.6.0 | — | libraries |
+| `scema-cli` | 1.0.0 | `scema` | bin (the loop, the launcher, `nft`, `execute`, `anchor`) |
+| `scema-tui` | 1.0.0 | `scema-tui` | bin (the console) |
+| `scema-daemon` | 1.0.0 | `scema-omnid` | bin (loopback HTTP) |
+| `scema-mcp` | 1.0.0 | `scema-mcp` | bin (MCP over stdio) |
+| `scema-world` `-tools` `-memory` `-sim` `-policy` `-verify` `-nft` `-trust` `-effect` `-anchor` `-agent` | 1.0.0 | — | libraries |
 
-> **Install the 0.6.0 line, and upgrade every component together.** `Domain` and
+> **Install the 1.0.0 line, and upgrade every component together.** `Domain` and
 > `EntityKind` became open enums in 0.5.0. The browser extension emits `domain: "web"` and
 > `alchem-link` emits `domain: "data"`, so a `scema` or `scema-omnid` built before that
 > rejects both at the door — *unknown variant `web`, expected one of `software`,

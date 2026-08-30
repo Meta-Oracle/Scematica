@@ -46,6 +46,49 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Scematica Omni 1.0 — the freeze
+
+On a verification runtime, 1.0 is not a maturity badge. It is one sentence: **a record sealed
+today still verifies tomorrow.** `docs/COMPATIBILITY.md` makes that specific enough to be
+checkable, and `corpus/` is what checks it.
+
+**Frozen:** the canonical encoding, the 1e-9 float quantisation, SHA-256 as the commitment
+hash, which fields a commitment covers and which it deliberately does not (`id`, `at`,
+`runtime` describe the recording, not the thing recorded), the wire shape of `scema.world/1`,
+`WorldState::schema` being optional, and the Merkle construction.
+
+**Open, and extensible without breaking anything:** `Domain` and `EntityKind` stay open enums,
+new producers, new `Effect` arms, new anchor chains, λ weights. None can change an existing
+record's digest, because an existing record does not contain them — so each is a minor.
+
+**Not covered, said plainly rather than left to inference:** Rust API stability below the CLI,
+the `.scema/` directory layout, `scema-nft` plate bytes across versions, and anything an
+anchor asserts.
+
+The corpus is the mechanism. Four real records sealed by builds that no longer exist —
+including two from **before `WorldState::schema` existed** — re-verified by
+`cargo test -p scema-effect --test corpus` on every commit, through the `omni` CI job.
+
+That tripwire was tested rather than assumed. Removing `skip_serializing_if` from `schema`
+makes both pre-schema records serialise `"schema": null`, which changes their canonical
+encoding and moves their digests; the corpus reported both as tampered while the two current
+records passed — exactly the shape of the disaster it exists to prevent. Reverted, and green
+again.
+
+The corpus is **never regenerated**. A re-sealed record agrees with today's build by
+construction and detects nothing; when one fails, the change under test is almost certainly
+what is wrong.
+
+Two limits are unchanged by 1.0 because they are properties of the design rather than the
+version: `verify` does not prove the world was as described (provenance carries that), and it
+does not prove the record is the original — tamper-evident, not tamper-proof, until the root
+is anchored somewhere the author does not control. `scema anchor` is the half that batches and
+proves; publishing needs a chain and a key.
+
+The browser extension and the Claude Code plugin move to 1.0.0 with the runtime they talk to.
+
+374 omni tests, clippy clean.
+
 ### Omni 0.9 — a root somebody else can hold
 
 `scema verify` has always ended its own limits with the same clause: tamper-evident, not

@@ -1,0 +1,23 @@
+[package]
+name = "scema-effect"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — what the agent actually did: a sealed, verifiable record of an attempted effect, with an explicit arm for a result nobody could observe."
+keywords = ["agent", "audit", "commitment", "provenance"]
+categories = ["cryptography"]
+
+[lib]
+name = "scema_effect"
+path = "src/lib.rs"
+
+[dependencies]
+scema-verify = { workspace = true }
+scema-trust = { workspace = true }
+scema-tools = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

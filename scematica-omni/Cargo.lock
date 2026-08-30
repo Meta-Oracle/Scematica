@@ -659,11 +659,13 @@ dependencies = [
  "clap",
  "clap_complete",
  "scema-agent",
+ "scema-effect",
  "scema-memory",
  "scema-nft",
  "scema-policy",
  "scema-sim",
  "scema-tools",
+ "scema-trust",
  "scema-verify",
  "scema-world",
  "serde",
@@ -682,6 +684,17 @@ dependencies = [
  "scema-tools",
  "scema-verify",
  "scema-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "scema-effect"
+version = "0.6.0"
+dependencies = [
+ "scema-tools",
+ "scema-trust",
+ "scema-verify",
  "serde",
  "serde_json",
 ]

@@ -15,12 +15,18 @@
 //!
 //! ## The verbs that exist and refuse
 //!
-//! `execute`, `delegate`, `discover` and `pay` are registered and exit non-zero with a
-//! statement of what is missing. They are in the help text on purpose: the shape of the
-//! runtime includes an action path, an agent-to-agent path and a payment path, and an
-//! operator should be able to find out from the tool itself that those are not built rather
-//! than from a README they may not read. A verb that silently did not exist would be
-//! indistinguishable from one that failed.
+//! `delegate`, `discover` and `pay` are registered and exit non-zero with a statement of
+//! what is missing. They are in the help text on purpose: the shape of the runtime includes
+//! an agent-to-agent path and a payment path, and an operator should be able to find that
+//! out from the tool itself rather than from a README they may not read. A verb that
+//! silently did not exist would be indistinguishable from one that failed.
+//!
+//! `execute` used to be one of them, and is not any more: `scema-trust` answers *whether*
+//! and `scema_tools::Workspace` answers *where*, so there is now a gate to put in front of
+//! an action. It stays **dry run by default** for the same reason `simulate` and `decide`
+//! are different verbs — the two paths compute the same thing up to the last step, and the
+//! only thing keeping a rehearsal from reading as an act is that they are not the same
+//! keystroke.
 //!
 //! ## `simulate` versus `decide`
 //!
@@ -30,6 +36,7 @@
 //! differ, which is why they share one code path with a flag rather than being two.
 
 mod check;
+mod execute;
 mod nft;
 mod quickstart;
 mod connect;
@@ -288,8 +295,37 @@ enum Command {
         shell: Shell,
     },
 
-    /// Not implemented: carry out a chosen action.
-    Execute,
+    /// Carry out one declared effect, behind both gates, and seal what happened.
+    ///
+    /// Dry run by default. The two paths compute the same thing up to the last step, which
+    /// is exactly why they are not the same keystroke — somebody who typed `--commit` has
+    /// said something; somebody who merely ran the command has not.
+    ///
+    /// The effect is declared in a file, never inferred from a decision: omni's branches
+    /// describe work ("11 markers in `scema-tools`"), and turning one into an executable
+    /// action automatically would be inference that writes to a disk.
+    Execute {
+        /// A `.json` effect, or `-` for stdin.
+        locator: String,
+        /// Carry it out. Without this, nothing is touched and nothing is sealed.
+        #[arg(long)]
+        commit: bool,
+        /// The decision record this effect claims to carry out. Asserted, never inferred.
+        #[arg(long)]
+        intent: Option<String>,
+        /// The directory the effect is confined to. Defaults to the working directory.
+        #[arg(long)]
+        allow: Option<PathBuf>,
+        /// Stop prompting for writes.
+        #[arg(long)]
+        allow_writes: bool,
+        /// Turn shell execution on at all.
+        #[arg(long)]
+        allow_execute: bool,
+        /// Answer every prompt with yes. The explicit opt-out; never a default.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Not implemented: hire another agent.
     Delegate,
     /// Not implemented: find purchasable capabilities.
@@ -790,11 +826,23 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Execute => not_built(
-            "execute",
-            "Nothing in this workspace writes to an environment it observed. An action path \
-             needs the approval model from `alchem-link` — risk declared per tool, no \
-             terminal means deny, secrets refused before the prompt — wired in front of it.",
+        Command::Execute {
+            locator,
+            commit,
+            intent,
+            allow,
+            allow_writes,
+            allow_execute,
+            yes,
+        } => execute::run(
+            locator,
+            &cli.root,
+            allow.as_ref(),
+            *commit,
+            intent.as_deref(),
+            *allow_writes,
+            *allow_execute,
+            *yes,
         ),
         Command::Delegate => not_built(
             "delegate",

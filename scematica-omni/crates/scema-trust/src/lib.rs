@@ -267,6 +267,24 @@ impl TrustPolicy {
         TrustPolicy { read_only: true, ..Default::default() }
     }
 
+    /// Stop prompting for writes.
+    ///
+    /// A builder method rather than leaving callers to write a struct literal: `grants` is
+    /// private on purpose — a grant may only arrive through `grant` or `remember`, past the
+    /// settling rule — which makes `..Default::default()` unusable from another crate. The
+    /// alternative was making the field public, and a policy whose grants can be assembled
+    /// wholesale by a caller is not a policy.
+    pub fn writing(mut self) -> Self {
+        self.allow_writes = true;
+        self
+    }
+
+    /// Turn shell access on. Off by default and never inferred.
+    pub fn executing(mut self) -> Self {
+        self.allow_execute = true;
+        self
+    }
+
     /// A decision needing no prompt, or `None` meaning **ask**.
     ///
     /// The order is the specification and it is the reason this crate exists:
@@ -369,6 +387,17 @@ pub trait Approver {
     /// Ask. Only called when [`TrustPolicy::preflight`] returned `None`.
     fn prompt(&mut self, request: &Request) -> Decision;
 
+    /// Why this approver refuses, when it does.
+    ///
+    /// Exists because "the operator declined" is a claim about a person, and
+    /// [`DenyApprover`] refuses **without asking anyone**. Recording its refusal as a
+    /// decline would describe a decision nobody made and send somebody looking for a prompt
+    /// they never saw — which is the failure the specification names, and which the first
+    /// version of `scema execute` committed on its first end-to-end run.
+    fn why_refused(&self) -> &'static str {
+        "declined at the prompt"
+    }
+
     /// Preflight, then prompt if needed, remembering a sticky answer.
     fn decide(&mut self, policy: &mut TrustPolicy, request: &Request) -> Outcome {
         if let Some(d) = policy.preflight(request) {
@@ -393,6 +422,10 @@ pub struct DenyApprover;
 impl Approver for DenyApprover {
     fn prompt(&mut self, _request: &Request) -> Decision {
         Decision::Deny
+    }
+
+    fn why_refused(&self) -> &'static str {
+        "no prompt was possible — stdin is not a terminal, and silence is not consent"
     }
 }
 

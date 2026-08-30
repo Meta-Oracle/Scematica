@@ -46,6 +46,48 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Omni 0.8 — the loop can act
+
+`execute` no longer exits 2. `scema-effect` records what was *done*, `scema-trust` says
+whether it may be, `scema_tools::Workspace` says where — three separate things, and the
+recorder is deliberately ignorant of the policy, because a recorder that could also
+authorise would eventually be asked to.
+
+**`Outcome::Unknown` is why the crate is shaped this way.** An effect attempted whose result
+could not be observed is not a success and not a failure: killed between the write and the
+confirmation, terminated by a signal, replaced by something else in between. Every arm
+writes and then *checks*, so doing and observing are separate steps — the tempting collapse
+is to trust the return value, and a record claiming success for an unverified write is worse
+than no record, because it is a false statement carrying a valid commitment. It exits 3, so
+a sequence cannot continue past one quietly, while a refusal exits 0: a script that treats
+"the policy said no" as a crash gets rewritten to ignore the exit code, and then it ignores
+real failures too.
+
+**Dry run is the default.** The two paths compute the same thing up to the last step, which
+is exactly why they are not the same keystroke — the rule that already separates `simulate`
+from `decide` and `enter` from `D`. A dry run still runs both gates, so it answers *would
+this be allowed*; it never prompts, because asking somebody to approve an act that is not
+going to happen teaches them the prompt is a formality; and it seals nothing, because a
+record of an act that did not happen is one somebody will later read as one that did.
+
+**The effect is declared, never inferred.** Omni's branches describe work — "11 markers in
+`scema-tools`" — and deriving an executable action from one would be the keyword-overlap bug
+with a disk behind it. `--intent` names the decision an effect claims to carry out, asserted
+by the operator exactly as `--ground` is.
+
+Confinement had to grow up for this. `resolve` canonicalises, which fails on anything not
+yet created, so a naive check refuses every create; it now confines the **deepest ancestor
+that exists** and rebuilds the rest onto it. A non-existent path containing `..` is
+**refused rather than guessed at** — `a/../../b` is only resolvable once `a` exists, and
+this is the case a string-scan check gets wrong in the dangerous direction.
+
+The first end-to-end run broke the specification written two commits earlier. `DenyApprover`
+refuses *without asking anyone*, and the outcome read `refused by Operator: declined at the
+prompt` — describing a decision nobody made, and sending an operator to look for a prompt
+they never saw. `Approver::why_refused` now carries the accurate reason, and a test pins it.
+
+357 omni tests, clippy clean.
+
 ### Omni 0.7 groundwork — the trust model, in Rust, checked against Python
 
 The other half of the same arc. `scema-trust` is a port of `alchem_link.approvals` against

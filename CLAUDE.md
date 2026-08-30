@@ -43,7 +43,7 @@ cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui,
 # producers, rejected at the door with `unknown variant`. `scema doctor` names what is
 # installed; `scema --version` is the fastest check.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 329 tests
+cd scematica-omni ; cargo test --workspace          # 357 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -54,6 +54,11 @@ cd scematica-omni ; cargo test --workspace          # 329 tests
 ./scematica-omni/target/release/scema nft world.json --out plate.svg --metadata plate.json
                                                     # a world drawn: deterministic, self-contained SVG
 ./scematica-omni/target/release/scema check --vocabulary # the open domain / entity-kind lists
+./scematica-omni/target/release/scema execute effect.json            # DRY RUN — both gates, touches nothing
+./scematica-omni/target/release/scema execute effect.json --commit --allow-writes --intent <id>
+# Dry run by DEFAULT. The two paths compute the same thing up to the last step, which is
+# exactly why they are not the same keystroke (same rule as simulate vs decide). A dry run
+# still runs both gates but never prompts, and seals nothing.
 ./scematica-omni/target/release/scema init          # create .scema/ (self-ignoring)
 ./scematica-omni/target/release/scema doctor        # installed / wired / quietly broken
 ./scematica-omni/target/release/scema connect --list           # assistants it can wire up
@@ -249,7 +254,10 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         scema-verify (proof-carrying decision records), scema-nft (a world
                         drawn — deterministic SVG plate + token metadata), scema-trust
                         (whether an action may happen — a port of alchem-link's approval
-                        model, conformance-checked against its vectors), scema-agent (the
+                        model, conformance-checked against its vectors), scema-effect (what
+                        the agent actually DID — a sealed record of an attempted effect,
+                        with an explicit `Unknown` arm for a result nobody could observe),
+                        scema-agent (the
                         loop), scema-cli (bin `scema` — the loop, plus the sibling launcher,
                         `init`/`doctor`/`connect`/`completions`/`nft`), scema-tui (bin
                         `scema-tui`, the console), scema-daemon (bin `scema-omnid`), scema-mcp
@@ -775,11 +783,16 @@ sorted keys, tagged types, normalised `-0.0` and NaN — because `serde_json` ou
 stable enough to hash. SHA-256, not the keccak-256 in `scema-bot-mesh`: nothing on an EVM
 verifies these yet, and if one ever does that binding belongs on `mesh-core`'s keccak path.
 
-**Nothing in this workspace writes to the environment it observes.** `execute`, `delegate`,
-`discover` and `pay` are registered verbs that exit 2 and say what is missing; they are in
-`--help` on purpose. The action path needs the `alchem-link` approval model in front of it
-(risk declared per tool, no terminal means deny, secrets refused before the prompt), and
-`pay` needs a spend policy first.
+**The action path exists now, and is gated twice.** `scema execute` carries out one
+*declared* effect — never one inferred from a decision, because omni's branches describe
+work ("11 markers in `scema-tools`") and turning one into an executable action automatically
+would be the keyword-overlap bug with a disk behind it. `scema_tools::Workspace` answers
+where, `scema-trust` answers whether, and `scema-effect` records what actually happened.
+Dry run by default; `--commit` is a separate keystroke and seals an `EffectRecord`.
+`Outcome::Unknown` is a first-class arm — an effect attempted whose result could not be
+observed is neither success nor failure, and exits 3 so a sequence cannot continue past one
+quietly. `delegate`, `discover` and `pay` still exit 2: `pay` needs a spend policy first, and
+a runtime that can spend without one is a runtime nobody should install.
 
 **The world contract is versioned and its vocabularies are open** (0.5.0). `WorldState`
 carries `schema: "scema.world/1"` and an undeclared version is refused on import — the

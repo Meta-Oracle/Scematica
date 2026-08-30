@@ -11,6 +11,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
+/// How many recent transitions the promotion window holds.
+///
+/// Large enough that one lucky trade cannot promote a variant, small enough that the mean
+/// still describes what the agent is doing *now* rather than what it did last week.
+pub const RECENT_WINDOW: usize = 200;
+
+/// Fewest transitions before a recent mean is reported at all.
+///
+/// The same rule as the coherence breaker's `MIN_SAMPLES`, for the same reason: a criterion
+/// that fires hardest when it knows least is worse than one that declines. A fresh variant
+/// has not performed badly — it has not performed.
+pub const RECENT_MIN: usize = 40;
+
 /// Public snapshot of agent state, written to `scematica-nn-stats.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStats {
@@ -19,6 +32,19 @@ pub struct AgentStats {
     pub epsilon: f64,
     pub replay_size: usize,
     pub total_reward: f64,
+    /// Mean reward over the last [`RECENT_WINDOW`] transitions, or `None` below the
+    /// minimum sample.
+    ///
+    /// The number the tournament promotes on. `total_reward` is a lifetime sum that is
+    /// never reset, so a variant that was better in its first thousand steps keeps winning
+    /// forever — a comparison that cannot change its mind. `None` rather than `0.0` when
+    /// too little has been seen: a fresh variant has not performed badly, it has not
+    /// performed.
+    #[serde(default)]
+    pub recent_mean: Option<f64>,
+    /// How many transitions that mean stands on.
+    #[serde(default)]
+    pub recent_n: usize,
     pub avg_loss: f64,
     pub target_updates: usize,
     /// True once at least one training step has produced usable network weights.
@@ -118,6 +144,13 @@ pub struct DQNAgent {
     step_count: usize,
     train_steps: usize,
     total_reward: f64,
+    /// Bounded ring of recent rewards, for [`AgentStats::recent_mean`].
+    ///
+    /// Not serialised into the checkpoint. A window is a claim about *recent* behaviour, and
+    /// restoring one from a file written days ago would let a resumed agent be promoted on
+    /// performance it is not currently delivering — which is the exact defect the window
+    /// exists to remove.
+    recent: std::collections::VecDeque<f64>,
     recent_losses: Vec<f64>,
     target_updates: usize,
     last_action: Option<TradeAction>,
@@ -186,6 +219,7 @@ impl DQNAgent {
             step_count: 0,
             train_steps: 0,
             total_reward: 0.0,
+            recent: std::collections::VecDeque::new(),
             recent_losses: Vec::new(),
             target_updates: 0,
             last_action: None,
@@ -254,6 +288,23 @@ impl DQNAgent {
 
     /// Attach a fresh latent world model so the agent can learn market dynamics
     /// and train on imagined roll-outs. Idempotent-ish: replaces any existing model.
+    /// Mean reward over the recent window, or `None` below [`RECENT_MIN`].
+    ///
+    /// `None`, never `0.0`. A variant that has not been evaluated has not been evaluated —
+    /// a zero would place it below every losing variant and above none, which is a verdict
+    /// nobody reached.
+    pub fn recent_mean(&self) -> Option<f64> {
+        if self.recent.len() < RECENT_MIN {
+            return None;
+        }
+        Some(self.recent.iter().sum::<f64>() / self.recent.len() as f64)
+    }
+
+    /// How many transitions the recent mean stands on.
+    pub fn recent_n(&self) -> usize {
+        self.recent.len()
+    }
+
     pub fn enable_world_model(&mut self) {
         self.world_model = Some(WorldModel::new(STATE_DIM, ACTION_DIM));
     }
@@ -516,6 +567,11 @@ impl DQNAgent {
         done: bool,
     ) {
         self.total_reward += reward;
+        // And the window the tournament actually reads.
+        self.recent.push_back(reward);
+        while self.recent.len() > RECENT_WINDOW {
+            self.recent.pop_front();
+        }
         let sv = state.to_vec();
         let nsv = next_state.to_vec();
         self.n_step_buffer
@@ -1352,6 +1408,8 @@ impl DQNAgent {
             epsilon: self.epsilon,
             replay_size: self.replay.len(),
             total_reward: self.total_reward,
+            recent_mean: self.recent_mean(),
+            recent_n: self.recent.len(),
             avg_loss,
             target_updates: self.target_updates,
             ready_to_advise: self.ready_to_advise(),

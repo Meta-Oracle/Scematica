@@ -46,6 +46,44 @@ per-evaluation context through the buy path is not a change worth making for a d
 `measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
 the breaker declined to judge are counted and never averaged.
 
+### Learn, step one: the tournament can change its mind
+
+The DQ\* tournament runs three variants and promoted the one with the highest `total_reward`.
+That number is a **lifetime sum which is never reset**, so a variant that was better in its
+first thousand steps kept the primary slot forever, however badly it was doing now. A
+comparison that cannot change its mind is not a tournament, and this is the criterion the
+Learn phase was going to have to replace before any of the dark machinery — QR-DQN, the
+Dreamer world model, the adversarial gym — could be evaluated at all. There is no point
+switching a variant on if the thing that judges it cannot notice.
+
+Promotion is now on **recent mean reward** over a 200-transition window, and three separate
+things can stop it, each meaning something different: the incumbent has no recent mean, so
+there is nothing to compare against; no challenger has one, because a variant below the
+40-transition floor has not performed badly but has not performed; or the best challenger is
+ahead by less than the margin, which is noise. Three variants on one stream produce means
+that cross constantly, and a primary that changes every evaluation is not a selection — it is
+noise with a promotion log.
+
+An unmeasured variant reports `None`, never `0.0`, and is **absent** from the comparison
+rather than entering it at zero — which would rank it below every losing variant on the
+strength of having done nothing. The same rule as `Term`, `Coverage` and every other
+aggregate here.
+
+The margin is relative to the incumbent's `abs()`. Computed on the signed value it inverts
+exactly when the agent is losing money — a challenger at −1.0 against an incumbent at −2.0 is
+a real improvement, and the naive test rejects it. Pinned by a test.
+
+The window is deliberately not serialised into the checkpoint. It is a claim about *recent*
+behaviour, and restoring one written days ago would let a resumed agent be promoted on
+performance it is not currently delivering, which is the defect this replaced wearing a
+different hat.
+
+One of the seven new tests failed first time and the code was right: `RECENT_WINDOW` is 200
+and the test fed only 80 losing transitions, so the window still held the good history and
+the recent mean was legitimately higher. The window working, not the rule failing.
+
+467 bot tests, clippy clean.
+
 ### PNG export, rasterised by hand
 
 `scema nft --png` writes the growth as a PNG. The rasteriser, the font and the PNG encoder

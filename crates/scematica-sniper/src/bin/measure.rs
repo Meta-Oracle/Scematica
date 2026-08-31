@@ -23,9 +23,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use scematica_nn::calibration::{Calibration, Verdict};
 use scematica_sniper::measure::{
-    audit, coverage, funnel, latency, read_jsonl, realised, split_at, CoherenceSample,
-    CoverageReport, Decision, Latency, Realised, SignalAudit, StageCount, Trade, AUDIT_FIELDS,
+    audit, coverage, dq_calibration, funnel, latency, read_jsonl, realised, split_at,
+    CoherenceSample, CoverageReport, Decision, Latency, Realised, SignalAudit, StageCount, Trade,
+    AUDIT_FIELDS,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -40,12 +42,16 @@ fn print_help() {
     println!("  --trades <PATH>        Default: scematica-trades.jsonl");
     println!("  --coherence <PATH>     Default: scematica-coherence.jsonl");
     println!("  --top <N>              Funnel rows per window (default 8)");
+    println!("  --dq                   Only the DQ* advice calibration");
     println!("  -h, --help             Print this help");
     println!("  -V, --version          Print version\n");
     println!("Reads only. Safe against a running bot.");
 }
 
 struct Args {
+    /// Print only the DQ* section. The rest of the report is long, and the agent's own
+    /// record is the thing most often being asked about on its own.
+    dq_only: bool,
     split: Option<String>,
     since: Option<String>,
     decisions: PathBuf,
@@ -56,6 +62,7 @@ struct Args {
 
 fn parse_args() -> Result<Option<Args>, String> {
     let mut a = Args {
+        dq_only: false,
         split: None,
         since: None,
         decisions: PathBuf::from("scematica-pool-decisions.jsonl"),
@@ -79,6 +86,9 @@ fn parse_args() -> Result<Option<Args>, String> {
             "-V" | "--version" => {
                 println!("measure {VERSION}");
                 return Ok(None);
+            }
+            "--dq" => {
+                a.dq_only = true;
             }
             "--split" => {
                 a.split = Some(need(i, "--split")?);
@@ -158,6 +168,18 @@ fn main() -> ExitCode {
     );
     if let (Some(a), Some(b)) = (decisions.first(), decisions.last()) {
         println!("  span       {} .. {}", a.day(), b.day());
+    }
+
+    if args.dq_only {
+        // Still windowed by `--since` above, because an aggregate over the whole log is a
+        // statement about history and not about the bot — the rule the rest of this tool is
+        // built on does not stop applying because the section is short.
+        println!(
+            "
+DQ*   the agent against its own advice"
+        );
+        print_dq(&dq_calibration(&decisions, &trades));
+        return ExitCode::SUCCESS;
     }
 
     match &args.split {
@@ -257,13 +279,53 @@ fn window(
     println!("\nREALISED");
     println!("  {}", realised_line(&r));
 
-    println!("
-ARRIVAL   detection to decision");
+    println!(
+        "
+ARRIVAL   detection to decision"
+    );
     print_latency(&latency(&owned));
 
     let cs: Vec<CoherenceSample> = samples.iter().map(|c| (*c).clone()).collect();
     println!("\nCOVERAGE");
     print_coverage(&coverage(&cs));
+
+    println!("\nDQ*   the agent against its own advice");
+    print_dq(&dq_calibration(&owned, &t));
+}
+
+/// The agent's calibration, and — more often — why there is not one.
+///
+/// The asymmetry printed at the bottom is the load-bearing part. A veto has no outcome and
+/// never will, so a policy that becomes more conservative does not become better calibrated;
+/// it becomes unscoreable. Anyone reading a `—` here needs to know which of those they are
+/// looking at.
+fn print_dq(c: &Calibration) {
+    for line in c.report().lines() {
+        println!("  {line}");
+    }
+    match c.verdict() {
+        Verdict::NoAdvice => {
+            println!("            The agent advises only once `ready_to_advise` is true");
+            println!("            (train_steps >= 10_000 and a live Q-signal). Nothing here");
+            println!("            means it never got there in this window, not that it held.");
+        }
+        Verdict::ActionNeverVaried { .. } => {
+            println!("            One value across the window is a constant, not a policy.");
+            println!("            Read `last_q_values` in scematica-nn-stats.json before");
+            println!("            touching any threshold: the Q-values can move freely while");
+            println!("            the argmax never does, and a threshold cannot fix that.");
+        }
+        Verdict::AllUnresolved { .. } => {
+            println!("            Every piece of advice vetoed a buy, so none of it has an");
+            println!("            outcome and none ever will. The agent has stopped the bot");
+            println!("            producing the evidence its own calibration needs.");
+        }
+        Verdict::Scored { .. } => {
+            println!("            Scored over the resolved subset only. Vetoes are counted");
+            println!("            and never scored: imputing an outcome for a pool nobody");
+            println!("            bought is the agent grading its own homework.");
+        }
+    }
 }
 
 /// How long the pipeline took to arrive, or an em dash when nobody measured it.
@@ -273,7 +335,10 @@ ARRIVAL   detection to decision");
 /// from the latency side — and until records carry the span, the honest report is a dash.
 fn print_latency(l: &Latency) {
     if !l.any() {
-        println!("  {:>7}   no decision in this window recorded how long it took", "—");
+        println!(
+            "  {:>7}   no decision in this window recorded how long it took",
+            "—"
+        );
         println!("            Unmeasured, not instant. The sniper records the span from the");
         println!("            listener seeing a pool to the decision being written; records");
         println!("            older than that instrumentation carry nothing.");
@@ -325,9 +390,7 @@ fn print_coverage(c: &CoverageReport) {
     if let Some(worst) = c.worst_resolution {
         println!("            worst {:.0}%", worst * 100.0);
     }
-    println!(
-        "            Sampled on a timer, so this is resolution *around* these decisions,"
-    );
+    println!("            Sampled on a timer, so this is resolution *around* these decisions,");
     println!("            not *for* them. Per-pool attribution would need a per-evaluation");
     println!("            context the buy path does not carry.");
 }
@@ -342,7 +405,11 @@ fn signal_line(a: &SignalAudit) -> String {
                 (Some(lo), Some(hi)) => format!("  range {lo:.4}..{hi:.4}"),
                 _ => String::new(),
             };
-            let flag = if a.never_varied() { "   <-- NEVER VARIED" } else { "" };
+            let flag = if a.never_varied() {
+                "   <-- NEVER VARIED"
+            } else {
+                ""
+            };
             format!(
                 "{head}{:>5} / {:<5} nonzero ({:>5.1}%){range}{flag}",
                 a.nonzero,
@@ -392,7 +459,11 @@ fn movement(before: &[&Decision], after: &[&Decision]) {
         f.iter().filter(|s| s.stage == stage).map(|s| s.share).sum()
     };
 
-    let mut stages: Vec<String> = fb.iter().chain(fa.iter()).map(|s| s.stage.clone()).collect();
+    let mut stages: Vec<String> = fb
+        .iter()
+        .chain(fa.iter())
+        .map(|s| s.stage.clone())
+        .collect();
     stages.sort();
     stages.dedup();
 
@@ -407,7 +478,10 @@ fn movement(before: &[&Decision], after: &[&Decision]) {
     // Largest absolute movement first — that is what a reader is looking for.
     rows.sort_by(|x, y| (y.2 - y.1).abs().total_cmp(&(x.2 - x.1).abs()));
 
-    println!("  {:<20} {:>9} {:>9} {:>9}", "stage", "before", "after", "delta");
+    println!(
+        "  {:<20} {:>9} {:>9} {:>9}",
+        "stage", "before", "after", "delta"
+    );
     for (stage, a, b) in rows.into_iter().take(10) {
         println!(
             "  {:<20} {:>8.1}% {:>8.1}% {:>+8.1}%",

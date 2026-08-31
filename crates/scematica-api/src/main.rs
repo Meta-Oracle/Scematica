@@ -1354,6 +1354,23 @@ async fn main() -> anyhow::Result<()> {
 mod tail_tests {
     use super::read_last_n_lines;
 
+    /// A path in the system temp directory that no other run is using.
+    ///
+    /// The names used to be fixed, and two `cargo test --workspace` runs at once — two
+    /// terminals, or an editor's test runner beside a shell — then had two processes writing
+    /// and reading the same file. One truncates while the other seeks, and the tail comes
+    /// back empty: a failure in code that is correct, on a machine where nothing is wrong.
+    ///
+    /// The pid separates processes and the counter separates tests within one, which is the
+    /// same pair `scema_tools`'s scratch helper needed after a timestamp collided on
+    /// Windows' ~15 ms clock. A timestamp is not enough here either.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("scematica-tail-{}-{}-{name}", std::process::id(), n))
+    }
+
     /// Write a file of `count` lines, each exactly 21 bytes including the newline.
     ///
     /// Fixed-width on purpose: the seek offset `read_last_n_lines` computes is then
@@ -1361,7 +1378,7 @@ mod tail_tests {
     /// hoping it lands somewhere interesting.
     fn write_fixture(name: &str, line: &str, count: usize) -> String {
         assert_eq!(line.len() + 1, 21, "fixture lines must be 21 bytes with the newline");
-        let path = std::env::temp_dir().join(name);
+        let path = scratch(name);
         let body: String = (0..count).map(|_| format!("{line}\n")).collect();
         std::fs::write(&path, body).expect("write fixture");
         path.display().to_string()
@@ -1370,7 +1387,7 @@ mod tail_tests {
     #[test]
     fn a_short_file_is_returned_whole() {
         // start == 0, so nothing is discarded: the first line here is a real first line.
-        let p = write_fixture("scematica-tail-short.log", &"a".repeat(20), 3);
+        let p = write_fixture("short.log", &"a".repeat(20), 3);
         let got = read_last_n_lines(&p, 10);
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|l| l.len() == 20));
@@ -1378,7 +1395,7 @@ mod tail_tests {
 
     #[test]
     fn the_last_n_lines_come_back_in_order() {
-        let path = std::env::temp_dir().join("scematica-tail-order.log");
+        let path = scratch("order.log");
         std::fs::write(&path, "one\ntwo\nthree\nfour\n").expect("write");
         let got = read_last_n_lines(&path.display().to_string(), 2);
         assert_eq!(got, vec!["three".to_string(), "four".to_string()]);
@@ -1390,7 +1407,7 @@ mod tail_tests {
         // byte 1500 — which is 9 bytes into line 71, not on a boundary. Everything after it
         // up to the newline is the tail of a line, and serving it beside real entries puts
         // half a sentence in the dashboard with nothing marking it as such.
-        let p = write_fixture("scematica-tail-fragment.log", &"a".repeat(20), 100);
+        let p = write_fixture("fragment.log", &"a".repeat(20), 100);
         let got = read_last_n_lines(&p, 3);
         assert_eq!(got.len(), 3);
         assert!(
@@ -1409,7 +1426,7 @@ mod tail_tests {
         // produce `Err` forever, which is a hung request thread. Simply bounding the
         // iterator instead would truncate the whole tail to nothing here. Both are wrong;
         // consuming the fragment as bytes first is what makes the tail correct AND finite.
-        let p = write_fixture("scematica-tail-utf8.log", &"é".repeat(10), 100);
+        let p = write_fixture("utf8.log", &"é".repeat(10), 100);
         let got = read_last_n_lines(&p, 3);
         assert_eq!(got.len(), 3, "a split character must not empty the tail: {got:?}");
         assert!(got.iter().all(|l| l.chars().count() == 10));

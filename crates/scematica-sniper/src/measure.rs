@@ -44,6 +44,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use scematica_nn::calibration::{Advice, Calibration};
 use serde::Deserialize;
 
 /// One decision, as much of it as this module needs.
@@ -226,7 +227,13 @@ pub fn audit(rows: &[Decision], fields: &[&str]) -> Vec<SignalAudit> {
                     max = Some(max.map_or(v, |m: f64| m.max(v)));
                 }
             }
-            SignalAudit { field: (*f).to_string(), present, nonzero, min, max }
+            SignalAudit {
+                field: (*f).to_string(),
+                present,
+                nonzero,
+                min,
+                max,
+            }
         })
         .collect()
 }
@@ -314,7 +321,6 @@ where
     (before, after)
 }
 
-
 /// One coherence sample, as written by the sniper every 30 s.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CoherenceSample {
@@ -366,7 +372,10 @@ impl CoverageReport {
 /// breaker explicitly declines to judge, and folding those into a mean would manufacture a
 /// verdict out of the breaker's own refusal to give one.
 pub fn coverage(samples: &[CoherenceSample]) -> CoverageReport {
-    let mut r = CoverageReport { samples: samples.len(), ..Default::default() };
+    let mut r = CoverageReport {
+        samples: samples.len(),
+        ..Default::default()
+    };
     let decisive: Vec<&CoherenceSample> = samples.iter().filter(|s| s.decisive).collect();
     r.decisive = decisive.len();
     if decisive.is_empty() {
@@ -377,10 +386,11 @@ pub fn coverage(samples: &[CoherenceSample]) -> CoverageReport {
     r.worst_resolution = decisive
         .iter()
         .map(|s| s.resolution_rate)
-        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.min(v))));
+        .fold(None, |acc: Option<f64>, v| {
+            Some(acc.map_or(v, |a| a.min(v)))
+        });
     r
 }
-
 
 /// How long the pipeline took to arrive at a decision, over a window.
 ///
@@ -425,7 +435,11 @@ pub fn latency(rows: &[Decision]) -> Latency {
         .filter(|v| v.is_finite() && *v >= 0.0)
         .map(|v| v as u64)
         .collect();
-    let mut l = Latency { measured: samples.len(), total: rows.len(), ..Default::default() };
+    let mut l = Latency {
+        measured: samples.len(),
+        total: rows.len(),
+        ..Default::default()
+    };
     if samples.is_empty() {
         return l;
     }
@@ -440,6 +454,62 @@ pub fn latency(rows: &[Decision]) -> Latency {
     l
 }
 
+// ── the agent's own advice ────────────────────────────────────────────────────
+
+/// Score the DQ* agent against the advice it recorded, using the trades that settled.
+///
+/// The join is by mint, forward in time, and only for decisions that were **not** vetoes.
+/// That last condition is the important one and it is not a convenience: a mint that was
+/// vetoed here and bought a week later under a different pool would otherwise hand the veto
+/// an outcome it had no part in — and the outcome would be attributed to advice that
+/// prevented exactly this kind of evidence from existing. A veto has no outcome. That is the
+/// finding, not a gap to fill.
+///
+/// `enforced` is `Some(true)` only where the log proves it: a rejection at stage
+/// `dq_advice` is the veto firing. Everywhere else the sniper writes the advice identically
+/// whether or not it was acting on it, so the honest answer is `None`.
+pub fn dq_calibration(decisions: &[Decision], trades: &[Trade]) -> Calibration {
+    // Realised sells per mint, in file order, which is time order for an append-only log.
+    let mut settled: BTreeMap<&str, Vec<&Trade>> = BTreeMap::new();
+    for t in trades.iter().filter(|t| t.is_realised()) {
+        settled.entry(t.mint.as_str()).or_default().push(t);
+    }
+
+    let mut cal = Calibration::new();
+    for d in decisions {
+        if d.decision.is_empty() && d.stage.is_empty() {
+            continue;
+        }
+        let Some(action) = d.rest.get("dq_action").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if action.is_empty() {
+            continue;
+        }
+
+        let vetoed = d.stage == "dq_advice" && d.decision == "rejected";
+        let realised_pnl = if vetoed {
+            None
+        } else {
+            settled
+                .get(d.mint.as_str())
+                .and_then(|v| {
+                    v.iter()
+                        .find(|t| t.timestamp.as_str() >= d.timestamp.as_str())
+                })
+                .map(|t| t.pnl)
+        };
+
+        cal.observe(&Advice {
+            action: action.to_string(),
+            confidence: d.num("dq_confidence"),
+            enforced: if vetoed { Some(true) } else { None },
+            realised_pnl,
+        });
+    }
+    cal
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,10 +517,7 @@ mod tests {
     fn dec(day: &str, stage: &str, extra: &[(&str, f64)]) -> Decision {
         let mut rest = BTreeMap::new();
         for (k, v) in extra {
-            rest.insert(
-                (*k).to_string(),
-                serde_json::Value::from(*v),
-            );
+            rest.insert((*k).to_string(), serde_json::Value::from(*v));
         }
         Decision {
             timestamp: format!("{day}T00:00:00Z"),
@@ -477,7 +544,10 @@ mod tests {
         let a = audit(&rows, &["absent_field"]);
         assert_eq!(a[0].present, 0);
         assert_eq!(a[0].nonzero_share(), None, "absent must not read as 0%");
-        assert!(!a[0].never_varied(), "a field nobody wrote did not 'never vary'");
+        assert!(
+            !a[0].never_varied(),
+            "a field nobody wrote did not 'never vary'"
+        );
     }
 
     #[test]
@@ -525,7 +595,11 @@ mod tests {
     fn an_empty_window_has_no_mean_rather_than_a_mean_of_zero() {
         let r = realised(&[]);
         assert_eq!(r.trades, 0);
-        assert_eq!(r.mean(), None, "an average over nothing is undefined, not zero");
+        assert_eq!(
+            r.mean(),
+            None,
+            "an average over nothing is undefined, not zero"
+        );
         assert_eq!(r.win_rate(), None);
     }
 
@@ -578,7 +652,10 @@ mod tests {
         let r = coverage(&[]);
         assert_eq!(r.samples, 0);
         assert!(!r.measured());
-        assert_eq!(r.mean_resolution, None, "unmeasured coverage must not read as 0.0");
+        assert_eq!(
+            r.mean_resolution, None,
+            "unmeasured coverage must not read as 0.0"
+        );
     }
 
     #[test]
@@ -649,7 +726,10 @@ mod tests {
         assert_eq!(l.worst_ms, Some(1000));
         assert_eq!(l.coverage(), Some(1.0));
         for v in [l.median_ms, l.p90_ms, l.worst_ms] {
-            assert!([10, 20, 30, 40, 1000].contains(&v.unwrap()), "{v:?} was never measured");
+            assert!(
+                [10, 20, 30, 40, 1000].contains(&v.unwrap()),
+                "{v:?} was never measured"
+            );
         }
     }
 
@@ -665,6 +745,104 @@ mod tests {
         assert_eq!(l.total, 3);
         assert_eq!(l.median_ms, Some(50));
         assert!((l.coverage().unwrap() - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_veto_is_never_handed_an_outcome_it_prevented() {
+        // The mint was vetoed, then traded a week later under a different pool. Joining on
+        // the mint alone would credit the veto with a result it had no part in — and the
+        // result exists only because the veto did not fire the second time.
+        let mut d = dec("2026-01-01", "dq_advice", &[("dq_confidence", 12.0)]);
+        d.decision = "rejected".into();
+        d.mint = "MINT".into();
+        d.rest
+            .insert("dq_action".into(), serde_json::json!("SELL_PARTIAL"));
+
+        let t = Trade {
+            timestamp: "2026-01-08T00:00:00Z".into(),
+            kind: "SELL".into(),
+            mint: "MINT".into(),
+            pnl: 3.0,
+            status: "ok".into(),
+        };
+        let cal = dq_calibration(&[d], &[t]);
+        assert_eq!(cal.resolved, 0, "a veto has no outcome");
+        assert_eq!(cal.unresolved, 1);
+        assert_eq!(cal.mean_abs_error(), None);
+    }
+
+    #[test]
+    fn advice_that_preceded_a_settled_trade_resolves() {
+        let mut d = dec("2026-01-01", "execution", &[("dq_confidence", 4.0)]);
+        d.decision = "accepted".into();
+        d.mint = "MINT".into();
+        d.rest.insert("dq_action".into(), serde_json::json!("BUY"));
+
+        let t = Trade {
+            timestamp: "2026-01-01T00:05:00Z".into(),
+            kind: "SELL".into(),
+            mint: "MINT".into(),
+            pnl: 2.0,
+            status: "ok".into(),
+        };
+        let cal = dq_calibration(&[d], &[t]);
+        assert_eq!(cal.resolved, 1);
+        assert_eq!(
+            cal.mean_abs_error(),
+            Some(0.0),
+            "a bullish call that paid off"
+        );
+    }
+
+    #[test]
+    fn a_trade_that_settled_before_the_advice_is_not_its_outcome() {
+        // Ordering matters more here than anywhere else in this module: a claim scored
+        // against something that happened first is not a prediction.
+        let mut d = dec("2026-06-01", "execution", &[]);
+        d.decision = "accepted".into();
+        d.mint = "MINT".into();
+        d.rest.insert("dq_action".into(), serde_json::json!("BUY"));
+
+        let t = Trade {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            kind: "SELL".into(),
+            mint: "MINT".into(),
+            pnl: 9.0,
+            status: "ok".into(),
+        };
+        assert_eq!(dq_calibration(&[d], &[t]).resolved, 0);
+    }
+
+    #[test]
+    fn records_without_advice_are_skipped_rather_than_counted_as_a_hold() {
+        // Most of the log has no `dq_action` at all. Treating an absent field as "the agent
+        // said hold" would invent thousands of opinions it never held.
+        let d = dec("2026-01-01", "filters", &[("pool_score", 70.0)]);
+        let cal = dq_calibration(&[d], &[]);
+        assert_eq!(cal.advised(), 0);
+        assert_eq!(
+            cal.verdict().headline(),
+            "no advice recorded in this window"
+        );
+    }
+
+    #[test]
+    fn enforcement_is_claimed_only_where_the_log_proves_it() {
+        // A veto at stage `dq_advice` is the agent acting. An accepted execution logs the
+        // advice identically whether or not the agent was being enforced, so it is unknown.
+        let mut veto = dec("2026-01-01", "dq_advice", &[]);
+        veto.decision = "rejected".into();
+        veto.rest
+            .insert("dq_action".into(), serde_json::json!("SELL_ALL"));
+
+        let mut exec = dec("2026-01-01", "execution", &[]);
+        exec.decision = "accepted".into();
+        exec.rest
+            .insert("dq_action".into(), serde_json::json!("BUY"));
+
+        let cal = dq_calibration(&[veto, exec], &[]);
+        assert_eq!(cal.enforcement_unknown, 1);
+        assert_eq!(cal.warm_up, 0);
     }
 
     #[test]

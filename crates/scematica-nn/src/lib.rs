@@ -1,6 +1,7 @@
 pub mod action;
 pub mod adversarial_sim;
 pub mod agent;
+pub mod calibration;
 pub mod distributional;
 pub mod equations;
 pub mod network;

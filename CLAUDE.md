@@ -114,6 +114,7 @@ cargo run --release --bin backtest -- --pools historical-pools.jsonl --tp 100 --
 cargo run --release --bin measure                        # one window over all history
 cargo run --release --bin measure -- --split 2026-08-05  # before vs after a change
 cargo run --release --bin measure -- --since 2026-08-01  # recent history only
+cargo run --release --bin measure -- --dq              # only the DQ* advice calibration
 # ALWAYS prefer --split. An aggregate over the whole log is a claim about HISTORY and
 # reads as a claim about the BOT: the momentum gate looks like the largest cause of
 # rejection ever recorded until you split on the day its veto was removed, at which
@@ -1091,6 +1092,25 @@ Pure-Rust Double DQN, no ML framework dependency. Lives inside the sniper proces
 - **Training**: Double DQN (online selects, target evaluates), **prioritized replay** (sum-tree, α=0.6, β 0.4→1.0), **n-step returns** (n=5); epsilon-greedy (1.0 → 0.05, decay 0.9995), target net hard-copy every 200 steps, replay buffer 10k, batch 64. Full reference: `docs/DQ_STAR_AGENT.md`
 - **Active buy-gating** (`sniper.rs`, `advise()` block): once `ready_to_advise()` is true the agent sizes entries (`BuyAggressive`→1.5x, `Hold`→0.5x) and can veto a buy on `SellPartial`/`SellAll`. `ready_to_advise = train_steps >= 10_000 && last_q_values has signal`. The veto only *fully suppresses* a buy when the bearish Q exceeds the best buy Q by ≥15% (`NN_VETO_REL_MARGIN`); a weaker lean downgrades to 0.5x sizing so a partially-converged net can't silently kill the PF≈6.5 edge.
 - **Regime branching**: separate `(online, target)` net pairs per regime engaged when `epsilon < 0.3` and a known regime (`bull`/`bear`/`sideways`/`panic`) is set.
+- **Calibration** (`calibration.rs`, printed by `measure --dq`): the agent scored against
+  the advice it recorded, using the trades that settled. Three rules, and the first is the
+  one that makes the module honest. **A veto has no outcome and never will** — nobody bought
+  the pool, so `mean_abs_error` is `None`, never `0.0`; a zero there reads as perfect
+  calibration achieved by refusing to act, and a policy would improve its score every time it
+  got more conservative. **The join is by mint, forward in time, and skips vetoes**, or a mint
+  vetoed here and bought a week later hands the veto a result it had no part in. And **a
+  score a constant policy earns is the base rate, not skill** — the first real run found
+  `SELL_PARTIAL` on 399 of 399 pieces of advice and a mean absolute error of 0.0000 on the 16
+  that resolved, which is exactly what "always say bearish" earns in a losing window. So
+  `Verdict` names the *cause* rather than returning a number: `NoAdvice` / `ActionNeverVaried`
+  / `AllUnresolved` / `Scored`, each a different instruction to the operator, and
+  `score_is_base_rate` puts the caveat on the same line as the figure. That finding is the
+  third time this repository has hit one failure — a gate reading a filter input that never
+  varies, a Ψ term pinned at zero, an argmax that never moves — so the histogram is printed
+  first and the check is standing rather than a one-off. Enforcement is tri-state: the sniper
+  logs advice identically whether or not it is acting on it, and only a rejection at stage
+  `dq_advice` proves the veto fired, so everything else is `enforcement unknown` rather than
+  credited to the agent.
 - **Tournament**: 3 variants (conservative/balanced/aggressive) run in parallel. Promotion is on **recent mean reward** over a 200-transition window, requiring a 10% margin, every 1000 steps. It was `total_reward` — a lifetime sum that is never reset — so a variant that was better in its first thousand steps kept the primary slot forever however badly it was doing now: a comparison that cannot change its mind. A variant below `RECENT_MIN` (40) reports `None`, not `0.0`, and is **absent** from the comparison rather than entering it at zero, which would rank it below every losing variant on the strength of having done nothing. The margin is relative to the incumbent's `abs()` because rewards go negative — computed on the signed value it inverts exactly when the agent is losing money, and losing less must still promote. The window is deliberately **not** serialised into the checkpoint: it is a claim about *recent* behaviour, and restoring one written days ago would promote on performance the agent is not currently delivering.
 
 ## Risk Subsystems

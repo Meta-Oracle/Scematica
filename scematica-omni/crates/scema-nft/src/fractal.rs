@@ -611,6 +611,61 @@ mod tests {
     use super::*;
     use crate::fixtures::{empty_world, parity_world, rich_world, unbounded_world};
 
+    /// The growth parameters are LOSSY, and this is exactly where.
+    ///
+    /// `growth_of` is a deliberate summary: it exists to draw a picture, and a picture is
+    /// allowed to lose detail. This test exists because the loss is not obvious, and somebody
+    /// will eventually be tempted to feed `Growth` to a model as a compact, domain-agnostic
+    /// perception vector. It is not one.
+    ///
+    /// A world where **nothing was counted** and a world where **everything counted was an
+    /// opportunity** produce the same spread, because `risk_share` is 0 in both. The source
+    /// already says "no signals is not a measurement of equilibrium" — but a consumer reading
+    /// only the number cannot tell which world it is looking at.
+    ///
+    /// That is `Scema.contribution_collapses` from `scema-lean`, surfacing one layer up: the
+    /// arithmetic cannot preserve the distinction, so anything needing it must carry it
+    /// alongside. `depth` has such a companion in `unbounded`; `spread` has none.
+    #[test]
+    fn growth_cannot_distinguish_nothing_counted_from_nothing_bad() {
+        use scema_world::Polarity;
+
+        let mut none_counted = parity_world();
+        none_counted.signals.clear();
+
+        let mut all_opportunity = parity_world();
+        all_opportunity.signals.retain(|s| s.polarity == Polarity::Opportunity);
+        assert!(
+            !all_opportunity.signals.is_empty(),
+            "the second world must carry signals or this proves nothing"
+        );
+
+        assert_eq!(
+            growth_of(&none_counted).spread,
+            growth_of(&all_opportunity).spread,
+            "if this ever differs the summary got richer — good, but update the note above"
+        );
+    }
+
+    /// The one distinction `Growth` does keep, and why it needs its own field.
+    ///
+    /// `depth` saturates at `MAX_DEPTH` for a fully-observed extent *and* for an unbounded
+    /// one — "we saw all of it" and "nobody knows how much there is" land on the same number.
+    /// `unbounded` is what separates them, which is why it is a field rather than something
+    /// a consumer could infer from `depth`.
+    #[test]
+    fn depth_alone_is_ambiguous_and_unbounded_is_the_fix() {
+        let mut whole = parity_world();
+        whole.extent.observed = 10;
+        whole.extent.total = Some(10);
+
+        let a = growth_of(&whole);
+        let b = growth_of(&unbounded_world());
+        assert_eq!(a.depth, b.depth, "depth saturates for both");
+        assert_ne!(a.unbounded, b.unbounded, "and only this field separates them");
+    }
+
+
     #[test]
     fn the_same_world_grows_the_same_form() {
         let w = parity_world();

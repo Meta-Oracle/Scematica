@@ -413,12 +413,25 @@ mod tests {
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
     }
 
+    /// Every captured producer output, by file name.
+    ///
+    /// Listed once so a new fixture joins every property test at once. Adding one to
+    /// `every_producer_fixture_imports` and forgetting the rest is how a producer ends up
+    /// pinned for its attribution and unpinned for the rules that matter.
+    const FIXTURES: [&str; 4] = [
+        "mesh-world.json",
+        "alchem-world.json",
+        "alchem-window-world.json",
+        "page-world.json",
+    ];
+
     /// Every fixture parses, validates, and keeps its producer's own attribution.
     #[test]
     fn every_producer_fixture_imports() {
         for (file, observer) in [
             ("mesh-world.json", "imported:mesh"),
             ("alchem-world.json", "imported:alchem-link"),
+            ("alchem-window-world.json", "imported:alchem-link"),
             ("page-world.json", "imported:page"),
         ] {
             let w = ImportObserver::from_json(&fixture(file), file)
@@ -434,7 +447,7 @@ mod tests {
     /// what any of these three observe.
     #[test]
     fn every_producer_reports_what_it_could_not_see() {
-        for file in ["mesh-world.json", "alchem-world.json", "page-world.json"] {
+        for file in FIXTURES {
             let w = ImportObserver::from_json(&fixture(file), file).unwrap();
             assert!(
                 !w.blind_spots.is_empty(),
@@ -451,7 +464,7 @@ mod tests {
     /// which producer's real output stopped being defensible.
     #[test]
     fn no_producer_claims_a_measurement_it_cannot_cite() {
-        for file in ["mesh-world.json", "alchem-world.json", "page-world.json"] {
+        for file in FIXTURES {
             let w = ImportObserver::from_json(&fixture(file), file).unwrap();
             for s in &w.signals {
                 if s.measured {
@@ -491,6 +504,67 @@ mod tests {
         for o in feeds.objects.iter().filter(|o| o.provenance == Provenance::Absent) {
             assert!(o.attrs.is_empty(), "an unread feed must carry no values: {}", o.id);
         }
+
+        let window =
+            ImportObserver::from_json(&fixture("alchem-window-world.json"), "alchem").unwrap();
+        assert!(
+            window.objects.iter().any(|o| matches!(o.provenance, Provenance::Stale { .. })),
+            "the windowed fixture should carry a feed whose last print is past its heartbeat"
+        );
+    }
+
+    /// A window never reports a statistic it could not compute.
+    ///
+    /// The hazard this fixture exists for. A window of price history is the most fabricable
+    /// thing any of these producers emits — every figure is a real number of a plausible
+    /// shape, and a volatility invented from two prints is indistinguishable from one
+    /// measured over three hundred once it is inside a record somebody can verify but not
+    /// second-guess. The producer omits what it could not compute; this asserts the omission
+    /// survived the wire rather than arriving as a zero.
+    #[test]
+    fn a_windowed_world_omits_what_it_could_not_compute() {
+        let w =
+            ImportObserver::from_json(&fixture("alchem-window-world.json"), "alchem").unwrap();
+
+        let thin = w
+            .objects
+            .iter()
+            .find(|o| o.attrs.get("samples").and_then(|v| v.as_f64()) == Some(3.0))
+            .expect("the fixture should carry a three-print feed");
+        // Three prints do have a volatility. What they do not have is a *drawdown-free*
+        // claim about a longer span, so the assertion is on the shape of the object rather
+        // than on one key: every attribute present is one the producer actually computed.
+        assert!(thin.attrs.contains_key("samples"), "a count is always measured");
+
+        // Nothing anywhere claims a statistic of exactly zero unless the window could
+        // support it — the em-dash rule, in a producer that has no renderer of its own.
+        for o in &w.objects {
+            if let Some(v) = o.attrs.get("volatility_period") {
+                assert!(
+                    o.attrs.get("samples").and_then(|s| s.as_f64()).unwrap_or(0.0) >= 2.0,
+                    "{} reports volatility {v:?} from fewer than two prints",
+                    o.id
+                );
+            }
+        }
+    }
+
+    /// The window and the snapshot describe the same subject.
+    ///
+    /// Deliberate: an agent should see one network observed two ways, not two networks. A
+    /// separate locator would split the memory in half, and nothing downstream would ever
+    /// connect "this feed was stale then" with "this feed gaps".
+    #[test]
+    fn the_two_oracle_worlds_share_a_subject_and_an_object_naming() {
+        let snap = ImportObserver::from_json(&fixture("alchem-world.json"), "a").unwrap();
+        let win =
+            ImportObserver::from_json(&fixture("alchem-window-world.json"), "a").unwrap();
+        assert_eq!(snap.entity.kind, win.entity.kind);
+        assert!(
+            snap.objects.iter().all(|o| o.id.starts_with("feed:"))
+                && win.objects.iter().all(|o| o.id.starts_with("feed:")),
+            "both must name a feed the same way or no agent can correlate them"
+        );
     }
 
     /// A world from a page does not leak the query string into the record.

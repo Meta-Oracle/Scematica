@@ -1,4 +1,4 @@
-# Alchem-Link v0.24.0
+# Alchem-Link v1.0.0
 
 An Alchemy × Chainlink developer toolkit that reads chains instead of documentation.
 Live oracle reads, a consumer-safety audit, measured feed behaviour, and a simulator that
@@ -670,7 +670,7 @@ alchem-link ui
 ```
 
 ```
-  Alchem-Link v0.24.0                              base  ·  66 feeds  ·  truecolor
+  Alchem-Link v1.0.0                               base  ·  66 feeds  ·  truecolor
  ALCHEM-LINK      ┏━ Live Feeds ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
                   ┃ETH/USD            1,930.24  FRESH      3m 21s ago · hb 20m  ┃
  Live Feeds       ┃WBTC/USD          67,940.11  FRESH      1m 04s ago · hb 20m  ┃

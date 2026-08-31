@@ -50,7 +50,7 @@ The package implements :func:`keccak256` itself — ``hashlib`` ships SHA3-256, 
 padding differs — so function selectors are computed rather than trusted.
 """
 
-__version__ = "0.24.0"
+__version__ = "1.0.0"
 
 from .abi import (
     AbiError,
@@ -271,6 +271,7 @@ from .simulate import (
     replay,
     run_scenario,
 )
+from .omni import perceive, perceive_window, windowed_world, world
 from .watch import WatchEvent, poll_interval_for, watch_feed
 from .workspace import (
     PROTECTED_PATTERNS,
@@ -406,6 +407,12 @@ __all__ = [
     "WatchEvent",
     "watch_feed",
     "poll_interval_for",
+    # omni — this network as a Scematica Omni WorldState. `world` and `windowed_world`
+    # are pure transforms and take `now`; the two `perceive*` functions do the reading.
+    "world",
+    "windowed_world",
+    "perceive",
+    "perceive_window",
     # analytics
     "Point",
     "Series",

@@ -135,7 +135,7 @@ and re-verified on every commit.
 > separate crates but one runtime; a new `scema` beside an old `scema-omnid` fails the same
 > way. `scema --version` and `scema doctor` are the fastest checks.
 
-`alchem-link` (Python, PyPI) versions independently again at **0.24.0**.
+`alchem-link` (Python, PyPI) versions independently again at **1.0.0**. What 1.0 promises, and the three things it deliberately does not, are in `alchem-link/docs/API-STABILITY.md`.
 
 The **web dashboard** (`web/`) and the **Android companion app** share one version,
 sourced from `web/package.json` (**1.27.0**). The mobile build reads it at build time to

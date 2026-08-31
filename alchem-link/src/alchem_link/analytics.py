@@ -234,7 +234,18 @@ def max_drawdown(series: Series) -> Dict[str, Any]:
     trying to work out whether an oracle tracked a real move or glitched.
     """
     if len(series) < 2:
-        return {"drawdown": 0.0, "peak": None, "trough": None, "recovered": True}
+        # `None`, not `0.0`. A single print cannot decline, so there is no drawdown to
+        # report — and `0.0` here is a claim the price held, made from one observation. The
+        # keys are the same as the measured branch: an early return that omitted
+        # `drawdown_pct` made `summarise` raise `KeyError` on every one-point series, which
+        # is a perfectly ordinary thing for a slow feed to produce over a short window.
+        return {
+            "drawdown": None,
+            "drawdown_pct": None,
+            "peak": None,
+            "trough": None,
+            "recovered": None,
+        }
 
     peak = series.points[0]
     worst = 0.0
@@ -267,6 +278,12 @@ def largest_move(series: Series) -> Dict[str, Any]:
     threshold from below, and an outlier here is usually either a real market event or a
     bad round, both of which you want to look at.
     """
+    if len(series) < 2:
+        # No pair, so no move was observed. Distinguished from a genuinely flat window,
+        # which also leaves `at` unset but whose zero is a real measurement — which is why
+        # this tests the length rather than `at`.
+        return {"move_bps": None, "move_pct": None, "from": None, "to": None}
+
     best = 0.0
     at: Optional[Tuple[Point, Point]] = None
     for previous, current in zip(series.points, series.points[1:]):
@@ -385,8 +402,10 @@ class Stats:
     volatility_annual: Optional[float] = None
     volatility_period: Optional[float] = None
     median_interval_secs: Optional[float] = None
-    max_drawdown_pct: float = 0.0
-    largest_move_bps: float = 0.0
+    #: `None` when the window held fewer than two prints. A zero here would claim the
+    #: price held through a span nobody observed.
+    max_drawdown_pct: Optional[float] = None
+    largest_move_bps: Optional[float] = None
 
     @property
     def range_pct(self) -> Optional[float]:
@@ -455,8 +474,10 @@ def summarise(series: Series) -> Stats:
     stats.volatility_annual = volatility(series, annualise=True)
     stats.volatility_period = volatility(series, annualise=False)
     stats.median_interval_secs = median_interval(series)
-    stats.max_drawdown_pct = float(max_drawdown(series)["drawdown_pct"])
-    stats.largest_move_bps = float(largest_move(series)["move_bps"])
+    drawdown = max_drawdown(series)["drawdown_pct"]
+    stats.max_drawdown_pct = None if drawdown is None else float(drawdown)
+    move = largest_move(series)["move_bps"]
+    stats.largest_move_bps = None if move is None else float(move)
     return stats
 
 

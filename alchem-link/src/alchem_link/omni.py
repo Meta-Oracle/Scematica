@@ -533,3 +533,400 @@ def perceive(
         sequencer=sequencer,
         now=now,
     )
+
+
+# ── the same feeds, over a window ────────────────────────────────────────────
+#
+# :func:`world` answers "what do these feeds say right now". That is the question an
+# operator asks, and it is not the question an agent about to price against them should
+# ask, because a feed can be perfectly fresh at the instant you look at it and have been
+# absent for the four hours before. A snapshot cannot distinguish a steady oracle from one
+# that publishes in bursts, and the second is the one that hurts.
+#
+# So this is the same network, described over a span of time: one object per feed carrying
+# what its history actually showed, and signals counting the feeds in each bad state. It
+# reuses the object ids of :func:`world` (``feed:<pair>``) and the same entity locator, on
+# purpose — an agent should see one subject observed two ways, not two subjects.
+#
+# Everything below obeys the same rule as the rest of this module, and it bites harder here
+# because statistics are so easy to fabricate: **an unmeasured statistic is an absent
+# attribute, never a zero.** A volatility of 0.0 is a claim that the price did not move. A
+# feed with two prints has no volatility at all, and the two must not look alike.
+
+#: Points below which a window's statistics are too thin to lean on.
+#:
+#: Not a hard floor — the statistics are still emitted, because they are what was measured.
+#: It drives a *signal*, so an agent can see that the numbers it is reading rest on four
+#: observations and discount them itself. Choosing to hide them here would be this module
+#: deciding on the agent's behalf.
+MIN_SAMPLES = 8
+
+#: Divergence between the last print and the window's TWAP, in basis points, past which a
+#: feed is counted. 100 bps is a percent: large enough not to fire on ordinary drift,
+#: small enough to catch a feed whose spot answer has run away from its own average.
+TWAP_DIVERGENCE_BPS = 100.0
+
+#: Peak-to-trough fall within the window, as a percentage, past which a feed is counted.
+DRAWDOWN_PCT = 10.0
+
+#: How much longer than its own heartbeat a feed's *median* publish interval may run before
+#: it is counted as gapping. 1.5x rather than 1.0x because the measured ceilings already run
+#: a percent or two over the configured interval — the same reason `STALENESS_TOLERANCE`
+#: exists — and a signal that fires every window trains people to ignore it.
+GAP_FACTOR = 1.5
+
+
+def _stat_attrs(stats: "Stats") -> Dict[str, Any]:
+    """The measured statistics, and only those.
+
+    A ``None`` in :class:`~alchem_link.analytics.Stats` means the window could not support
+    that computation — two points have no volatility, a zero low has no percentage range.
+    Those keys are **omitted**, not defaulted, because an omni object with no attribute is
+    read as unmeasured and an attribute of ``0.0`` is read as an observation.
+    """
+    attrs: Dict[str, Any] = {
+        "samples": _scalar_int(stats.samples),
+        "span_secs": _scalar_int(stats.span_secs),
+    }
+    optional = (
+        ("max_drawdown_pct", stats.max_drawdown_pct),
+        ("largest_move_bps", stats.largest_move_bps),
+        ("first", stats.first),
+        ("last", stats.last),
+        ("low", stats.low),
+        ("high", stats.high),
+        ("mean", stats.mean),
+        ("median", stats.median),
+        ("twap", stats.twap),
+        ("change_pct", stats.change_pct),
+        ("range_pct", stats.range_pct),
+        ("volatility_annual", stats.volatility_annual),
+        ("volatility_period", stats.volatility_period),
+        ("median_interval_secs", stats.median_interval_secs),
+        ("twap_divergence_bps", stats.twap_divergence_bps),
+    )
+    for key, value in optional:
+        if value is not None:
+            attrs[key] = _scalar_num(float(value))
+    return attrs
+
+
+def _window_provenance(last_seen: int, heartbeat: int, observed_at: int) -> Dict[str, Any]:
+    """Whether the *end* of the window can be believed as the present.
+
+    A window always describes the past; what varies is whether it reaches up to now. A feed
+    whose last print is inside its heartbeat is live and its history is current. One whose
+    last print is older is stale — and the history is still perfectly good evidence about
+    the span it covers, which is why the value is kept and labelled rather than dropped.
+    """
+    age = max(0, observed_at - last_seen)
+    if age > heartbeat:
+        return {"kind": "stale", "age_secs": age, "budget_secs": max(1, heartbeat)}
+    return {"kind": "live", "age_secs": age}
+
+
+def windowed_world(
+    histories: Sequence["Series"],
+    network: str = DEFAULT_NETWORK,
+    window_secs: int = 6 * 3600,
+    unreadable: Optional[Sequence[str]] = None,
+    truncated: Optional[Sequence[str]] = None,
+    now: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Describe a network's feeds over a time window as a ``WorldState``.
+
+    ``histories`` is one :class:`~alchem_link.analytics.Series` per feed that answered.
+    ``unreadable`` names the feeds no history could be fetched for at all, and ``truncated``
+    names those whose history was cut short by a block-range cap — two different kinds of
+    ignorance that must not be collapsed. The first is a blind spot; the second is a window
+    that is honestly shorter than requested, and the object still carries its real
+    ``span_secs``.
+
+    Pure. :func:`perceive_window` does the reading.
+    """
+    from .analytics import summarise
+
+    net = get_network(network)
+    observed_at = int(time.time()) if now is None else int(now)
+    registered = list_feeds(network)
+    heartbeats = {f.pair: int(getattr(f, "heartbeat_secs", 0) or 0) for f in registered}
+    unreadable = list(unreadable or [])
+    truncated = set(truncated or [])
+    total = max(1, len(registered))
+
+    # An empty series is not a history. Keeping it would produce an object whose every
+    # statistic is absent, which reads as "we looked and learned nothing" — true, but it
+    # belongs in blind_spots where sim turns it into uncertainty, not in objects where it
+    # pads the extent numerator.
+    usable = [s for s in histories if len(s) > 0]
+    empty = [s.pair for s in histories if len(s) == 0]
+
+    objects: List[Dict[str, Any]] = []
+    summaries: List[Any] = []
+    live_at_end: Dict[str, bool] = {}
+    for series in usable:
+        stats = summarise(series)
+        summaries.append((series, stats))
+        heartbeat = heartbeats.get(series.pair, 0) or window_secs
+        provenance = _window_provenance(
+            series.points[-1].timestamp, heartbeat, observed_at
+        )
+        live_at_end[series.pair] = provenance["kind"] == "live"
+        objects.append(
+            {
+                "id": f"feed:{series.pair}",
+                "kind": "aggregator",
+                "label": series.pair,
+                "attrs": _stat_attrs(stats),
+                "provenance": provenance,
+            }
+        )
+
+    # Missing is computed by **difference against the registry**, never taken from the
+    # caller. `perceive` learned this the same way: a feed absent from the input is absent,
+    # and an observer that reported only what it was told about would silently shrink the
+    # world every time a caller passed a short list. `unreadable` and `empty` then only
+    # refine *why* a feed is missing — the node refused, or the feed did not publish — and
+    # both are ignorance, neither is a zero.
+    covered = {s.pair for s in usable}
+    reasons = {p: "the node did not answer" for p in unreadable}
+    reasons.update({p: "the feed published nothing" for p in empty})
+    missing = [f.pair for f in registered if f.pair not in covered]
+    # A caller may name something the registry does not carry. Dropping it would hide a
+    # genuine failure behind a bookkeeping mismatch, so it is appended rather than ignored.
+    missing += [p for p in reasons if p not in covered and p not in missing]
+
+    blind_spots: List[str] = []
+    for pair in missing[:MAX_BLIND_SPOTS]:
+        why = reasons.get(pair, "it was not read")
+        blind_spots.append(
+            f"{pair} on {net.label}: no history over the last {window_secs}s — {why}; "
+            "no prints, no cadence, no volatility"
+        )
+    if len(missing) > MAX_BLIND_SPOTS:
+        blind_spots.append(
+            f"… {len(missing) - MAX_BLIND_SPOTS} further feed(s) without history not listed"
+        )
+
+    signals: List[Dict[str, Any]] = []
+
+    if missing:
+        signals.append(
+            _signal(
+                "feeds-without-history",
+                "risk",
+                f"{len(missing)} of {len(registered)} feed(s) produced no history",
+                "Nothing is known about how these behaved over the window. That is not the "
+                "same as behaving well.",
+                len(missing) / total,
+                [f"feed:{p}" for p in missing[:10]],
+                [
+                    f"counted {len(missing)} feed(s) with zero points over {window_secs}s "
+                    f"against {len(registered)} registered address(es)"
+                ],
+            )
+        )
+
+    short = [s.pair for s, _ in summaries if s.pair in truncated]
+    if short:
+        signals.append(
+            _signal(
+                "truncated-window",
+                "risk",
+                f"{len(short)} feed(s) have a shorter history than was asked for",
+                "The block scan hit its cap. Their statistics are real and describe less "
+                "time than the rest — comparing them like for like overstates the shorter "
+                "window's stability.",
+                len(short) / total,
+                [f"feed:{p}" for p in short[:10]],
+                [f"counted {len(short)} feed(s) whose log scan was capped"],
+            )
+        )
+
+    thin = [s.pair for s, st in summaries if st.samples < MIN_SAMPLES]
+    if thin:
+        signals.append(
+            _signal(
+                "thin-history",
+                "risk",
+                f"{len(thin)} feed(s) published fewer than {MIN_SAMPLES} times in the window",
+                "Their statistics are computed and reported, because that is what was "
+                "measured — but a volatility over four points is not a volatility.",
+                len(thin) / total,
+                [f"feed:{p}" for p in thin[:10]],
+                [
+                    f"counted {len(thin)} feed(s) with fewer than {MIN_SAMPLES} points "
+                    f"over {window_secs}s"
+                ],
+            )
+        )
+
+    gapping = [
+        s.pair
+        for s, st in summaries
+        if st.median_interval_secs is not None
+        and heartbeats.get(s.pair, 0) > 0
+        and st.median_interval_secs > heartbeats[s.pair] * GAP_FACTOR
+    ]
+    if gapping:
+        signals.append(
+            _signal(
+                "publish-gaps",
+                "risk",
+                f"{len(gapping)} feed(s) published slower than their own heartbeat",
+                "Fresh at the moment you look and absent for hours between. A snapshot "
+                "cannot see this, which is the reason this window exists.",
+                len(gapping) / total,
+                [f"feed:{p}" for p in gapping[:10]],
+                [
+                    f"counted {len(gapping)} feed(s) whose median publish interval exceeded "
+                    f"{GAP_FACTOR}x their measured heartbeat"
+                ],
+            )
+        )
+
+    diverged = [
+        s.pair
+        for s, st in summaries
+        if st.twap_divergence_bps is not None
+        and abs(st.twap_divergence_bps) >= TWAP_DIVERGENCE_BPS
+    ]
+    if diverged:
+        signals.append(
+            _signal(
+                "twap-divergence",
+                "risk",
+                f"{len(diverged)} feed(s) sit more than {TWAP_DIVERGENCE_BPS:.0f} bps from "
+                "their own window TWAP",
+                "Exactly the condition a TWAP-priced protocol is protected against and a "
+                "spot-priced one is not.",
+                len(diverged) / total,
+                [f"feed:{p}" for p in diverged[:10]],
+                [
+                    f"counted {len(diverged)} feed(s) with |last - twap| / twap >= "
+                    f"{TWAP_DIVERGENCE_BPS:.0f} bps"
+                ],
+            )
+        )
+
+    fell = [
+        s.pair
+        for s, st in summaries
+        if st.max_drawdown_pct is not None and st.max_drawdown_pct >= DRAWDOWN_PCT
+    ]
+    if fell:
+        signals.append(
+            _signal(
+                "window-drawdown",
+                "risk",
+                f"{len(fell)} feed(s) fell at least {DRAWDOWN_PCT:.0f}% peak to trough",
+                "A price move, not a fault. It is a risk to a position, not to the oracle, "
+                "and it is counted separately for that reason.",
+                len(fell) / total,
+                [f"feed:{p}" for p in fell[:10]],
+                [f"counted {len(fell)} feed(s) with max drawdown >= {DRAWDOWN_PCT:.0f}%"],
+            )
+        )
+
+    troubled = set(thin) | set(gapping) | set(diverged) | set(short)
+    steady = [
+        s.pair for s, _ in summaries if s.pair not in troubled and live_at_end.get(s.pair)
+    ]
+    if steady:
+        signals.append(
+            _signal(
+                "steady-feeds",
+                "opportunity",
+                f"{len(steady)} feed(s) published on cadence throughout the window",
+                "Counted, not scored. This says they behaved, not that they are correct — "
+                "no oracle's own history can establish that.",
+                len(steady) / total,
+                [f"feed:{p}" for p in steady[:10]],
+                [
+                    f"counted {len(steady)} feed(s) live at the window end with no gap, "
+                    "no truncation, no thin sample and no TWAP divergence"
+                ],
+            )
+        )
+
+    signals = signals[:MAX_SIGNALS]
+
+    state = {
+        "schema": WORLD_SCHEMA,
+        "observer": OBSERVER,
+        "entity": {
+            "kind": "service",
+            # The same locator as the snapshot world, deliberately. This is one subject
+            # observed two ways, and giving the window its own locator would split a
+            # network's memory in half — an agent would never connect "BTC/USD was stale
+            # then" with "BTC/USD gaps".
+            "locator": f"chainlink:{network}",
+            "label": f"{net.label} price feeds over {window_secs}s",
+        },
+        "domain": "data",
+        "observed_at": observed_at,
+        "objects": objects,
+        "facts": [],
+        "signals": signals,
+        "extent": {
+            "observed": len(objects),
+            "total": len(registered) if len(objects) <= len(registered) else None,
+            "note": (
+                f"{len(objects)} of {len(registered)} registered feed(s) produced history "
+                f"over {window_secs}s; {len(missing)} produced none"
+            ),
+        },
+        "blind_spots": blind_spots,
+    }
+    _check(state)
+    return state
+
+
+def perceive_window(
+    network: str = DEFAULT_NETWORK,
+    hours: float = 6.0,
+    client: Any = None,
+    rpc_url: Optional[str] = None,
+    now: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Read a window of history from a network and describe it as a ``WorldState``.
+
+    The impure half of :func:`windowed_world`, split for the same reason :func:`perceive` is
+    split from :func:`world`: everything that decides what a history *means* stays testable
+    without an RPC endpoint, and the meaning is the part worth testing.
+
+    A feed whose log scan raises is reported as unreadable rather than as an empty history.
+    Those are different claims — "the node would not answer" and "the feed did not publish"
+    — and only the second is a fact about the oracle.
+    """
+    from .analytics import Series, Point
+    from .logs import answer_updates
+    from .rpc import client_for
+
+    rpc = client or client_for(network=network, rpc_url=rpc_url)
+    window_secs = int(hours * 3600)
+
+    histories: List[Any] = []
+    unreadable: List[str] = []
+    for feed in list_feeds(network):
+        try:
+            updates = answer_updates(
+                feed.address, hours=hours, network=network, client=rpc
+            )
+        except Exception:
+            unreadable.append(feed.pair)
+            continue
+        points = [
+            Point(timestamp=int(u.updated_at), price=float(u.price))
+            for u in updates
+            if getattr(u, "updated_at", None) and getattr(u, "price", None) is not None
+        ]
+        histories.append(Series(pair=feed.pair, network=network, points=points))
+
+    return windowed_world(
+        histories,
+        network=network,
+        window_secs=window_secs,
+        unreadable=unreadable,
+        now=now,
+    )

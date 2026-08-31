@@ -346,16 +346,26 @@ def _cmd_omni(args: argparse.Namespace) -> int:
     """
     import json
 
-    from .omni import perceive
+    from .omni import perceive, perceive_window
 
-    state = perceive(network=args.network, rpc_url=args.rpc_url)
+    if getattr(args, "window", False):
+        # A different question, not a prettier answer. The snapshot says what the feeds say
+        # now; the window says how they have behaved, and a feed can be perfectly fresh at
+        # the instant you look and have been absent for the four hours before. Both are
+        # worlds, both carry the same entity locator, and an agent can hold both.
+        state = perceive_window(
+            network=args.network, hours=args.hours, rpc_url=args.rpc_url
+        )
+    else:
+        state = perceive(network=args.network, rpc_url=args.rpc_url)
     print(json.dumps(state, indent=2, sort_keys=True))
 
     # Exit code reflects what was found, so a shell pipeline can branch on it: a world with
     # nothing counted against it is a clean read, and one carrying a risk signal is not a
     # failure of this command either — the *agent* decides what to do about it. Only an
     # unreadable set is a problem this command can report.
-    unreadable = any(s["id"] == "unreadable-feeds" for s in state["signals"])
+    blind = {"unreadable-feeds", "feeds-without-history"}
+    unreadable = any(s["id"] in blind for s in state["signals"])
     return EXIT_UNUSABLE if unreadable else EXIT_OK
 
 
@@ -524,8 +534,12 @@ def _cmd_stats(args: argparse.Namespace) -> int:
                    value_style="warn" if abs(stats.twap_divergence_bps) > 100 else "value")
         if stats.volatility_annual:
             out.kv("volatility", f"{stats.volatility_annual * 100:.1f}% annualised", width=13)
-        out.kv("max drawdown", f"{stats.max_drawdown_pct:.3f}%", width=13)
-        out.kv("largest move", f"{stats.largest_move_bps:.1f} bps", width=13)
+        out.kv("max drawdown",
+               f"{stats.max_drawdown_pct:.3f}%" if stats.max_drawdown_pct is not None
+               else "—", width=13)
+        out.kv("largest move",
+               f"{stats.largest_move_bps:.1f} bps" if stats.largest_move_bps is not None
+               else "—", width=13)
         if stats.median_interval_secs:
             out.kv("interval", f"median {fmt_secs(int(stats.median_interval_secs))}", width=13)
     return EXIT_OK
@@ -1326,9 +1340,13 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--limit", type=int, default=25)
         if name in ("history", "cadence", "stats", "backtest"):
             sub.add_argument("--rounds", type=int, default=30, help="Rounds of history to walk")
-        if name == "updates":
+        if name in ("updates", "omni"):
             sub.add_argument("--hours", type=float, default=6.0,
                              help="Window to search for publishes (default: 6)")
+        if name == "omni":
+            sub.add_argument("--window", action="store_true",
+                             help="Describe the last --hours of history rather than the "
+                                  "present instant")
         if name == "divergence":
             sub.add_argument("--threshold", type=float, default=50.0,
                              help="Outlier threshold in basis points (default: 50)")

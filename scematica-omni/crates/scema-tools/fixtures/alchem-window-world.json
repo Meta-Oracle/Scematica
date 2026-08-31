@@ -1,0 +1,694 @@
+{
+  "schema": "scema.world/1",
+  "observer": "alchem-link",
+  "entity": {
+    "kind": "service",
+    "locator": "chainlink:ethereum",
+    "label": "Ethereum Mainnet price feeds over 21600s"
+  },
+  "domain": "data",
+  "observed_at": 1700000000,
+  "objects": [
+    {
+      "id": "feed:ETH/USD",
+      "kind": "aggregator",
+      "label": "ETH/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 24
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 20700
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.47770700636942676
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 47.77070063694267
+        },
+        "first": {
+          "t": "num",
+          "v": 2500.0
+        },
+        "last": {
+          "t": "num",
+          "v": 2509.0
+        },
+        "low": {
+          "t": "num",
+          "v": 2500.0
+        },
+        "high": {
+          "t": "num",
+          "v": 2512.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 2505.75
+        },
+        "median": {
+          "t": "num",
+          "v": 2506.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 2505.608695652174
+        },
+        "change_pct": {
+          "t": "num",
+          "v": 0.36
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 0.48
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 0.4342430700591891
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.002319801621517926
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 13.534852244529347
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "feed:BTC/USD",
+      "kind": "aggregator",
+      "label": "BTC/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 3
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 1800
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.31201248049922
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 31.201248049921997
+        },
+        "first": {
+          "t": "num",
+          "v": 64000.0
+        },
+        "last": {
+          "t": "num",
+          "v": 63900.0
+        },
+        "low": {
+          "t": "num",
+          "v": 63900.0
+        },
+        "high": {
+          "t": "num",
+          "v": 64100.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 64000.0
+        },
+        "median": {
+          "t": "num",
+          "v": 64000.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 64050.0
+        },
+        "change_pct": {
+          "t": "num",
+          "v": -0.15625
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 0.3129890453834116
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 0.6202911326755266
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.0033137025657029883
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": -23.4192037470726
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "feed:LINK/USD",
+      "kind": "aggregator",
+      "label": "LINK/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 10
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 81000
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 0.0
+        },
+        "first": {
+          "t": "num",
+          "v": 1.0
+        },
+        "last": {
+          "t": "num",
+          "v": 1.0
+        },
+        "low": {
+          "t": "num",
+          "v": 1.0
+        },
+        "high": {
+          "t": "num",
+          "v": 1.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 1.0
+        },
+        "median": {
+          "t": "num",
+          "v": 1.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 1.0
+        },
+        "change_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 0.0
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.0
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 9000.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 0.0
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "feed:DAI/USD",
+      "kind": "aggregator",
+      "label": "DAI/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 21
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 18000
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 700.0000000000001
+        },
+        "first": {
+          "t": "num",
+          "v": 100.0
+        },
+        "last": {
+          "t": "num",
+          "v": 107.0
+        },
+        "low": {
+          "t": "num",
+          "v": 100.0
+        },
+        "high": {
+          "t": "num",
+          "v": 107.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 100.33333333333333
+        },
+        "median": {
+          "t": "num",
+          "v": 100.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 100.0
+        },
+        "change_pct": {
+          "t": "num",
+          "v": 7.000000000000001
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 7.000000000000001
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 2.8319812205781476
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.015128933725321243
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 700.0000000000001
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "feed:AAVE/USD",
+      "kind": "aggregator",
+      "label": "AAVE/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 9
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 7200
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 18.0
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 1800.0
+        },
+        "first": {
+          "t": "num",
+          "v": 50.0
+        },
+        "last": {
+          "t": "num",
+          "v": 48.0
+        },
+        "low": {
+          "t": "num",
+          "v": 41.0
+        },
+        "high": {
+          "t": "num",
+          "v": 50.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 46.0
+        },
+        "median": {
+          "t": "num",
+          "v": 46.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 45.75
+        },
+        "change_pct": {
+          "t": "num",
+          "v": -4.0
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 21.951219512195124
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 14.8181334722721
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.07916103313326428
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 491.8032786885246
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    },
+    {
+      "id": "feed:UNI/USD",
+      "kind": "aggregator",
+      "label": "UNI/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 12
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 9900
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 0.0
+        },
+        "first": {
+          "t": "num",
+          "v": 1.0
+        },
+        "last": {
+          "t": "num",
+          "v": 1.0
+        },
+        "low": {
+          "t": "num",
+          "v": 1.0
+        },
+        "high": {
+          "t": "num",
+          "v": 1.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 1.0
+        },
+        "median": {
+          "t": "num",
+          "v": 1.0
+        },
+        "twap": {
+          "t": "num",
+          "v": 1.0
+        },
+        "change_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 0.0
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 0.0
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 0.0
+        }
+      },
+      "provenance": {
+        "kind": "stale",
+        "age_secs": 72000,
+        "budget_secs": 3600
+      }
+    },
+    {
+      "id": "feed:STETH/USD",
+      "kind": "aggregator",
+      "label": "STETH/USD",
+      "attrs": {
+        "samples": {
+          "t": "int",
+          "v": 11
+        },
+        "span_secs": {
+          "t": "int",
+          "v": 9000
+        },
+        "max_drawdown_pct": {
+          "t": "num",
+          "v": 0.0
+        },
+        "largest_move_bps": {
+          "t": "num",
+          "v": 58.823529411765534
+        },
+        "first": {
+          "t": "num",
+          "v": 17.0
+        },
+        "last": {
+          "t": "num",
+          "v": 18.0
+        },
+        "low": {
+          "t": "num",
+          "v": 17.0
+        },
+        "high": {
+          "t": "num",
+          "v": 18.0
+        },
+        "mean": {
+          "t": "num",
+          "v": 17.5
+        },
+        "median": {
+          "t": "num",
+          "v": 17.5
+        },
+        "twap": {
+          "t": "num",
+          "v": 17.45
+        },
+        "change_pct": {
+          "t": "num",
+          "v": 5.88235294117647
+        },
+        "range_pct": {
+          "t": "num",
+          "v": 5.88235294117647
+        },
+        "volatility_annual": {
+          "t": "num",
+          "v": 0.018516906809191245
+        },
+        "volatility_period": {
+          "t": "num",
+          "v": 9.892052033346934e-05
+        },
+        "median_interval_secs": {
+          "t": "num",
+          "v": 900.0
+        },
+        "twap_divergence_bps": {
+          "t": "num",
+          "v": 315.1862464183385
+        }
+      },
+      "provenance": {
+        "kind": "live",
+        "age_secs": 0
+      }
+    }
+  ],
+  "facts": [],
+  "signals": [
+    {
+      "id": "feeds-without-history",
+      "polarity": "risk",
+      "label": "9 of 16 feed(s) produced no history",
+      "detail": "Nothing is known about how these behaved over the window. That is not the same as behaving well.",
+      "magnitude": 0.5625,
+      "measured": true,
+      "targets": [
+        "feed:ETH/BTC",
+        "feed:XAU/USD",
+        "feed:SOL/USD",
+        "feed:AVAX/USD",
+        "feed:BNB/USD",
+        "feed:MATIC/USD",
+        "feed:EUR/USD",
+        "feed:USDC/USD",
+        "feed:USDT/USD"
+      ],
+      "evidence": [
+        "counted 9 feed(s) with zero points over 21600s against 16 registered address(es)"
+      ]
+    },
+    {
+      "id": "truncated-window",
+      "polarity": "risk",
+      "label": "1 feed(s) have a shorter history than was asked for",
+      "detail": "The block scan hit its cap. Their statistics are real and describe less time than the rest \u2014 comparing them like for like overstates the shorter window's stability.",
+      "magnitude": 0.0625,
+      "measured": true,
+      "targets": [
+        "feed:STETH/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) whose log scan was capped"
+      ]
+    },
+    {
+      "id": "thin-history",
+      "polarity": "risk",
+      "label": "1 feed(s) published fewer than 8 times in the window",
+      "detail": "Their statistics are computed and reported, because that is what was measured \u2014 but a volatility over four points is not a volatility.",
+      "magnitude": 0.0625,
+      "measured": true,
+      "targets": [
+        "feed:BTC/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) with fewer than 8 points over 21600s"
+      ]
+    },
+    {
+      "id": "publish-gaps",
+      "polarity": "risk",
+      "label": "1 feed(s) published slower than their own heartbeat",
+      "detail": "Fresh at the moment you look and absent for hours between. A snapshot cannot see this, which is the reason this window exists.",
+      "magnitude": 0.0625,
+      "measured": true,
+      "targets": [
+        "feed:LINK/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) whose median publish interval exceeded 1.5x their measured heartbeat"
+      ]
+    },
+    {
+      "id": "twap-divergence",
+      "polarity": "risk",
+      "label": "3 feed(s) sit more than 100 bps from their own window TWAP",
+      "detail": "Exactly the condition a TWAP-priced protocol is protected against and a spot-priced one is not.",
+      "magnitude": 0.1875,
+      "measured": true,
+      "targets": [
+        "feed:DAI/USD",
+        "feed:AAVE/USD",
+        "feed:STETH/USD"
+      ],
+      "evidence": [
+        "counted 3 feed(s) with |last - twap| / twap >= 100 bps"
+      ]
+    },
+    {
+      "id": "window-drawdown",
+      "polarity": "risk",
+      "label": "1 feed(s) fell at least 10% peak to trough",
+      "detail": "A price move, not a fault. It is a risk to a position, not to the oracle, and it is counted separately for that reason.",
+      "magnitude": 0.0625,
+      "measured": true,
+      "targets": [
+        "feed:AAVE/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) with max drawdown >= 10%"
+      ]
+    },
+    {
+      "id": "steady-feeds",
+      "polarity": "opportunity",
+      "label": "1 feed(s) published on cadence throughout the window",
+      "detail": "Counted, not scored. This says they behaved, not that they are correct \u2014 no oracle's own history can establish that.",
+      "magnitude": 0.0625,
+      "measured": true,
+      "targets": [
+        "feed:ETH/USD"
+      ],
+      "evidence": [
+        "counted 1 feed(s) live at the window end with no gap, no truncation, no thin sample and no TWAP divergence"
+      ]
+    }
+  ],
+  "extent": {
+    "observed": 7,
+    "total": 16,
+    "note": "7 of 16 registered feed(s) produced history over 21600s; 9 produced none"
+  },
+  "blind_spots": [
+    "ETH/BTC on Ethereum Mainnet: no history over the last 21600s \u2014 the feed published nothing; no prints, no cadence, no volatility",
+    "XAU/USD on Ethereum Mainnet: no history over the last 21600s \u2014 the node did not answer; no prints, no cadence, no volatility",
+    "SOL/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "AVAX/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "BNB/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "MATIC/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "EUR/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "USDC/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility",
+    "USDT/USD on Ethereum Mainnet: no history over the last 21600s \u2014 it was not read; no prints, no cadence, no volatility"
+  ]
+}

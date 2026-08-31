@@ -317,7 +317,8 @@ def render_analytics(network: str, payload: Any, error: Optional[str] = None) ->
                 "warn" if divergence is not None and abs(divergence) > 100 else "muted"),
             seg(f"   vol {stats.volatility_annual * 100:.1f}%/yr"
                 if stats.volatility_annual else "", "muted"),
-            seg(f"   max dd {stats.max_drawdown_pct:.2f}%", "muted"),
+            seg(f"   max dd {stats.max_drawdown_pct:.2f}%"
+                if stats.max_drawdown_pct is not None else "   max dd —", "muted"),
         ))
     out.append(line(seg("─" * 64, "rule")))
     out.append(note_line(

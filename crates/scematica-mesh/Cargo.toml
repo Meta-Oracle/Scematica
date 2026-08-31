@@ -24,7 +24,7 @@ chrono = { workspace = true }
 # constant here that silently drifts from the agent that writes the values. The crate is
 # pure Rust (serde/tracing/chrono/rand/anyhow) with no ML or solana dependency, so this
 # costs nothing structurally — see the note in `node.rs::dqstar_verdict`.
-scematica-nn = { version = "1.27.0", path = "../scematica-nn" }
+scematica-nn = { version = "1.28.0", path = "../scematica-nn" }
 
 [dev-dependencies]
 serde_json = { workspace = true }

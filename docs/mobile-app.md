@@ -90,16 +90,16 @@ cd android; .\gradlew.bat assembleDebug
 **Versioning (single source):** the app's `versionName`/`versionCode` and the artifact
 name are derived from `web/package.json`'s `version` at build time (read in
 `app/build.gradle`) — `versionCode` is the semver packed as `major*10000+minor*100+patch`
-(1.27.0 → 12700), and the release artifact is named **`scematica-v<version>.apk`**. Bump
+(1.28.0 → 12800), and the release artifact is named **`scematica-v<version>.apk`**. Bump
 `web/package.json` to version the whole app; nothing else to edit.
 
 `npm run mobile:apk` chains export → sync → `assembleRelease`. The release output lands at
 `web/android/app/build/outputs/apk/release/scematica-v<version>.apk` (e.g.
-`scematica-v1.27.0.apk`).
+`scematica-v1.28.0.apk`).
 
 > **The checked-in apk is well behind the current source.** `web/package.json` is at
-> 1.27.0; the last artifact built and copied to the project root is still
-> `scematica-v1.11.3.apk`. Re-run `npm run mobile:apk` to produce a 1.27.0 build — it is
+> 1.28.0; the last artifact built and copied to the project root is still
+> `scematica-v1.11.3.apk`. Re-run `npm run mobile:apk` to produce a 1.28.0 build — it is
 > needed anyway, because the static export must be rebuilt for the
 > `NEXT_PUBLIC_STATIC_EXPORT` flag (see the pairing section) to reach the bundle.
 

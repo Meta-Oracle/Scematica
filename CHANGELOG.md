@@ -2,493 +2,151 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
-## Unreleased
+## What's New in v1.28.0
 
-Bot workspace stays at **1.27.0** — nothing here is a release yet. Scematica Omni moves to
-**0.6.0**, and that move is the point of the entry.
+Bot workspace **1.28.0**. Scematica Omni reaches **1.0.0** and `alchem-link` reaches
+**1.0.0**, both versioned independently of the bot.
+
+One theme runs through all of it, and it is the theme this repository keeps rediscovering
+one layer further down: **an unmeasured thing must never look like a measured zero.** It has
+been enforced in renderers, in the Ψ gates, and in decision records. This release enforces it
+in the two places nobody had looked — the input layer of the reinforcement-learning agent,
+and the statistics a producer emits about a window of oracle history.
 
 ### `measure` — the bot audits its own decision log
 
-First step of the Measure phase, and the reason it goes before anything else: the recurring
-failure recorded in this repository's own history is tuning a threshold before checking that
-the quantity it compares against is capable of varying.
-
 `scematica measure` reads `scematica-pool-decisions.jsonl` and `scematica-trades.jsonl`,
 writes nothing, and is safe against a live bot. It reports the rejection funnel, a
-dead-signal audit, realised PnL, and coverage.
+dead-signal audit, realised PnL, arrival latency, coverage, and the DQ* advice calibration.
 
 **`--split` is the point.** An aggregate over the whole log is a claim about *history* and
-reads as a claim about the *bot*. Building this tool immediately demonstrated why: over all
-9,214 records the momentum gate is the single largest cause of rejection ever recorded,
-1,747 pools turned away on `inflow_rate=0.000`. Split on 2026-08-05 — the day that veto was
-removed — and it is 28.3% of one window and 0.4% of the next, with buy-ready rising 1.1% →
-11.3%. Both numbers are correct; only the second is about the bot as it stands. That fix had
-never been measured.
-
-**What the audit found that is still live.** Four fields are written into every decision and
-have never once carried a non-zero value across all 9,214 records, in either window:
-`velocity_sol_per_sec`, `pumpfun_score`, `dex_boost_usd`, `social_count` —
-plus `pool_age_secs`, non-zero twice. The report deliberately says **never varied** rather
-than "always zero": measured-and-zero and never-populated are different facts and the log
-cannot tell them apart. Reading the producers settles it, and two consequences are already
-visible — `sniper.rs` composes the DQ\* state with `price_velocity` derived from
-`velocity_sol_per_sec`, so at least one of the net's 24 input features is a constant; and
-`main.rs` gates on `pool_score >= 90 || pumpfun_score >= 90 || inflow_rate >= 1.5 ||
-velocity >= 2.618`, an OR whose second and fourth terms can never be true.
-
-**Coverage now accrues.** The share of RPC-bound checks that resolved was never written per
-decision — the coherence breaker counts it process-globally — so for every existing record it
-is unmeasured, and the report prints `—`. Never `0`, and PnL is never attributed to a
-coverage band nobody recorded. The sniper now appends `scematica-coherence.jsonl` every 30s
-so the question becomes answerable going forward. Timer-sampled rather than per-pool, because
-the breaker keeps a rolling window rather than a monotonic counter and threading a
-per-evaluation context through the buy path is not a change worth making for a diagnostic;
-`measure` says so, and reports resolution *around* a decision rather than *for* it. Samples
-the breaker declined to judge are counted and never averaged.
-
-### Learn, step one: the tournament can change its mind
-
-The DQ\* tournament runs three variants and promoted the one with the highest `total_reward`.
-That number is a **lifetime sum which is never reset**, so a variant that was better in its
-first thousand steps kept the primary slot forever, however badly it was doing now. A
-comparison that cannot change its mind is not a tournament, and this is the criterion the
-Learn phase was going to have to replace before any of the dark machinery — QR-DQN, the
-Dreamer world model, the adversarial gym — could be evaluated at all. There is no point
-switching a variant on if the thing that judges it cannot notice.
-
-Promotion is now on **recent mean reward** over a 200-transition window, and three separate
-things can stop it, each meaning something different: the incumbent has no recent mean, so
-there is nothing to compare against; no challenger has one, because a variant below the
-40-transition floor has not performed badly but has not performed; or the best challenger is
-ahead by less than the margin, which is noise. Three variants on one stream produce means
-that cross constantly, and a primary that changes every evaluation is not a selection — it is
-noise with a promotion log.
-
-An unmeasured variant reports `None`, never `0.0`, and is **absent** from the comparison
-rather than entering it at zero — which would rank it below every losing variant on the
-strength of having done nothing. The same rule as `Term`, `Coverage` and every other
-aggregate here.
-
-The margin is relative to the incumbent's `abs()`. Computed on the signed value it inverts
-exactly when the agent is losing money — a challenger at −1.0 against an incumbent at −2.0 is
-a real improvement, and the naive test rejects it. Pinned by a test.
-
-The window is deliberately not serialised into the checkpoint. It is a claim about *recent*
-behaviour, and restoring one written days ago would let a resumed agent be promoted on
-performance it is not currently delivering, which is the defect this replaced wearing a
-different hat.
-
-One of the seven new tests failed first time and the code was right: `RECENT_WINDOW` is 200
-and the test fed only 80 losing transitions, so the window still held the good history and
-the recent mean was legitimately higher. The window working, not the rule failing.
-
-467 bot tests, clippy clean.
-
-### PNG export, rasterised by hand
-
-`scema nft --png` writes the growth as a PNG. The rasteriser, the font and the PNG encoder
-are all written here, which needs a reason, and the reason is the one the crate already
-rests on: **the same world produces the same bytes.** `resvg` and a browser canvas antialias
-differently, so a library PNG would depend on which runtime made it — two artefacts with one
-name. The same call this crate already made for base64, the glob matcher and the sine table.
-
-Antialiasing is a 3× supersample followed by an integer box downsample with a stated
-rounding rule, so every pixel is a sum of integers over a constant — a value two runtimes
-cannot disagree about. No analytic coverage, no floats.
-
-The zlib stream uses **stored** deflate blocks. A real compressor's output depends on its
-heuristics, and a heuristic is exactly what two implementations differ about; stored blocks
-make the byte stream a pure function of the pixels. Files are larger — 787 KB at 512px — and
-that is the right trade for an artefact whose entire value is reproducibility. Validated
-against a real zlib decoder: signature, per-chunk CRCs, IHDR, and an inflated length that
-matches exactly.
-
-The legend is drawn with a 5×7 bitmap font written out by hand, including glyphs for `·`,
-`°`, `—` and `∅` — the empty set especially, because that is how an unmeasured coverage is
-written everywhere else here and a fallback box would turn a specific statement into a
-missing-character marker. An unknown character draws a visible box rather than nothing: a
-silently dropped glyph makes a label read as something it is not.
-
-Both renderings walk one primitive list. `text_pair` produces the SVG element and the raster
-primitive together so a legend line cannot reach one and not the other, and a test asserts
-the counts match. The SVG output is byte-identical after the refactor, which the parity
-fixture confirmed rather than my believing it.
-
-CLI only for now. The browser still exports the SVG, so there is no two-runtime divergence to
-have — the rasteriser would need porting first, and claiming parity before that would be the
-kind of unearned confidence the rest of this stack exists to refuse.
-
-402 omni tests, 37 parity checks, clippy clean.
-
-### Arrive, step one: the pipeline can time itself
-
-The repository's own notes call the central product problem structural — **the bot arrives
-post-pump** — and no amount of filter tuning touches it. Attacking it from the latency side
-needs a number that did not exist.
-
-The execution path was already instrumented: `TxTelemetryEvent` carries `elapsed_ms`,
-`blockhash_fetch_ms_total`, `send_confirm_ms_total`. Nothing measured the part *before* that,
-where the filter round trips live. `decide_latency_ms` now records the span from the listener
-seeing a pool to the decision being written, and `measure` reports it as a nearest-rank
-distribution — every figure printed is a span that was actually measured, never one
-interpolated between two that were.
-
-`Option` and `skip_serializing_if`, for the reason every optional field here is: a build that
-did not record it and a pipeline that decided in zero milliseconds are different facts. Zero
-would read as *arrives instantly*, which is the most flattering possible reading of exactly
-the thing under investigation, so it is the one value that must not appear by default. All
-9,214 historical records honestly report `—`.
-
-Marked through a bounded side table in `latency.rs` rather than threaded through
-`write_pool_decision`'s twenty-six call sites. That is a deliberate trade: a large diff in a
-live buy path is how a trading bug gets introduced by a diagnostic. The table is bounded and
-prunes stale entries, because it is fed by an unbounded event stream and is not drained on
-every path — a leak in a report is a leak in the process that holds the money. Reading a span
-consumes it, so a pool decided twice cannot report the first decision's span both times.
-
-This is the baseline, not the fix. Block-level listening, leader-schedule-aware submission and
-bundle routing are the Arrive phase proper, and they need a live connection to evaluate —
-which is precisely why the measurement lands first.
-
-460 bot tests, clippy clean.
-
-### The NFT is a fractal now
-
-`scema nft` grows the world instead of gauging it. The instrument plate is still there behind
-`--plate` and still tested — it is the same data read as measurements — but the default is a
-form whose *shape* is the reading.
-
-Nothing about it is decoration laid over numbers. Depth comes from `Extent`, branching from
-the signal count, spread from the balance of risk against opportunity, decay from legibility,
-and the exact form is seeded by the world's own commitment, so two worlds are visibly
-distinct and the same world never is.
-
-**Ignorance is a severed limb.** A blind spot does not fade a branch or tint it — it cuts it
-off, leaving a stub and a void in the canopy. A world nobody could read grows visibly
-mutilated, which is an accurate report and is meant to be uncomfortable.
-
-Three attempts were needed to make that honest, and each failure is worth recording because
-each was the form asserting something the data did not.
-
-The first made severing a per-node *probability* of `blind_spots / observed`, which compounds
-down the recursion: **three reported blind spots cut twenty-six limbs.** That is the same
-class of error as rendering an unmeasured term as `0.00`. It is a count now, chosen up front.
-
-The second cut at whatever depth was convenient, so a cut could sit inside another cut's
-subtree and never be reached — three blind spots rendered as two limbs cut. Every cut now
-lands on **one level**, where nesting is impossible and the count is exact.
-
-The third chose the shallowest level that could *hold* the cuts, and three cuts fit exactly on
-level one of an arity-3 tree — so all three level-one limbs were cut and the entire canopy
-disappeared, rendering "three of six objects were unreadable" as "nothing was observed at
-all". The level now needs three nodes per cut, and when even the deepest level cannot hold
-them the footer says `(CAPPED)` rather than quietly under-reporting.
-
-Determinism survived, which fractals make harder rather than easier: a recursion amplifies
-any disagreement, so a one-ULP difference at the root is a visibly different tree by the
-fourth level. There is no float arithmetic in the growth — integer milliunits, whole-degree
-angles through the shared sine table, and a **32-bit** xorshift because `Math.imul` and
-`>>> 0` reproduce u32 wrapping exactly where u64 would need `BigInt`. The recursion order is
-fixed and the RNG is consumed in that order.
-
-`web/lib/omni/fractal.ts` is the port and it matched byte for byte on the first run.
-`check:omni` pins it, along with the cut count across seeds and that cutting never
-annihilates the form. `/omni` renders the growth now, with a legend, because a form this
-suggestive needs its terms stated or a viewer reads whatever they already believed into it.
-
-391 omni tests, 37 parity checks, clippy clean.
-
-### Scematica Omni 1.0 — the freeze
-
-On a verification runtime, 1.0 is not a maturity badge. It is one sentence: **a record sealed
-today still verifies tomorrow.** `docs/COMPATIBILITY.md` makes that specific enough to be
-checkable, and `corpus/` is what checks it.
-
-**Frozen:** the canonical encoding, the 1e-9 float quantisation, SHA-256 as the commitment
-hash, which fields a commitment covers and which it deliberately does not (`id`, `at`,
-`runtime` describe the recording, not the thing recorded), the wire shape of `scema.world/1`,
-`WorldState::schema` being optional, and the Merkle construction.
-
-**Open, and extensible without breaking anything:** `Domain` and `EntityKind` stay open enums,
-new producers, new `Effect` arms, new anchor chains, λ weights. None can change an existing
-record's digest, because an existing record does not contain them — so each is a minor.
-
-**Not covered, said plainly rather than left to inference:** Rust API stability below the CLI,
-the `.scema/` directory layout, `scema-nft` plate bytes across versions, and anything an
-anchor asserts.
-
-The corpus is the mechanism. Four real records sealed by builds that no longer exist —
-including two from **before `WorldState::schema` existed** — re-verified by
-`cargo test -p scema-effect --test corpus` on every commit, through the `omni` CI job.
-
-That tripwire was tested rather than assumed. Removing `skip_serializing_if` from `schema`
-makes both pre-schema records serialise `"schema": null`, which changes their canonical
-encoding and moves their digests; the corpus reported both as tampered while the two current
-records passed — exactly the shape of the disaster it exists to prevent. Reverted, and green
-again.
-
-The corpus is **never regenerated**. A re-sealed record agrees with today's build by
-construction and detects nothing; when one fails, the change under test is almost certainly
-what is wrong.
-
-Two limits are unchanged by 1.0 because they are properties of the design rather than the
-version: `verify` does not prove the world was as described (provenance carries that), and it
-does not prove the record is the original — tamper-evident, not tamper-proof, until the root
-is anchored somewhere the author does not control. `scema anchor` is the half that batches and
-proves; publishing needs a chain and a key.
-
-The browser extension and the Claude Code plugin move to 1.0.0 with the runtime they talk to.
-
-374 omni tests, clippy clean.
-
-### Omni 0.9 — a root somebody else can hold
-
-`scema verify` has always ended its own limits with the same clause: tamper-evident, not
-tamper-proof, *until the root is anchored somewhere the author does not control*. `scema-anchor`
-is the half that batches and proves. Record roots — decisions **and** effects — go into one
-Merkle tree, and any single record gets an inclusion proof a third party can check holding
-neither the batch nor the other records.
-
-**SHA-256, and that is not a compromise.** `mesh-attest` uses keccak and matching it would let
-the two share a verifier, but Omni's commitments are SHA-256: changing the hash would mean every
-record already sealed on disk stops verifying, and a verifier that rejects untouched history is
-the one failure that teaches a reader to stop believing it. It costs nothing, because EVM
-exposes SHA-256 as precompile `0x02` — a contract can check these proofs directly. The algorithm
-is recorded in the batch and checked on verification rather than assumed.
-
-Two details that are cheap to get wrong and were not. **Leaves and internal nodes are
-domain-separated** (`H(0x00‖bytes)` versus `H(0x01‖left‖right)`); without the tags an internal
-node is a valid leaf preimage and membership can be proven for something never submitted. And
-**an odd node is promoted, never duplicated** — padding by duplication is the widespread
-implementation and lets two leaf sets share a root, the CVE-2012-2459 shape, which here would
-mean a batch presented as covering a record it never covered. Both are pinned by tests that fail
-if the property is lost.
-
-**Anchors are a list, and empty means unanchored — said in those words.** The plan is one chain
-whose economics we control and one with an audience, each independently checkable. Nothing here
-reaches a chain: `--record` writes down that a root was published and states plainly that it did
-not check, because reaching a chain is a network act with a key behind it and recording an anchor
-that was never submitted would be the fabrication the rest of this runtime exists to refuse. A
-reader follows the reference themselves — an anchor taken on the author's word is not an anchor.
-
-Editing a batch is caught: `--list` reports `ROOT DOES NOT MATCH ITS LEAVES`, which is the edit
-that would let a record be claimed as covered by an anchor that never included it.
-
-372 omni tests, clippy clean.
-
-### Omni 0.8 — the loop can act
-
-`execute` no longer exits 2. `scema-effect` records what was *done*, `scema-trust` says
-whether it may be, `scema_tools::Workspace` says where — three separate things, and the
-recorder is deliberately ignorant of the policy, because a recorder that could also
-authorise would eventually be asked to.
-
-**`Outcome::Unknown` is why the crate is shaped this way.** An effect attempted whose result
-could not be observed is not a success and not a failure: killed between the write and the
-confirmation, terminated by a signal, replaced by something else in between. Every arm
-writes and then *checks*, so doing and observing are separate steps — the tempting collapse
-is to trust the return value, and a record claiming success for an unverified write is worse
-than no record, because it is a false statement carrying a valid commitment. It exits 3, so
-a sequence cannot continue past one quietly, while a refusal exits 0: a script that treats
-"the policy said no" as a crash gets rewritten to ignore the exit code, and then it ignores
-real failures too.
-
-**Dry run is the default.** The two paths compute the same thing up to the last step, which
-is exactly why they are not the same keystroke — the rule that already separates `simulate`
-from `decide` and `enter` from `D`. A dry run still runs both gates, so it answers *would
-this be allowed*; it never prompts, because asking somebody to approve an act that is not
-going to happen teaches them the prompt is a formality; and it seals nothing, because a
-record of an act that did not happen is one somebody will later read as one that did.
-
-**The effect is declared, never inferred.** Omni's branches describe work — "11 markers in
-`scema-tools`" — and deriving an executable action from one would be the keyword-overlap bug
-with a disk behind it. `--intent` names the decision an effect claims to carry out, asserted
-by the operator exactly as `--ground` is.
-
-Confinement had to grow up for this. `resolve` canonicalises, which fails on anything not
-yet created, so a naive check refuses every create; it now confines the **deepest ancestor
-that exists** and rebuilds the rest onto it. A non-existent path containing `..` is
-**refused rather than guessed at** — `a/../../b` is only resolvable once `a` exists, and
-this is the case a string-scan check gets wrong in the dangerous direction.
-
-The first end-to-end run broke the specification written two commits earlier. `DenyApprover`
-refuses *without asking anyone*, and the outcome read `refused by Operator: declined at the
-prompt` — describing a decision nobody made, and sending an operator to look for a prompt
-they never saw. `Approver::why_refused` now carries the accurate reason, and a test pins it.
-
-357 omni tests, clippy clean.
-
-### Omni 0.7 groundwork — the trust model, in Rust, checked against Python
-
-The other half of the same arc. `scema-trust` is a port of `alchem_link.approvals` against
-the specification written for it, and `cargo test -p scema-trust` runs the same twenty
-vectors Python runs. All twenty agree.
-
-No dependencies, deliberately: this is the gate in front of every action the runtime will
-ever take, and it should be readable end to end by somebody deciding whether to trust it.
-The glob matcher is thirty lines rather than a crate, and it is iterative with backtracking
-because the naive recursive form overflows the stack on `*a*a*a*a*b` — and these patterns
-match paths a model chose.
-
-`preflight` is a pure function from a policy and a request to a decision or "ask", which is
-what makes it checkable against a file at all. `Risk` is closed where `Domain` is open, and
-for the opposite reason: an unrecognised domain should degrade to a warning so producers can
-describe new worlds, but an unrecognised *risk* has no safe default — `Read` understates and
-`Execute` makes the vocabulary unusable — so the caller decides. Grants live behind a
-private field so one can only arrive through `grant` or `remember`, past the settling rule.
-And `Refusal` distinguishes `Policy` from `Declined`, because saying "the user declined"
-when no prompt was shown describes a decision nobody made.
-
-**`scema_tools::Workspace` now refuses `PROTECTED_PATTERNS` by name**, closing a gap CLAUDE.md
-had recorded as open: `RepoObserver` reads file contents to count tests and markers, and
-nothing stopped it reading a keypair. It emits only counts, but a count derived from a
-private key is still a read of one, and the daemon and MCP server take their paths from a
-browser extension and a language model. The check runs *after* canonicalisation and *before*
-the root test, so a symlink cannot launder a protected target and the refusal reads as "this
-is a secret" rather than "widen your roots". `cargo test -p scema-tools --test
-protected_vectors` holds that list against Python's.
-
-Both vector tests **skip** when the sibling tree is absent — a published crate does not carry
-it — and announce the skip, because a conformance suite that quietly runs zero cases is worse
-than one that fails.
-
-One bug, in the harness rather than the library, worth recording because it is the shape of
-mistake these files exist to catch. Two vectors failed on first run; the library was right
-and the reader was wrong. A grant key is `tool:dirname` and therefore contains a colon, so
-splitting on the *first* one produced the key `"write_file` and silently installed no grant —
-the case then fell through to the standing configuration, and the vector accused the library.
-
-329 omni tests, clippy clean.
-
-### alchem-link: the trust model becomes a specification
-
-The first step of the alchem-link 1.0 line, and it goes first because Scematica Omni cannot
-grow an action path until it exists. `approvals.py` and `workspace.py` are the only working
-approval model in this repository, and omni's own docs name that model as the precondition
-for `execute`. Writing it a second time from memory is how two implementations end up
-disagreeing about which refusals are overridable.
-
-`docs/TRUST-MODEL.md` states it in a language-neutral form: two gates asked in order and
-kept separate (`Workspace` answers *where*, `TrustPolicy` answers *whether*), risk declared
-per tool so a new tool cannot arrive unclassified, the fixed preflight order — hard refusals,
-explicit rules, session grants, standing configuration — and why that order is the point.
-Grants are session-scoped and never persisted, keyed by directory rather than file. No
-terminal means deny. Secrets are refused before the prompt, for reads as well as writes, and
-omitted from listings entirely, because a user cannot consent to a disclosure they have not
-been shown.
-
-`vectors/trust-model.json` is what actually binds two implementations: twenty cases as
-(policy, request) -> allow / deny / **ask**, chosen for where a wrong implementation still
-looks plausible — a grant that must not survive a hard refusal, a `deny_always` that must
-outrank a permissive configuration, a rule matching on tool but not path, a rule that tries
-to enable execution the operator turned off. All twenty passed against Python on the first
-run. `ask` is asserted to be exercised, because a vector file where nothing asks would pass
-against an implementation that never prompts.
-
-Writing the vectors found one real gap and one bad test. `PROTECTED_PATTERNS` covered
-`credentials` and `.aws/` but not a flat `aws-credentials` exported beside somebody's source;
-it now covers `*-credentials` and `*_credentials`, anchored as suffixes so that a document
-*about* credentials stays readable — the point is to refuse the secret, not its
-documentation. And the new test asserting `Workspace` agrees with the vectors originally
-wrapped `resolve` in `assertRaises(Exception)`, which passed for every path because none of
-them existed in the temporary root: a missing file and a refused secret are different
-outcomes, and a test that cannot tell them apart would keep passing after the protection was
-removed. It asks `is_protected` directly now.
-
-627 tests.
-
-### One age rule, not three
-
-The first thing `measure` found, acted on. `CachedPool::open_time` is usually absent —
-pump.fun migrations and whale-copy pools set it to `0` outright and Raydium often leaves it
-unset on new pools, which are the only pools this bot trades. Both scorers already knew
-that and fall back to the detection timestamp, treating an unusable value as unknown rather
-than as zero; `pool_scorer`'s own comment says returning `0.0` velocity there *"would read
-as measured, and stalled, and penalise the pool."*
-
-`sniper.rs` computed its own age inline with a bare `else { 0 }` and no fallback, and that
-value — not the scorers' — is what reached the decision log, the Deep Q\* state and two
-gates. It is now one implementation in `pool_age`, with `None` for an age nobody can
-establish and for a timestamp far enough in the future to be nonsense. `pool_scorer` keeps
-its own skew handling on top, deliberately: it is ranking, and a pool whose clock cannot be
-believed should rank like a stale one rather than vanish from the comparison.
-
-Two limits are recorded rather than papered over. There is **no source of true age** for an
-`open_time = 0` pool — nothing stores when the pool was first seen, so the fallback yields
-"observed zero seconds ago", which is honest and not an age. And the decision log still
-carries `f64`, so an unknown age and a pool detected this second both write `0`. The gates
-are unaffected — every one is guarded on `pool_age_secs > 0`, so an unknown velocity cannot
-satisfy a threshold — but the log cannot tell the two apart, which is exactly what made this
-invisible for months. Making the log carry `Option` touches every writer and is the next
-change, kept separate from a behavioural one.
-
-The Deep Q\* net has no way to express an unmeasured input: `price_velocity` takes `0.0`
-when velocity is unknown, which the net reads as an observation of a stalled pool. Fixing it
-means a mask feature and a `STATE_DIM` change that invalidates every checkpoint, so it
-belongs to the Learn phase where that cost is acceptable.
-
-### Omni 0.6.0 — because a published 0.5.0 could not carry the fix
-
-`Domain` and `EntityKind` became open enums in 0.5.0, and two of the four producers depend
-on it: the browser extension emits `domain: "web"` and `alchem-link` emits `domain: "data"`.
-A component built before that refuses both outright —
-
-```
-unknown variant `web`, expected one of `software`, `infrastructure`, `trading`, `unknown`
-```
-
-— which is what an operator running an older `scema-omnid` beside a current extension
-actually sees. The components are separate crates so `cargo install scema-cli` on a CI box
-does not drag in a terminal stack, and the cost of that split is that nothing makes them
-move together except the operator.
-
-So three things changed. The family is at **0.6.0**, which is what lets the corrected CLI
-and daemon be published at all — 0.5.0 is already on the registry and a published version
-is a fact. `scema doctor` now **runs each component and compares its version to its own**,
-reporting `FAIL` with `cargo install <crate> --force` rather than the `ok` it used to give
-on existence alone; the command exists to find quietly-broken installations and this was
-the one it could not see. And the README says to install the line, not a crate.
-
-The browser extension and the Claude Code plugin move to 0.6.0 with it. They did not change,
-but they version with the runtime they talk to, and the drift v1.27.0 closed was exactly
-these numbers disagreeing.
-
-### `scema-nft` — a world, drawn
-
-New crate. A `WorldState` becomes a self-contained SVG plate plus ERC-721 metadata, via
-`scema nft` or in the browser on `/omni`. The same world produces the same **bytes** in Rust
-and in `web/lib/omni/nft.ts`, which is what makes the plate a derivative of the record
-rather than an illustration of it — an image that depended on which runtime drew it would
-mean two artefacts for one world.
-
-That required no trigonometry (a shared integer sine table; `sin`/`cos` are not correctly
-rounded by IEEE-754), no decimal formatting of floats, rounding spelled out as half away
-from zero, code points rather than UTF-16 units, base64 over UTF-8 bytes rather than `btoa`,
-and no clock. The same wall `canonical.rs` hit, and the same conclusion.
-
-The plate is an instrument: the em-dash rule in vector form. A gauge nobody measured draws
-its full sweep dashed; a gauge measured at zero draws nothing and prints `0.00`. Blind spots
-cut visible notches, because ignorance should be a hole rather than blank space. There is no
-rarity, tier or rank, and both test suites assert the absence.
-
-### Two real bugs in the bot workspace
-
-**`cargo clippy --workspace` did not compile.** `scema-ddqn`'s argument loop tripped
-`clippy::never_loop`, which is deny-by-default, so a documented command failed outright. The
-loop could never reach a second argument — every arm ends the process — and now says so.
-
-**The API's log tail could hang, and served a fragment as a line.** `read_last_n_lines`
-seeks to an arbitrary byte and then read lines with `filter_map(|l| l.ok())`. `Lines` may
-yield `Err` forever, and `filter_map` skips errors and keeps asking, so a persistent read
-error turned a log tail into a stuck request thread. The seek also lands mid-line — and can
-land mid-UTF-8-character — so the first line was a fragment served as though it were a whole
-entry. The fragment is now discarded at the byte level and the iterator is bounded.
-
-### `npm run lint` in web/ opened an installer
-
-ESLint was never declared or installed, so `next lint` prompted interactively — a surprise in
-a terminal and a hang in CI. Replaced with `npm run typecheck` and `npm run check`, the
-latter running the typecheck plus all five parity suites in one command.
+reads as a claim about the *bot*. Building the tool immediately demonstrated why: over all
+9,214 records the momentum gate is the largest cause of rejection ever recorded, 1,747 pools
+turned away on `inflow_rate=0.000`. Split on 2026-08-05 — the day that veto was removed — and
+it is 28.3% of one window and 0.4% of the next. Both numbers are correct; only the second is
+about the bot as it stands.
+
+The first thing it found was a real bug: three separate implementations of the pool-age rule,
+one of which disagreed with the other two. There is now one, in `pool_age.rs`, and every
+function on it returns `Option` because an unpopulated `open_time` is not an age of zero.
+
+`latency.rs` adds the span nothing measured — listener to decision — through a bounded side
+table rather than through `write_pool_decision`'s twenty-six call sites, because a large diff
+in a live buy path is how a trading bug gets introduced by a diagnostic. An unmarked pool
+reports `None`, never `0`: zero is the most flattering possible reading of the exact thing
+under investigation.
+
+### DQ*: the agent scored against its own advice, and the input it was actually given
+
+`measure --dq` scores the agent on the advice it recorded, using the trades that settled. It
+found `SELL_PARTIAL` on **399 of 399** pieces of advice across three months. That is not a
+calibration result; it is the reason there cannot be one, so `Verdict` names the cause —
+`NoAdvice` / `ActionNeverVaried` / `AllUnresolved` / `Scored` — rather than returning a bare
+number. A veto has no outcome and never will, so `mean_abs_error` is `None`, never `0.0`; a
+zero there reads as perfect calibration achieved by refusing to act.
+
+Sixteen calls did resolve, at a mean absolute error of 0.0000. That number is worthless and
+the report says so on the same line: a policy that always says "bearish" is scored perfectly
+in any window where every trade lost money. `score_is_base_rate` marks it.
+
+Then `measure --since 2026-07-01` answered *why*: 16 trades, 0 wins, 16 losses. "Always
+bearish" was the only policy the data supported. **The agent was not the bottleneck; its
+input was.**
+
+Reading the two state builders made that concrete. `to_vec()` normalises into [0,1] and hands
+the result to a network that cannot ask a follow-up question:
+
+- `pool_age_secs` is non-zero in **0 of 8,422** decisions, and `0.0` normalises to the
+  *bottom* of its band — a pool zero seconds old, the most bullish value it can take.
+- The entry builder asserted `lp_burned: true` and `mint_renounced: true`, the safest
+  readings of the two strongest safety signals, with nothing checking either.
+- `trade_state_from_event`, which builds the states the agent *trains* on, filled nine fields
+  with constants.
+
+`FeatureMask` marks what was not measured, `to_vec` substitutes `NEUTRAL[i]`, and `coverage()`
+rides in `TradeDecisionExplanation` beside `confidence` — because five finite Q-values with a
+clear argmax look identical whether the input was real or substituted. The neutral table is
+deliberately not a blanket 0.5: `price_change_pct` is `clamp(-1,3)/3`, so 0% sits at 0.0 and
+the midpoint is +150%, and `buy_sell_ratio` is `/5.0`, so a balanced book is 0.2.
+
+**The tournament can also change its mind now.** Promotion was on `total_reward`, a lifetime
+sum that is never reset, so a variant that was better in its first thousand steps kept the
+primary slot forever however badly it was doing since. It is now recent mean reward over a
+200-transition window; a variant below the minimum sample count reports `None` and is
+*absent* from the comparison rather than entering it at zero.
+
+### Scematica Omni 1.0
+
+The loop can act, prove, and be drawn.
+
+- **`scema execute`** carries out one *declared* effect, gated twice — `Workspace` answers
+  where, `scema-trust` answers whether — and dry-run by default. `Outcome::Unknown` is a
+  first-class arm and exits 3, because an effect whose result nobody could observe is neither
+  success nor failure.
+- **`scema-trust`** is the Python approval model ported to Rust and checked against 20 shared
+  conformance vectors, so the two cannot drift.
+- **`scema anchor`** batches sealed records into one Merkle root with per-record inclusion
+  proofs. Odd nodes are promoted, never duplicated.
+- **`scema-nft` now grows the world** rather than gauging it: a deterministic fractal whose
+  depth comes from extent, spread from the risk/opportunity balance, decay from legibility,
+  and **one severed limb per blind spot** — a count, never a rate. The first version used a
+  per-node probability that compounded down the recursion and cut twenty-six limbs for three
+  blind spots, which is the form claiming more ignorance than the observer reported. The
+  instrument plate is still there behind `--plate`.
+- **PNG export, byte-identical between the CLI and the browser.** `scema nft --png` and
+  `/omni`'s Download PNG produce the same file. Handing the SVG to a canvas cannot do that —
+  antialiasing is unspecified, so the same page yields different pixels in different browsers
+  and the image stops being a derivative of the record. So the rasteriser, the 5×7 font and a
+  zlib of *stored* deflate blocks are written by hand on both sides and compared byte for byte
+  by `check:omni`.
+- **The 1.0 freeze**: a corpus of real sealed records, including two from before the schema
+  field existed, asserted to keep verifying. A verifier that cries tamper on untouched history
+  is the one failure that teaches a reader to stop believing it.
+
+### alchem-link 1.0
+
+**Windowed oracle worlds.** `world()` answers "what do these feeds say right now", which is
+not the question an agent about to price against them should ask: a feed can be perfectly
+fresh at the instant you look and have been absent for the four hours before.
+`windowed_world()` / `omni --window` describe the same network over a span, with seven signals
+counting the feeds in each bad state. Same entity locator and same `feed:<pair>` ids as the
+snapshot — one subject observed two ways.
+
+A price window is the most fabricable thing the package emits, so an unmeasured statistic is
+an **absent attribute**, never a zero. Writing it found a real bug: `summarise()` raised
+`KeyError` on any series with fewer than two points, and the fix goes further than the crash —
+`max_drawdown_pct` and `largest_move_bps` are now `Optional` and `None` there, because a
+single print cannot decline and `0.0` claimed the price held through a span nobody observed.
+
+Missing feeds are computed by difference against the **registry** rather than taken from the
+caller, and the two reasons a feed is missing are worded differently, because "the node would
+not answer" and "the feed did not publish" are different claims and only one is a fact about
+the oracle.
+
+**`docs/API-STABILITY.md`** states the surface and three carve-outs, and
+`tests/test_public_api.py` makes them checkable rather than prose. The sharpest carve-out: a
+statistic gaining `None` where it returned a number is explicitly *not* breaking, because the
+measured-versus-unmeasured rule outranks the version contract.
+
+### Fixes
+
+- `read_last_n_lines` in `scematica-api` could hang a request thread forever: `Lines` may
+  yield `Err` indefinitely and `filter_map(|l| l.ok())` skips and keeps asking. The seek also
+  lands mid-line and can split a UTF-8 character. The fragment is now consumed at byte level
+  first, which makes the tail both correct and finite.
+- `scema doctor` compares installed component versions against the launcher's and reports a
+  mismatch as `FAIL` with the exact `cargo install --force` to run. The failure it exists for
+  had already happened: a 0.1.0 `scema` refusing every world with domain `web` or `data`.
+- CI covers all five workspaces, alchem-link, the extension and `npm run check` — it ran
+  roughly a third of the repository before.
+- A test helper in `scema-tools` could hand two tests the same directory; Windows' clock
+  granularity is coarse enough that a timestamp is not a unique name. The API tail fixtures had
+  the same bug against a fixed name in the system temp directory.
+- `scema nft` refused an effect record with a message describing the file wrongly. It now names
+  what the file is and points at the decision that can be drawn instead.
+- `.gitattributes` declares binary files rather than letting git detect them, because
+  `parity-fractal.png` is compared byte for byte and "almost certainly correct" is the wrong
+  standard for a fixture whose job is to be exact.
 
 ## What's New in v1.27.0
 

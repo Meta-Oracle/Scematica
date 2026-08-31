@@ -1,9 +1,9 @@
 # Scematica DQ* Agent — Technical Reference
 
-> Crate: `scematica-nn` 1.27.0 · Agent architecture generation: **v1.1.0** (dueling / PER / n-step) · Last verified against source: 2026-08-11 (at v1.25.0)  
+> Crate: `scematica-nn` 1.28.0 · Agent architecture generation: **v1.1.0** (dueling / PER / n-step) · Last verified against source: 2026-08-11 (at v1.25.0)  
 > Full technical documentation of the Deep Q* reinforcement learning agent in `crates/scematica-nn`.
 >
-> Note on versions: the crate ships at the workspace version (1.27.0); the
+> Note on versions: the crate ships at the workspace version (1.28.0); the
 > "v1.x" labels in this document refer to the **agent architecture generation**
 > (see §18), a separate lineage from the package version.
 
@@ -31,6 +31,7 @@
 18. [Version History](#18-version-history)
 19. [Distributional RL — QR-DQN (opt-in)](#19-distributional-rl--qr-dqn-opt-in)
 20. [World Model — Dreamer-style Planning (opt-in)](#20-world-model--dreamer-style-planning-opt-in)
+21. [What the network is told it does not know](#21-what-the-network-is-told-it-does-not-know)
 
 ---
 
@@ -935,3 +936,68 @@ un-fakeable failures shape what the next agent learns to avoid.**
 > Note: `doubt_spread`/market-conviction as *live per-pool* NN state features is
 > deliberately deferred until there's a live per-pool doubt source to populate
 > them — adding always-zero features would only reset checkpoints for no signal.
+
+---
+
+## 21. What the network is told it does not know
+
+Every feature above is normalised into roughly [0, 1] and handed to a network that has no way
+to ask a follow-up question. A field nobody measured therefore arrives as *some* number, and
+that number is a claim the network cannot distinguish from an observation.
+
+That claim was measured and found to be actively misleading. `measure` reports
+`pool_age_secs` non-zero in **0 of 8,422** decisions — `pool.open_time` is essentially never
+populated on the Raydium pools this listener sees — and `0.0` normalises to `0.0`, the bottom
+of the 0..1h band, which reads as **a pool zero seconds old**: the most bullish value the
+feature can take. Two more were asserted outright rather than checked: `build_nn_entry_state`
+set `lp_burned: true` and `mint_renounced: true`, the safest readings of the two strongest
+safety signals in the vector. And `trade_state_from_event`, which rebuilds the states the
+agent *trains* on, filled nine fields with constants — so those were not one bad decision
+each but a bad target repeated thousands of times.
+
+### The mechanism
+
+`TradeState` carries a `FeatureMask`. `to_vec()` substitutes `NEUTRAL[i]` for anything marked,
+and `coverage()` reports the fraction that carried a measurement.
+
+`TradeDecisionExplanation` now carries `state_coverage` and `unmeasured` beside `confidence`,
+because `confidence` is a property of the *output*: a network handed a vector that is one
+third invention still produces five finite Q-values with a clear argmax, and will report that
+as high confidence. There is nothing in the output that says how much of the input was real,
+so the channel has to sit next to it.
+
+### Why the neutral table is not a blanket 0.5
+
+This is the trap in the obvious version of the change, and two of the encodings above walk
+straight into it:
+
+- `price_change_pct` is `clamp(-1, 3) / 3`. A 0% change sits at **0.0**, and the midpoint of
+  the range is **+150%**.
+- `buy_sell_ratio` is `÷ 5`. A balanced book — one buy per sell — sits at **0.2**.
+
+Filling either with 0.5 would replace "I do not know" with "strongly bullish" on precisely the
+two features where that is most expensive. `NEUTRAL` is therefore a hand-declared table, one
+entry per feature, and every entry that is not 0.5 carries its reason in the source.
+
+### The default, and why it is the weak half
+
+`FeatureMask::default()` marks *nothing*. That preserves the behaviour of every construction
+site written before the mask existed, and it means every `TradeState` already sitting in a
+saved replay buffer still deserialises — which matters, because the alternative default
+silently rewrites the agent's entire training history into neutrals.
+
+The cost is real: a producer that does not know it should be marking a feature keeps lying by
+omission. What makes that acceptable is that coverage is *recorded*. A producer claiming 100%
+coverage is making a claim, and a claim can be checked. Silence cannot.
+
+### How this was found
+
+`measure --dq` scores the agent against the advice it recorded. It found `SELL_PARTIAL` on
+399 of 399 pieces of advice across three months — one value, no variance, which is not a
+calibration result but the reason there cannot be one. `measure --since 2026-07-01` then
+answered why: **16 trades, 0 wins, 16 losses.** "Always bearish" was the only policy that data
+supported. The agent was not malfunctioning; it was right, and the problem was upstream of it.
+
+That is the third time this repository has hit the same failure at a different layer — a gate
+reading a filter input that never varies, a Ψ term pinned at zero, and now an argmax that
+never moves. In each case a number *looked* like a decision and was a constant.

@@ -1,6 +1,6 @@
 # Scematica Roadmap
 
-**Workspace v1.27.0 · verified against source 2026-08-11 (at v1.25.0)**
+**Workspace v1.28.0 · verified against source 2026-08-11 (at v1.25.0)**
 
 ---
 
@@ -249,9 +249,22 @@ useful than the plan here:
   the pipeline actually measured; `GET /api/calibration` scores past claims against realised
   PnL. Both are explicit about what they cannot know: tightening yields an exact delta,
   loosening admits pools with no outcome and gets no number.
-- **alchem-link 0.23.x** — a second product: a stdlib-only Alchemy × Chainlink toolkit with
-  its own in-package terminal system and a coding agent behind two independent gates.
-  590 tests, all offline.
+- **alchem-link 1.0.0** — a second product: a stdlib-only Alchemy × Chainlink toolkit with
+  its own in-package terminal system and a coding agent behind two independent gates. Also a
+  Scematica Omni producer, describing a network's feeds either as an instant or as a window
+  of history. 663 tests, all offline. `docs/API-STABILITY.md` states the surface and its
+  three carve-outs, and `tests/test_public_api.py` checks them.
+- **Scematica Omni 1.0.0** — the agent runtime: observe → hypothesise → simulate → score →
+  decide → record → remember, with a decision record somebody who was not there can verify.
+  It can now act (`scema execute`, gated twice, dry-run by default), anchor a batch of
+  records into one Merkle root, and draw a world as a deterministic fractal whose severed
+  limbs are a count of blind spots. 406 tests plus a compatibility corpus that includes
+  records sealed before the schema field existed.
+- **`measure`** — the bot audits its own decision log. It has already found five signals that
+  never varied, three disagreeing implementations of the pool-age rule, and a Deep Q* policy
+  whose argmax had not moved in three months. The last of those turned out to be the agent
+  being *right* about a losing window, which redirected the work from the policy to the
+  features it was being fed.
 - **BOT Chain port** (`scema-botchain`) and the **neural mesh** (`scema-bot-mesh`).
 
 ## The BOT Chain result — measured, then paused

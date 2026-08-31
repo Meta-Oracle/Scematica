@@ -1,6 +1,6 @@
 # Scematica — Equations, Strategies, and Algorithm Reference
 
-> Strategy generation 1.4.0 · Crate: workspace 1.27.0 · Verified against source 2026-08-11 (at v1.25.0)  
+> Strategy generation 1.4.0 · Crate: workspace 1.28.0 · Verified against source 2026-08-11 (at v1.25.0)  
 > Internal technical reference for all trading equations, parameter evolution, and strategy rationale.
 >
 > Parameter values in this document are the **`config.rs` defaults** (verified in

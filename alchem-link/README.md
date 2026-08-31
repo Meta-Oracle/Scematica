@@ -341,6 +341,29 @@ client, so everything that decides what a reading *means* is tested offline. Onl
 rules omni's importer applies, so this package fails its own tests rather than producing
 something the consumer rejects three processes away.
 
+### The same feeds over a window — `omni --window`
+
+A snapshot answers *what do these feeds say right now*, which is the question an operator
+asks. It is not the question an agent about to price against them should ask: a feed can be
+perfectly fresh at the instant you look and have been absent for the four hours before, and
+nothing in a snapshot can tell a steady oracle from one that publishes in bursts.
+
+```bash
+alchem-link omni -n base --window --hours 6 | scema simulate "is this feed set dependable" --path -
+```
+
+One object per feed carrying what its history actually showed, and seven signals counting the
+feeds in each bad state — no history, a capped scan, too few prints, publishing slower than
+their own heartbeat, a spot answer far from the window TWAP, a large drawdown, and the ones
+that behaved. Same entity locator and the same `feed:<pair>` object ids as the snapshot, so an
+agent sees **one subject observed two ways** rather than two unrelated networks.
+
+A price window is the most fabricable thing this package emits: every figure is a real number
+of a plausible shape, and a volatility invented from two prints is indistinguishable from one
+measured over three hundred. So **an unmeasured statistic is an absent attribute, never a
+zero** — a `volatility` of 0.0 is a claim the price did not move, and two prints have no
+volatility at all. `windowed_world()` is pure and takes `now`; `perceive_window()` reads.
+
 ## Batched reads
 
 Reading a network's feeds means three `eth_call`s each. Done naively that is 48 round
@@ -790,7 +813,7 @@ both drop straight into a CI gate.
 python -m unittest discover -s tests
 ```
 
-622 cases, all offline — no test in this suite reads a chain.
+663 cases, all offline — no test in this suite reads a chain.
 
 That is a design constraint rather than a convenience. `analytics` and `simulate` compute
 numbers people size positions and write guards against, and a number that can only be

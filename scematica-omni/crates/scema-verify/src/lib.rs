@@ -24,6 +24,7 @@
 //! stricter than JSON: sorted keys, tagged types, normalised `-0.0` and NaN. `serde_json`'s
 //! own output is not stable enough to hash.
 
+pub mod outcome;
 pub mod canonical;
 pub mod record;
 pub mod store;
@@ -31,3 +32,5 @@ pub mod store;
 pub use canonical::{canonical_bytes, digest, digest_of_digests, Digest};
 pub use record::{verify, Commitment, DecisionRecord, Mismatch, Verification};
 pub use store::RecordStore;
+
+pub use outcome::{resolve, Calibration, Checked, Resolution, Unresolvable};

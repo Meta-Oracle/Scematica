@@ -21,6 +21,7 @@
 
 pub mod decide;
 pub mod evaluator;
+pub mod legibility;
 pub mod render;
 pub mod utility;
 
@@ -29,4 +30,5 @@ pub mod dqstar;
 
 pub use decide::{decide, Abstention, Decision, DecisionConfig, EvaluatorStatus, Excluded, Ranked};
 pub use evaluator::{Applicability, Evaluation, Evaluator};
+pub use legibility::LegibilityEvaluator;
 pub use utility::{Contribution, Utility, UtilityWeights};

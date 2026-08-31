@@ -47,6 +47,10 @@ fn read(locator: &str) -> Result<(String, String)> {
     Ok((text, p.display().to_string()))
 }
 
+// Eight parameters, one per flag. Grouping them into a struct would move the argument list
+// somewhere else rather than shorten it, and clap already owns the definition — the struct
+// would be a second place for a flag to be forgotten.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     locator: &str,
     out: Option<&PathBuf>,

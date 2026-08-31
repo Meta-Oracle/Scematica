@@ -56,7 +56,7 @@ use scema_memory::{MemoryKind, Recall};
 // `scema_policy::render`.
 use scema_policy::render;
 use scema_verify::{verify, RecordStore};
-use scema_world::{Constraint, Goal};
+use scema_world::{Constraint, Goal, WorldFeatures, WorldState};
 
 /// Default state directory, relative to the working directory.
 const DEFAULT_ROOT: &str = ".scema";
@@ -115,6 +115,27 @@ enum Command {
         /// Path to observe.
         #[arg(default_value = ".")]
         locator: String,
+        /// Also draw the perceived world here, as a self-contained SVG.
+        ///
+        /// Opt-in, and it stays opt-in. `observe` writing files because it felt like it
+        /// would break a guarantee this runtime states out loud in three places — quickstart
+        /// "writes nothing", simulate "writes nothing", and the whole reason `decide` is a
+        /// separate keystroke from `simulate`. A perception verb that leaves artefacts on
+        /// disk is a perception verb somebody stops trusting.
+        #[arg(long)]
+        nft: Option<PathBuf>,
+        /// Also rasterise it here. Implies the growth; see `scema nft --help` for sizing.
+        #[arg(long)]
+        nft_png: Option<PathBuf>,
+        /// Edge of that PNG in pixels.
+        #[arg(long, default_value = "1024")]
+        nft_png_size: usize,
+        /// Print the domain-agnostic feature vector and its coverage.
+        ///
+        /// The same twelve numbers a policy evaluator would read, so what the runtime
+        /// perceives can be inspected without writing an evaluator to look at it.
+        #[arg(long)]
+        features: bool,
     },
     /// Rank competing branches against a goal. Writes nothing.
     Simulate {
@@ -510,7 +531,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 *plate,
             )
         }
-        Command::Observe { locator } => {
+        Command::Observe { locator, nft, nft_png, nft_png_size, features } => {
             let agent = agent_for(false);
             let w = agent.observe(locator)?;
             if cli.json {
@@ -540,6 +561,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     println!("  … {} more", w.objects.len() - 20);
                 }
             }
+
+            if *features {
+                print_features(&w);
+            }
+            draw_perceived(&w, nft.as_ref(), nft_png.as_ref(), *nft_png_size)?;
             Ok(ExitCode::SUCCESS)
         }
 
@@ -945,6 +971,62 @@ fn not_built(verb: &str, why: &str) -> Result<ExitCode> {
     eprintln!("\n  It is listed in `--help` on purpose: the shape of this runtime includes");
     eprintln!("  this verb, and finding that out from the tool beats finding it out later.");
     Ok(ExitCode::from(2))
+}
+
+/// Draw the world that was just perceived, if asked.
+///
+/// The link between perception and the artefact, and it is a *flag* rather than a default on
+/// purpose. `observe` is one of three verbs this runtime advertises as writing nothing, and
+/// the separation between "look" and "leave a trace" is the same distinction that keeps
+/// `simulate` and `decide` as different keystrokes. Making perception emit files by default
+/// would trade that for convenience, once, permanently.
+///
+/// The plate is drawn from the world as perceived, so its commitment is computed here rather
+/// than taken from a record — there is no record yet. That is the honest reading: this
+/// picture is of an observation, not of a decision, and `scema nft` on a sealed record is
+/// what binds one to a judgement.
+fn draw_perceived(
+    w: &WorldState,
+    svg_out: Option<&PathBuf>,
+    png_out: Option<&PathBuf>,
+    png_size: usize,
+) -> Result<()> {
+    if svg_out.is_none() && png_out.is_none() {
+        return Ok(());
+    }
+    let digest = scema_nft::world_digest(w);
+
+    if let Some(p) = svg_out {
+        let svg = scema_nft::render_svg(w, &digest);
+        std::fs::write(p, &svg).with_context(|| format!("writing {}", p.display()))?;
+        eprintln!("wrote {} ({} bytes)", p.display(), svg.len());
+    }
+    if let Some(p) = png_out {
+        let bytes = scema_nft::fractal::render_png(w, &digest, png_size);
+        std::fs::write(p, &bytes).with_context(|| format!("writing {}", p.display()))?;
+        eprintln!("wrote {} ({} bytes, {png_size}x{png_size})", p.display(), bytes.len());
+    }
+    eprintln!("world commitment {digest}");
+    Ok(())
+}
+
+/// The domain-agnostic feature vector, rendered under the one rule that matters.
+///
+/// An unmeasured feature prints `—`, never `0.000`, and the coverage is on the same screen as
+/// the numbers. Both are the same requirement `scema_policy::render::cell` enforces; this
+/// prints `Term`s directly because they are not a scored aggregate.
+fn print_features(w: &WorldState) {
+    let f = WorldFeatures::of(w);
+    let c = f.coverage();
+    println!("FEATURES  {} measured of {}", c.measured, c.total);
+    for (name, t) in WorldFeatures::names().iter().zip(f.terms()) {
+        let shown = if t.measured { format!("{:.3}", t.value) } else { "—".to_string() };
+        println!("  {name:<20} {shown:>7}   {}", t.note);
+    }
+    println!();
+    println!("  A consumer reading only the values cannot tell a substituted neutral from");
+    println!("  a measurement — which is why the coverage above is not optional, and why");
+    println!("  `WorldFeatures::to_vec_with_mask` exists for anything that learns here.");
 }
 
 fn main() -> ExitCode {

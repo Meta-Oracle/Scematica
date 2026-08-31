@@ -54,6 +54,13 @@ cd scematica-omni ; cargo build --release
 cd scematica-omni ; cargo test --workspace          # 409 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
+./scematica-omni/target/release/scema observe . --features   # the 12-wide WorldFeatures vector
+./scematica-omni/target/release/scema observe . --nft w.svg --nft-png w.png  # draw what was perceived
+# `--nft` is OPT-IN and stays opt-in. `observe` is one of three verbs advertised as writing
+# nothing (with `quickstart` and `simulate`), and that separation is the same one keeping
+# `decide` a different keystroke from `simulate`. A perception verb that leaves artefacts by
+# default is one people stop trusting. The plate drawn here commits to an *observation*, not
+# to a judgement — `scema nft <record>` is what binds a picture to a sealed decision.
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
 ./scematica-omni/target/release/scema decide   "<goal>" --ground <signal-id>   # seals a record
 ./scematica-omni/target/release/scema explain --list ; scema verify --all

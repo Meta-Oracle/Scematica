@@ -12,7 +12,7 @@ use scematica_core::{
     types::known_tokens,
     wallet::Wallet,
 };
-use scematica_nn::{AgentStats, DQNAgent, TradeAction, TradeState as NNState};
+use scematica_nn::{AgentStats, DQNAgent, FeatureMask, TradeAction, TradeState as NNState};
 use scematica_sniper::{
     alerts::AlertManager,
     listener::{ListenerEvent, PoolListener},
@@ -71,7 +71,17 @@ impl Drop for LockGuard {
 }
 
 fn event_f64(v: &serde_json::Value, key: &str) -> f64 {
-    v.get(key).and_then(|x| x.as_f64()).unwrap_or(0.0)
+    event_opt_f64(v, key).unwrap_or(0.0)
+}
+
+/// The same read, keeping the difference between "absent" and "zero".
+///
+/// `event_f64` collapses them, which is fine for a log line and wrong for a training state:
+/// the trade log is months of output from builds that wrote different fields, and a key that
+/// was never written arrives as `0.0` — which for several features in the state vector is
+/// not a neutral value but an extremal one.
+fn event_opt_f64(v: &serde_json::Value, key: &str) -> Option<f64> {
+    v.get(key).and_then(|x| x.as_f64())
 }
 
 fn event_confirmed(v: &serde_json::Value) -> bool {
@@ -81,6 +91,20 @@ fn event_confirmed(v: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// A training state, rebuilt from one line of the trade log.
+///
+/// This is the more consequential of the two builders: the states it produces go into the
+/// replay buffer, so anything invented here is not a single bad decision but a bad *target*
+/// the agent trains against thousands of times.
+///
+/// The log spans months of builds that wrote different fields, and `event_f64` returns `0.0`
+/// for a key that was never written. For several features that zero is the extreme of the
+/// range rather than its middle — `pool_age_secs: 0.0` reads as a pool opened this instant —
+/// so absence is detected and marked rather than defaulted. `TradeState::to_vec` then
+/// substitutes the declared neutral.
+///
+/// Four fields have no source on this path at all and were constants: wallet balance, market
+/// regime, spread and open positions. They are marked, not guessed.
 fn trade_state_from_event(
     v: &serde_json::Value,
     daily_pnl_sol: f64,
@@ -93,7 +117,46 @@ fn trade_state_from_event(
     let pool_score = event_f64(v, "pool_score");
     let inflow_rate = event_f64(v, "inflow_rate_sol_per_sec");
     let velocity = event_f64(v, "velocity_sol_per_sec");
+
+    let mut unmeasured = FeatureMask::NONE;
+    for (key, feature) in [
+        ("pool_age_secs", "pool_age_secs"),
+        ("pool_size_sol", "initial_liquidity_sol"),
+        ("buy_pressure_ratio", "buy_sell_ratio"),
+        ("position_age_secs", "position_age_secs"),
+        ("pool_score", "pool_score_norm"),
+        ("inflow_rate_sol_per_sec", "volume_5min_sol"),
+        ("velocity_sol_per_sec", "price_velocity"),
+    ] {
+        if event_opt_f64(v, key).is_none() {
+            unmeasured.mark_named(feature);
+        }
+    }
+    if event_opt_f64(v, "inflow_rate_sol_per_sec").is_none() {
+        unmeasured.mark_named("volume_velocity");
+    }
+    if event_opt_f64(v, "pnl_pct").is_none() {
+        for f in ["price_change_pct", "current_pnl_pct", "peak_pnl_pct"] {
+            unmeasured.mark_named(f);
+        }
+    }
+    // No source on this path. Previously `true`, `true`, `0.0`, `0`, `0.0`, `0` and `0.5`.
+    for f in [
+        "lp_burned",
+        "mint_renounced",
+        "sol_balance_sol",
+        "regime",
+        "volatility",
+        "spread_pct",
+        "open_positions",
+        "deployer_rug_rate",
+        "price_acceleration",
+    ] {
+        unmeasured.mark_named(f);
+    }
+
     NNState {
+        unmeasured,
         pool_age_secs: event_f64(v, "pool_age_secs"),
         initial_liquidity_sol: event_f64(v, "pool_size_sol"),
         price_change_pct: pnl_pct / 100.0,

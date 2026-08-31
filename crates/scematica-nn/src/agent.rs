@@ -82,7 +82,20 @@ pub struct TradeDecisionExplanation {
     /// Human-readable explanation of the dominant Q-value.
     pub top_reason: String,
     /// max_q / sum_abs_q — how confident the network is.
+    ///
+    /// A property of the *output*, and on its own it is misleading. A net handed a vector
+    /// that is one third invention still produces five finite Q-values with a clear argmax,
+    /// and this number will happily report that as high confidence. Read it beside
+    /// `state_coverage`.
     pub confidence: f64,
+    /// Fraction of the state vector that carried a measurement.
+    ///
+    /// The channel the network does not have. There is nothing in five Q-values that says
+    /// how much of the input was real, so it is recorded next to them — the same reason
+    /// `scema_policy` refuses to print a score without its coverage.
+    pub state_coverage: f64,
+    /// The features nobody measured, by name. Empty is a claim, not a silence.
+    pub unmeasured: Vec<String>,
 }
 
 // Checkpoint — does not include replay buffer (too large to serialise)
@@ -1279,6 +1292,8 @@ impl DQNAgent {
             q_values,
             top_reason,
             confidence,
+            state_coverage: state.coverage(),
+            unmeasured: state.unmeasured.names().into_iter().map(String::from).collect(),
         }
     }
 

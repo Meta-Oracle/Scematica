@@ -136,6 +136,8 @@ cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli doctor
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli verify -n base   # registry vs chain
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli audit -n arbitrum # consumer-safety lint
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli simulate           # replay guards vs failure modes
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli omni -n base       # feeds now, as a WorldState
+cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli omni -n base --window --hours 6  # the same feeds over a span
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.dashboard              # full-screen console (no deps)
 cd alchem-link ; pyinstaller alchem-link.spec ; pyinstaller alchem-link-ui.spec       # standalone binaries
 
@@ -240,9 +242,21 @@ alchem-link/            Python (not in the cargo workspace). Alchemy x Chainlink
                         oracle set as a Scematica Omni `WorldState`, so an agent can rank
                         branches against a stale feed rather than an operator reading a
                         board. `world()` is a pure transform taking no RPC client; only
-                        `perceive()` reads a chain.
+                        `perceive()` reads a chain. `windowed_world()` / `perceive_window()`
+                        (`omni --window`) describe the same feeds over a **span** rather than
+                        an instant — a feed can be fresh at the moment you look and have been
+                        absent for four hours, and a snapshot cannot see that. Same entity
+                        locator and same `feed:<pair>` ids as the snapshot, so an agent sees
+                        one subject observed two ways. An unmeasured statistic is an **absent
+                        attribute**, never a zero: a volatility of 0.0 claims the price did
+                        not move, and two prints have no volatility at all.
+                        **1.0.0** — `docs/API-STABILITY.md` states the surface and the three
+                        carve-outs, and `tests/test_public_api.py` makes them checkable. The
+                        sharpest one: a statistic gaining `None` where it returned a number is
+                        explicitly *not* breaking, because the measured-vs-unmeasured rule
+                        outranks the version contract.
                         Bins: `alchem-link`, `alchem-link-ui`.
-                        Tests: `python -m unittest discover -s tests` (622, all offline)
+                        Tests: `python -m unittest discover -s tests` (663, all offline)
 scema-botchain/         BOT Chain (EVM, chain 677) port. **Own cargo workspace, in the
                         root `exclude` list** — an EVM stack needs reqwest 0.12/rustls
                         0.23, exactly what the pin comments say cannot coexist with
@@ -1092,6 +1106,25 @@ Pure-Rust Double DQN, no ML framework dependency. Lives inside the sniper proces
 - **Training**: Double DQN (online selects, target evaluates), **prioritized replay** (sum-tree, α=0.6, β 0.4→1.0), **n-step returns** (n=5); epsilon-greedy (1.0 → 0.05, decay 0.9995), target net hard-copy every 200 steps, replay buffer 10k, batch 64. Full reference: `docs/DQ_STAR_AGENT.md`
 - **Active buy-gating** (`sniper.rs`, `advise()` block): once `ready_to_advise()` is true the agent sizes entries (`BuyAggressive`→1.5x, `Hold`→0.5x) and can veto a buy on `SellPartial`/`SellAll`. `ready_to_advise = train_steps >= 10_000 && last_q_values has signal`. The veto only *fully suppresses* a buy when the bearish Q exceeds the best buy Q by ≥15% (`NN_VETO_REL_MARGIN`); a weaker lean downgrades to 0.5x sizing so a partially-converged net can't silently kill the PF≈6.5 edge.
 - **Regime branching**: separate `(online, target)` net pairs per regime engaged when `epsilon < 0.3` and a known regime (`bull`/`bear`/`sideways`/`panic`) is set.
+- **Unmeasured features take the neutral element, not zero** (`state.rs`). `to_vec()`
+  normalises into [0,1] and hands the result to a net that cannot ask a follow-up question,
+  so a field nobody measured arrives as a number and that number is a claim. It was an
+  actively misleading one: `pool_age_secs` is non-zero in **0 of 8,422** decisions
+  (`pool.open_time` is essentially never populated) and `0.0` normalises to the *bottom* of
+  its range — a pool zero seconds old, the most bullish value it can take. The entry builder
+  also asserted `lp_burned: true` and `mint_renounced: true`, the two safest readings of the
+  two strongest safety signals, and `trade_state_from_event` — which builds the states the
+  agent *trains* on — filled nine fields with constants. `FeatureMask` marks what was not
+  measured and `to_vec` substitutes `NEUTRAL[i]`; `coverage()` says how much was real and
+  rides in `TradeDecisionExplanation` beside `confidence`, because five finite Q-values with
+  a clear argmax look identical whether the input was measured or invented. The neutral
+  table is **not** a blanket 0.5 and that is the trap: `price_change_pct` is
+  `clamp(-1,3)/3`, so 0% sits at 0.0 and the midpoint is **+150%**; `buy_sell_ratio` is
+  `/5.0`, so a balanced book is 0.2. A uniform midpoint would replace "I do not know" with
+  "strongly bullish" on exactly the two features where that costs most. `FeatureMask`
+  defaults to *nothing marked*, which preserves every pre-existing caller and every state in
+  a saved replay buffer — the weaker half of the design, made checkable by recording
+  coverage rather than trusting silence.
 - **Calibration** (`calibration.rs`, printed by `measure --dq`): the agent scored against
   the advice it recorded, using the trades that settled. Three rules, and the first is the
   one that makes the module honest. **A veto has no outcome and never will** — nobody bought

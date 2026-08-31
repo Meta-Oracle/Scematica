@@ -9,7 +9,7 @@ use scematica_core::{
     types::known_tokens,
 };
 use scematica_nn::equations::{EquationMonitor, Verdict};
-use scematica_nn::{DQNAgent, TradeAction, TradeState as NNState};
+use scematica_nn::{DQNAgent, FeatureMask, TradeAction, TradeState as NNState};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use spl_associated_token_account;
@@ -567,6 +567,23 @@ impl Sniper {
 
     /// Config base values — exposed so the builder-mode watcher in main.rs
     /// can compute mode-specific TP/SL/mult relative to the configured baseline.
+    /// The state handed to the DQ* agent when a pool becomes buy-ready.
+    ///
+    /// Nine of the twenty-four features are not available at this point in the pipeline, and
+    /// until now they were filled with constants. Two of those constants were the *most
+    /// bullish* value the feature can take: `lp_burned: true` and `mint_renounced: true` are
+    /// the two strongest safety signals in the vector, asserted rather than checked. A third,
+    /// `pool_age_secs`, arrives as `0.0` on essentially every pool — `measure` reports it
+    /// non-zero in 0 of 8,422 decisions — and `0.0` normalises to the bottom of its range,
+    /// which reads as a pool that opened this second.
+    ///
+    /// So they are **marked** instead. `TradeState::to_vec` substitutes the declared neutral
+    /// for anything in the mask, and `coverage()` says how much of the vector was real. The
+    /// values still carry whatever the pipeline had, because the mask is what decides — a
+    /// field left at a plausible-looking constant with no mark is the failure this replaces.
+    ///
+    /// `deployer_rug_rate: 0.5` was already doing this by hand, and stays as the same
+    /// number now reached through the mask, so nothing has to remember which one it was.
     fn build_nn_entry_state(
         &self,
         pool_size_sol: f64,
@@ -582,7 +599,36 @@ impl Sniper {
             "bear" | "panic" => -1,
             _ => 0,
         };
+
+        let mut unmeasured = FeatureMask::NONE;
+        // The pool's own age. `pool.open_time` is zero on essentially every Raydium pool
+        // this listener sees, so a caller passing 0.0 has almost certainly not measured it.
+        // Treating a genuine "opened this instant" as unmeasured costs nothing here — the
+        // filter pipeline already gates on age separately — while the reverse is the net
+        // being told every pool is brand new.
+        if pool_age_secs <= 0.0 {
+            unmeasured.mark_named("pool_age_secs");
+        }
+        // Nothing on this path checks either. They were asserted `true`.
+        unmeasured.mark_named("lp_burned");
+        unmeasured.mark_named("mint_renounced");
+        // No price history is carried to the entry decision, so none of these three is a
+        // measurement of anything.
+        unmeasured.mark_named("price_change_pct");
+        unmeasured.mark_named("volatility");
+        unmeasured.mark_named("price_acceleration");
+        // The reputation ledger exists (`reputation.rs`) and is not consulted here. Until it
+        // is, this is a stated neutral rather than a rate.
+        unmeasured.mark_named("deployer_rug_rate");
+        // Streak counters: losses are tracked, wins are not, and a hard zero would say the
+        // agent has never won.
+        unmeasured.mark_named("consecutive_wins");
+        if velocity_sol_per_sec == 0.0 {
+            unmeasured.mark_named("price_velocity");
+        }
+
         NNState {
+            unmeasured,
             pool_age_secs,
             initial_liquidity_sol: pool_size_sol,
             price_change_pct: 0.0,
@@ -2351,6 +2397,20 @@ impl Sniper {
                     .filter(|v| v.is_finite())
                     .map(f64::abs)
                     .fold(0.0, f64::max);
+                // Coverage beside the advice, always — not only when something looks wrong.
+                // Five finite Q-values with a clear argmax look identical whether the input
+                // was measured or substituted, and this is the only line that says which.
+                let coverage = nn_state.coverage();
+                if coverage < 1.0 {
+                    debug!(
+                        mint = %pool.base_mint,
+                        action = action.label(),
+                        coverage = format!("{:.0}%", coverage * 100.0),
+                        unmeasured = ?nn_state.unmeasured.names(),
+                        "DQ*: advising on a partly-substituted state"
+                    );
+                }
+
                 let has_signal = q_vals.iter().any(|v| v.is_finite() && v.abs() > 1e-9);
                 if !has_signal {
                     debug!(

@@ -17,6 +17,6 @@ pub use agent::{AgentStats, DQNAgent, TradeDecisionExplanation};
 pub use distributional::{QuantileNetwork, N_QUANTILES};
 pub use onnx::{export_agent, export_qnetwork, qnetwork_to_onnx, ExportOptions};
 pub use replay::Transition;
-pub use state::{TradeState, STATE_DIM, STATE_FEATURES};
+pub use state::{FeatureMask, TradeState, NEUTRAL, STATE_DIM, STATE_FEATURES};
 pub use tournament::AgentTournament;
 pub use world_model::{ImaginedStep, WorldModel, WorldModelLoss, LATENT_DIM};

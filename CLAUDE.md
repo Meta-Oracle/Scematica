@@ -38,12 +38,20 @@ cargo run --release -p mesh-dashboard -- --json       # raw mesh
 # Published to crates.io as `scema-*` crates (1.0.0), independent of the bot's
 # `scematica-*` line. Install without a checkout:
 cargo install scema-cli scema-tui scema-daemon scema-mcp  # -> scema, scema-tui, scema-omnid, scema-mcp
-# Upgrade these together. Pre-0.5.0 builds carry the CLOSED Domain enum and refuse any
-# world with domain `web` (the extension) or `data` (alchem-link) — two of the four
-# producers, rejected at the door with `unknown variant`. `scema doctor` names what is
-# installed; `scema --version` is the fastest check.
+# Upgrade these together, and check what you actually got. Two distinct traps, both paid for:
+#   * Pre-0.5.0 builds carry the CLOSED Domain enum and refuse any world with domain `web`
+#     (the extension) or `data` (alchem-link) — two of the four producers, rejected at the
+#     door with `unknown variant`.
+#   * 0.5.0 was the published head for a long time and has NO `nft` and NO `anchor`, and its
+#     `execute` is a stub that prints "Not implemented". `scema nft` there answers
+#     "a similar subcommand exists: 'init'", which reads as a typo rather than an old build.
+# A `cargo install scema-cli` also silently overwrites an install made from a checkout, so a
+# working `scema` can regress without anything being rebuilt. `scema --version` is the fastest
+# check; `scema doctor` compares every component against the launcher and FAILs on a mismatch.
+# On Windows the upgrade fails with "Access is denied (os error 5)" while `scema daemon` is
+# running — the launcher holds its own .exe. Stop it first.
 cd scematica-omni ; cargo build --release
-cd scematica-omni ; cargo test --workspace          # 402 tests
+cd scematica-omni ; cargo test --workspace          # 409 tests
 ./scematica-omni/target/release/scema quickstart .  # THE FIRST THING TO RUN — narrated, writes nothing
 ./scematica-omni/target/release/scema observe .     # perceive a source tree
 ./scematica-omni/target/release/scema simulate "<goal>" --ground <signal-id>   # writes nothing
@@ -54,6 +62,14 @@ cd scematica-omni ; cargo test --workspace          # 402 tests
 ./scematica-omni/target/release/scema nft world.json --out growth.svg --metadata token.json
 ./scematica-omni/target/release/scema nft world.json --plate --out plate.svg
 ./scematica-omni/target/release/scema nft world.json --out g.svg --png g.png --png-size 1024
+./scematica-omni/target/release/scema nft world.json --png g.png --png-size 512 \
+    --image-format png --metadata token.json   # metadata `image` carries the PNG, not the SVG
+# `--image-format` defaults to `svg`: two orders of magnitude smaller, and *the* drawing
+# rather than a sampling of it. Choose `png` when the consumer cannot render SVG — several
+# marketplaces and most preview pipelines cannot. Base64 inflates by 4/3, so 1024px is ~4 MB
+# of metadata; the command prints the size. `--image <url>` wins over both and is the right
+# answer at scale. The embedded bytes are the SAME render as the file `--png` writes, not a
+# second one — two renders would agree today and drift the first time a default moves.
 # The same PNG is downloadable from /omni in the browser, byte for byte — see the note below.
 # PNG export rasterises the SAME primitive list the SVG is built from, with a hand-written
 # rasteriser, 5x7 bitmap font and PNG encoder. A library rasteriser or a browser canvas

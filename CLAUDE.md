@@ -54,6 +54,7 @@ cd scematica-omni ; cargo test --workspace          # 402 tests
 ./scematica-omni/target/release/scema nft world.json --out growth.svg --metadata token.json
 ./scematica-omni/target/release/scema nft world.json --plate --out plate.svg
 ./scematica-omni/target/release/scema nft world.json --out g.svg --png g.png --png-size 1024
+# The same PNG is downloadable from /omni in the browser, byte for byte — see the note below.
 # PNG export rasterises the SAME primitive list the SVG is built from, with a hand-written
 # rasteriser, 5x7 bitmap font and PNG encoder. A library rasteriser or a browser canvas
 # would antialias differently, and an image that depends on who rendered it is not a
@@ -631,6 +632,20 @@ constraints, and the first is stronger than anywhere else on the site:
   record contributes its *stored* `commitment.world` rather than a recomputed one, so an
   edited record yields a plate whose digest does not match its own world — that mismatch is
   the tamper signal, and recomputing would repair the evidence.
+- **The PNG is rastered, never canvassed** (`lib/omni/raster.ts`, a port of
+  `crates/scema-nft/src/raster.rs`). `/omni`'s **Download PNG** must hand back the same bytes
+  `scema nft --png` writes, and handing the SVG to a `<canvas>` cannot: antialiasing is not
+  specified, so the same page yields different pixels in different browsers and the image
+  stops being a derivative of the record. So the whole path is ported — a 3× supersample and
+  an **integer** box downsample (round half up, stated on both sides) instead of analytic
+  coverage; a 5×7 bitmap font instead of a text engine; a hand-written zlib of **stored**
+  deflate blocks, because a compressor's heuristics are not part of any specification and two
+  valid deflate streams of one image still differ byte for byte. `>>> 0` after every step of
+  `crc32`/`adler32` — JS bitwise operators are signed int32 where Rust's are `u32`. The font
+  table deliberately has **no parity test of its own**: a glyph differing by one bit changes
+  the PNG, and `parity-fractal.png` is compared byte for byte. Raster at 1024 (the CLI's
+  default, so the two files are one file), on demand — 3 MB and ~250 ms is cheap when asked
+  for and a stutter on every drop if eager.
 
 `lib/omni/view.ts::cell` is the TS copy of the one render rule — an unmeasured term prints
 `—`, never `0.00`. Three implementations exist (Rust `scema_policy::render`, the extension
@@ -640,8 +655,9 @@ than no copy.
 `npm run check:mesh` pins the layer table, the colour rules, tri-state edges, layout
 determinism, path tracing, URL rooting, and **Rust↔TS parity of the Ψ arithmetic** against a fixture
 captured from a real `cargo run --example dump`. `npm run check:omni` pins the
-Rust↔TS commitment arithmetic, the fractal growth and the SVG plate (37 checks) against a real sealed record
-and a real rendered plate — including the
+Rust↔TS commitment arithmetic, the fractal growth, the SVG plate and the **PNG raster**
+(41 checks) against a real sealed record, a real rendered plate and a real rendered PNG —
+including the
 1e-9 float binding, the integer/float tag distinction, byte-wise key ordering, and the
 `JSON.stringify` hazard above. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching

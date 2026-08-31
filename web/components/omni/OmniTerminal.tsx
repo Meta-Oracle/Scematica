@@ -30,7 +30,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { verifyRecordText, webSha256, type Verification } from '@/lib/omni/verify'
-import { looksLikeRecord, type DecisionRecord, type Projection } from '@/lib/omni/types'
+import {
+  looksLikeRecord,
+  type DecisionRecord,
+  type Projection,
+  type WorldState,
+} from '@/lib/omni/types'
 import {
   abstentionAdvice,
   abstentionHeadline,
@@ -41,7 +46,15 @@ import {
   truncate,
 } from '@/lib/omni/view'
 import { dataUri, metadataFor, plateSourceFromText } from '@/lib/omni/nft'
-import { renderFractal } from '@/lib/omni/fractal'
+import { renderFractal, renderFractalPng } from '@/lib/omni/fractal'
+
+/**
+ * Edge of the downloaded PNG, in pixels.
+ *
+ * 1024 because that is `scema nft --png`'s default, and the two files are meant to be the
+ * same file. Changing it here without changing the CLI would leave two images with one name.
+ */
+const PNG_SIZE = 1024
 
 /**
  * The plate, drawn from the same text the verifier hashed.
@@ -56,6 +69,13 @@ interface Plate {
   href: string
   metadata: string
   digest: string
+  /**
+   * Kept so the PNG can be rastered on demand rather than up front.
+   *
+   * A 1024px raster is 3 MB and about a quarter of a second of main thread — cheap when
+   * somebody asks for it, and a stutter on every file drop if it were eager.
+   */
+  world: WorldState
 }
 
 interface Loaded {
@@ -102,6 +122,7 @@ export function OmniTerminal() {
           href: dataUri(svg),
           metadata: JSON.stringify(metadataFor(source.world, svg, source.digest), null, 2),
           digest: source.digest,
+          world: source.world,
         }
       } catch {
         plate = null
@@ -394,6 +415,34 @@ function RecordView({ loaded }: { loaded: Loaded }) {
  */
 function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
   const base = name.replace(/\.json$/i, '')
+  const [rastering, setRastering] = useState(false)
+
+  /**
+   * Raster and hand over the file.
+   *
+   * On demand for the cost reason above, and through a `Blob` rather than a `data:` URI
+   * because a 3 MB URI is past what some browsers will follow — and a download that silently
+   * does nothing is worse than a button that is not there.
+   *
+   * A frame is yielded before the work so the button can actually paint its busy state;
+   * without it the render blocks the same tick that set the flag and nothing shows.
+   */
+  const downloadPng = async () => {
+    setRastering(true)
+    try {
+      await new Promise((r) => requestAnimationFrame(() => r(null)))
+      const bytes = renderFractalPng(plate.world, plate.digest, PNG_SIZE)
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${base}.png`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setRastering(false)
+    }
+  }
+
   return (
     <Panel title="PLATE">
       <div className="flex flex-col gap-5 md:flex-row md:items-start">
@@ -444,6 +493,14 @@ function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
             >
               Download SVG
             </a>
+            <button
+              type="button"
+              onClick={downloadPng}
+              disabled={rastering}
+              className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent disabled:opacity-50"
+            >
+              {rastering ? `Rastering ${PNG_SIZE}×${PNG_SIZE}…` : 'Download PNG'}
+            </button>
             <a
               href={`data:application/json;charset=utf-8,${encodeURIComponent(plate.metadata)}`}
               download={`${base}.metadata.json`}
@@ -453,10 +510,14 @@ function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
             </a>
           </div>
           <p className="text-omni-dim">
-            Both were produced in this tab and nothing was uploaded. The metadata carries no
-            score, rank or rarity: every trait on it is a count an observer reported, and a
-            ranking invented here would be a number of the right shape with nothing behind
-            it.
+            All three were produced in this tab and nothing was uploaded. The PNG is not the
+            SVG handed to a canvas: it is rastered by a port of the same integer code{' '}
+            <span className="text-omni-text">scema nft --png</span> runs, so the file that
+            lands in your downloads is byte-for-byte the file the command line writes. An
+            image that came out differently depending on which browser drew it would not be a
+            derivative of the record. The metadata carries no score, rank or rarity: every
+            trait on it is a count an observer reported, and a ranking invented here would be
+            a number of the right shape with nothing behind it.
           </p>
         </div>
       </div>

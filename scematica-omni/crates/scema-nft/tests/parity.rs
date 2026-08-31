@@ -53,6 +53,36 @@ fn check_or_write(name: &str, actual: &str) {
     }
 }
 
+/// The same, for a file that is not text.
+///
+/// Kept separate rather than generalised because the string form normalises `\r\n`, and doing
+/// that to a PNG would corrupt it in a way that only shows up on one platform.
+fn check_or_write_bytes(name: &str, actual: &[u8]) {
+    let path = fixtures_dir().join(name);
+    let bless = std::env::var_os("SCEMA_NFT_BLESS").is_some();
+    let write = || {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixtures dir");
+        }
+        fs::write(&path, actual).expect("write fixture");
+    };
+
+    match fs::read(&path) {
+        Ok(existing) if existing == actual => {}
+        Ok(_) if bless => write(),
+        Ok(existing) => panic!(
+            "fixture {} is out of date ({} bytes on disk, {} rendered).\n\
+             The raster output changed. If that was deliberate, re-run with \
+             SCEMA_NFT_BLESS=1 — `web/scripts/check-omni.mjs` compares the TypeScript \
+             rasteriser against this file byte for byte.",
+            path.display(),
+            existing.len(),
+            actual.len()
+        ),
+        Err(_) => write(),
+    }
+}
+
 #[test]
 fn the_parity_fixture_is_current() {
     let w = parity_world();
@@ -74,6 +104,15 @@ fn the_parity_fixture_is_current() {
         &format!("{}\n", serde_json::to_string_pretty(&meta).expect("serialise metadata")),
     );
     check_or_write("parity-digest.txt", &format!("{d}\n"));
+
+    // And the raster, byte for byte.
+    //
+    // 256 rather than the 512 of the SVG viewBox: small enough to review in a diff, and large
+    // enough that the legend still renders at two *different* glyph scales — a text-placement
+    // disagreement between the two rasterisers cannot hide in a size where every scale rounds
+    // to 1. The font table gets no parity test of its own; a glyph differing by one bit
+    // changes these bytes, which is exactly what this compares.
+    check_or_write_bytes("parity-fractal.png", &fractal::render_png(&w, &d, 256));
 }
 
 #[test]

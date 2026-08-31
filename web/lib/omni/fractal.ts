@@ -34,6 +34,7 @@ import {
   truncate,
   type Role,
 } from './nft.ts'
+import { renderPng, type Anchor, type Prim } from './raster.ts'
 import type { WorldState } from './types.ts'
 
 const UNIT = 1000
@@ -206,23 +207,42 @@ function cutSet(g: Growth, rng: Rng): number[] {
 
 // ── drawing ───────────────────────────────────────────────────────────────────
 
-function textEl(
+/**
+ * A text element, and the primitive that mirrors it.
+ *
+ * Returned as a pair so a caller cannot emit one without the other — a legend that appeared
+ * in the SVG and not in the PNG would leave the raster looking like a picture rather than a
+ * reading. Same reason as `text_pair` in `fractal.rs`.
+ */
+function textPair(
   x: number,
   y: number,
   size: number,
   role: Role,
-  anchor: string,
+  anchor: Anchor,
   body: string,
-): string {
-  return (
+): [string, Prim] {
+  const el =
     `<text x="${x}" y="${y}" ` +
     `font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" ` +
     `font-size="${size}" fill="${PALETTE[role]}" text-anchor="${anchor}">${esc(body)}</text>`
-  )
+  return [el, { kind: 'text', at: [x * UNIT, y * UNIT], size, rgb: PALETTE[role], anchor, body }]
 }
 
-/** Draw a world as a fractal growth. `digestHex` seeds the form and is printed on it. */
-export function renderFractal(w: WorldState, digestHex: string): string {
+/** Both renderings' inputs, from one traversal. */
+export interface Scene {
+  svg: string
+  prims: Prim[]
+}
+
+/**
+ * Draw the growth once, returning both renderings' inputs.
+ *
+ * The primitive list is accumulated *alongside* the SVG string rather than replacing it, so
+ * the raster walks the identical growth and the SVG output does not change by a byte — which
+ * the parity fixture would catch immediately if it did.
+ */
+export function scene(w: WorldState, digestHex: string): Scene {
   const g = growthOf(w)
   const rng = new Rng(digestHex)
   const cuts = cutSet(g, rng)
@@ -232,10 +252,19 @@ export function renderFractal(w: WorldState, digestHex: string): string {
   let segments = 0
   let severed = 0
   const tips: Pt[] = []
+  const prims: Prim[] = []
 
   const line = (a: Pt, b: Pt, widthMu: number, role: Role, dashed: boolean) => {
     if (segments >= MAX_SEGMENTS) return
     segments += 1
+    prims.push({
+      kind: 'line',
+      a: [a.x, a.y],
+      b: [b.x, b.y],
+      widthMu: Math.max(widthMu, 400),
+      rgb: PALETTE[role],
+      dashed,
+    })
     const dash = dashed ? ' stroke-dasharray="3 4"' : ''
     body +=
       `<path d="M ${pt(a)} L ${pt(b)}" stroke="${PALETTE[role]}" ` +
@@ -286,11 +315,26 @@ export function renderFractal(w: WorldState, digestHex: string): string {
     const role: Role = sig.polarity === 'risk' ? 'risk' : 'opportunity'
     const fill = sig.measured ? PALETTE[role] : 'none'
     if (sig.polarity === 'opportunity') {
+      prims.push({
+        kind: 'disc',
+        c: [p.x, p.y],
+        rMu: 2600,
+        rgb: PALETTE[role],
+        filled: sig.measured,
+      })
       body += `<circle cx="${fmt(p.x)}" cy="${fmt(p.y)}" r="2.6" fill="${fill}" stroke="${PALETTE[role]}" stroke-width="1.2"/>`
     } else {
       const a = { x: p.x, y: p.y - 3 * UNIT }
       const b = { x: p.x - 2600, y: p.y + 1800 }
       const c = { x: p.x + 2600, y: p.y + 1800 }
+      prims.push({
+        kind: 'tri',
+        a: [a.x, a.y],
+        b: [b.x, b.y],
+        c: [c.x, c.y],
+        rgb: PALETTE[role],
+        filled: sig.measured,
+      })
       body += `<path d="M ${pt(a)} L ${pt(b)} L ${pt(c)} Z" fill="${fill}" stroke="${PALETTE[role]}" stroke-width="1.2"/>`
     }
   }
@@ -303,17 +347,41 @@ export function renderFractal(w: WorldState, digestHex: string): string {
   s +=
     `<rect x="8" y="8" width="${VIEW - 16}" height="${VIEW - 16}" ` +
     `fill="none" stroke="${PALETTE.frame}" stroke-width="1"/>`
-  s += body
 
-  s += textEl(24, 34, 17, 'heading', 'start', truncate(w.entity.label, 30))
-  s += textEl(24, 52, 10, 'label', 'start', `${w.entity.kind} · ${w.domain} · ${truncate(w.observer, 28)}`)
+  // The frame, as primitives too. It is chrome rather than data, but the claim this module
+  // makes is that the two renderings depict the same thing — and a border present in one and
+  // absent in the other is a small, avoidable way for that to be false.
+  const lo = 8 * UNIT
+  const hi = (VIEW - 8) * UNIT
+  const frame: [[number, number], [number, number]][] = [
+    [
+      [lo, lo],
+      [hi, lo],
+    ],
+    [
+      [hi, lo],
+      [hi, hi],
+    ],
+    [
+      [hi, hi],
+      [lo, hi],
+    ],
+    [
+      [lo, hi],
+      [lo, lo],
+    ],
+  ]
+  for (const [a, b] of frame) {
+    prims.push({ kind: 'line', a, b, widthMu: 1000, rgb: PALETTE.frame, dashed: false })
+  }
+
+  s += body
 
   const t = w.extent.total
   const extent =
     t === null || t === undefined
       ? `EXTENT ${w.extent.observed} · UNBOUNDED`
       : `EXTENT ${w.extent.observed}/${t}`
-  s += textEl(24, 460, 10, 'label', 'start', extent)
 
   const [, capped] = plannedCuts(g)
   const blind =
@@ -322,26 +390,51 @@ export function renderFractal(w: WorldState, digestHex: string): string {
       : capped
         ? `${w.blind_spots.length} BLIND SPOT(S) · ${severed} LIMB(S) CUT (CAPPED)`
         : `${w.blind_spots.length} BLIND SPOT(S) · ${severed} LIMB(S) CUT`
-  s += textEl(VIEW - 24, 460, 10, w.blind_spots.length === 0 ? 'label' : 'absent', 'end', blind)
 
   const measured = w.signals.filter((x) => x.measured).length
-  s += textEl(
-    24,
-    478,
-    10,
-    'label',
-    'start',
-    w.signals.length === 0 ? 'COVERAGE ∅' : `COVERAGE ${measured}/${w.signals.length}`,
-  )
-  s += textEl(
-    VIEW - 24,
-    478,
-    10,
-    'label',
-    'end',
-    `depth ${g.depth} · arity ${g.arity} · spread ${g.spread}°`,
-  )
-  s += textEl(24, 496, 10, 'claim', 'start', `world ${shortDigest(digestHex)}`)
+  const coverage = w.signals.length === 0 ? 'COVERAGE ∅' : `COVERAGE ${measured}/${w.signals.length}`
 
-  return s + '</svg>'
+  const legend: [number, number, number, Role, Anchor, string][] = [
+    [24, 34, 17, 'heading', 'start', truncate(w.entity.label, 30)],
+    [24, 52, 10, 'label', 'start', `${w.entity.kind} · ${w.domain} · ${truncate(w.observer, 28)}`],
+    [24, 460, 10, 'label', 'start', extent],
+    [VIEW - 24, 460, 10, w.blind_spots.length === 0 ? 'label' : 'absent', 'end', blind],
+    [24, 478, 10, 'label', 'start', coverage],
+    [
+      VIEW - 24,
+      478,
+      10,
+      'label',
+      'end',
+      `depth ${g.depth} · arity ${g.arity} · spread ${g.spread}°`,
+    ],
+    [24, 496, 10, 'claim', 'start', `world ${shortDigest(digestHex)}`],
+  ]
+  for (const [x, y, size, role, anchor, bodyText] of legend) {
+    const [el, prim] = textPair(x, y, size, role, anchor, bodyText)
+    s += el
+    prims.push(prim)
+  }
+
+  return { svg: s + '</svg>', prims }
+}
+
+/** Draw a world as a fractal growth. `digestHex` seeds the form and is printed on it. */
+export function renderFractal(w: WorldState, digestHex: string): string {
+  return scene(w, digestHex).svg
+}
+
+/**
+ * The same growth as a PNG.
+ *
+ * Rasterised from the identical primitive list the SVG is built from, so the two cannot
+ * depict different trees — and byte-identical to what `scema nft --png` writes, which is what
+ * makes the image a derivative of the record rather than of whichever runtime drew it.
+ */
+export function renderFractalPng(
+  w: WorldState,
+  digestHex: string,
+  size: number,
+): Uint8Array<ArrayBuffer> {
+  return renderPng(scene(w, digestHex).prims, VIEW, size, PALETTE.ground)
 }

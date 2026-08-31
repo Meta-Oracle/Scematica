@@ -114,6 +114,27 @@ pub fn load(value: &Value) -> Result<Source> {
         return Ok(Source { world, digest, kind: SourceKind::World });
     }
 
+    // An effect record *is* a record, and refusing it with "expected a record" describes the
+    // file wrongly — it sends the reader hunting a corruption that is not there. It has no
+    // world because it never had one: it records an act, not an observation. The honest
+    // answer names what it is and points at the thing that can be drawn.
+    if value.get("effect").is_some() && value.get("outcome").is_some() {
+        let intent = value.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+        if intent.is_empty() {
+            bail!(
+                "that is an effect record. It has no world to draw — it records what was \
+                 done, not what was observed. This one names no decision either (sealed \
+                 without `--intent`), so there is nothing to draw it from."
+            );
+        }
+        bail!(
+            "that is an effect record. It has no world to draw — it records what was done, \
+             not what was observed. Draw the decision it carries out instead:\n  \
+             scema nft .scema/decisions/{}.json",
+            &intent[..8.min(intent.len())]
+        );
+    }
+
     bail!(
         "not a world or a decision record: expected either `observer` + `entity` \
 (a WorldState, as `scema observe` prints) or `world` + `commitment` (a sealed record)"
@@ -204,5 +225,36 @@ mod tests {
         for banned in ["minted", "generated_at", "rendered_at", "createdAt"] {
             assert!(!meta.contains(banned), "metadata must not contain {banned}");
         }
+    }
+
+    #[test]
+    fn an_effect_record_is_refused_by_name_and_points_at_what_can_be_drawn() {
+        // It is a *record*, so "expected a record" describes the file wrongly and sends the
+        // reader hunting a corruption that is not there. It has no world because it never
+        // had one — it records an act, not an observation.
+        let v = serde_json::json!({
+            "id": "3090fe49",
+            "intent": "07aecde6906ee6bf",
+            "effect": { "kind": "create_dir", "path": "notes" },
+            "outcome": { "status": "succeeded", "detail": "ok" },
+            "commitment": { "intent": "a", "effect": "b", "outcome": "c", "root": "d" },
+        });
+        let e = load(&v).unwrap_err().to_string();
+        assert!(e.contains("effect record"), "{e}");
+        assert!(e.contains("07aecde6"), "it must name the decision to draw instead: {e}");
+    }
+
+    #[test]
+    fn an_effect_record_with_no_intent_says_there_is_nothing_to_draw() {
+        // Sealed without `--intent`, which is honest but unlinkable. Suggesting a record id
+        // that does not exist would be worse than saying so.
+        let v = serde_json::json!({
+            "intent": "",
+            "effect": { "kind": "create_dir", "path": "notes" },
+            "outcome": { "status": "simulated" },
+            "commitment": { "root": "d" },
+        });
+        let e = load(&v).unwrap_err().to_string();
+        assert!(e.contains("names no decision"), "{e}");
     }
 }

@@ -25,6 +25,7 @@ scema-verify = { workspace = true }
 scema-nft = { workspace = true }
 scema-effect = { workspace = true }
 scema-anchor = { workspace = true }
+scema-spend = { workspace = true }
 scema-trust = { workspace = true }
 scema-agent = { workspace = true }
 serde = { workspace = true }

@@ -902,8 +902,22 @@ where, `scema-trust` answers whether, and `scema-effect` records what actually h
 Dry run by default; `--commit` is a separate keystroke and seals an `EffectRecord`.
 `Outcome::Unknown` is a first-class arm — an effect attempted whose result could not be
 observed is neither success nor failure, and exits 3 so a sequence cannot continue past one
-quietly. `delegate`, `discover` and `pay` still exit 2: `pay` needs a spend policy first, and
-a runtime that can spend without one is a runtime nobody should install.
+quietly. `delegate`, `discover` and `pay` are built, and each is narrower than its name. The
+blocker on `pay` was real and is now `scema-spend`: caps, allow-lists and a sealed
+`SpendRecord`. **None of the three moves money or opens a socket** — omni cannot link
+`scematica-protocol` (solana-sdk), so they decide, record, and emit a settlement request for
+something else to settle. That split is right anyway: the decision is pure and testable, and
+the expensive half is a separate step somebody has to run.
+An **absent policy permits nothing** — its own `NoPolicy` refusal, distinct from a breached
+limit, because "you configured nothing" and "you are over budget" send an operator to
+different places. Allow-lists are exact, never prefixes: `inference.` would authorise every
+capability anybody later named under it. Amounts are `u128` **as decimal strings** on the
+wire — JSON numbers are doubles past ~9e15, and `serde_json` refuses a bare `u128` on the way
+back in, so a record sealed as an integer can be written and never re-read. `Settlement::
+Unknown` exits 3 and does **not** consume budget: charging for a spend that may not have
+happened lets a flaky counterparty drain an allowance, and calling it `Failed` invites a
+retry that pays twice. A committed `pay` that is refused is still sealed — the pattern of
+what an agent *wanted* to buy is exactly what a spend policy is for.
 
 **The world contract is versioned and its vocabularies are open** (0.5.0). `WorldState`
 carries `schema: "scema.world/1"` and an undeclared version is refused on import — the

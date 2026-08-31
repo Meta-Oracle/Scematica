@@ -35,6 +35,7 @@
 //! record and appends memory. Both compute exactly the same thing; only the side effects
 //! differ, which is why they share one code path with a flag rather than being two.
 
+mod market;
 mod anchor;
 mod check;
 mod execute;
@@ -44,7 +45,7 @@ mod connect;
 mod doctor;
 mod launch;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
@@ -404,12 +405,71 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Not implemented: hire another agent.
-    Delegate,
-    /// Not implemented: find purchasable capabilities.
-    Discover,
-    /// Not implemented: settle for a capability over x402.
-    Pay,
+    /// Hand a goal to another agent, on the record.
+    ///
+    /// Records what was handed off and under what spend authority. It is NOT a contract:
+    /// bonded results live on the ScemaDEX rail, which is not in this workspace, so a
+    /// specialist that answers badly can be disbelieved and not penalised.
+    Delegate {
+        /// What the other agent is being asked to do.
+        goal: String,
+        /// Who is being asked.
+        #[arg(long)]
+        to: String,
+        /// Spend policy. Without one nothing is delegable — an absent policy permits none.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Budget for this delegation, in the smallest unit.
+        #[arg(long)]
+        max: Option<u128>,
+        #[arg(long, default_value = "lamports")]
+        asset: String,
+        /// Seal the delegation. Without this nothing is written and nobody is contacted.
+        #[arg(long)]
+        commit: bool,
+    },
+    /// What capabilities are on offer, and which this agent is allowed to want.
+    ///
+    /// Reads a catalogue file (or `-` for stdin) rather than an endpoint, so a relay, a curl
+    /// pipeline and a hand-written list are all the same input. Contacts nothing.
+    Discover {
+        /// Catalogue of offers, or `-` for stdin.
+        #[arg(default_value = "-")]
+        catalogue: PathBuf,
+        /// Spend policy, to mark what may actually be bought.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+    },
+    /// Decide whether a spend may happen, and record the decision.
+    ///
+    /// **It does not settle.** x402 settlement lives in `scematica-protocol`, which depends
+    /// on solana-sdk — the pin this workspace exists to keep out. This authorises, seals a
+    /// record, and emits a settlement request for something that can pay.
+    Pay {
+        /// Capability being bought. Matched verbatim against the policy.
+        #[arg(long)]
+        capability: String,
+        /// Who is being paid.
+        #[arg(long)]
+        to: String,
+        /// Amount in the smallest unit. Never a display value.
+        #[arg(long)]
+        units: u128,
+        #[arg(long, default_value = "lamports")]
+        asset: String,
+        /// Spend policy. Without one nothing is payable.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Ledger of what has already settled, so the budget is cumulative.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+        /// The decision this spend serves.
+        #[arg(long)]
+        intent: Option<String>,
+        /// Seal a record and emit the settlement request. Dry run without it.
+        #[arg(long)]
+        commit: bool,
+    },
 }
 
 fn parse_constraints(specs: &[String]) -> Vec<Constraint> {
@@ -945,32 +1005,39 @@ fn run(cli: Cli) -> Result<ExitCode> {
             *allow_execute,
             *yes,
         ),
-        Command::Delegate => not_built(
-            "delegate",
-            "Agent-to-agent hiring runs over the ScemaDEX relay and needs a bonded result \
-             format, so a specialist that answers badly can be slashed rather than merely \
-             disbelieved.",
+        Command::Delegate { goal, to, policy, max, asset, commit } => market::delegate(
+            Path::new(&cli.root),
+            goal,
+            to,
+            policy.as_ref(),
+            *max,
+            asset,
+            *commit,
         ),
-        Command::Discover => not_built(
-            "discover",
-            "Capability discovery needs the relay's catalogue endpoint and a policy for \
-             which capabilities this agent is allowed to want.",
-        ),
-        Command::Pay => not_built(
-            "pay",
-            "x402 settlement exists in `scematica-protocol`, but paying on the agent's own \
-             initiative needs a spend policy first. A runtime that can spend without one is \
-             a runtime nobody should install.",
+        Command::Discover { catalogue, policy } => {
+            market::discover(catalogue, policy.as_ref())
+        }
+        Command::Pay {
+            capability,
+            to,
+            units,
+            asset,
+            policy,
+            ledger,
+            intent,
+            commit,
+        } => market::pay(
+            Path::new(&cli.root),
+            capability,
+            to,
+            *units,
+            asset,
+            policy.as_ref(),
+            ledger.as_ref(),
+            intent.as_deref(),
+            *commit,
         ),
     }
-}
-
-fn not_built(verb: &str, why: &str) -> Result<ExitCode> {
-    eprintln!("scema {verb}: not built yet.\n");
-    eprintln!("  {why}");
-    eprintln!("\n  It is listed in `--help` on purpose: the shape of this runtime includes");
-    eprintln!("  this verb, and finding that out from the tool beats finding it out later.");
-    Ok(ExitCode::from(2))
 }
 
 /// Draw the world that was just perceived, if asked.

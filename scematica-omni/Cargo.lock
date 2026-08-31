@@ -675,6 +675,7 @@ dependencies = [
  "scema-nft",
  "scema-policy",
  "scema-sim",
+ "scema-spend",
  "scema-tools",
  "scema-trust",
  "scema-verify",
@@ -770,6 +771,15 @@ name = "scema-sim"
 version = "1.0.0"
 dependencies = [
  "scema-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "scema-spend"
+version = "1.0.0"
+dependencies = [
+ "scema-verify",
  "serde",
  "serde_json",
 ]

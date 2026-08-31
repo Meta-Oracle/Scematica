@@ -1,0 +1,20 @@
+[package]
+name = "scema-spend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — whether the agent may spend, how much, and on what. The policy that has to exist before `pay` does."
+keywords = ["agent", "payments", "policy", "x402"]
+categories = ["config"]
+
+# No wallet, no signer, no chain, no HTTP — see the crate note. This crate decides; it never
+# settles. `scematica-protocol` does the settling and lives in the bot workspace behind a
+# solana-sdk pin that omni must never link.
+[dependencies]
+scema-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -807,6 +807,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "scema-vault"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "scema-daemon",
+ "scema-entitlement",
+ "scema-verify",
+ "scema-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scema-verify"
 version = "1.0.0"
 dependencies = [

@@ -111,6 +111,19 @@ cd scematica-omni ; cargo test --workspace          # 409 tests
 ./scematica-omni/target/release/scema daemon --allow .   # -> scema-omnid, loopback :7842
 ./scematica-omni/target/release/scema mcp    --allow .   # -> scema-mcp, MCP over stdio
 
+# scema-vault — sealed world trees served to token holders. SEPARATE BINARY on purpose:
+# `scema-omnid` binds loopback and that bind is deliberately not configurable, while a
+# distribution service is supposed to be reachable. Both postures in one process is how the
+# wrong one gets enabled. Still defaults to loopback; TLS is a reverse proxy's job.
+cargo run -p scema-vault -- --records .scema/decisions --entitlements ent.json
+# The token's `scema.world_commitment` IS the access key — one token, one world, derived
+# from the artefact rather than recorded beside it (`scema-entitlement`). 503 and never 403
+# when the chain cannot be read: an RPC timeout is not a fact about the holder, and a 403
+# sends somebody to re-buy a token they already own. Fails closed AND reports accurately.
+# Bytes are served VERBATIM — re-serialising would collapse `0.0` to `0`, change the digest,
+# and hand a holder a record that fails its own verification. It gates distribution, never
+# truth: a served record still verifies offline with `scema verify --file` or /omni.
+
 # The console, directly. Black+violet palette, unique among this repo's TUIs.
 ./scematica-omni/target/release/scema-tui                  # five tabs over the loop
 ./scematica-omni/target/release/scema-tui --once           # one pass as plain text

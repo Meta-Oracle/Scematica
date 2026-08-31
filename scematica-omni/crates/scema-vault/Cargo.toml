@@ -1,0 +1,30 @@
+[package]
+name = "scema-vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — serves sealed world trees to the holders of the tokens that commit to them."
+keywords = ["agent", "nft", "server"]
+categories = ["web-programming::http-server"]
+
+[[bin]]
+name = "scema-vault"
+path = "src/main.rs"
+
+# Reuses `scema-daemon`'s hand-rolled HTTP rather than pulling a framework, for the reason
+# spelled out there: the moment omni carries a TLS stack, somebody path-depends it from the
+# bot workspace and resurrects the zeroize/curve25519-dalek conflict. TLS for this service is
+# a reverse proxy's job — see the README.
+[dependencies]
+scema-daemon = { workspace = true }
+scema-entitlement = { workspace = true }
+scema-verify = { workspace = true }
+scema-world = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

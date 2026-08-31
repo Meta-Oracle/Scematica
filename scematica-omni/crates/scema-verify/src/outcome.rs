@@ -319,7 +319,14 @@ mod tests {
         let mut p = StructuralSimulator::new().project(&world, &goal, &h);
         p.expected_gain = Term::measured("R", "gain", gain, "test");
         p.uncertainty = Term::measured("U", "unc", unc, "test");
-        let mut d = decide(&world, &goal, &[h.clone()], &[p.clone()], &[], DecisionConfig::default());
+        let mut d = decide(
+            &world,
+            &goal,
+            std::slice::from_ref(&h),
+            std::slice::from_ref(&p),
+            &[],
+            DecisionConfig::default(),
+        );
         d.chosen = chosen.map(|c| c.to_string());
         DecisionRecord::seal("test/1", 0, world, goal, vec![h], vec![p], d)
     }

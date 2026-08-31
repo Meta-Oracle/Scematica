@@ -1,0 +1,31 @@
+# Binary files, declared rather than detected.
+#
+# `parity-fractal.png` carries Rust's raster output, and `web/scripts/check-omni.mjs`
+# compares the TypeScript port against it byte for byte. Git's content heuristic would almost
+# certainly leave a PNG alone on its own — but "almost certainly" is the wrong standard for a
+# fixture whose entire job is to be exact, and the failure would surface on somebody else's
+# machine as a parity error in code that is correct.
+#
+# The text fixtures beside it are deliberately *not* pinned with `-text`. They are stored as
+# LF and checked out as CRLF on Windows, and both comparators already normalise `\r\n` before
+# comparing (`check_or_write` in `tests/parity.rs`, and the `.replace(/\r\n/g, '\n')` in
+# `check-omni.mjs`). Pinning them now would push the working tree's CRLF into blobs that are
+# currently LF — changing the very bytes this file exists to protect.
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.apk binary
+*.wasm binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

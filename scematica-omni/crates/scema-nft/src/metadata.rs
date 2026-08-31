@@ -57,6 +57,22 @@ pub fn data_uri(svg: &str) -> String {
     format!("data:image/svg+xml;base64,{}", base64(svg.as_bytes()))
 }
 
+/// The PNG as a self-contained `data:` URI.
+///
+/// The SVG is the better default and stays the default: it is two orders of magnitude
+/// smaller, and it is *the* drawing rather than a sampling of it. But an SVG `image` is
+/// unusable in a surprising number of places — several marketplaces, most previews, and
+/// anything that composites into a bitmap — and "your token renders everywhere except where
+/// people look at it" is not a property worth defending on aesthetic grounds.
+///
+/// The cost is stated rather than hidden: base64 inflates by 4/3, so a 1024px raster is
+/// roughly 4 MB of metadata. `scema nft --image-format png` prints the resulting size and
+/// `--png-size` is the dial. For anything minted at scale the right answer is still a hosted
+/// URL through `--image`.
+pub fn data_uri_png(bytes: &[u8]) -> String {
+    format!("data:image/png;base64,{}", base64(bytes))
+}
+
 /// Build the token metadata.
 ///
 /// `image` overrides the inlined data URI — for a deployment that pins the SVG somewhere
@@ -159,6 +175,68 @@ fn counts(w: &WorldState) -> (usize, usize, usize, usize) {
 mod tests {
     use super::*;
     use crate::fixtures::{empty_world, parity_world, rich_world};
+
+    #[test]
+    fn a_png_data_uri_declares_png_and_round_trips_to_the_same_bytes() {
+        // The whole point of embedding rather than linking is that the token carries the
+        // image. If the base64 does not decode back to the exact file the CLI wrote, the
+        // token and the artefact on disk are two different pictures with one commitment.
+        let w = parity_world();
+        let d = crate::world_digest(&w);
+        let png = crate::fractal::render_png(&w, &d, 64);
+
+        let uri = data_uri_png(&png);
+        assert!(uri.starts_with("data:image/png;base64,"), "{}", &uri[..40]);
+
+        // Decoded with an independent implementation rather than by inverting `base64`,
+        // which would agree with its own bug.
+        let body = uri.split_once(',').unwrap().1;
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = Vec::new();
+        for c in body.bytes() {
+            if c == b'=' {
+                break;
+            }
+            let v = alphabet.iter().position(|a| *a == c).expect("alphabet") as u32;
+            bits.push(v);
+        }
+        let mut out = Vec::new();
+        for chunk in bits.chunks(4) {
+            let mut n = 0u32;
+            for (i, v) in chunk.iter().enumerate() {
+                n |= v << (18 - 6 * i);
+            }
+            let take = chunk.len() * 6 / 8;
+            for i in 0..take {
+                out.push(((n >> (16 - 8 * i)) & 0xff) as u8);
+            }
+        }
+        assert_eq!(out, png, "the embedded image is not the file that was rendered");
+    }
+
+    #[test]
+    fn an_explicit_image_url_outranks_an_inlined_drawing() {
+        // A hosted URL is what anything minted at scale should carry, and a flag the caller
+        // passed explicitly must never lose to a default.
+        let w = parity_world();
+        let d = crate::world_digest(&w);
+        let meta = metadata(&w, "<svg/>", &d, Some("ipfs://bafy.../plate.png"));
+        assert_eq!(meta["image"], "ipfs://bafy.../plate.png");
+    }
+
+    #[test]
+    fn the_default_image_is_still_the_inline_svg() {
+        // Changing this silently would repoint every token anybody has already minted from
+        // a self-contained drawing to something else.
+        let w = parity_world();
+        let d = crate::world_digest(&w);
+        let meta = metadata(&w, "<svg/>", &d, None);
+        assert!(
+            meta["image"].as_str().unwrap().starts_with("data:image/svg+xml;base64,"),
+            "{}",
+            meta["image"]
+        );
+    }
 
     #[test]
     fn base64_matches_the_reference_vectors() {

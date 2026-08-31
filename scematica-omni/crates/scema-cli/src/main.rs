@@ -313,6 +313,16 @@ enum Command {
         /// image is a `data:` URI and the token is complete on its own.
         #[arg(long)]
         image: Option<String>,
+        /// Which drawing the metadata's `image` inlines: `svg` (default) or `png`.
+        ///
+        /// SVG is the default because it is two orders of magnitude smaller and is *the*
+        /// drawing rather than a sampling of it. Choose `png` when the consumer cannot
+        /// render SVG — several marketplaces and most preview pipelines cannot — and accept
+        /// the size: base64 inflates by 4/3, so 1024px is roughly 4 MB of metadata. Trade it
+        /// down with `--png-size`, or host the image and pass `--image`, which wins over
+        /// both.
+        #[arg(long, default_value = "svg", value_parser = ["svg", "png"])]
+        image_format: String,
         /// Also write a PNG here, rasterised from the same growth.
         ///
         /// The rasteriser and the PNG encoder are written by hand for the same reason the
@@ -488,15 +498,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             check::run(locator, cli.json)
         }
-        Command::Nft { locator, out, metadata, image, png, png_size, plate } => nft::run(
-            locator,
-            out.as_ref(),
-            metadata.as_ref(),
-            image.as_deref(),
-            png.as_ref(),
-            *png_size,
-            *plate,
-        ),
+        Command::Nft { locator, out, metadata, image, image_format, png, png_size, plate } => {
+            nft::run(
+                locator,
+                out.as_ref(),
+                metadata.as_ref(),
+                image.as_deref(),
+                image_format,
+                png.as_ref(),
+                *png_size,
+                *plate,
+            )
+        }
         Command::Observe { locator } => {
             let agent = agent_for(false);
             let w = agent.observe(locator)?;

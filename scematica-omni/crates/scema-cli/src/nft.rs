@@ -52,6 +52,7 @@ pub fn run(
     out: Option<&PathBuf>,
     metadata_out: Option<&PathBuf>,
     image: Option<&str>,
+    image_format: &str,
     png: Option<&PathBuf>,
     png_size: usize,
     plate: bool,
@@ -82,19 +83,46 @@ pub fn run(
         }
     }
 
-    if let Some(p) = png {
-        // Rasterised from the same primitives the SVG is built from, so the two cannot
-        // depict different trees. The plate has no raster backend — it is an instrument to
-        // be read, not an image to be held.
+    // Rastered once and reused. Writing the file and embedding it in the metadata must not
+    // be two renders: they would agree today and are exactly the pair that drifts the moment
+    // somebody changes a default on one path.
+    let want_png = png.is_some() || image_format.eq_ignore_ascii_case("png");
+    let png_bytes = if want_png {
+        // The plate has no raster backend — it is an instrument to be read, not an image to
+        // be held.
         if plate {
-            bail!("--png renders the growth; it does not apply to --plate");
+            bail!("PNG renders the growth; it does not apply to --plate");
         }
-        let bytes = scema_nft::fractal::render_png(&source.world, &source.digest, png_size);
-        std::fs::write(p, &bytes).with_context(|| format!("writing {}", p.display()))?;
+        Some(scema_nft::fractal::render_png(&source.world, &source.digest, png_size))
+    } else {
+        None
+    };
+
+    if let (Some(p), Some(bytes)) = (png, png_bytes.as_ref()) {
+        std::fs::write(p, bytes).with_context(|| format!("writing {}", p.display()))?;
         eprintln!("wrote {} ({} bytes, {png_size}x{png_size})", p.display(), bytes.len());
     }
 
     if let Some(p) = metadata_out {
+        // `--image` still wins. A hosted URL is what anything minted at scale should carry,
+        // and a flag the caller passed explicitly must not be overridden by a default.
+        let embedded;
+        let image = match (image, png_bytes.as_ref()) {
+            (Some(url), _) => Some(url),
+            (None, Some(bytes)) if image_format.eq_ignore_ascii_case("png") => {
+                embedded = scema_nft::metadata::data_uri_png(bytes);
+                // Base64 inflates by 4/3 and this lands inside the metadata document. Said
+                // out loud, because a 4 MB token JSON is rejected by some hosts and merely
+                // slow at others, and both failures happen long after this command exits.
+                eprintln!(
+                    "metadata image is the {png_size}x{png_size} PNG, inline: {} KB of base64 \
+                     (use --png-size to trade detail for size, or --image <url> to host it)",
+                    embedded.len() / 1024
+                );
+                Some(embedded.as_str())
+            }
+            _ => None,
+        };
         let meta = render_metadata(&source.world, &svg, &source.digest, image);
         let json = serde_json::to_string_pretty(&meta)?;
         std::fs::write(p, format!("{json}\n"))

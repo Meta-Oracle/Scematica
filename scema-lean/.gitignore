@@ -1,0 +1,3 @@
+# Lake's build tree: oleans, C output, the compiled `formalize` binary.
+# All regenerable by `lake build`, and large.
+/.lake/

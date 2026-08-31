@@ -1,0 +1,22 @@
+name = "scema"
+version = "1.0.0"
+defaultTargets = ["Scema", "formalize"]
+
+# No Mathlib, deliberately.
+#
+# Not to be clever — because every theorem in this package is meant to be checkable by
+# somebody who cloned the repository and ran one command, offline, in seconds. Mathlib is a
+# multi-gigabyte dependency and a long build, and a proof nobody can afford to re-check is
+# in the same category as a test nobody runs.
+#
+# It is also a real constraint on what can be stated, and that constraint is healthy: it
+# forces the invariants to be elementary. Every result here is about lists, options, integers
+# and an inductive tree. If a claim needs measure theory, it is not a claim about a wire
+# format.
+
+[[lean_lib]]
+name = "Scema"
+
+[[lean_exe]]
+name = "formalize"
+root = "Main"

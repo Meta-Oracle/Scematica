@@ -157,6 +157,12 @@ cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli omni -n base 
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.dashboard              # full-screen console (no deps)
 cd alchem-link ; pyinstaller alchem-link.spec ; pyinstaller alchem-link-ui.spec       # standalone binaries
 
+# scema-lean — the invariants as machine-checked proofs (Lean 4, own toolchain, no Mathlib)
+cd scema-lean ; lake build          # discharges every proof; failure = an invariant broke
+cd scema-lean ; lake exe formalize  # the decidable ones re-run as computations (15 checks)
+# `lake build` IS the test. `formalize` exists so a reader who does not read Lean still gets
+# an answer, and so a `decide` weakened into a vacuous truth shows up as a failing check.
+
 # Lint / format
 cargo clippy --workspace --all-targets
 cargo fmt --all
@@ -284,6 +290,26 @@ scema-botchain/         BOT Chain (EVM, chain 677) port. **Own cargo workspace, 
                         Bins: `botchain-probe`. See scema-botchain/README.md — it records
                         the measured pool-creation flow, which as of Aug 2026 is ~2 events
                         in 8 days and therefore does not yet support a sniper.
+scema-lean/             **Lean 4 package, not a cargo crate.** The handful of invariants the
+                        project's guarantees actually rest on, as machine-checked proofs:
+                        the unmeasured/measured-zero distinction (`Term.lean`), odd-node
+                        promotion and CVE-2012-2459 (`Merkle.lean`), and canonical-encoding
+                        tag/key-order/fixed-point separation (`Canonical.lean`).
+                        **It is NOT a Rust-to-Lean transpiler** and must not be described as
+                        one — that is Aeneas/hax territory, years of work for a *subset* of
+                        Rust. It is a model of ~300 lines of Rust, maintained by hand, and
+                        the README says so in a section that must not be deleted: the gap
+                        between model and implementation is real, and a proof believed to
+                        cover code it does not is worse than no proof.
+                        Lean 4.18.0 pinned, **no Mathlib** (every claim must be reachable by
+                        `decide`/`simp`/`omega`, which keeps a cold build near a minute and
+                        forces the invariants to stay elementary). No network.
+                        `cd scema-lean ; lake build ; lake exe formalize` (15 checks).
+                        Two traps if you extend it: a `partial def` does not reduce in the
+                        kernel, so `decide` silently gets *stuck* rather than failing — split
+                        normalisation from serialisation to keep recursion structural; and a
+                        nested inductive cannot derive `DecidableEq`, which is fine because
+                        every theorem should compare bytes, not values.
 scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace, in the
                         root `exclude` list** — it will host a browser-extension bridge, a
                         local daemon and an MCP surface, all of which want a modern

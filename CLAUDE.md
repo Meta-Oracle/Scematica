@@ -932,6 +932,18 @@ trait, for the same reason the WorldState contract is: the two sides cannot link
 verify that money moved and does not pretend to; what it buys is that a settler cannot be
 vague — a settlement without a reference is refused, and `Unknown` is not an accepted
 outcome, because a settler that cannot tell should emit no receipt at all.
+**Writing a settler: `scematica-omni/docs/SETTLERS.md`.** The contract is versioned
+(`scema.receipt/1`) and carries shared conformance vectors at
+`crates/scema-spend/vectors/receipts.json` — omni runs them in `tests/conformance.rs` and a
+settler author runs the same file, so both sides check against ONE artefact rather than
+each other's prose (three hand-written WorldState producers drifted exactly that way until
+fixtures pinned them). One vector is `fabricated-but-well-formed`, **accepted on purpose**:
+the contract checks shape and never truth, and anything reading a successful reconciliation
+as proof of payment has misread it. `scema_spend::settler` supplies the seam and a
+`ScriptedSettler` double, so the loop is testable before anybody writes code that can spend;
+`Script::Silence` is the case to build against, because a caller that treats silence as
+failure and retries **pays twice**. `answers()` is separate from `Receipt::validate` because
+a settler working a queue can reply to the wrong item with a perfectly well-formed document.
 
 **The world contract is versioned and its vocabularies are open** (0.5.0). `WorldState`
 carries `schema: "scema.world/1"` and an undeclared version is refused on import — the

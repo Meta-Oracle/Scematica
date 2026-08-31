@@ -1,0 +1,143 @@
+{
+  "contract": "scema.receipt/1",
+  "note": [
+    "Conformance vectors for the settler boundary. Omni runs these against its own",
+    "`Receipt::validate` in `tests/conformance.rs`; a settler written in another workspace",
+    "or another language should run the same file against its emitter, so both sides are",
+    "checked against one artefact rather than against each other's prose.",
+    "",
+    "`accepted` is what omni does with the document, and nothing more. A vector that is",
+    "accepted is well-formed — it is NOT a statement that money moved. Nothing in this",
+    "contract can establish that, and the `fabricated-but-well-formed` case exists to make",
+    "that impossible to forget."
+  ],
+  "vectors": [
+    {
+      "name": "settled",
+      "why": "The ordinary success. A reference somebody can look up on a chain.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "settled",
+        "reference": "5xQabcdefghijklmnopqrstuvwxyz1234567890signature",
+        "settler": "scematica-protocol/1.28.0"
+      },
+      "accepted": true
+    },
+    {
+      "name": "failed-with-a-reason",
+      "why": "Definitely did not happen. Safe to retry, and the detail says why.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "failed",
+        "detail": "counterparty returned 402 with requirements this settler cannot meet",
+        "settler": "scematica-protocol/1.28.0"
+      },
+      "accepted": true
+    },
+    {
+      "name": "settled-without-a-reference",
+      "why": "The reference is the entire difference between a claim somebody can check and one they must take on trust. A settler that cannot produce one has not settled.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "settled",
+        "reference": "",
+        "settler": "sloppy/1"
+      },
+      "accepted": false,
+      "error": "no_reference"
+    },
+    {
+      "name": "settled-with-whitespace-reference",
+      "why": "Same rule. A blank that looks filled in is worse than an empty one.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "settled",
+        "reference": "   ",
+        "settler": "sloppy/1"
+      },
+      "accepted": false,
+      "error": "no_reference"
+    },
+    {
+      "name": "failed-without-a-reason",
+      "why": "An operator cannot tell whether to retry, which is the only decision a failure informs.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "failed",
+        "detail": "",
+        "settler": "sloppy/1"
+      },
+      "accepted": false,
+      "error": "no_detail"
+    },
+    {
+      "name": "no-spend-record",
+      "why": "A receipt about nothing in particular cannot resolve anything.",
+      "receipt": {
+        "spend_record": "",
+        "outcome": "settled",
+        "reference": "sig",
+        "settler": "sloppy/1"
+      },
+      "accepted": false,
+      "error": "no_spend_record"
+    },
+    {
+      "name": "truncated-spend-record",
+      "why": "Record ids are 16 hex characters. A short one is a truncation somewhere, and matching it loosely would let one receipt resolve the wrong spend.",
+      "receipt": {
+        "spend_record": "dd4c36",
+        "outcome": "settled",
+        "reference": "sig",
+        "settler": "sloppy/1"
+      },
+      "accepted": false,
+      "error": "no_spend_record"
+    },
+    {
+      "name": "fabricated-but-well-formed",
+      "why": "ACCEPTED, and that is the point. This contract checks shape, never truth. A settler can lie and omni will take the document; the reference exists so a human or a chain lookup can catch it. Anything that reads `accepted: true` as proof of payment has misread the contract.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "settled",
+        "reference": "entirely-made-up",
+        "settler": "liar/1"
+      },
+      "accepted": true
+    },
+    {
+      "name": "unnamed-settler",
+      "why": "ACCEPTED. `settler` is optional so an operator can reconcile by hand from a block explorer without inventing a name for themselves. The reconciliation prints '(unnamed settler)' rather than implying provenance it does not have.",
+      "receipt": {
+        "spend_record": "dd4c36f4cc82292f",
+        "outcome": "settled",
+        "reference": "5xQ...sig"
+      },
+      "accepted": true
+    }
+  ],
+  "rejected_outcomes": {
+    "note": [
+      "Values of `outcome` that must not parse at all, as distinct from parsing and failing",
+      "validation. A settler emitting one of these has misunderstood the contract, and the",
+      "failure should be loud at the boundary rather than becoming a quiet no-op."
+    ],
+    "cases": [
+      {
+        "name": "unknown",
+        "why": "A settler reporting 'I do not know' is reporting the state the record is already in. Accepting it would let reconciliation appear to make progress while changing nothing. A settler that cannot tell should emit NO receipt — silence is the honest signal, and the spend stays visibly unresolved.",
+        "receipt": { "spend_record": "dd4c36f4cc82292f", "outcome": "unknown" }
+      },
+      {
+        "name": "pending",
+        "why": "Same reason. 'Not yet' is not an outcome; come back when it is one.",
+        "receipt": { "spend_record": "dd4c36f4cc82292f", "outcome": "pending" }
+      },
+      {
+        "name": "partial",
+        "why": "There is no partial settlement in this contract. A spend is one amount to one payee, and half of it is a different spend that was never authorised.",
+        "receipt": { "spend_record": "dd4c36f4cc82292f", "outcome": "partial", "reference": "sig" }
+      }
+    ]
+  }
+}

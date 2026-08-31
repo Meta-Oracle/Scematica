@@ -37,7 +37,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod receipt;
 pub mod record;
+pub mod settler;
 
+pub use settler::{answers, Script, ScriptedSettler, Settler, SettlementRequest};
 pub use receipt::{Receipt, ReceiptError, ReceiptOutcome};
 pub use record::{Settlement, SpendRecord};
 

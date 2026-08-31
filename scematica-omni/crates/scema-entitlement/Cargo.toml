@@ -1,0 +1,20 @@
+[package]
+name = "scema-entitlement"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Scematica Omni — who may read which world tree, and the three answers that question has."
+keywords = ["agent", "access-control", "nft"]
+categories = ["authentication"]
+
+# No chain client, no crypto, no HTTP. Deliberate: everything that decides what an
+# entitlement *means* is a pure transform with tests that need no network, and the chain read
+# is a trait the caller supplies. Same split as `alchem_link.omni.world` vs `perceive`, and
+# for the same reason — the meaning is the part worth testing.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

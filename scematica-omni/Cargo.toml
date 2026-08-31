@@ -15,6 +15,7 @@ members = [
     "crates/scema-tui",
     "crates/scema-daemon",
     "crates/scema-mcp",
+    "crates/scema-entitlement",
 ]
 resolver = "2"
 
@@ -56,6 +57,7 @@ scema-verify = { path = "crates/scema-verify", version = "1.0.0" }
 scema-nft = { path = "crates/scema-nft", version = "1.0.0" }
 scema-trust = { path = "crates/scema-trust", version = "1.0.0" }
 scema-effect = { path = "crates/scema-effect", version = "1.0.0" }
+scema-entitlement = { path = "crates/scema-entitlement", version = "1.0.0" }
 scema-anchor = { path = "crates/scema-anchor", version = "1.0.0" }
 scema-agent = { path = "crates/scema-agent", version = "1.0.0" }
 scema-tui = { path = "crates/scema-tui", version = "1.0.0" }

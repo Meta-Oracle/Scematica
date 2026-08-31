@@ -711,6 +711,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scema-entitlement"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scema-mcp"
 version = "1.0.0"
 dependencies = [

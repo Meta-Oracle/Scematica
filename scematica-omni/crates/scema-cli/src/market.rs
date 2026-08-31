@@ -24,9 +24,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use scema_spend::{
-    authorise, Amount, Ledger, Settlement, SpendPolicy, SpendRecord, SpendRequest, Verdict,
+    authorise, Amount, Ledger, Receipt, ReceiptOutcome, Settlement, SpendPolicy, SpendRecord,
+    SpendRequest, Verdict,
 };
 
 /// A capability somebody offers. Read from a catalogue file; never invented.
@@ -281,6 +282,126 @@ pub fn delegate(
     Ok(ExitCode::from(3))
 }
 
+/// `scema reconcile` — resolve an `Unknown` spend from a settler's receipt.
+///
+/// The half that was missing, and its absence was a real defect rather than an omission:
+/// `pay` read the ledger but nothing ever wrote it, so the cumulative budget cap was inert
+/// across invocations. Every spend saw `spent: 0`. The per-transaction cap worked; the total
+/// did not.
+///
+/// The fix is not "write the ledger in `pay`" — only a **settled** spend may consume budget,
+/// and `pay` cannot observe settlement. So the ledger is written here, where a settlement is
+/// actually reported, and nowhere else.
+///
+/// ## The spend record is never edited
+///
+/// Reconciliation appends its own sealed record naming the spend it resolves. The original
+/// stays exactly as sealed, still saying `Unknown`, because that *was* the state of knowledge
+/// at that moment and rewriting it would destroy the evidence that the gap existed. Same rule
+/// as every other record in this runtime: sealed means sealed.
+pub fn reconcile(
+    root: &Path,
+    receipt_path: &Path,
+    ledger_path: Option<&PathBuf>,
+) -> Result<ExitCode> {
+    let receipt: Receipt = read_json(receipt_path)?;
+    if let Err(e) = receipt.validate() {
+        bail!("{}", e.explain());
+    }
+
+    let spend_path = root.join("spends").join(format!("{}.json", receipt.spend_record));
+    let spend: SpendRecord = read_json(&spend_path).with_context(|| {
+        format!("no spend record `{}` under {}", receipt.spend_record, root.display())
+    })?;
+
+    if !spend.verify() {
+        bail!(
+            "the spend record `{}` does not match its own commitment — it was edited after              sealing, and reconciling it would launder that",
+            spend.id
+        );
+    }
+    if !matches!(spend.settlement, Settlement::Unknown { .. }) {
+        println!("SPEND {} is already {}", spend.id, settlement_word(&spend.settlement));
+        println!("  Nothing to reconcile. A receipt only resolves an unobserved settlement.");
+        return Ok(ExitCode::from(1));
+    }
+
+    let mut ledger: Ledger = match ledger_path {
+        Some(p) if p.exists() => read_json(p)?,
+        _ => Ledger::default(),
+    };
+
+    let settlement = match &receipt.outcome {
+        ReceiptOutcome::Settled { reference } => {
+            Settlement::Settled { reference: reference.clone() }
+        }
+        ReceiptOutcome::Failed { detail } => Settlement::Failed { detail: detail.clone() },
+    };
+
+    println!("RECONCILE  {}", spend.id);
+    println!("  {} {} to {}", spend.request.amount.units, spend.request.amount.asset,
+             spend.request.payee);
+    println!("  receipt from {}", if receipt.settler.is_empty() { "(unnamed settler)" }
+             else { &receipt.settler });
+    println!("  {}", settlement.headline());
+
+    let mut charged = false;
+    if settlement.consumed_budget() {
+        if let Some(p) = ledger_path {
+            charged = ledger.settle(&spend.id, spend.request.amount.units);
+            if charged {
+                std::fs::write(p, format!("{}
+", serde_json::to_string_pretty(&ledger)?))
+                    .with_context(|| format!("writing {}", p.display()))?;
+                println!("  budget  {} spent across {} settlement(s)", ledger.spent, ledger.count);
+            } else {
+                // Not an error. Running this twice is reasonable — after a crash, from a
+                // retry loop — and the second run being a no-op is the designed behaviour.
+                println!("  budget  already counted; this spend was reconciled before");
+            }
+        } else {
+            println!("  budget  NOT updated — no --ledger was given, so nothing accumulates");
+        }
+    }
+
+    let record = SpendRecord::seal(
+        concat!("scema-cli/", env!("CARGO_PKG_VERSION")),
+        now(),
+        spend.request.clone(),
+        spend.verdict.clone(),
+        settlement.clone(),
+    );
+    let dir = root.join("reconciliations");
+    std::fs::create_dir_all(&dir)?;
+    let out = dir.join(format!("{}.json", record.id));
+    let body = serde_json::json!({
+        "reconciles": spend.id,
+        "receipt": receipt,
+        "record": record,
+    });
+    std::fs::write(&out, format!("{}
+", serde_json::to_string_pretty(&body)?))?;
+
+    println!();
+    println!("  sealed {}", out.display());
+    println!("  The spend record itself is unchanged and still reads UNKNOWN — that was the");
+    println!("  state of knowledge when it was sealed, and rewriting it would erase the gap.");
+    if !charged && settlement.consumed_budget() && ledger_path.is_some() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    Ok(ExitCode::from(settlement.exit_code()))
+}
+
+fn settlement_word(s: &Settlement) -> &'static str {
+    match s {
+        Settlement::Settled { .. } => "settled",
+        Settlement::Failed { .. } => "failed",
+        Settlement::Unknown { .. } => "unknown",
+        Settlement::DryRun => "a dry run",
+        Settlement::Refused { .. } => "refused",
+    }
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -429,6 +550,141 @@ mod tests {
         assert_eq!(files.len(), 1);
     }
 
+
+    /// Seal a spend and return its record id.
+    fn seal_spend(dir: &Path, pol: &Path) -> String {
+        pay(dir, "inference.rank", "agent-b", 400, "lamports", Some(&pol.to_path_buf()), None, None, true)
+            .unwrap();
+        let f = std::fs::read_dir(dir.join("spends")).unwrap().flatten().next().unwrap();
+        f.path().file_stem().unwrap().to_string_lossy().to_string()
+    }
+
+    fn write_receipt(dir: &Path, id: &str, body: serde_json::Value) -> PathBuf {
+        let p = dir.join("receipt.json");
+        let mut v = body;
+        v["spend_record"] = serde_json::json!(id);
+        std::fs::write(&p, serde_json::to_string(&v).unwrap()).unwrap();
+        p
+    }
+
+    #[test]
+    fn reconciling_a_settlement_charges_the_budget_exactly_once() {
+        // The defect this verb exists for: `pay` read the ledger and nothing wrote it, so the
+        // cumulative cap was inert. Running twice must be a no-op, not a double charge.
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": "sig", "settler": "t"
+        }));
+        let led = dir.join("ledger.json");
+
+        reconcile(&dir, &r, Some(&led)).unwrap();
+        let l1: Ledger = serde_json::from_str(&std::fs::read_to_string(&led).unwrap()).unwrap();
+        assert_eq!((l1.spent, l1.count), (400, 1));
+
+        reconcile(&dir, &r, Some(&led)).unwrap();
+        let l2: Ledger = serde_json::from_str(&std::fs::read_to_string(&led).unwrap()).unwrap();
+        assert_eq!((l2.spent, l2.count), (400, 1), "a second run must change nothing");
+    }
+
+    #[test]
+    fn a_failed_settlement_does_not_charge_the_budget() {
+        // Otherwise a counterparty that never delivers still exhausts the allowance.
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "failed", "detail": "counterparty refused"
+        }));
+        let led = dir.join("ledger.json");
+        reconcile(&dir, &r, Some(&led)).unwrap();
+        assert!(!led.exists(), "a failure must not write a ledger entry");
+    }
+
+    #[test]
+    fn the_spend_record_is_never_edited_by_reconciliation() {
+        // Sealed means sealed. The original still says UNKNOWN because that was the state of
+        // knowledge then, and rewriting it would erase the evidence the gap existed.
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let spend_path = dir.join("spends").join(format!("{id}.json"));
+        let before = std::fs::read_to_string(&spend_path).unwrap();
+
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": "sig"
+        }));
+        reconcile(&dir, &r, Some(&dir.join("ledger.json"))).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&spend_path).unwrap(), before);
+        assert!(dir.join("reconciliations").exists(), "it appends instead");
+    }
+
+    #[test]
+    fn an_already_resolved_spend_is_not_reconciled_twice() {
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        // A refused spend is sealed as `Refused`, never `Unknown`.
+        pay(&dir, "inference.rank", "stranger", 400, "lamports", Some(&pol), None, None, true).unwrap();
+        let f = std::fs::read_dir(dir.join("spends")).unwrap().flatten().next().unwrap();
+        let id = f.path().file_stem().unwrap().to_string_lossy().to_string();
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": "sig"
+        }));
+        assert_eq!(reconcile(&dir, &r, None).unwrap(), ExitCode::from(1));
+    }
+
+    #[test]
+    fn a_tampered_spend_record_is_refused_rather_than_reconciled() {
+        // Reconciling an edited record would launder the edit into a fresh sealed artefact.
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let spend_path = dir.join("spends").join(format!("{id}.json"));
+        let text = std::fs::read_to_string(&spend_path).unwrap();
+        std::fs::write(&spend_path, text.replace("\"400\"", "\"999999\"")).unwrap();
+
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": "sig"
+        }));
+        let e = reconcile(&dir, &r, None).unwrap_err().to_string();
+        assert!(e.contains("commitment"), "{e}");
+    }
+
+    #[test]
+    fn a_settlement_receipt_without_a_reference_is_refused() {
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": ""
+        }));
+        assert!(reconcile(&dir, &r, None).is_err());
+    }
+
+    #[test]
+    fn a_receipt_for_an_unknown_record_names_the_record_it_could_not_find() {
+        let dir = scratch();
+        let r = write_receipt(&dir, "0000000000000000", serde_json::json!({
+            "outcome": "settled", "reference": "sig"
+        }));
+        let e = reconcile(&dir, &r, None).unwrap_err().to_string();
+        assert!(e.contains("0000000000000000"), "{e}");
+    }
+
+    #[test]
+    fn without_a_ledger_the_budget_is_explicitly_not_updated() {
+        // Silently succeeding while accumulating nothing is how the original defect hid.
+        let dir = scratch();
+        let pol = policy_file(&dir);
+        let id = seal_spend(&dir, &pol);
+        let r = write_receipt(&dir, &id, serde_json::json!({
+            "outcome": "settled", "reference": "sig"
+        }));
+        reconcile(&dir, &r, None).unwrap();
+        assert!(!dir.join("ledger.json").exists());
+    }
     #[test]
     fn a_dry_run_delegation_writes_nothing() {
         let dir = scratch();

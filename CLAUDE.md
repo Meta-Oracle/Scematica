@@ -918,6 +918,20 @@ Unknown` exits 3 and does **not** consume budget: charging for a spend that may 
 happened lets a flaky counterparty drain an allowance, and calling it `Failed` invites a
 retry that pays twice. A committed `pay` that is refused is still sealed — the pattern of
 what an agent *wanted* to buy is exactly what a spend policy is for.
+`scema reconcile <receipt>` closes the loop and is the **only** place the ledger is written.
+Its absence was a defect, not a gap: `pay` read the ledger and nothing wrote it, so the
+cumulative `total` cap was inert across invocations and every spend saw `spent: 0`. The fix
+is not writing it in `pay` — only a settled spend may consume budget and `pay` cannot observe
+settlement. `Ledger.settled_ids` makes double-charging **structurally impossible** rather
+than guarded by a caller: reconciliation is exactly the operation somebody runs twice, and
+the second run is a no-op. The spend record is **never edited** — reconciliation appends its
+own sealed record, because the original saying UNKNOWN is the evidence that the gap existed.
+A tampered spend record is refused rather than reconciled, or the edit gets laundered into a
+fresh artefact. The settler boundary is `scema_spend::receipt` — a JSON contract, not a
+trait, for the same reason the WorldState contract is: the two sides cannot link. It cannot
+verify that money moved and does not pretend to; what it buys is that a settler cannot be
+vague — a settlement without a reference is refused, and `Unknown` is not an accepted
+outcome, because a settler that cannot tell should emit no receipt at all.
 
 **The world contract is versioned and its vocabularies are open** (0.5.0). `WorldState`
 carries `schema: "scema.world/1"` and an undeclared version is refused on import — the

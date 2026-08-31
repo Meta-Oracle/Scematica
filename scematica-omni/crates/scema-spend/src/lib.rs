@@ -35,8 +35,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod receipt;
 pub mod record;
 
+pub use receipt::{Receipt, ReceiptError, ReceiptOutcome};
 pub use record::{Settlement, SpendRecord};
 
 
@@ -139,20 +141,43 @@ impl SpendPolicy {
 }
 
 /// What has already been spent under a policy.
+///
+/// Only a **settled** spend appears here. An authorised spend that failed, or one whose
+/// settlement could not be observed, does not consume budget — otherwise a flaky counterparty
+/// exhausts an allowance without ever delivering.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Ledger {
     #[serde(with = "u128_str")]
     pub spent: u128,
     pub count: usize,
+    /// Ids of the spend records already counted.
+    ///
+    /// Membership rather than a flag, so double-counting is **structurally impossible** and
+    /// not merely guarded by a caller remembering to check. Reconciliation is exactly the
+    /// operation somebody runs twice — after a crash, from a retry loop, from two terminals —
+    /// and a budget that can be charged twice for one payment is worse than no budget.
+    #[serde(default)]
+    pub settled_ids: Vec<String>,
 }
 
 impl Ledger {
-    /// Record a settled spend. Called only after money actually moved — a spend that was
-    /// authorised and then failed must not consume budget, or a flaky counterparty
-    /// exhausts the agent's allowance without delivering anything.
-    pub fn settled(&mut self, amount: u128) {
+    /// Count a settled spend against the budget.
+    ///
+    /// Returns `false` and changes nothing if this record was already counted. The caller
+    /// should report that as "already reconciled" rather than as an error: running it twice
+    /// is a reasonable thing to do and the second run is simply a no-op.
+    pub fn settle(&mut self, record_id: &str, amount: u128) -> bool {
+        if self.settled_ids.iter().any(|x| x == record_id) {
+            return false;
+        }
         self.spent = self.spent.saturating_add(amount);
         self.count += 1;
+        self.settled_ids.push(record_id.to_string());
+        true
+    }
+
+    pub fn has_settled(&self, record_id: &str) -> bool {
+        self.settled_ids.iter().any(|x| x == record_id)
     }
 
     pub fn remaining(&self, policy: &SpendPolicy) -> u128 {
@@ -382,7 +407,7 @@ mod tests {
 
     #[test]
     fn an_exhausted_budget_refuses_a_spend_that_is_individually_fine() {
-        let ledger = Ledger { spent: 9_800, count: 20 };
+        let ledger = Ledger { spent: 9_800, count: 20, ..Default::default() };
         match authorise(&policy(), &ledger, &req(500)) {
             Verdict::Refused { refusal: Refusal::OverBudget { remaining, .. } } => {
                 assert_eq!(remaining, 200);
@@ -393,7 +418,7 @@ mod tests {
 
     #[test]
     fn spending_exactly_the_remainder_is_allowed_and_leaves_zero() {
-        let ledger = Ledger { spent: 9_500, count: 1 };
+        let ledger = Ledger { spent: 9_500, count: 1, ..Default::default() };
         assert_eq!(
             authorise(&policy(), &ledger, &req(500)),
             Verdict::Allowed { remaining_after: 0 }
@@ -416,9 +441,31 @@ mod tests {
         // flaky counterparty exhausts it without ever delivering.
         let mut l = Ledger::default();
         assert_eq!(l.remaining(&policy()), 10_000);
-        l.settled(400);
+        assert!(l.settle("rec-1", 400));
         assert_eq!(l.remaining(&policy()), 9_600);
         assert_eq!(l.count, 1);
+    }
+
+    #[test]
+    fn one_payment_cannot_be_charged_to_the_budget_twice() {
+        // Reconciliation is exactly the operation somebody runs twice — after a crash, from a
+        // retry loop, from two terminals. Membership makes the second run a no-op rather than
+        // a double charge, which is a property of the type and not of the caller's care.
+        let mut l = Ledger::default();
+        assert!(l.settle("rec-1", 400));
+        assert!(!l.settle("rec-1", 400), "the second call must change nothing");
+        assert_eq!(l.spent, 400);
+        assert_eq!(l.count, 1);
+        assert!(l.has_settled("rec-1"));
+    }
+
+    #[test]
+    fn a_ledger_written_before_ids_existed_still_loads() {
+        // `settled_ids` is `#[serde(default)]` so an older ledger keeps its totals rather
+        // than failing to parse — the numbers are the part that must not be lost.
+        let l: Ledger = serde_json::from_str(r#"{"spent":"400","count":1}"#).unwrap();
+        assert_eq!(l.spent, 400);
+        assert!(l.settled_ids.is_empty());
     }
 
     #[test]

@@ -440,6 +440,18 @@ enum Command {
         #[arg(long)]
         policy: Option<PathBuf>,
     },
+    /// Resolve an unobserved spend from a settler's receipt.
+    ///
+    /// `pay` cannot see whether money moved, so it seals the spend as UNKNOWN. This is where
+    /// a settler's report resolves it — and the **only** place the budget ledger is written,
+    /// because only a settled spend consumes budget.
+    Reconcile {
+        /// The settler's receipt.
+        receipt: PathBuf,
+        /// Ledger to charge. Without it nothing accumulates and the total cap stays inert.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
     /// Decide whether a spend may happen, and record the decision.
     ///
     /// **It does not settle.** x402 settlement lives in `scematica-protocol`, which depends
@@ -1014,6 +1026,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             asset,
             *commit,
         ),
+        Command::Reconcile { receipt, ledger } => {
+            market::reconcile(Path::new(&cli.root), receipt, ledger.as_ref())
+        }
         Command::Discover { catalogue, policy } => {
             market::discover(catalogue, policy.as_ref())
         }

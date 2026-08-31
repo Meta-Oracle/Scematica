@@ -34,12 +34,14 @@
 //! `WorldState`, `Goal` and `Hypothesis` live here. `Projection` lives in `scema-sim` and
 //! `Decision` in `scema-policy`, because both are computed rather than observed.
 
+pub mod features;
 pub mod goal;
 pub mod hypothesis;
 pub mod provenance;
 pub mod term;
 pub mod world;
 
+pub use features::WorldFeatures;
 pub use goal::{Constraint, ConstraintKind, Goal, GOAL_HYPOTHESIS_ID};
 pub use hypothesis::{Action, Hypothesis, HypothesisOrigin, Reversibility, RiskClass};
 pub use provenance::Provenance;

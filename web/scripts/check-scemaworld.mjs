@@ -13,6 +13,12 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 import { generate, EXTENT } from '../lib/scemaworld/generate.ts'
+import {
+  camera, forward, up, right, rotate, translate, view, perspective, mul, qNorm,
+} from '../lib/scemaworld/camera.ts'
+import {
+  drawList, isGhost, roleOfContact, sensorFar, sensorLabel, boundaryLabel, PALETTE,
+} from '../lib/scemaworld/view.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const nftDir = join(here, '..', '..', 'scematica-omni', 'crates', 'scema-nft', 'fixtures')
@@ -203,6 +209,135 @@ check('there is no currency, price or yield anywhere in the model', () => {
     assert(!s.includes(`"${banned}"`), `the space carries a ${banned} field`)
   }
   assert(src.includes('Not an economy'), 'the commitment must be written down, not just true')
+})
+
+
+// ── camera ────────────────────────────────────────────────────────────────────
+
+const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
+
+check('a fresh camera looks down negative z', () => {
+  const f = forward(camera())
+  assert(near(f[0], 0) && near(f[1], 0) && near(f[2], -1), `forward was ${f}`)
+})
+
+check('the ship axes stay orthonormal after a long flight', () => {
+  // Quaternion drift is slow and then catastrophic: accumulated error turns rotation into a
+  // shear, and the symptom is stretched geometry rather than anything obviously wrong.
+  let c = camera()
+  for (let i = 0; i < 5000; i += 1) c = rotate(c, 0.03, -0.017, 0.023)
+  for (const v of [forward(c), up(c), right(c)]) {
+    assert(near(Math.hypot(...v), 1, 1e-4), `axis length drifted to ${Math.hypot(...v)}`)
+  }
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  assert(near(dot(forward(c), up(c)), 0, 1e-4), 'forward and up stopped being perpendicular')
+  assert(near(dot(forward(c), right(c)), 0, 1e-4), 'forward and right stopped being perpendicular')
+})
+
+check('rotation is in the ship frame, so pitching while inverted is not reversed', () => {
+  // The Euler-angle failure this avoids: roll 180 degrees, then pitch. A world-axis rotation
+  // sends the nose the wrong way and the player reports "the controls broke".
+  const rolled = rotate(camera(), 0, 0, Math.PI)
+  const pitched = rotate(rolled, 0.4, 0, 0)
+  const f = forward(pitched)
+  assert(f[1] < -0.2, `expected the nose to pitch toward world -y, got ${f}`)
+})
+
+check('thrust moves along the nose, whatever the orientation', () => {
+  const c = rotate(camera(), 0, Math.PI / 2, 0)
+  const moved = translate(c, [0, 0, -10])
+  const f = forward(c)
+  for (const i of [0, 1, 2]) {
+    assert(near(moved.position[i], f[i] * 10, 1e-5), `axis ${i}: ${moved.position[i]}`)
+  }
+})
+
+check('the view matrix undoes the camera transform', () => {
+  const c = translate(rotate(camera(), 0.3, -0.7, 0.2), [12, -4, 30])
+  const m = view(c)
+  const p = c.position
+  const vx = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]
+  const vy = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]
+  const vz = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]
+  assert(near(vx, 0, 1e-3) && near(vy, 0, 1e-3) && near(vz, 0, 1e-3), `${vx} ${vy} ${vz}`)
+})
+
+check('something ahead of the ship projects in front of the near plane', () => {
+  const vp = mul(perspective(1.1, 1.6, 1, 10000), view(camera([0, 0, 0])))
+  const a = [0, 0, -500]
+  const w = vp[3] * a[0] + vp[7] * a[1] + vp[11] * a[2] + vp[15]
+  assert(w > 0, `a point ahead had w = ${w}; it would be culled`)
+})
+
+check('a normalised zero quaternion is the identity rather than NaN', () => {
+  assert(qNorm([0, 0, 0, 0]).every(Number.isFinite), 'qNorm produced a non-finite quaternion')
+})
+
+// ── what gets drawn ───────────────────────────────────────────────────────────
+
+check('a ghost contact is never drawn solid', () => {
+  // The rule this layer exists to protect, checked on the draw list rather than the
+  // generator — this is the last place it could be lost.
+  const s = generate(world, digest)
+  const list = drawList(s)
+  for (const c of s.contacts) {
+    const role = roleOfContact(c)
+    const body = list.bodies.find((b) => b.label === c.label && b.role === role)
+    assert(body, `no body for contact ${c.id}`)
+    assert(body.solid === c.solid, `${c.id}: body solid=${body.solid}, contact solid=${c.solid}`)
+    if (!c.solid) assert(isGhost(role), `${c.id} is estimated but its role is not a ghost`)
+  }
+})
+
+check('a ghost keeps its polarity hue and differs by fill, not by colour', () => {
+  // Colour alone would fail the way the TUI mono test exists to prevent: two shades of red
+  // are one thing at a glance, on a bad monitor, or to a colour-blind player.
+  assert(
+    PALETTE['ghost-hostile'].join() === PALETTE.hostile.join(),
+    'a hostile ghost must stay red — it is still hostile if it is there'
+  )
+  assert(PALETTE['ghost-salvage'].join() === PALETTE.salvage.join())
+  assert(isGhost('ghost-hostile') && !isGhost('hostile'))
+})
+
+check('every role drawn has a palette entry', () => {
+  const list = drawList(generate(world, digest))
+  for (const b of list.bodies) assert(PALETTE[b.role], `no colour for ${b.role}`)
+  for (const l of list.segments) assert(PALETTE[l.role], `no colour for ${l.role}`)
+})
+
+check('unknown sensor range gives a null draw distance, never a default', () => {
+  // Picking a number here would tell the player the map is small when the truth is that
+  // nobody measured it.
+  const list = drawList(generate({ ...world, objects: [] }, digest))
+  assert(list.far === null, `far was ${list.far}`)
+})
+
+check('a fully dark world still draws its immediate surroundings', () => {
+  // A black screen is indistinguishable from a broken renderer, and "the game did not load"
+  // is the wrong lesson to teach about an unreadable world.
+  assert(sensorFar(0) > 0, 'zero range drew nothing at all')
+  assert(sensorFar(0) < sensorFar(1) / 4, 'the floor is too generous to read as darkness')
+})
+
+check('the HUD prints an em dash for unmeasured sensor range', () => {
+  assert(sensorLabel(generate({ ...world, objects: [] }, digest)) === '—')
+  assert(sensorLabel(generate(world, digest)).endsWith('%'))
+})
+
+check('the HUD says when the map has no known boundary', () => {
+  const un = generate({ ...world, extent: { observed: 9, total: null, note: '' } }, digest)
+  assert(boundaryLabel(un) === 'NO KNOWN BOUNDARY')
+  assert(boundaryLabel(generate(world, digest)) === 'BOUNDED')
+})
+
+check('the gl layer chooses no colours and no roles', () => {
+  // Same rule as `lib/mesh/view.ts::toneFor`: one implementation of anything encoding a
+  // claim. An `isGhost` in the renderer means the rule has left the file that tests it.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'gl.ts'))
+  assert(!/#[0-9a-fA-F]{6}/.test(src), 'gl.ts contains a hex colour')
+  assert(!src.includes('isGhost'), 'gl.ts decides ghostliness itself')
+  assert(src.includes('PALETTE['), 'gl.ts should look colours up rather than know them')
 })
 
 console.log(`\n${pass}/${pass + fail} checks passed`)

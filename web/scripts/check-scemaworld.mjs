@@ -24,6 +24,8 @@ import {
   LASER, PHOTON,
 } from '../lib/scemaworld/weapons.ts'
 import { fetchWorld, explain, retryable, matchesRequest } from '../lib/scemaworld/vault.ts'
+// `join` is already taken by `node:path` in this file.
+import { join as joinFleet, placement } from '../lib/scemaworld/fleet.ts'
 
 /** Unit vector from the origin toward a point, for lock tests. */
 function normTo(p) {
@@ -600,6 +602,99 @@ check('every vault outcome has an explanation a player can act on', () => {
     const msg = explain({ kind, detail: 'x', record: { text: '', commitment: '' } })
     assert(msg && msg.length > 2, `${kind} has no explanation`)
   }
+})
+
+
+// ── fleets ────────────────────────────────────────────────────────────────────
+
+const seedA = 'a'.repeat(64)
+const seedB = 'b'.repeat(64)
+const seedC = 'c'.repeat(64)
+const spaceOf = (seed) => generate(world, seed)
+
+check('a fleet is the same galaxy whatever order the records arrive in', () => {
+  // The property that makes two players comparing notes describe the same thing. An
+  // index-based layout would have been simpler and would have made the map a function of a
+  // UI event order.
+  const a = joinFleet([spaceOf(seedA), spaceOf(seedB), spaceOf(seedC)])
+  const b = joinFleet([spaceOf(seedC), spaceOf(seedA), spaceOf(seedB)])
+  assert(JSON.stringify(a.worlds) === JSON.stringify(b.worlds), 'placement depends on order')
+  assert(a.nodes.length === b.nodes.length)
+})
+
+check('placement comes from the commitment, so a world keeps its address', () => {
+  const p1 = placement(seedA)
+  const p2 = placement(seedA)
+  assert(JSON.stringify(p1) === JSON.stringify(p2), 'placement is not deterministic')
+  assert(JSON.stringify(placement(seedB)) !== JSON.stringify(p1), 'two worlds share a spot')
+})
+
+check('node ids stay unique across a fleet', () => {
+  // Renumbering is the whole job. A collision would silently draw one world lane into
+  // another world's geometry.
+  const f = joinFleet([spaceOf(seedA), spaceOf(seedB)])
+  assert(new Set(f.nodes.map((n) => n.id)).size === f.nodes.length, 'duplicate node id')
+  const ids = new Set(f.nodes.map((n) => n.id))
+  for (const l of f.lanes) {
+    assert(ids.has(l.from) && ids.has(l.to), `lane ${l.from}->${l.to} points nowhere`)
+  }
+})
+
+check('contact ids are namespaced so two worlds cannot merge a target', () => {
+  // Two records can legitimately carry the same signal id. Merging them would make one
+  // target absorb hits meant for another.
+  const f = joinFleet([spaceOf(seedA), spaceOf(seedB)])
+  assert(new Set(f.contacts.map((c) => c.id)).size === f.contacts.length, 'duplicate contact')
+})
+
+check('worlds do not overlap in space', () => {
+  const f = joinFleet([spaceOf(seedA), spaceOf(seedB), spaceOf(seedC)])
+  for (let i = 0; i < f.worlds.length; i += 1) {
+    for (let j = i + 1; j < f.worlds.length; j += 1) {
+      const a = f.worlds[i].origin
+      const b = f.worlds[j].origin
+      const d = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+      assert(d > EXTENT, `worlds ${i} and ${j} are ${d} apart, closer than one world's extent`)
+    }
+  }
+})
+
+check('one unknown sensor range makes the fleet unknown, not the minimum of the rest', () => {
+  // The coverage mistake in a new place: taking the minimum of the known ones would report a
+  // confident figure computed over an incomplete set.
+  const dark = generate({ ...world, objects: [] }, seedA)
+  assert(dark.sensorRange === null, 'the dark world should be unmeasured')
+  const f = joinFleet([dark, spaceOf(seedB)])
+  assert(f.sensorRange === null, `fleet range was ${f.sensorRange}`)
+})
+
+check('a fleet of measured worlds takes the worst range', () => {
+  const f = joinFleet([spaceOf(seedA), spaceOf(seedB)])
+  assert(f.sensorRange !== null, 'both worlds are measured')
+  assert(f.sensorRange <= spaceOf(seedA).sensorRange)
+})
+
+check('bridges connect every world without a complete graph', () => {
+  const f = joinFleet([spaceOf(seedA), spaceOf(seedB), spaceOf(seedC)])
+  assert(f.bridges.length === f.worlds.length - 1, `${f.bridges.length} bridges`)
+  const reached = new Set([0])
+  for (const b of f.bridges) {
+    reached.add(b.from)
+    reached.add(b.to)
+  }
+  assert(reached.size === f.worlds.length, 'a world is unreachable')
+})
+
+check('a single world needs no bridges', () => {
+  const f = joinFleet([spaceOf(seedA)])
+  assert(f.bridges.length === 0)
+  assert(f.worlds.length === 1)
+})
+
+check('an empty fleet is empty rather than an error', () => {
+  const f = joinFleet([])
+  assert(f.worlds.length === 0 && f.nodes.length === 0)
+  assert(f.sensorRange !== undefined, 'an empty fleet still reports a range field')
 })
 
 await Promise.all(pending)

@@ -59,7 +59,7 @@ being designed in, and it is the sentence that makes the whole thing cohere.
 
 ## Arcs
 
-Numbered, in dependency order. Each is shippable on its own.
+Numbered, in dependency order. Each is shippable on its own. **All six are built.**
 
 ### Arc 1 — The volume *(done)*
 
@@ -160,11 +160,25 @@ world is caught rather than flown.
 
 The token's utility is exactly this and nothing more: **the space it describes.**
 
-### Arc 6 — Fleets
+### Arc 6 — Fleets *(done)*
 
-Many records, one session. A player's owned worlds become a cluster with lanes between them,
-so a corpus is a galaxy. Needs nothing new from the runtime — it is Arc 1 run N times with a
-join.
+`lib/scemaworld/fleet.ts`. Many records, one galaxy. Node ids are renumbered and contact ids
+namespaced by world, because two records can legitimately carry the same signal id and a fleet
+must not merge two different things into one target.
+
+**Placement comes from each world's commitment, and the worlds are sorted by it before
+placing.** So the galaxy is a function of *which* records are held, not of the order somebody
+dropped them — two players comparing notes are describing the same arrangement. An index-based
+layout would have been simpler and would have quietly made the map depend on a UI event order.
+
+**One unknown sensor range makes the whole fleet unknown**, rather than taking the minimum of
+the measured ones. That would report a confident figure computed over an incomplete set — the
+coverage mistake, in a new place.
+
+A bridge means only *these two records are both yours*. It is **not** a claim that the observed
+things are related: a repository and a set of oracle feeds have nothing to do with each other,
+and a lane between them must not suggest otherwise. Bridges get their own role so they cannot
+be mistaken for lanes inside a world, which are structural.
 
 ## What must never happen to this
 

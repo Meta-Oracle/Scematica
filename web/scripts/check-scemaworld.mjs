@@ -19,6 +19,16 @@ import {
 import {
   drawList, isGhost, roleOfContact, sensorFar, sensorLabel, boundaryLabel, PALETTE,
 } from '../lib/scemaworld/view.ts'
+import {
+  newCombat, selected, switchWeapon, fire, step, durability, threatLabel, lockOn,
+  LASER, PHOTON,
+} from '../lib/scemaworld/weapons.ts'
+
+/** Unit vector from the origin toward a point, for lock tests. */
+function normTo(p) {
+  const l = Math.hypot(p.x, p.y, p.z) || 1
+  return { x: p.x / l, y: p.y / l, z: p.z / l }
+}
 
 const here = dirname(fileURLToPath(import.meta.url))
 const nftDir = join(here, '..', '..', 'scematica-omni', 'crates', 'scema-nft', 'fixtures')
@@ -338,6 +348,135 @@ check('the gl layer chooses no colours and no roles', () => {
   assert(!/#[0-9a-fA-F]{6}/.test(src), 'gl.ts contains a hex colour')
   assert(!src.includes('isGhost'), 'gl.ts decides ghostliness itself')
   assert(src.includes('PALETTE['), 'gl.ts should look colours up rather than know them')
+})
+
+
+// ── weapons ───────────────────────────────────────────────────────────────────
+
+const contactsOf = (s) => s.contacts
+const firstSolid = (s) => contactsOf(s).find((c) => c.solid)
+const firstGhost = (s) => contactsOf(s).find((c) => !c.solid)
+
+check('a ghost never reports a threat number, however much it is shot', () => {
+  // The rule combat is not allowed to break. Resolving a ghost into a known value on first
+  // hit would feel better to play and would be the em-dash bug with a design justification:
+  // the number would be invented and the player would act on it as a measurement.
+  const s = generate(world, digest)
+  const ghost = firstGhost(s)
+  assert(ghost, 'the fixture must carry an estimated signal')
+  assert(threatLabel(ghost) === '—', `ghost threat read ${threatLabel(ghost)}`)
+
+  let c = newCombat()
+  for (let i = 0; i < 40; i += 1) {
+    c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, i * 200, [ghost])
+    c = step(c, 0.5, [ghost], s.seed).combat
+  }
+  assert(threatLabel(ghost) === '—', 'the ghost resolved after being hit')
+})
+
+check('a counted contact reports the magnitude that was counted', () => {
+  const solid = firstSolid(generate(world, digest))
+  assert(solid, 'the fixture must carry a counted signal')
+  assert(threatLabel(solid) === solid.magnitude.toFixed(2))
+})
+
+check('durability comes from the seed, never from the reported magnitude', () => {
+  // Magnitude drives size and aggression only. A hit-point pool derived from it would give
+  // anybody who writes a record a reason to understate it.
+  const a = durability('seed-a', 'sig-1')
+  const b = durability('seed-b', 'sig-1')
+  assert(a !== b || durability('seed-a', 'sig-2') !== a, 'the seed does not reach durability')
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'weapons.ts'))
+  // Sliced to the end of the function, not a fixed number of characters: the first version
+  // ran past it into `threatLabel`, which legitimately reads magnitude, and reported a
+  // violation that was not there.
+  const from = src.indexOf('export function durability')
+  const next = src.indexOf('export function', from + 10)
+  assert(!src.slice(from, next).includes('magnitude'), 'durability reads magnitude')
+})
+
+check('the same record produces the same fight', () => {
+  const s = generate(world, digest)
+  const run = () => {
+    let c = newCombat()
+    for (let i = 0; i < 30; i += 1) {
+      c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, i * 200, s.contacts)
+      c = step(c, 0.2, s.contacts, s.seed).combat
+    }
+    return c
+  }
+  assert(JSON.stringify(run()) === JSON.stringify(run()), 'two fights diverged')
+})
+
+check('left click switches weapons and never fires', () => {
+  let c = newCombat()
+  assert(selected(c).kind === 'laser', 'lasers are the default')
+  const before = c.projectiles.length
+  c = switchWeapon(c)
+  assert(selected(c).kind === 'photon')
+  assert(c.projectiles.length === before, 'switching fired something')
+  c = switchWeapon(c)
+  assert(selected(c).kind === 'laser', 'it cycles')
+})
+
+check('the laser is automatic and the photon is not', () => {
+  assert(LASER.automatic && !PHOTON.automatic)
+  assert(LASER.magazine === null, 'lasers are unlimited')
+  assert(typeof PHOTON.magazine === 'number', 'missiles are not')
+})
+
+check('cooldown limits the rate of fire', () => {
+  let c = newCombat()
+  c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 1000, [])
+  const after = c.projectiles.length
+  c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 1000 + LASER.cooldownMs - 1, [])
+  assert(c.projectiles.length === after, 'fired inside the cooldown')
+  c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 1000 + LASER.cooldownMs, [])
+  assert(c.projectiles.length === after + 1, 'did not fire after the cooldown')
+})
+
+check('photons are finite and firing an empty tube does nothing', () => {
+  let c = switchWeapon(newCombat())
+  let t = 0
+  for (let i = 0; i < PHOTON.magazine + 5; i += 1) {
+    t += PHOTON.cooldownMs
+    c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, t, [])
+  }
+  assert(c.photonsLeft === 0, `photonsLeft was ${c.photonsLeft}`)
+  assert(c.projectiles.length === PHOTON.magazine, `fired ${c.projectiles.length}`)
+})
+
+check('a photon locks a ghost as readily as a solid', () => {
+  // Refusing to lock a ghost would leak the answer: the player would learn from the
+  // targeting computer what the record does not know.
+  const s = generate(world, digest)
+  const ghost = firstGhost(s)
+  const lock = lockOn({ x: 0, y: 0, z: 0 }, normTo(ghost.at), [ghost], [])
+  assert(lock === ghost.id, `lock was ${lock}`)
+})
+
+check('a projectile expires instead of leaking', () => {
+  let c = newCombat()
+  c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 0, [])
+  assert(c.projectiles.length === 1)
+  for (let i = 0; i < 60; i += 1) c = step(c, 0.2, [], 'seed').combat
+  assert(c.projectiles.length === 0, 'a missed shot never expired')
+})
+
+check('a contact takes its durability in hits and then is destroyed once', () => {
+  const s = generate(world, digest)
+  const target = { ...firstSolid(s), at: { x: 0, y: 0, z: -100000 } }
+  const need = durability(s.seed, target.id)
+  let c = newCombat()
+  let destroyed = 0
+  for (let i = 0; i < need + 6; i += 1) {
+    c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, i * 200, [target])
+    const r = step(c, 0.6, [target], s.seed)
+    c = r.combat
+    destroyed += r.hits.filter((h) => h.destroyed).length
+  }
+  assert(destroyed === 1, `destroyed fired ${destroyed} times`)
+  assert(c.destroyed.includes(target.id), 'the contact was never marked destroyed')
 })
 
 console.log(`\n${pass}/${pass + fail} checks passed`)

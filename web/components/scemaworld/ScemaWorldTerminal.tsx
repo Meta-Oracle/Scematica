@@ -21,6 +21,7 @@ import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
   camera as makeCamera,
+  forward,
   mul,
   perspective,
   rotate,
@@ -29,6 +30,15 @@ import {
   type Camera,
 } from '@/lib/scemaworld/camera'
 import { createRenderer, type Renderer } from '@/lib/scemaworld/gl'
+import {
+  fire,
+  newCombat,
+  selected,
+  step,
+  switchWeapon,
+  threatLabel,
+  type Combat,
+} from '@/lib/scemaworld/weapons'
 
 interface Loaded {
   name: string
@@ -51,6 +61,11 @@ export function ScemaWorldTerminal() {
   const keys = useRef<Set<string>>(new Set())
   const renderer = useRef<Renderer | null>(null)
   const throttle = useRef(0)
+  const combat = useRef<Combat>(newCombat())
+  const firing = useRef(false)
+  const [weapon, setWeapon] = useState('AUTO LASER')
+  const [ammo, setAmmo] = useState<string>('∞')
+  const [kills, setKills] = useState(0)
 
   const load = useCallback(async (file: File) => {
     setError(null)
@@ -90,6 +105,10 @@ export function ScemaWorldTerminal() {
       last = t
 
       // ── input ────────────────────────────────────────────────────────────
+      //
+      // WASD aims the camera, Q/E roll, the arrows are translation thrusters. Roll is on Q/E
+      // because it is the only rotational axis WASD leaves unreachable, and a space game
+      // without roll has an up — which this one does not.
       const k = keys.current
       const rate = 1.4 * dt
       let c = cam.current
@@ -98,11 +117,35 @@ export function ScemaWorldTerminal() {
       const roll = (k.has('KeyQ') ? 1 : 0) - (k.has('KeyE') ? 1 : 0)
       if (pitch || yaw || roll) c = rotate(c, pitch * rate, yaw * rate, roll * rate)
 
-      const accel = (k.has('ShiftLeft') ? 1 : 0) - (k.has('Space') ? 1 : 0)
+      // Arrows: vertical and lateral thrust, in the ship's own frame.
+      const lift = (k.has('ArrowUp') ? 1 : 0) - (k.has('ArrowDown') ? 1 : 0)
+      const strafe = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0)
+      const thrust = 620 * UNIT * dt
+      if (lift || strafe) c = translate(c, [strafe * thrust, lift * thrust, 0])
+
+      // Main drive. Not in the given scheme, and a ship that cannot go forward is not one —
+      // so Shift and Control hold the throttle, and the HUD says so.
+      const accel = (k.has('ShiftLeft') ? 1 : 0) - (k.has('ControlLeft') ? 1 : 0)
       throttle.current = Math.max(0, Math.min(1, throttle.current + accel * dt * 1.5))
       const v = throttle.current * 900 * UNIT
       if (v > 0) c = translate(c, [0, 0, -v * dt])
       cam.current = c
+
+      // ── weapons ──────────────────────────────────────────────────────────
+      const nose = forward(c)
+      const dir = { x: nose[0], y: nose[1], z: nose[2] }
+      const muzzle = { x: c.position[0], y: c.position[1], z: c.position[2] }
+      const live = loaded.space.contacts
+      if (firing.current) {
+        // `fire` enforces its own cooldown, so holding the button on a semi-automatic
+        // weapon is refused there rather than by a flag here — one rule, one place.
+        combat.current = fire(combat.current, muzzle, dir, t, live)
+      }
+      const advanced = step(combat.current, dt, live, loaded.space.seed)
+      combat.current = advanced.combat
+      if (advanced.hits.some((h) => h.destroyed)) {
+        setKills(combat.current.destroyed.length)
+      }
 
       // ── draw ─────────────────────────────────────────────────────────────
       const w = canvas.clientWidth
@@ -130,10 +173,47 @@ export function ScemaWorldTerminal() {
     }
   }, [loaded])
 
+  // Mouse. Right fires, left switches — and the context menu is suppressed only over the
+  // canvas, so right-click still works normally everywhere else on the page.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !loaded) return
+    const down = (e: MouseEvent) => {
+      if (e.button === 2) {
+        e.preventDefault()
+        firing.current = true
+      } else if (e.button === 0) {
+        combat.current = switchWeapon(combat.current)
+        const w = selected(combat.current)
+        setWeapon(w.name)
+        setAmmo(w.magazine === null ? '∞' : String(combat.current.photonsLeft))
+      }
+    }
+    const up = (e: MouseEvent) => {
+      if (e.button === 2) firing.current = false
+      // A semi-automatic weapon fires once per press. Releasing is what re-arms it, and the
+      // cooldown in `fire` is what stops a fast clicker emptying the tube in one frame.
+      if (selected(combat.current).magazine !== null) {
+        setAmmo(String(combat.current.photonsLeft))
+      }
+    }
+    const menu = (e: Event) => e.preventDefault()
+    canvas.addEventListener('mousedown', down)
+    window.addEventListener('mouseup', up)
+    canvas.addEventListener('contextmenu', menu)
+    return () => {
+      canvas.removeEventListener('mousedown', down)
+      window.removeEventListener('mouseup', up)
+      canvas.removeEventListener('contextmenu', menu)
+    }
+  }, [loaded])
+
   // Keyboard. Attached to the window so the canvas does not need focus to fly.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.code === 'Space') e.preventDefault()
+      // Arrows and space scroll the page otherwise, which moves the HUD out from under the
+      // canvas mid-flight.
+      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
       keys.current.add(e.code)
     }
     const upKey = (e: KeyboardEvent) => keys.current.delete(e.code)
@@ -231,12 +311,42 @@ export function ScemaWorldTerminal() {
               alarm={s.rifts > 0}
             />
             <Row k="throttle" v={`${speed}%`} />
+            <Row k="weapon" v={weapon} />
+            <Row k="ammo" v={ammo} />
+            <Row k="destroyed" v={String(kills)} />
           </div>
 
           {!flying && (
             <div className="pointer-events-none absolute inset-x-0 bottom-8 text-center font-mono text-xs text-omni-dim">
-              <div>W/S pitch · A/D yaw · Q/E roll · SHIFT throttle up · SPACE throttle down</div>
+              <div>
+                W/S pitch · A/D yaw · Q/E roll · ARROWS lateral &amp; vertical thrust ·
+                SHIFT/CTRL main drive
+              </div>
+              <div className="mt-1">
+                RIGHT CLICK fire · LEFT CLICK switch weapon · lasers are automatic, photons
+                are not
+              </div>
               <div className="mt-1">click the view to begin</div>
+            </div>
+          )}
+
+          {s.contacts.length > 0 && (
+            <div className="pointer-events-none absolute bottom-4 left-5 space-y-0.5 font-mono text-[11px]">
+              <div className="text-omni-dim">CONTACTS — threat as the record reported it</div>
+              {s.contacts.slice(0, 6).map((c) => (
+                <div key={c.id}>
+                  <span className={c.hostility === 'hostile' ? 'text-omni-absent' : 'text-omni-valid'}>
+                    {c.hostility === 'hostile' ? 'HOSTILE' : 'SALVAGE'}
+                  </span>{' '}
+                  <span className={c.solid ? 'text-omni-text' : 'text-omni-dim'}>
+                    {threatLabel(c)}
+                  </span>{' '}
+                  <span className="text-omni-dim">
+                    {c.solid ? '' : 'ghost — nobody measured this '}
+                    {truncate(c.label, 30)}
+                  </span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -251,6 +361,10 @@ export function ScemaWorldTerminal() {
       )}
     </div>
   )
+}
+
+function truncate(sIn: string, n: number): string {
+  return sIn.length <= n ? sIn : `${sIn.slice(0, n - 1)}…`
 }
 
 function Row({ k, v, alarm }: { k: string; v: string; alarm?: boolean }) {

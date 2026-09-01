@@ -71,7 +71,7 @@ model has no economy in it.
 Integer coordinates for the same reason the PNG rasteriser has no floats: two machines that
 disagree about where a station is are not playing the same game.
 
-### Arc 2 — The renderer
+### Arc 2 — The renderer *(done)*
 
 Hand-rolled WebGL, no engine dependency. In keeping with the rasteriser, the HTTP server and
 the PNG encoder, and for the same reason — a rendering that depends on which library drew it
@@ -91,14 +91,42 @@ seeing what a forged map looks like is more instructive than being refused one.
 Also accepts the PNG. `lib/omni/raster.ts` already produces bytes that are a pure function of
 the record, so the digest can be recovered from an owned image.
 
-### Arc 4 — Combat
+### Arc 4 — Combat *(done)*
 
-Hostiles from risk signals. Magnitude drives size and aggression — **never damage numbers**,
-because a signal's magnitude is a measurement of a concern and not a hit-point pool, and
-conflating them would invite tuning the record.
+Two weapons. **Automatic lasers** — unlimited, held fire, fast and straight. **Photon
+missiles** — twelve, one per press, and they steer toward a lock. Right click fires, left
+click switches.
 
-Ghosts are the interesting fight: you cannot know whether one is there until you commit to it.
-That is the epistemics again, and it is genuinely novel as a mechanic.
+Magnitude drives size and aggression. **Durability comes from the seed**, never from the
+reported magnitude, and that is the load-bearing decision: a hit-point pool derived from a
+signal's magnitude would hand anybody who can write a record a reason to understate it. Same
+record, same fight; a smaller reported number does not buy an easier enemy.
+
+**A ghost never resolves.** An estimated signal is one the observer counted but whose
+magnitude it guessed — the thing is there, its size is unknown, and nothing in the record can
+settle that, so neither does the game. Its threat reads `—` while you are fighting it and
+after you have destroyed it. Resolving a ghost on first hit into a known number would play
+better and would be the em-dash bug with a game-design justification: the number would be
+invented, and the player would act on it as though somebody had measured it.
+
+A photon will lock a ghost as readily as a solid. Refusing to would leak the answer — the
+player would learn from the targeting computer what the record does not know.
+
+## Controls
+
+| | |
+|---|---|
+| `W` `A` `S` `D` | pitch and yaw — aim the ship |
+| `Q` `E` | roll |
+| arrows | lateral and vertical thrusters |
+| `SHIFT` / `CTRL` | main drive throttle up / down |
+| right click | fire |
+| left click | switch weapon |
+
+Roll is on `Q`/`E` because it is the one rotational axis `WASD` leaves unreachable, and a
+space game without roll has an up — which this one does not. The main drive is not in the
+original scheme; a ship that cannot go forward is not a ship, so it is on `SHIFT`/`CTRL` and
+the HUD says so.
 
 ### Arc 5 — Entitlement
 

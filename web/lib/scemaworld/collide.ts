@@ -1,50 +1,54 @@
 /**
- * Collision: what is solid, what is not, and why the difference is an epistemic claim.
+ * Collision, and where the epistemic distinction lives now that nodes are open structures.
  *
  * Pure and grid-accelerated. No GL, no clock, no camera — `check:scemaworld` pins all of it.
  *
- * ## The rule that decides what you can hit
+ * ## Nodes do not block flight
  *
- * A sector contains six kinds of thing the observer actually *perceived* — stations, docks,
- * depots, markets, the origin, a derelict — and three kinds that are statements about the limits
- * of what it perceived. A **phantom** is a station the observer modelled rather than saw. A
- * **marker** is a place it looked and found nothing. A **rift** is a region it could not read at
- * all.
+ * They did, briefly, and the node radii were then increased by half again on a sector two and a
+ * half times larger. Solid obstacles at that size are not scenery, they are a maze: a sector
+ * whose landmarks are also walls is one where the interesting thing about a market is that it is
+ * in the way. They are drawn as open wireframe structures (`meshes.ts`) and you fly through them.
  *
- * The first six are solid. The last three are not, and this is the only interesting decision in
- * the file.
+ * ## So the distinction moved, rather than disappearing
  *
- * The temptation is to make everything solid, because a mirage you fly through "feels like a
- * bug". But making a phantom solid is the game asserting that something is there, on the strength
- * of a record that explicitly says nobody looked and saw it. Making it permeable is not the
- * opposite claim: the game simulates what was *observed*, and there is nothing here to hit
- * because nobody observed anything — which is a fact about the record, not about reality. A rift
- * is the sharpest case: it is a hole in somebody's knowledge, and a hole cannot be run into.
+ * A sector contains six kinds of thing the observer actually *perceived* — station, dock, depot,
+ * market, origin, derelict — and three that are statements about the limits of what it perceived.
+ * A **phantom** is a station the observer modelled rather than saw. A **marker** is a place it
+ * looked and found nothing. A **rift** is a region it could not read at all.
  *
- * So the HUD says so, in as many words, the moment you pass through one. That sentence is the
- * mechanic. A player who flies through a station and is told *"nothing here — this was modelled,
- * not observed"* has learned what a provenance is, from the cockpit, in a way no legend achieves.
+ * Flying through the first six puts something on your sensors. Flying through the last three puts
+ * nothing there, and the HUD says so in as many words. That is the same claim as before — the
+ * game simulates what was observed, and there is nothing here to register because nothing was
+ * observed — expressed as a *reading* rather than as a wall. It is arguably the better home for
+ * it: a wall is a fact about the world, and a sensor return is a fact about what somebody knows.
+ *
+ * `registers` is the predicate. `collidesWith` is kept as its alias for the one thing that still
+ * blocks a projectile — nothing, currently — and to keep the vocabulary in one place.
+ *
+ * ## What still collides
+ *
+ * Craft against each other, and craft against the player. A ship you can fly through is a ship
+ * that is not there, and at these closing speeds a passing interceptor should be an event.
  *
  * ## Why a grid
  *
- * A thousand nodes against seventy craft and a few dozen bolts is a hundred thousand distance
- * tests a frame if done naively, every frame, forever. The nodes never move, so the grid is built
- * once per space and queried; craft are few enough to test pairwise within a neighbourhood.
+ * Kept for the node queries the nav and sensor paths still make: a thousand nodes against
+ * seventy craft is a hundred thousand distance tests a frame if done naively. Nodes never move,
+ * so it is built once per space.
  */
 
 import { servicesOf, type Node, type NodeKind, type Space, type Vec3 } from './generate.ts'
-import { EXTENT } from './scale.ts'
+import { EXTENT, R_NODE_MAX } from './scale.ts'
 
 /**
- * Whether a node kind is a thing you can run into.
+ * Whether flying through a node puts anything on your sensors.
  *
- * Separate from `Body.solid` in `view.ts` on purpose, even though the two nearly agree. That one
- * decides how a thing is *drawn* — hollow means "may not be there" — and this one decides whether
- * it is *there*. They answer different questions and a rift is exactly where they diverge: it is
- * drawn as a visible object because a blind spot is worth seeing, and it is not solid because it
- * is a gap in a record rather than a thing in space.
+ * The six kinds the observer perceived do. The three that are statements about the *limits* of
+ * what it perceived do not — and the difference is the whole of the epistemics at the point a
+ * player acts on them.
  */
-export function collidesWith(kind: NodeKind): boolean {
+export function registers(kind: NodeKind): boolean {
   switch (kind) {
     case 'phantom':
     case 'marker':
@@ -55,18 +59,31 @@ export function collidesWith(kind: NodeKind): boolean {
   }
 }
 
-/** What the HUD says when you pass through something that was never observed. */
-export function permeableNote(kind: NodeKind): string {
+/**
+ * Alias for `registers`, kept so the grid and its callers keep one vocabulary.
+ *
+ * Nodes no longer block anything, so nothing reads this as "will stop a ship". It survives
+ * because the grid still needs to know which nodes are *things* and which are annotations.
+ */
+export const collidesWith = registers
+
+/** What the HUD says when you fly through something. */
+export function passageNote(kind: NodeKind, label: string): string {
   switch (kind) {
     case 'phantom':
-      return 'nothing here — that station was modelled, not observed'
+      return 'nothing on sensors — that station was modelled, not observed'
     case 'marker':
-      return 'nothing here — the observer looked and found nothing'
+      return 'nothing on sensors — the observer looked here and found nothing'
     case 'rift':
       return 'a blind spot — nobody could read this region'
     default:
-      return ''
+      return `passing through ${label}`
   }
+}
+
+/** The old name, kept for the permeable kinds only. */
+export function permeableNote(kind: NodeKind): string {
+  return registers(kind) ? '' : passageNote(kind, '')
 }
 
 // ── the grid ──────────────────────────────────────────────────────────────────
@@ -135,7 +152,10 @@ function near(grid: Grid, a: Vec3, b: Vec3, pad: number): Obstacle[] {
     for (let cy = Math.floor(lo.y / CELL); cy <= Math.floor(hi.y / CELL); cy += 1) {
       for (let cz = Math.floor(lo.z / CELL); cz <= Math.floor(hi.z / CELL); cz += 1) {
         const bucket = grid.cells.get(`${cx},${cy},${cz}`)
-        if (bucket) out.push(...bucket)
+        // Appended one at a time rather than spread. `push(...bucket)` builds an argument list
+        // per bucket and this runs once per craft per frame; on a sector where a query can touch
+        // hundreds of cells it was a measurable share of the tick.
+        if (bucket) for (let i = 0; i < bucket.length; i += 1) out.push(bucket[i])
       }
     }
   }
@@ -368,28 +388,40 @@ export function steerAround(
 }
 
 /**
- * The nearest permeable node the segment passes through, for the note the HUD shows.
+ * The node whose volume this segment passed through, if any. Nearest first.
  *
- * Deliberately a *separate* query from the solid grid. Building one grid with a flag would put
- * the two answers one boolean apart, and the whole point of the distinction is that they are
- * different kinds of claim.
+ * Covers **every** kind, observed and unobserved alike, because the interesting output is now
+ * which of the two it was — `passageNote` turns that into the sentence the HUD shows. Restricting
+ * this to the unobserved kinds would make "nothing on sensors" the only message the mechanic ever
+ * produces, and a distinction only one side of which is ever visible is not a distinction the
+ * player can learn.
  */
-export function passedThrough(space: Space, from: Vec3, to: Vec3, radius: number): Node | null {
+export function crossed(space: Space, from: Vec3, to: Vec3, radius: number): Node | null {
   let best: Node | null = null
   let bestT = Infinity
+  const reach = radius + R_NODE_MAX
   for (const n of space.nodes) {
-    if (collidesWith(n.kind)) continue
-    // Cheap reject before the segment maths: the sector has a thousand nodes and this runs every
-    // frame. Most of them are nowhere near.
-    const rough = Math.max(Math.abs(n.at.x - from.x), Math.abs(n.at.y - from.y), Math.abs(n.at.z - from.z))
-    if (rough > EXTENT * 0.05) continue
+    // Cheap reject before the segment maths: a sector has a thousand nodes, this runs every
+    // frame, and most of them are nowhere near.
+    // Chebyshev reject against the actual reach rather than a fixed slice of the sector. The
+    // fixed slice was 6% of a volume that has since grown two and a half times, so it admitted
+    // hundreds of nodes per frame to do exact segment maths on.
+    if (Math.abs(n.at.x - from.x) > reach) continue
+    if (Math.abs(n.at.y - from.y) > reach) continue
+    if (Math.abs(n.at.z - from.z) > reach) continue
     const { dist, t } = closestOnSegment(n.at, from, to)
-    if (dist <= radius * 6 && t < bestT) {
+    if (dist <= radius && t < bestT) {
       best = n
       bestT = t
     }
   }
   return best
+}
+
+/** The old name. Reports only the kinds that register nothing. */
+export function passedThrough(space: Space, from: Vec3, to: Vec3, radius: number): Node | null {
+  const n = crossed(space, from, to, radius)
+  return n && !registers(n.kind) ? n : null
 }
 
 /** Convenience: is this node one you can dock with *and* fly into? */

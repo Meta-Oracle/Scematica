@@ -224,7 +224,9 @@ export function ScemaWorldTerminal() {
         // The far plane covers the whole generated sector. It used to be gated by sensor range,
         // which put a wall of fog around a volume the entire design is about the size of.
         const proj = perspective(1.15, w / Math.max(1, h), NEAR_PLANE, FAR_PLANE)
-        r.draw(mul(proj, view(live.camera)), viewRotation(live.camera), w, h)
+        // The star pass needs the *projection* applied too — with the bare view rotation the
+        // field sheared and swam as the camera turned, which is the one thing stars must never do.
+        r.draw(mul(proj, view(live.camera)), mul(proj, viewRotation(live.camera)), w, h)
       }
 
       raf = requestAnimationFrame(frame)

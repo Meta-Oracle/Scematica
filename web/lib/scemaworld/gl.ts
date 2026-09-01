@@ -172,18 +172,25 @@ out vec4 outColor;
 void main() { outColor = vec4(vColor, vAlpha); }`
 
 /**
- * Stars. Drawn on a unit sphere with the camera's translation removed, so they rotate with the
+ * Stars. Drawn on a unit sphere with the camera's *translation* removed, so they rotate with the
  * ship and never approach — a star you could fly to would be an object, and the record makes no
  * claim about one.
+ *
+ * The uniform is the **projection times** the view rotation, and that word is the whole of a bug
+ * worth recording. It was the view rotation alone, so `p` was a view-space position being handed
+ * straight to `gl_Position` as though it were clip space: no field of view, no aspect correction,
+ * and — the visible part — a field that sheared and swam as the camera turned instead of sitting
+ * still. Stars that do not hold still are worse than no stars, because the one thing they exist
+ * to provide is a fixed reference for rotation.
  */
 const VERT_STAR = `#version 300 es
 in vec3 aPos;
 in float aMag;
-uniform mat4 uViewRot;
+uniform mat4 uViewProjRot;
 out float vMag;
 void main() {
   vMag = aMag;
-  vec4 p = uViewRot * vec4(aPos, 1.0);
+  vec4 p = uViewProjRot * vec4(aPos, 1.0);
   // Pinned to just inside the far plane in clip space, so no depth precision is spent on them.
   gl_Position = vec4(p.xy, p.w * 0.9999, p.w);
   gl_PointSize = 1.0 + aMag * 1.6;
@@ -228,7 +235,7 @@ function link(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram 
 }
 
 export interface Renderer {
-  draw(viewProj: Mat4, viewRot: Mat4, width: number, height: number): void
+  draw(viewProj: Mat4, viewProjRot: Mat4, width: number, height: number): void
   upload(list: DrawList): void
   /** Build the star sphere. Once per world — it is a function of the commitment. */
   sky(seed: string): void
@@ -297,14 +304,53 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   }
 
   const sphere = Mesh.icosphere()
+  /**
+   * Every wireframe shape, as a table rather than a list of hand-written group lines.
+   *
+   * `Record<Shape, ...>` on both this and the buckets in `upload` means a new silhouette added to
+   * `classes.ts` fails to compile until it has a mesh — which is the only reliable defence
+   * against the failure mode where a shape exists, is selected, and quietly draws nothing.
+   */
+  const WIRES: Record<string, () => Mesh.Wire> = {
+    interceptor: Mesh.interceptor,
+    gunship: Mesh.gunship,
+    capital: Mesh.capital,
+    dreadnought: Mesh.dreadnought,
+    station: Mesh.station,
+    market: Mesh.market,
+    dock: Mesh.dock,
+    depot: Mesh.depot,
+    derelict: Mesh.derelict,
+    rift: Mesh.rift,
+    phantom: Mesh.phantom,
+    marker: Mesh.marker,
+    origin: Mesh.origin,
+  }
   const groups: Record<Shape, Group> = {
     sphere: group(bodyProg, sphere, gl.TRIANGLES, 'aSolid'),
     shell: group(bodyProg, sphere, gl.TRIANGLES, 'aSolid'),
-    interceptor: group(wireProg, Mesh.interceptor(), gl.LINES, 'aFlash'),
-    gunship: group(wireProg, Mesh.gunship(), gl.LINES, 'aFlash'),
-    capital: group(wireProg, Mesh.capital(), gl.LINES, 'aFlash'),
     bolt: group(boltProg, Mesh.bolt(), gl.TRIANGLES, 'aGlow'),
+    interceptor: group(wireProg, WIRES.interceptor(), gl.LINES, 'aFlash'),
+    gunship: group(wireProg, WIRES.gunship(), gl.LINES, 'aFlash'),
+    capital: group(wireProg, WIRES.capital(), gl.LINES, 'aFlash'),
+    dreadnought: group(wireProg, WIRES.dreadnought(), gl.LINES, 'aFlash'),
+    station: group(wireProg, WIRES.station(), gl.LINES, 'aFlash'),
+    market: group(wireProg, WIRES.market(), gl.LINES, 'aFlash'),
+    dock: group(wireProg, WIRES.dock(), gl.LINES, 'aFlash'),
+    depot: group(wireProg, WIRES.depot(), gl.LINES, 'aFlash'),
+    derelict: group(wireProg, WIRES.derelict(), gl.LINES, 'aFlash'),
+    rift: group(wireProg, WIRES.rift(), gl.LINES, 'aFlash'),
+    phantom: group(wireProg, WIRES.phantom(), gl.LINES, 'aFlash'),
+    marker: group(wireProg, WIRES.marker(), gl.LINES, 'aFlash'),
+    origin: group(wireProg, WIRES.origin(), gl.LINES, 'aFlash'),
   }
+  /** Which program each group draws with, so `draw` does not restate the table. */
+  const PROGRAM_OF: Record<Shape, WebGLProgram> = Object.fromEntries(
+    (Object.keys(groups) as Shape[]).map((k) => [
+      k,
+      k === 'sphere' || k === 'shell' ? bodyProg : k === 'bolt' ? boltProg : wireProg,
+    ]),
+  ) as Record<Shape, WebGLProgram>
   // The halo: the same cylinder, drawn larger and dimmer under the same additive blend.
   const glowGroup = group(boltProg, Mesh.bolt(), gl.TRIANGLES, 'aGlow')
 
@@ -367,9 +413,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   }
 
   function upload(list: DrawList) {
-    const buckets: Record<Shape, Body[]> = {
-      sphere: [], shell: [], interceptor: [], gunship: [], capital: [], bolt: [],
-    }
+    const buckets = Object.fromEntries(
+      (Object.keys(groups) as Shape[]).map((k) => [k, [] as Body[]]),
+    ) as Record<Shape, Body[]>
     for (const b of list.bodies) buckets[shapeOf(b)].push(b)
 
     for (const key of Object.keys(buckets) as Shape[]) {
@@ -407,7 +453,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     gl.bindVertexArray(null)
   }
 
-  function draw(viewProj: Mat4, viewRot: Mat4, width: number, height: number) {
+  function draw(viewProj: Mat4, viewProjRot: Mat4, width: number, height: number) {
     gl.viewport(0, 0, width, height)
     // Very slightly blue-black rather than pure black: a pure-black ground makes the faintest
     // stars vanish into it, and the faint ones are most of the sky.
@@ -420,7 +466,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     if (starCount > 0) {
       gl.disable(gl.DEPTH_TEST)
       gl.useProgram(starProg)
-      gl.uniformMatrix4fv(gl.getUniformLocation(starProg, 'uViewRot'), false, viewRot)
+      gl.uniformMatrix4fv(gl.getUniformLocation(starProg, 'uViewProjRot'), false, viewProjRot)
       gl.bindVertexArray(starVao)
       gl.drawArrays(gl.POINTS, 0, starCount)
       gl.bindVertexArray(null)
@@ -436,11 +482,12 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     gl.drawArrays(gl.LINES, 0, lineVertices)
     gl.bindVertexArray(null)
 
-    // 3. Bodies, then hulls.
+    // 3. Solid bodies, then every wireframe, then the transparent shells.
     drawGroup(bodyProg, groups.sphere, viewProj)
-    drawGroup(wireProg, groups.interceptor, viewProj)
-    drawGroup(wireProg, groups.gunship, viewProj)
-    drawGroup(wireProg, groups.capital, viewProj)
+    for (const key of Object.keys(groups) as Shape[]) {
+      if (key === 'sphere' || key === 'shell' || key === 'bolt') continue
+      drawGroup(PROGRAM_OF[key], groups[key], viewProj)
+    }
     // Shells last of the depth-writing pass so their transparency blends over the solids.
     drawGroup(bodyProg, groups.shell, viewProj)
 

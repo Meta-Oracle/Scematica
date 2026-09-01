@@ -104,6 +104,11 @@ export function servicesOf(kind: NodeKind): Service[] {
       return ['refuel']
     case 'derelict':
       return ['scavenge']
+    case 'origin':
+      // The home station is the one node that does everything. It is where the ship starts and
+      // where a new player learns what the service keys are for, and a first station that
+      // answers "core does not offer refuel" teaches that the keys do not work.
+      return ['refuel', 'repair', 'trade']
     // origin, marker, phantom, rift: nothing. A phantom especially — it is a mirage.
     default:
       return []
@@ -259,8 +264,13 @@ export function generate(world: WorldState, digest: string): Space {
       // The core of a world is always a market. It is where you arrive, it is the one place
       // that is reachable without a journey, and a sector you cannot outfit from is a sector
       // you can only lose in.
-      kind: 'market',
-      services: servicesOf('market'),
+      // Its own kind, not a market. The home station does everything — refuel, repair and trade
+      // — because it is where a new player learns what the service keys are for, and a first
+      // station that answers "core does not offer refuel" teaches that the keys do not work. It
+      // also gets its own silhouette, which is worth having for the one node you keep coming back
+      // to.
+      kind: 'origin',
+      services: servicesOf('origin'),
       label: 'core',
     },
   ]

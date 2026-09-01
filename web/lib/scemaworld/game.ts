@@ -82,16 +82,11 @@ export function gridFor(space: Space): Collide.Grid {
 }
 
 /**
- * Damage from flying into something, per unit of closing speed.
+ * Damage for ramming a craft, per unit of closing speed. Both parties pay.
  *
- * Tuned so a graze at cruise costs a few points and a full-burn nose-first impact into a dock
- * takes most of a stock hull. Ramming has to be survivable — a player who dies to one mistimed
- * approach stops approaching anything — and it has to be expensive enough that docking is a
- * manoeuvre rather than a collision you perform on purpose.
+ * Ramming has to be survivable — a player who dies to one mistimed pass stops flying near
+ * anything — and expensive enough that closing to knife range is a decision.
  */
-const IMPACT_DAMAGE = 26
-
-/** Damage for ramming a craft, per unit of closing speed. Both parties pay. */
 const RAM_DAMAGE = 34
 
 /**
@@ -194,6 +189,11 @@ export function nearestService(space: Space, at: Vec3): Node | null {
   let best: Node | null = null
   let bestD = DOCK_RANGE
   for (const n of space.nodes) {
+    // Axis rejects before the square root. This runs over a thousand nodes every frame, and a
+    // `Math.hypot` per node was most of what it cost.
+    if (Math.abs(n.at.x - at.x) > bestD) continue
+    if (Math.abs(n.at.y - at.y) > bestD) continue
+    if (Math.abs(n.at.z - at.z) > bestD) continue
     if (servicesOf(n.kind).length === 0) continue
     const d = dist(n.at, at)
     if (d < bestD) {
@@ -258,30 +258,19 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     camera = translate(camera, [strafe * t, lift * t, 0])
   }
 
-  // ── the ship against the furniture ─────────────────────────────────────────
-  // Resolved once, after every source of movement — main drive, thrusters — and before anything
-  // is aimed from the ship's position. Resolving per-source would let a thruster nudge you
-  // through a wall the drive had just been stopped by.
+  // ── flying through the furniture ───────────────────────────────────────────
+  // Nodes do not block. They are open structures at a scale where solid ones would be a maze
+  // rather than scenery — a sector whose landmarks are also walls is one where the interesting
+  // thing about a market is that it is in the way.
+  //
+  // What they do is *register*. Passing through something the observer perceived puts it on the
+  // sensors; passing through a phantom, a marker or a rift puts nothing there and says so. Same
+  // claim the solid/permeable split used to carry, expressed as a reading rather than a wall —
+  // and a better home for it, since a wall is a fact about the world and a sensor return is a
+  // fact about what somebody knows.
   const grid = gridFor(space)
-  const wanted = v3(camera.position)
-  const landing = Collide.resolve(grid, v3(was), wanted, R_PLAYER, dt)
-  if (landing.hit) {
-    camera = { ...camera, position: [landing.at.x, landing.at.y, landing.at.z] }
-    const cost = Math.round((landing.impact / Ship.topSpeed(0)) * IMPACT_DAMAGE)
-    if (cost > 0) {
-      ship = Ship.damage(ship, cost, nowMs)
-      notice = `impact — ${landing.hit.node.label} (−${cost})`
-    }
-    // The drive is cut on impact. Leaving it running grinds the hull against the surface for as
-    // long as the key is held, which turns one mistake into a death and reads as the ship being
-    // stuck rather than stopped.
-    throttle = 0
-  } else {
-    // Nothing solid — but the segment may have passed through something the observer never saw.
-    // This is the sentence that teaches a player what a provenance is, from the cockpit.
-    const ghosted = Collide.passedThrough(space, v3(was), wanted, R_PLAYER)
-    if (ghosted) notice = Collide.permeableNote(ghosted.kind)
-  }
+  const crossed = Collide.crossed(space, v3(was), v3(camera.position), R_PLAYER)
+  if (crossed) notice = Collide.passageNote(crossed.kind, crossed.label)
 
   // ── the jump drive ─────────────────────────────────────────────────────────
   // Resolved before weapons so a jump that lands this frame puts the ship at its destination
@@ -337,9 +326,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   })
 
   if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels)
-  const advanced = Weapons.step(combat, dt, moved, space.seed, (from, to) =>
-    Collide.sweep(grid, from, to, 0) !== null,
-  )
+  // No geometry blocks a shot any more: a wireframe frame is not cover. The seam stays because
+  // the alternative is deleting a parameter that a future obstacle would have to reintroduce.
+  const advanced = Weapons.step(combat, dt, moved, space.seed)
   combat = advanced.combat
 
   // Flashes decay every tick and are re-lit by a hit. Decaying first means a hit landing this
@@ -368,6 +357,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   }
 
   // ── the enemy's turn ───────────────────────────────────────────────────────
+  // Craft still avoid nodes even though they cannot hit them. A wing flying *through* a station
+  // ring is technically correct and looks like the geometry is decorative; steering round one
+  // costs nothing and reads as piloting.
   const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid)
   swarm = enemyStep.swarm
   let shake = Math.max(0, state.shake - dt * 2.2)

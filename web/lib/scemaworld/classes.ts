@@ -29,10 +29,40 @@
 
 import { EXTENT } from './scale.ts'
 
-/** A silhouette. `gl.ts` owns one mesh per value; nothing else may choose one. */
-export type Shape = 'sphere' | 'shell' | 'bolt' | 'interceptor' | 'gunship' | 'capital'
+/**
+ * A silhouette. `gl.ts` owns one mesh per value; nothing else may choose one.
+ *
+ * Nodes have their own now, rather than all being spheres in different colours. A market and a
+ * rift used to be the same ball, so the vocabulary the record carries arrived as a *palette* —
+ * which fails the same way colour-only distinctions fail everywhere else in this project.
+ */
+export type Shape =
+  | 'sphere'
+  | 'shell'
+  | 'bolt'
+  | 'interceptor'
+  | 'gunship'
+  | 'capital'
+  | 'dreadnought'
+  | 'station'
+  | 'market'
+  | 'dock'
+  | 'depot'
+  | 'derelict'
+  | 'rift'
+  | 'phantom'
+  | 'marker'
+  | 'origin'
 
-export type ClassId = 'skiff' | 'interceptor' | 'lancer' | 'gunship' | 'frigate' | 'destroyer'
+export type ClassId =
+  | 'skiff'
+  | 'interceptor'
+  | 'lancer'
+  | 'gunship'
+  | 'frigate'
+  | 'destroyer'
+  | 'dreadnought'
+  | 'leviathan'
 
 export interface ClassSpec {
   id: ClassId
@@ -98,25 +128,42 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     speed: S(1 / 26), turn: 0.85, aggro: S(0.09), standoff: S(0.016),
     damage: 9, cooldownMs: 900, burst: 3, bounty: 90, capital: false,
   },
-  // A capital. It does not chase and it does not need to.
+  // The smallest capital. It does not chase and it does not need to.
   frigate: {
     id: 'frigate', label: 'FRIGATE', shape: 'capital',
-    radius: S(0.016), hull: 140, shield: 90, shieldRegen: 8,
-    speed: S(1 / 90), turn: 0.22, aggro: S(0.13), standoff: S(0.045),
+    radius: S(0.028), hull: 140, shield: 90, shieldRegen: 8,
+    speed: S(1 / 90), turn: 0.22, aggro: S(0.15), standoff: S(0.055),
     damage: 16, cooldownMs: 1100, burst: 4, bounty: 350, capital: true,
   },
-  // Star-destroyer class. Visible from most of the sector, survivable only with upgrades, and
-  // deliberately worth more than everything else combined — it is the thing to build toward.
+  // Star-destroyer class: four times a station across, and visible from most of the sector.
   destroyer: {
     id: 'destroyer', label: 'DESTROYER', shape: 'capital',
-    radius: S(0.038), hull: 460, shield: 300, shieldRegen: 14,
-    speed: S(1 / 150), turn: 0.1, aggro: S(0.18), standoff: S(0.07),
+    radius: S(0.075), hull: 460, shield: 300, shieldRegen: 14,
+    speed: S(1 / 150), turn: 0.09, aggro: S(0.2), standoff: S(0.1),
     damage: 24, cooldownMs: 800, burst: 6, bounty: 1200, capital: true,
+  },
+  // War-class. Fifteen stations end to end, with a broadside that will strip a stock hull in
+  // two volleys. It is not a fight to be picked; it is a thing to be *seen*, from a long way
+  // off, and decided about.
+  dreadnought: {
+    id: 'dreadnought', label: 'DREADNOUGHT', shape: 'dreadnought',
+    radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
+    speed: S(1 / 260), turn: 0.05, aggro: S(0.26), standoff: S(0.16),
+    damage: 40, cooldownMs: 700, burst: 8, bounty: 4000, capital: true,
+  },
+  // The largest thing in any sector, and rare enough that most worlds have none. At this size
+  // the ribbing on the hull is doing real work: it is the only cue for how far away it is, and
+  // without it a leviathan at range reads as a nearby triangle.
+  leviathan: {
+    id: 'leviathan', label: 'LEVIATHAN', shape: 'dreadnought',
+    radius: S(0.24), hull: 4200, shield: 2600, shieldRegen: 44,
+    speed: S(1 / 420), turn: 0.028, aggro: S(0.34), standoff: S(0.26),
+    damage: 62, cooldownMs: 620, burst: 10, bounty: 14000, capital: true,
   },
 }
 
 export const CLASS_IDS: ClassId[] = [
-  'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer',
+  'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer', 'dreadnought', 'leviathan',
 ]
 
 /** Milliseconds without taking a hit before shields begin to come back. */
@@ -131,10 +178,12 @@ export const SHIELD_DELAY_MS = 4_200
  */
 export function classFor(roll: number): ClassSpec {
   const r = roll % 100
-  if (r < 26) return CLASSES.skiff
-  if (r < 58) return CLASSES.interceptor
-  if (r < 78) return CLASSES.lancer
-  if (r < 93) return CLASSES.gunship
-  if (r < 99) return CLASSES.frigate
-  return CLASSES.destroyer
+  if (r < 24) return CLASSES.skiff
+  if (r < 54) return CLASSES.interceptor
+  if (r < 73) return CLASSES.lancer
+  if (r < 88) return CLASSES.gunship
+  if (r < 95) return CLASSES.frigate
+  if (r < 98) return CLASSES.destroyer
+  if (r < 99) return CLASSES.dreadnought
+  return CLASSES.leviathan
 }

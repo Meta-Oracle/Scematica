@@ -798,8 +798,28 @@ Three more rules the 104 checks carry, each paid for:
   star you could fly to would be an object the record never claimed. Draw distance is a constant
   covering the sector: it used to come from sensor range, which conflated what the record knows
   with what the window shows and made an unread world arrive as a *small* one.
+- **Nodes are open wireframe structures you fly through, one silhouette per kind** (`meshes.ts`).
+  They were shaded spheres, so a market and a rift were the same ball in different colours and the
+  record's vocabulary arrived as a *palette* — the failure mode colour-only distinctions always
+  have. The epistemic split moved with them: it was *solid vs permeable*, it is now **registers vs
+  does not**. Flying through something the observer perceived puts it on the sensors; a phantom, a
+  marker or a rift puts nothing there and the HUD says why. Both halves are visible now, which the
+  earlier version got wrong — when only the absence produced a message there was nothing to
+  contrast it with.
+- **Docking range must comfortably exceed the largest node**, and did not: the origin's radius plus
+  the ship's left a dockable shell two thousandths of a sector thick, crossed in a twentieth of a
+  second, which the ship spawned outside. That plus a home station that was a *market* (trade and
+  repair, no fuel) was the whole of the reported "refuelling does not work". A test pins the
+  relationship rather than the number, and the origin is now its own kind offering all three.
+- **A behaviour can be unreachable and no test notice.** `overshoot` keyed on *alignment* — the
+  player being behind the nose — and a fighter turns fast enough that it always points at the
+  player, so alignment inside the standoff band never dropped below 0.74 in a forty-second fight.
+  Range rate is the physical fact. Same shape of bug as the capitals that could never be rolled.
+- **Stars are projected, not pasted.** The shader took a view-space position as though it were
+  clip space, so the field sheared and swam as the camera turned — and holding still is the entire
+  reason stars are there. `check:scemaworld` asserts the uniform.
 - **What is solid is exactly what was observed** (`collide.ts`). Station, dock, depot, market,
-  origin and derelict collide; **phantom, marker and rift do not**. Making a phantom solid is the
+  origin and derelict register; **phantom, marker and rift do not**. Making a phantom solid is the
   game asserting something is there on the strength of a record that says nobody saw it; making
   it permeable is not the opposite claim, because the game simulates what was *observed* and
   there is nothing here to hit. The HUD says which, and that sentence is the mechanic. Four bugs

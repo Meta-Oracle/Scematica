@@ -33,18 +33,21 @@ import {
 } from '../lib/scemaworld/ship.ts'
 import * as Enemy from '../lib/scemaworld/enemy.ts'
 import {
-  collidesWith, permeableNote, sweep, resolve, separate, steerAround, passedThrough,
-  closestOnSegment, SEPARATION,
+  collidesWith, registers, permeableNote, passageNote, sweep, resolve, separate, steerAround,
+  passedThrough, crossed, closestOnSegment, SEPARATION,
 } from '../lib/scemaworld/collide.ts'
 import { gridFor, NOTICE_MS } from '../lib/scemaworld/game.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
-import { JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER } from '../lib/scemaworld/scale.ts'
+import {
+  JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX,
+} from '../lib/scemaworld/scale.ts'
 import {
   swarmOf, step as enemyStep, hit as enemyHit, living, decide, leadPoint, turnToward,
   nearestThreat, classRoll, AGGRO_RANGE,
 } from '../lib/scemaworld/enemy.ts'
 import { CLASSES, CLASS_IDS, classFor, SHIELD_DELAY_MS } from '../lib/scemaworld/classes.ts'
 import * as Hyper from '../lib/scemaworld/hyper.ts'
+import * as Meshes from '../lib/scemaworld/meshes.ts'
 import { interceptor, gunship, capital, bolt, starfield } from '../lib/scemaworld/meshes.ts'
 import { shapeOf, LANE_ALPHA } from '../lib/scemaworld/view.ts'
 import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../lib/scemaworld/game.ts'
@@ -1533,13 +1536,43 @@ check('a shield upgrade delivers the buffer it sold you', () => {
 
 // ── silhouettes and the sky ──────────────────────────────────────────────────
 
-check('every shape a class names has a mesh', () => {
-  // The class table and the renderer must not be two homes for the same decision.
-  const meshes = { interceptor: interceptor(), gunship: gunship(), capital: capital() }
+check('every shape anything names has a mesh', () => {
+  // The class table, the node vocabulary and the renderer must not be three homes for one
+  // decision. A shape that exists, is selected, and quietly draws nothing is the failure here.
   for (const id of CLASS_IDS) {
     const shape = CLASSES[id].shape
-    assert(meshes[shape] && meshes[shape].length > 0, `${id} names ${shape}, which has no mesh`)
+    const build = Meshes[shape]
+    assert(typeof build === 'function', `${id} names ${shape}, which has no mesh`)
+    assert(build().length > 0, `${shape} builds an empty mesh`)
   }
+  // And every node kind, now that they are silhouettes rather than coloured spheres.
+  for (const kind of ['origin', 'station', 'dock', 'depot', 'market', 'derelict', 'marker', 'phantom', 'rift']) {
+    const build = Meshes[kind]
+    assert(typeof build === 'function' && build().length > 0, `${kind} has no silhouette`)
+  }
+})
+
+check('a node is told apart by its shape, not by its colour', () => {
+  // They were shaded spheres, so a market and a rift were the same ball in different colours and
+  // the whole vocabulary the record carries arrived as a palette. That fails the way colour-only
+  // distinctions fail everywhere in this project: on a bad monitor, at a glance, or for a
+  // colour-blind player, two shades are one thing.
+  const seen = new Map()
+  for (const kind of ['origin', 'station', 'dock', 'depot', 'market', 'derelict', 'marker', 'phantom', 'rift']) {
+    const key = Meshes[kind]().join(',')
+    assert(!seen.has(key), `${kind} and ${seen.get(key)} draw the same shape`)
+    seen.set(key, kind)
+  }
+})
+
+check('every node is drawn hollow', () => {
+  // They are open structures you fly through. A shaded sphere claims a surface where there is a
+  // frame, which is a claim about the observed thing that nobody made.
+  const s = generate(world, digest)
+  const list = drawList(s)
+  const nodes = list.bodies.slice(0, s.nodes.length)
+  assert(nodes.every((b) => !b.solid), 'a node is drawn as a solid body')
+  assert(nodes.every((b) => b.facing), 'a node has no orientation, so every ring faces one way')
 })
 
 check('a hull points along +Z and fits the unit sphere it will be scaled by', () => {
@@ -1688,15 +1721,36 @@ check('being shot kicks the screen, and hull hits kick harder', () => {
 })
 
 check('every class in the table can actually be met', () => {
-  // Both capitals were unreachable and nothing failed. The class roll was derived from
-  // `durability`, which returns one of *six* values — the roll covered about half the
-  // distribution and never once reached the top bracket. A table whose bottom two entries are
-  // decoration is the kind of bug that hides behind a plausible-looking sector.
-  const s = generate(world, digest)
-  const seen = new Set(swarmOf(s.raiders, s.seed).craft.map((c) => c.spec.id))
+  // Both capitals were unreachable once and nothing failed: the class roll came from
+  // `durability`, which returns one of *six* values, so it covered about half the distribution
+  // and never reached the top bracket. A table whose last entries are decoration is the kind of
+  // bug that hides behind a plausible-looking sector.
+  //
+  // Asserted over the roll rather than over one sector, because the war classes are deliberately
+  // rare enough that a given sector may have none — which is the point of them.
+  const seen = new Set()
+  for (let i = 0; i < 4000; i += 1) seen.add(classFor(i).id)
   for (const id of CLASS_IDS) {
-    assert(seen.has(id), `${id} exists in the table and cannot be met in this sector`)
+    assert(seen.has(id), `${id} exists in the table and can never be rolled`)
   }
+})
+
+check('a sector carries capitals, and war classes stay rare', () => {
+  const s = generate(world, digest)
+  const specs = swarmOf(s.raiders, s.seed).craft.map((c) => c.spec)
+  assert(specs.some((x) => x.capital), 'no capital anywhere in the sector')
+  const war = specs.filter((x) => x.id === 'dreadnought' || x.id === 'leviathan').length
+  assert(war <= 4, `${war} war-class ships — a sector with several is one you cannot cross`)
+})
+
+check('the war classes are colossal against everything else', () => {
+  // "The largest enemies are not big enough" was the complaint, and a ratio is the only way to
+  // pin it: they have to dwarf a station, not merely a fighter.
+  const station = R_STATION
+  assert(CLASSES.destroyer.radius > station * 4, 'a destroyer is not obviously bigger than a station')
+  assert(CLASSES.dreadnought.radius > CLASSES.destroyer.radius * 1.6, 'a dreadnought is a big destroyer')
+  assert(CLASSES.leviathan.radius > station * 15, 'the largest ship is not colossal')
+  assert(CLASSES.leviathan.hull > CLASSES.interceptor.hull * 200, 'it dies like a fighter')
 })
 
 check('the class roll covers its whole range', () => {
@@ -1890,29 +1944,51 @@ check('impact speed is closing speed, so a graze is not a crash', () => {
   if (graze.hit) assert(graze.impact < head.impact, 'a graze cost as much as a head-on hit')
 })
 
-check('flying into a station costs hull and cuts the drive', () => {
+check('flying through an observed station puts it on the sensors', () => {
+  // Nodes are open structures now — solid ones at this size would be a maze rather than scenery,
+  // and a sector whose landmarks are also walls is one where the interesting thing about a market
+  // is that it is in the way. The epistemic distinction moved to what *registers*.
   const s = generate(world, digest)
-  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  // A station with nothing parked on it. Record signals sit *on* nodes, so the obvious first
+  // station has a hostile inside it and the ship rams the craft on the way through — which is
+  // correct behaviour and not what this is measuring.
+  const occupied = new Set([...s.contacts, ...s.raiders].map((c) => `${c.at.x},${c.at.y},${c.at.z}`))
+  const station = s.nodes.find(
+    (n) => registers(n.kind) && n.id !== 0 && !occupied.has(`${n.at.x},${n.at.y},${n.at.z}`),
+  )
   const r = nodeRadius(roleOfNode(station))
   let g = { ...newGame(s), throttle: 1 }
   g = {
     ...g,
     camera: {
-      position: [station.at.x, station.at.y, station.at.z + r * 4],
+      position: [station.at.x, station.at.y, station.at.z + r * 3],
       orientation: [0, 0, 0, 1],
     },
   }
-  let hit = false
-  for (let f = 0; f < 240 && !hit; f += 1) {
+  let noticed = null
+  for (let f = 0; f < 400 && !noticed; f += 1) {
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
-    // Shields absorb an impact exactly as they absorb a shot. Asserting on hull alone said the
-    // collision cost nothing when it had in fact cost the whole buffer.
-    hit = g.ship.shield < shieldMax(0) || g.ship.hull < hullMax(0)
+    if ((g.notice ?? '').includes('passing through')) noticed = g.notice
   }
-  assert(hit, 'flying nose-first into a station cost nothing')
-  assert(g.throttle === 0, 'the drive kept running against the surface')
-  assert((g.notice ?? '').includes('impact'), g.notice)
-  assert(g.ship.hull > 0, 'one collision at cruise killed the ship outright')
+  assert(noticed, 'flying through a station registered nothing')
+  assert(g.ship.hull === hullMax(0), 'an open structure damaged the ship')
+  assert(g.throttle === 1, 'flying through a station cut the drive')
+})
+
+check('flying through a phantom registers nothing, and says so', () => {
+  // The sentence is the mechanic, and it now has a counterpart — a distinction only one side of
+  // which is ever visible is not one the player can learn.
+  const objects = world.objects.map((o) => ({
+    ...o,
+    provenance: { kind: 'simulated', age_secs: 0, budget_secs: 1 },
+  }))
+  const s = generate({ ...world, objects }, digest)
+  const ph = s.nodes.find((n) => n.kind === 'phantom')
+  assert(ph, 'the fixture produced no phantom')
+  const note = passageNote(ph.kind, ph.label)
+  assert(note.includes('nothing on sensors'), note)
+  assert(note.includes('modelled'), note)
+  assert(passageNote('station', 'live-1').includes('passing through'), 'an observed node says nothing')
 })
 
 check('a phantom is flown through, and the game says why', () => {
@@ -1979,29 +2055,38 @@ check('avoidance bends a heading rather than replacing it', () => {
   assert(clear.urgency === 0 && clear.dir.z === 1, 'a clear heading was bent anyway')
 })
 
-check('a craft never ends a tick inside a station', () => {
-  // Avoidance is a heuristic and heuristics miss. The hard resolve is what guarantees a wireframe
-  // hull is never sitting in the middle of a dock.
-  const s = generate(world, digest)
-  const grid = gridFor(s)
-  let g = newGame(s)
-  for (let f = 0; f < 60 * 30; f += 1) {
-    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
-    if (f % 120 !== 0) continue
-    for (const c of Enemy.living(g.swarm)) {
-      const inside = sweep(grid, c.at, c.at, 0)
-      assert(!inside, `a ${c.spec.label} is inside ${inside?.obstacle.node.label}`)
-    }
-  }
+check('craft steer around nodes even though nothing stops them', () => {
+  // A wing flying *through* a station ring is technically correct and looks like the geometry is
+  // decorative. Steering round one costs nothing and reads as piloting — but it must stay
+  // steering: hard-stopping a craft would trap the record-signal ones, which start inside a
+  // station because contacts sit on nodes.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'enemy.ts'))
+  assert(src.includes('steerAround'), 'craft do not avoid nodes at all')
+  assert(!src.includes('resolve(grid'), 'craft are hard-stopped by something they can fly through')
 })
 
-check('geometry stops fire in both directions', () => {
-  // A station is cover or it is scenery. It must be the same rule for both sides, or the player
-  // learns that hiding works only for the other one.
+check('a wireframe frame is not cover, for either side', () => {
+  // Deliberate, and the deliberate part is that it is symmetric. When nodes were solid, geometry
+  // stopped fire in both directions; now that they are open structures it stops fire in neither.
+  // What must never happen is one of the two — the player learning that hiding works only for the
+  // other side is worse than either consistent rule.
+  const s = generate(world, digest)
+  const station = s.nodes.find((n) => registers(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const from = { x: station.at.x, y: station.at.y, z: station.at.z + r * 3 }
+  const target = { ...firstSolid(s), at: { x: station.at.x, y: station.at.y, z: station.at.z - r * 3 } }
+  let c = newCombat()
+  let hits = []
+  for (let i = 0; i < 40 && hits.length === 0; i += 1) {
+    c = fire(c, from, { x: 0, y: 0, z: -1 }, i * 200, [target])
+    const res = step(c, 0.05, [target], s.seed)
+    c = res.combat
+    hits = res.hits
+  }
+  assert(hits.length > 0, 'a shot was blocked by a structure it should pass through')
+
   const enemySrc = codeOf(join(here, '..', 'lib', 'scemaworld', 'enemy.ts'))
-  assert(enemySrc.includes('resolve(grid, s.at, at'), 'enemy fire passes through stations')
-  const gameSrc = codeOf(join(here, '..', 'lib', 'scemaworld', 'game.ts'))
-  assert(gameSrc.includes('Collide.sweep(grid, from, to'), 'player fire passes through stations')
+  assert(!enemySrc.includes('resolve(grid, s.at, at'), 'enemy fire is blocked but the player is not')
 })
 
 check('a bolt is stopped by a station rather than killing what is behind it', () => {
@@ -2126,6 +2211,145 @@ check('a notice raised between ticks is stamped by the next one', () => {
   // A tick far past any expiry window: the message is new to the tick, so it survives.
   g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 900_000 })
   assert(g.notice === raised, 'a message raised by a key press was expired before being seen')
+})
+
+// ── the reported bug: services that never engage ─────────────────────────────
+
+check('docking range comfortably clears the largest node', () => {
+  // The whole of "refuelling does not work". The origin market's radius plus the ship's put the
+  // hull 0.014 of a sector from the centre and docking range was 0.019 — a shell two thousandths
+  // of a sector thick, crossed in a twentieth of a second at cruise. The ship spawned *outside*
+  // it, so the first station a new player ever sees reported `nothing in range`.
+  //
+  // The relationship is pinned rather than the number, because the number will move again.
+  assert(DOCK_RANGE > R_NODE_MAX + R_PLAYER, 'a ship touching the largest node is out of range')
+  const band = DOCK_RANGE - (R_NODE_MAX + R_PLAYER)
+  assert(band > R_NODE_MAX, `the dockable shell is ${Math.round(band / 1e6)}M — too thin to stop in`)
+})
+
+check('the ship starts in range of the station it starts at', () => {
+  // The first thing a new player can do should be the first thing they need to learn. It was
+  // `nothing in range`.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  assert(g.nearby, 'nothing in range at spawn')
+  assert(g.nearby.id === s.nodes[0].id, `nearest was ${g.nearby.label}, not the origin`)
+  assert(servicesOf(g.nearby.kind).length > 0, 'the origin offers no services')
+})
+
+check('every service actually fires at the node that offers it', () => {
+  // End to end, per service, rather than trusting that `servicesOf` and `useService` agree.
+  const s = generate(world, digest)
+  const at = (node, ship) => ({ ...newGame(s), nearby: node, ship: { ...newShip(), ...ship } })
+
+  const depot = s.nodes.find((n) => n.kind === 'depot')
+  const refuelled = useService(at(depot, { fuel: 5, jumpFuel: 0 }), 'refuel')
+  assert(refuelled.ship.fuel === fuelCapacity(0), refuelled.notice)
+
+  const dock = s.nodes.find((n) => n.kind === 'dock')
+  const docked = useService(at(dock, { fuel: 5, jumpFuel: 0 }), 'refuel')
+  assert(docked.ship.jumpFuel > 0, 'a dock did not charge the jump drive')
+  const repaired = useService(at(dock, { hull: 10, salvage: 900 }), 'repair')
+  assert(repaired.ship.hull > 10, repaired.notice)
+
+  const market = s.nodes.find((n) => n.kind === 'market')
+  const bought = purchase({ ...at(market, { salvage: 9000 }) }, 'engine')
+  assert(bought.ship.levels.engine === 1, bought.notice)
+
+  const derelict = s.nodes.find((n) => n.kind === 'derelict')
+  if (derelict) {
+    const stripped = useService(at(derelict, {}), 'scavenge')
+    assert(stripped.ship.salvage > 0, stripped.notice)
+  }
+})
+
+check('a service refused at the wrong node says which node and which service', () => {
+  // "Nothing happened" is the failure this replaces. The origin is a market, so `F` there is a
+  // legitimate refusal — and it has to read as one rather than as a dead key.
+  const s = generate(world, digest)
+  const market = s.nodes.find((n) => n.kind === 'market')
+  const r = useService({ ...newGame(s), nearby: market }, 'refuel')
+  assert((r.notice ?? '').includes(market.label), r.notice)
+  assert((r.notice ?? '').includes('refuel'), r.notice)
+})
+
+check('the market is reachable from where the player starts', () => {
+  // A market you cannot afford is a design; a market you can never stand in front of is a bug.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  g = { ...g, ship: { ...g.ship, salvage: 9000 } }
+  const bought = purchase(g, 'shields')
+  assert(bought.ship.levels.shields === 1, `could not trade at spawn: ${bought.notice}`)
+})
+
+// ── the sector at its new size ───────────────────────────────────────────────
+
+check('a node is a structure rather than a speck', () => {
+  // The sector grew two and a half times and the nodes grew faster still, because the complaint
+  // was that they were too small *relative to it* — a landmark in the arithmetic and a dot on
+  // the screen.
+  assert(R_STATION > EXTENT / 200, 'a station is a speck at sector scale')
+  assert(R_NODE_MAX < EXTENT / 25, 'a node is a continent')
+  assert(EXTENT > 1_000_000_000, 'the sector did not actually grow')
+})
+
+check('a war-class ship dwarfs the structures it flies past', () => {
+  assert(CLASSES.leviathan.radius > R_NODE_MAX * 8, 'the largest ship is smaller than eight stations')
+  assert(CLASSES.dreadnought.radius > R_STATION * 8, 'a dreadnought is not obviously immense')
+})
+
+check('the war classes still cannot outrun you, and still reach their firing range', () => {
+  // Both invariants applied to the new entries, because both were broken by earlier additions and
+  // neither failure was visible by looking.
+  for (const id of ['dreadnought', 'leviathan']) {
+    const c = CLASSES[id]
+    assert(c.speed < topSpeed(0), `${id} outruns a stock ship`)
+    assert((c.speed * 0.3) / c.turn <= c.standoff * 1.6, `${id} cannot reach its own standoff`)
+  }
+})
+
+check('the star field is projected, not pasted', () => {
+  // The shader was handed a view-space position as though it were clip space: no field of view,
+  // no aspect correction, and a field that sheared and swam as the camera turned. Stars that do
+  // not hold still are worse than no stars, since holding still is the whole of what they are for.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'gl.ts'))
+  assert(src.includes('uViewProjRot'), 'the star pass takes a rotation with no projection')
+  assert(!src.includes('uViewRot'), 'the old un-projected uniform is still in use')
+  const term = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(term.includes('mul(proj, viewRotation'), 'the caller does not project the star matrix')
+})
+
+check('the home station offers every service', () => {
+  // It was a market, so the very first thing a new player pressed answered "core does not offer
+  // refuel" — which teaches that the service keys do not work rather than that this particular
+  // node does not sell fuel.
+  const s = generate(world, digest)
+  const home = s.nodes[0]
+  assert(home.kind === 'origin', `the home station is a ${home.kind}`)
+  for (const svc of ['refuel', 'repair', 'trade']) {
+    assert(servicesOf('origin').includes(svc), `home does not offer ${svc}`)
+  }
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  const hurt = { ...g, ship: { ...g.ship, fuel: 1, hull: 10, salvage: 5000 } }
+  assert(useService(hurt, 'refuel').ship.fuel > 1, 'could not refuel at home')
+  assert(useService(hurt, 'repair').ship.hull > 10, 'could not repair at home')
+  assert(purchase(hurt, 'engine').ship.levels.engine === 1, 'could not trade at home')
+})
+
+check('a tick stays well inside a frame', () => {
+  // 0.68ms became 5.17ms when the sector grew and the nodes with it: the avoidance probe box
+  // scaled with the largest radius, and a leviathan's covers a large fraction of the sector. It
+  // is asserted rather than assumed, because the failure is a game that runs at forty frames per
+  // second on the machine it was not measured on.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const N = 600
+  const t0 = Date.now()
+  for (let f = 0; f < N; f += 1) {
+    g = tick(g, s, { keys: new Set(['ArrowUp']), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  const per = (Date.now() - t0) / N
+  assert(per < 4, `${per.toFixed(2)}ms per tick, against a 16.7ms frame`)
 })
 
 await Promise.all(pending)

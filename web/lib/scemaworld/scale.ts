@@ -33,20 +33,30 @@ export const UNIT = 1000
  * appreciably more than this in its longest axis — around 1.5×. Treat `EXTENT` as the scale of
  * the place, not as its bounding box.
  */
-export const EXTENT = 420_000 * UNIT
+export const EXTENT = 1_050_000 * UNIT
 
 // ── distances, as fractions of the sector ────────────────────────────────────
 
-/** Radius of an ordinary station. About 0.6% of the sector: a landmark, not a speck. */
-export const R_STATION = Math.round(EXTENT * 0.0062)
-export const R_ORIGIN = Math.round(EXTENT * 0.0105)
-export const R_MARKET = Math.round(EXTENT * 0.0088)
-export const R_DOCK = Math.round(EXTENT * 0.0076)
-export const R_DEPOT = Math.round(EXTENT * 0.0058)
-export const R_DERELICT = Math.round(EXTENT * 0.0054)
-export const R_PHANTOM = Math.round(EXTENT * 0.005)
-export const R_RIFT = Math.round(EXTENT * 0.008)
-export const R_MARKER = Math.round(EXTENT * 0.0035)
+/**
+ * Node radii.
+ *
+ * Bigger both ways: the sector itself is two and a half times what it was, *and* these are a
+ * larger fraction of it. A station used to be six tenths of a percent of the sector — a landmark
+ * in the arithmetic and a dot on the screen. They are now structures you fly *through*, which is
+ * what `collide.ts` stopped making solid and what `meshes.ts` gives a silhouette to.
+ */
+export const R_STATION = Math.round(EXTENT * 0.009)
+export const R_ORIGIN = Math.round(EXTENT * 0.016)
+export const R_MARKET = Math.round(EXTENT * 0.014)
+export const R_DOCK = Math.round(EXTENT * 0.012)
+export const R_DEPOT = Math.round(EXTENT * 0.0085)
+export const R_DERELICT = Math.round(EXTENT * 0.008)
+export const R_PHANTOM = Math.round(EXTENT * 0.0075)
+export const R_RIFT = Math.round(EXTENT * 0.013)
+export const R_MARKER = Math.round(EXTENT * 0.005)
+
+/** The largest a node can be, so docking range can be checked against it. */
+export const R_NODE_MAX = R_ORIGIN
 
 /** Base radius of a contact, before its magnitude is added. */
 export const R_CONTACT = Math.round(EXTENT * 0.0024)
@@ -59,8 +69,18 @@ export const R_PHOTON = Math.round(EXTENT * 0.0016)
 /** The player's own hull, for taking hits. */
 export const R_PLAYER = Math.round(EXTENT * 0.0035)
 
-/** How close you must be to a node to use its services — about three station radii. */
-export const DOCK_RANGE = Math.round(EXTENT * 0.019)
+/**
+ * How close you must be to a node to use its services.
+ *
+ * **Must comfortably exceed the largest node.** It did not, and that was the whole of the
+ * reported "refuelling does not work": the origin market's own radius plus the ship's put the
+ * hull at 0.014 of the sector from the centre, and docking range was 0.019 — a shell two
+ * thousandths of a sector thick, crossed in a twentieth of a second at cruise. The ship spawned
+ * *outside* it, so the first station a new player ever sees reported `nothing in range`.
+ *
+ * A test now pins the relationship rather than the number.
+ */
+export const DOCK_RANGE = Math.round(EXTENT * 0.055)
 
 /**
  * Default sensor and engagement ranges.

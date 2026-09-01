@@ -98,13 +98,52 @@ export function isGhost(role: Role): boolean {
 /**
  * The silhouette for a body. The **only** place a shape is chosen.
  *
- * Same arrangement as `PALETTE` and for the same reason: a renderer that decided the fast one
- * was the small triangle would be a second home for the class table, and the two would drift.
+ * Same arrangement as `PALETTE` and for the same reason: a renderer that decided the fast one was
+ * the small triangle would be a second home for the class table, and the two would drift.
+ *
+ * **Nodes have their own shapes now.** They were shaded spheres, which told you a thing was there
+ * and nothing else — a market and a rift were the same ball in different colours, so the whole
+ * vocabulary the record carries arrived as a palette. That fails the way colour-only distinctions
+ * fail everywhere in this project: on a bad monitor, at a glance, or for a colour-blind player,
+ * two shades are one thing. A market is now a hexagonal platform and a rift is a jagged shell
+ * around nothing, and neither needs its colour to be read.
  */
 export function shapeOf(b: Body): Shape {
   if (b.shape) return b.shape
   if (b.role === 'laser' || b.role === 'photon' || b.role === 'enemy-shot') return 'bolt'
-  return b.solid ? 'sphere' : 'shell'
+  switch (b.role) {
+    case 'origin':
+    case 'station':
+    case 'market':
+    case 'dock':
+    case 'depot':
+    case 'derelict':
+    case 'rift':
+    case 'phantom':
+    case 'marker':
+      return b.role
+    default:
+      // Contacts and the waypoint keep the sphere. A signal is a *reading*, not a structure, and
+      // giving it architecture would claim the observer saw a thing where it counted an event.
+      return b.solid ? 'sphere' : 'shell'
+  }
+}
+
+/**
+ * A node's orientation, from its id.
+ *
+ * Deterministic and cheap. Without it every station ring in the sector faces the same way, which
+ * makes a thousand of them read as a printed pattern rather than as a place — and the ring is
+ * edge-on from the same direction for all of them, so from one axis the whole sector becomes
+ * lines.
+ */
+export function nodeFacing(id: number): Vec3 {
+  // Three coprime-ish moduli, so the three components do not repeat together.
+  const x = ((id * 7) % 13) - 6
+  const y = ((id * 11) % 9) - 4
+  const z = ((id * 5) % 11) - 5 || 3
+  const l = Math.hypot(x, y, z) || 1
+  return { x: x / l, y: y / l, z: z / l }
 }
 
 /** How faint a lane is drawn. See `Segment.alpha`. */
@@ -261,10 +300,16 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       at: n.at,
       role,
       radius: nodeRadius(role),
-      // A phantom is simulated — something the observer modelled rather than saw. Drawn
-      // hollow for the same reason a ghost is: it is not a thing that was there.
-      solid: role !== 'phantom' && role !== 'marker',
+      // Every node is hollow now. They are open structures you fly *through* (see `collide.ts`),
+      // and a wireframe is the honest rendering of one: a shaded sphere claims a surface where
+      // there is a frame. `solid` survives because it still separates a *contact* that was
+      // measured from one that was estimated, which is a different claim entirely.
+      solid: false,
       label: n.label,
+      // A fixed heading, so a station's ring is not edge-on to the same axis everywhere. Derived
+      // from the node id rather than a clock or a random draw: two players holding the same
+      // record see the same sector, orientations included.
+      facing: nodeFacing(n.id),
     }
   })
 

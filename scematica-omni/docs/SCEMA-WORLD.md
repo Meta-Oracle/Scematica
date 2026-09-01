@@ -388,7 +388,93 @@ crosshair for the rest of the session, and a stale message is worse than none.
 
 Measured at **0.68 ms per tick** against a 16.7 ms budget, with 1,080 solid nodes and 77 craft.
 
-## Arc 10 — The record rides inside the picture *(done)*
+## Arc 10 — Structures, not spheres *(done)*
+
+### The sector is two and a half times larger, and the nodes grew faster still
+
+The complaint was that nodes were too small, and the honest version of that is that they were too
+small *relative to the sector* — a landmark in the arithmetic and a dot on the screen. A station
+is now nine tenths of a percent of a sector that is itself 2.5× what it was, so it went from two
+and a half million units across to nine.
+
+### They are open structures you fly through, and each kind has its own silhouette
+
+Nodes were shaded spheres: a market and a rift were the same ball in different colours, so the
+whole vocabulary a record carries arrived as a *palette*. That fails the way colour-only
+distinctions fail everywhere else here — on a bad monitor, at a glance, or for a colour-blind
+player, two shades are one thing.
+
+Each kind is now a wireframe with its own shape. A **station** is a habitation ring on a spindle,
+so it reports its orientation from any angle. A **market** is a flat hexagonal platform. A **dock**
+is an open cradle with a gap you can fly into — the gap is the design, since a dock is the one
+node the player has business inside. A **derelict** is literally the station ring with segments
+missing and its spindle snapped, so that it reads as *the same object, stale*. A **rift** is a
+jagged shell around nothing, deliberately empty through the middle: a core there would be the
+em-dash bug in geometry, a claim about the contents of a place the record could not see. A
+**phantom** is the station ring drawn as a dotted skeleton — identifiable and obviously inferred.
+A **marker** is a survey cross and nothing else, because nothing was observed to draw.
+
+And they no longer block flight. Solid obstacles at this size are not scenery, they are a maze:
+a sector whose landmarks are also walls is one where the interesting thing about a market is that
+it is in the way.
+
+### So the epistemic distinction moved rather than disappearing
+
+It used to be *solid versus permeable*. It is now **registers versus does not**. Flying through
+something the observer perceived puts it on your sensors; flying through a phantom, a marker or a
+rift puts nothing there and the HUD says why. Same claim, expressed as a reading rather than as a
+wall — and arguably a better home for it, since a wall is a fact about the world and a sensor
+return is a fact about what somebody knows.
+
+Both halves are now visible, which the old version got wrong: when only the *absence* produced a
+message, a player had nothing to contrast it against.
+
+### War-class ships
+
+`DREADNOUGHT` is fifteen stations end to end. `LEVIATHAN` is twenty-eight, with a hull two hundred
+times a fighter's and a broadside that strips a stock ship in two volleys. Neither is a fight to
+be picked; they are things to be *seen*, from a long way off, and decided about. They have their
+own mesh rather than a scaled capital — a shape only ever seen very large needs *more* detail, not
+the same detail stretched, or a hull fifteen stations long reads as a flat triangle.
+
+### Stars hold still now
+
+The star shader was handed a **view-space** position as though it were clip space: no field of
+view, no aspect correction, and — the visible part — a field that sheared and swam as the camera
+turned. Stars that do not hold still are worse than no stars, since holding still is the entire
+job. One matrix multiply.
+
+### The reported bug: refuelling and the market
+
+Two causes, both real.
+
+**Docking range was narrower than the thing you dock with.** The origin's radius plus the ship's
+put the hull at 0.014 of a sector from the centre and docking range was 0.019 — a shell two
+thousandths of a sector thick, crossed in a twentieth of a second at cruise. The ship spawned
+*outside* it, so the first station a new player ever sees reported `nothing in range`. A test now
+pins the relationship rather than the number.
+
+**The home station was a market**, which offers trade and repair. So the first key a new player
+pressed answered *"core does not offer refuel"* — which teaches that the service keys do not work
+rather than that this particular node does not sell fuel. The origin is its own kind now, offers
+all three, and has its own silhouette.
+
+### Also in this pass
+
+`overshoot` was unreachable and no test had noticed. The condition was on *alignment* — the player
+being behind the nose — and a fighter turns fast enough that it always points at the player:
+alignment inside the standoff band never once dropped below 0.74 across a forty-second engagement.
+Range rate is the physical fact; alignment was a proxy that only holds for something slow.
+
+Craft no longer hard-stop against nodes either, since they can fly through them; they still steer
+around, which costs nothing and reads as piloting.
+
+Performance went from 0.68 ms to 5.17 ms a tick when the sector grew — a leviathan's avoidance
+probe covers a large fraction of the sector, and the query walked hundreds of cells. Capitals no
+longer swerve, the sweep stopped allocating per bucket, and the two per-frame node scans reject on
+an axis before the square root. **0.51 ms**, and there is now a test.
+
+## Arc 11 — The record rides inside the picture *(done)*
 
 A PNG named the world it derived from and carried nothing else, which made it a claim ticket: to
 fly the space or verify the record you had to fetch the record from somewhere. That is right for
@@ -487,7 +573,7 @@ be mistaken for lanes inside a world, which are structural.
 ## Running it
 
 ```console
-$ cd web && npm run check:scemaworld     # generator, scale, dogfight, collision, jump — 166
+$ cd web && npm run check:scemaworld     # generator, scale, dogfight, structures, jump — 182
 $ cd web && npm run dev                  # /scema-world
 ```
 

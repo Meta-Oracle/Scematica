@@ -502,6 +502,12 @@ function PlatePanel({ plate, name }: { plate: Plate; name: string }) {
               {rastering ? `Rastering ${PNG_SIZE}×${PNG_SIZE}…` : 'Download PNG'}
             </button>
             <a
+              href="/scema-world"
+              className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"
+            >
+              Fly this world →
+            </a>
+            <a
               href={`data:application/json;charset=utf-8,${encodeURIComponent(plate.metadata)}`}
               download={`${base}.metadata.json`}
               className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"

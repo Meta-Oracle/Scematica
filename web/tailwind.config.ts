@@ -136,6 +136,31 @@ const config: Config = {
         'omni-warn':        '#ffb86b',
         'omni-unmeasured':  '#463a26',
 
+        // ── scema-world ─────────────────────────────────────────────────────
+        // Eighth product, eighth identity: cold violet-white on true black, the
+        // colour of a cockpit at night. Distinct from scylar's warm violet, which
+        // is a face, and from omni's amber, which is a document — this is the
+        // instrument glow of something you are flying.
+        //
+        // Two of these are not decoration and must not be tuned into each other:
+        // `sw-ghost` marks a contact nobody measured, and `sw-rift` marks a lane
+        // that ends because the observer could not see past it. Both are the
+        // em-dash rule in the one place a player acts on it, and both are the
+        // colour of *not knowing* rather than of a low value.
+        'sw-black':      '#04030a',
+        'sw-surface':    '#0b0918',
+        'sw-border':     '#241f45',
+        'sw-border-hi':  '#413a78',
+        'sw-text':       '#e8e6ff',
+        'sw-muted':      '#a09bd0',
+        'sw-dim':        '#5f5a90',
+        'sw-accent':     '#a96bff',
+        'sw-glow':       '#d0aaff',
+        'sw-hostile':    '#ff595f',
+        'sw-salvage':    '#59e69e',
+        'sw-ghost':      '#6f6690',
+        'sw-rift':       '#4a4470',
+
         // ── escrow market ───────────────────────────────────────────────────
         // Fifth product, fifth identity: a cold teal on near-black, against the
         // sniper's red, alchem's blue, scylar's violet and botchain's amber.

@@ -303,6 +303,9 @@ export function ScemaWorldTerminal() {
         <div className="flex flex-wrap items-baseline gap-3">
           <b className="tracking-widest text-omni-accent">SCEMA-WORLD</b>
           <span className="text-omni-dim">the record is the map</span>
+          <a href="/omni" className="text-omni-dim underline-offset-4 hover:underline">
+            verify a record
+          </a>
           <span className="ml-auto text-omni-dim">
             no upload · the space is computed in this tab
           </span>

@@ -117,6 +117,14 @@ export default function Home() {
             >
               ◆ OMNI
             </Link>
+            <Link
+              href="/scema-world"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-sw-border
+                         text-sw-accent hover:border-sw-accent hover:text-sw-glow
+                         transition-all text-xs tracking-widest"
+            >
+              ✦ SCEMA-WORLD
+            </Link>
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

@@ -81,15 +81,27 @@ Lanes as lines, stations as instanced geometry, ghosts drawn differently from so
 visibly so. Pointer-lock flight, six degrees of freedom. Sensor range as a real draw distance,
 so an illegible world is *experienced* as dark rather than labelled dark.
 
-### Arc 3 — Loading a record
+### Arc 3 — Loading a record *(done)*
 
-Drop a `.json` on the page, exactly as `/omni` already does — `FileReader`, no upload, and the
-record is verified in the browser with the existing `verifyRecordText`. A tampered record still
-generates a space, and the HUD says `INVALID` in a way that cannot be missed. It is not blocked:
-seeing what a forged map looks like is more instructive than being refused one.
+Drop a `.json` on the page, exactly as `/omni` does — `FileReader`, no upload, verified in the
+browser with `verifyRecordText`. A tampered record still generates a space and the HUD says
+`INVALID` unmissably. It is not blocked: seeing what a forged map looks like is more
+instructive than being refused one.
 
-Also accepts the PNG. `lib/omni/raster.ts` already produces bytes that are a pure function of
-the record, so the digest can be recovered from an owned image.
+**A PNG is a claim ticket, not a map**, and the first version of this document got that wrong.
+It claimed the digest could be "recovered from an owned image" — it cannot. The plate draws
+only a *shortened* digest as glyphs, and pixels are not invertible. Worse, the image could not
+say which record it derived from at all.
+
+Fixed properly: the encoder writes a `tEXt` chunk keyed `scema.world` carrying the full
+commitment, in both `raster.rs` and `raster.ts`, so byte-parity is preserved and the fixture
+still matches. `readWorldCommitment` walks the chunk table rather than scanning the bytes — a
+scan would eventually find something hex-shaped in the pixel data and hand back a commitment
+nobody wrote.
+
+The ticket names a world; it does not contain one. The objects, signals and blind spots that
+make the space do not survive rasterisation, so a PNG tells you *which* record to fetch. Which
+is exactly what Arc 5 is for.
 
 ### Arc 4 — Combat *(done)*
 

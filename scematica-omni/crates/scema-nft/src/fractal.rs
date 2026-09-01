@@ -439,7 +439,7 @@ pub fn render(world: &WorldState, digest_hex: &str) -> String {
 /// written here rather than taken from a library.
 pub fn render_png(world: &WorldState, digest_hex: &str, size: usize) -> Vec<u8> {
     let (_, prims) = scene(world, digest_hex);
-    crate::raster::render_png(&prims, VIEW, size, Role::Ground)
+    crate::raster::render_png(&prims, VIEW, size, Role::Ground, digest_hex)
 }
 
 /// Draw the growth once, returning both renderings' inputs.

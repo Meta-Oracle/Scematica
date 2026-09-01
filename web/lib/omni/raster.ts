@@ -395,7 +395,60 @@ function zlibStored(data: Uint8Array): Uint8Array {
   return Uint8Array.from(out)
 }
 
-function encodePng(w: number, h: number, rgb: Uint8Array): Uint8Array<ArrayBuffer> {
+/**
+ * PNG keyword under which the world commitment travels. Must match `WORLD_KEYWORD` in
+ * `raster.rs` — it is inside the bytes the parity fixture compares.
+ */
+export const WORLD_KEYWORD = 'scema.world'
+
+/** A `tEXt` chunk: `keyword text`, Latin-1. A digest is hex, so nothing needs escaping. */
+function textChunk(out: number[], keyword: string, text: string): void {
+  const body = [
+    ...Array.from(keyword, (c) => c.charCodeAt(0)),
+    0,
+    ...Array.from(text, (c) => c.charCodeAt(0)),
+  ]
+  chunk(out, 'tEXt', body)
+}
+
+/**
+ * Read the world commitment out of a PNG this encoder wrote.
+ *
+ * Walks the chunk table rather than searching the bytes: a digest-looking string could appear
+ * anywhere in the pixel data by chance, and a scan would eventually find one and hand back a
+ * commitment nobody wrote.
+ *
+ * Returns `null` when the image carries none — an ordinary PNG, or one written before this
+ * chunk existed. Not an error: the caller's job is to ask for the record another way.
+ */
+export function readWorldCommitment(png: Uint8Array): string | null {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (png.length < 8 || sig.some((b, i) => png[i] !== b)) return null
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength)
+  let off = 8
+  while (off + 8 <= png.length) {
+    const len = view.getUint32(off)
+    const kind = String.fromCharCode(...png.slice(off + 4, off + 8))
+    if (kind === 'tEXt') {
+      const body = png.slice(off + 8, off + 8 + len)
+      const nul = body.indexOf(0)
+      if (nul > 0) {
+        const key = String.fromCharCode(...body.slice(0, nul))
+        if (key === WORLD_KEYWORD) return String.fromCharCode(...body.slice(nul + 1))
+      }
+    }
+    if (kind === 'IEND') break
+    off += 12 + len
+  }
+  return null
+}
+
+function encodePng(
+  w: number,
+  h: number,
+  rgb: Uint8Array,
+  world: string,
+): Uint8Array<ArrayBuffer> {
   // Filter type 0 on every row: any other filter is a compression aid, and there is no
   // compression here to aid.
   const raw = new Uint8Array(h * (1 + w * 3))
@@ -405,6 +458,8 @@ function encodePng(w: number, h: number, rgb: Uint8Array): Uint8Array<ArrayBuffe
   }
   const out: number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
   chunk(out, 'IHDR', [...be32(w), ...be32(h), 8, 2, 0, 0, 0])
+  // Between IHDR and IDAT, where a reader finds it without decompressing anything.
+  if (world) textChunk(out, WORLD_KEYWORD, world)
   chunk(out, 'IDAT', zlibStored(raw))
   chunk(out, 'IEND', [])
   return Uint8Array.from(out)
@@ -416,6 +471,7 @@ export function renderPng(
   view: number,
   size: number,
   bgHex: string,
+  world: string,
 ): Uint8Array<ArrayBuffer> {
   const big = size * SS
   const buf = new Buf(big, big, hexToRgb(bgHex))
@@ -466,5 +522,5 @@ export function renderPng(
     }
   }
 
-  return encodePng(size, size, buf.downsample(size, size))
+  return encodePng(size, size, buf.downsample(size, size), world)
 }

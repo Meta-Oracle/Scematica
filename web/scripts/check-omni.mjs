@@ -25,6 +25,7 @@ import { canonicalBytes, parseCanonical, toFixed, toHex } from '../lib/omni/cano
 import { verifyRecordText } from '../lib/omni/verify.ts'
 import { cell, abstentionHeadline } from '../lib/omni/view.ts'
 import { renderFractal, renderFractalPng, growthOf, plannedCuts } from '../lib/omni/fractal.ts'
+import { readWorldCommitment } from '../lib/omni/raster.ts'
 import {
   arcPath,
   base64,
@@ -475,7 +476,14 @@ await check('the PNG is a real PNG and its chunk CRCs check out', () => {
     off += 12 + len
   }
   assert(off === png.length, 'chunks must tile the file exactly')
-  assert(kinds.join(',') === 'IHDR,IDAT,IEND', `chunks were ${kinds.join(',')}`)
+  // `tEXt` carries the world commitment, so the image can name the record it derives from.
+  // Asserted by membership rather than by an exact sequence: pinning the order made adding a
+  // legal, ignorable chunk look like a corruption.
+  assert(kinds[0] === 'IHDR', `first chunk was ${kinds[0]}`)
+  assert(kinds[kinds.length - 1] === 'IEND', 'IEND must be last')
+  for (const required of ['IHDR', 'IDAT', 'IEND', 'tEXt']) {
+    assert(kinds.includes(required), `no ${required} chunk: ${kinds.join(',')}`)
+  }
 
   assert(view.getUint32(16) === 64 && view.getUint32(20) === 64, 'IHDR dimensions')
   assert(png[24] === 8 && png[25] === 2, 'must be 8-bit RGB')
@@ -487,8 +495,21 @@ await check('the zlib stream is stored blocks, so the bytes depend only on the p
   // unreachable. Stored blocks make the output a pure function of the pixels.
   const png = renderFractalPng(plateWorld, 'deadbeef', 64)
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength)
-  const len = view.getUint32(33)
-  const idat = png.slice(41, 41 + len)
+  // Located by walking the chunk table. The first version indexed IDAT at a fixed offset and
+  // broke the moment a `tEXt` chunk was added ahead of it — a position is not an identity.
+  let off = 8
+  let idat = null
+  while (off + 8 <= png.length) {
+    const len = view.getUint32(off)
+    const kind = String.fromCharCode(...png.slice(off + 4, off + 8))
+    if (kind === 'IDAT') {
+      idat = png.slice(off + 8, off + 8 + len)
+      break
+    }
+    off += 12 + len
+  }
+  assert(idat, 'no IDAT chunk')
+  const len = idat.length
   assert(idat[0] === 0x78 && idat[1] === 0x01, 'zlib header must be 78 01')
   // BTYPE lives in bits 1-2 of the first byte of a block; 00 is "stored".
   assert(((idat[2] >> 1) & 0x03) === 0, 'the first deflate block must be stored')
@@ -496,6 +517,27 @@ await check('the zlib stream is stored blocks, so the bytes depend only on the p
   const raw = 64 * (1 + 64 * 3)
   const blocks = Math.ceil(raw / 65535)
   assert(len === 2 + blocks * 5 + raw + 4, `IDAT length ${len} is not stored-block sized`)
+})
+
+await check('the PNG names the world it depicts', () => {
+  // The plate draws only a *shortened* digest as glyphs, and pixels are not invertible, so
+  // before this the image could not say which record it derived from. A `tEXt` chunk can, and
+  // it is what lets `/scema-world` accept a PNG as a claim ticket for a world.
+  const digest = readFileSync(join(nftDir, 'parity-digest.txt'), 'utf8').trim()
+  const png = renderFractalPng(plateWorld, digest, 128)
+  assert(readWorldCommitment(png) === digest, 'the commitment did not survive the encoder')
+})
+
+await check('an ordinary PNG carries no commitment rather than a guessed one', () => {
+  // `null`, never a fabricated digest. A scan of the pixel bytes would eventually find
+  // something hex-shaped and hand back a commitment nobody wrote, which is why the reader
+  // walks the chunk table instead.
+  const png = renderFractalPng(plateWorld, 'deadbeef', 64)
+  const stripped = png.slice()
+  // Corrupt the keyword so the chunk is present but not ours.
+  const at = stripped.indexOf(0x73) // 's' of "scema.world"
+  if (at > 0) stripped[at] = 0x78
+  assert(readWorldCommitment(stripped) === null, 'a foreign tEXt chunk was read as ours')
 })
 
 await check('an unmeasured signal rasterises differently from a measured one', () => {

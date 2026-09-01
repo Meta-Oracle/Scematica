@@ -436,5 +436,5 @@ export function renderFractalPng(
   digestHex: string,
   size: number,
 ): Uint8Array<ArrayBuffer> {
-  return renderPng(scene(w, digestHex).prims, VIEW, size, PALETTE.ground)
+  return renderPng(scene(w, digestHex).prims, VIEW, size, PALETTE.ground, digestHex)
 }

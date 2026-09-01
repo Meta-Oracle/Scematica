@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { verifyRecordText, webSha256, type Verification } from '@/lib/omni/verify'
 import { plateSourceFromText } from '@/lib/omni/nft'
+import { readWorldCommitment } from '@/lib/omni/raster'
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
@@ -67,9 +68,30 @@ export function ScemaWorldTerminal() {
   const [ammo, setAmmo] = useState<string>('∞')
   const [kills, setKills] = useState(0)
 
+  const [ticket, setTicket] = useState<string | null>(null)
+
   const load = useCallback(async (file: File) => {
     setError(null)
+    setTicket(null)
     try {
+      // A PNG is a *claim ticket*, not a map. The image names the world it derives from in a
+      // `tEXt` chunk, but it does not contain the world — the space needs the objects, the
+      // signals and the blind spots, and none of those survive rasterisation. So a PNG tells
+      // you which record to go and get; it cannot stand in for one.
+      if (file.name.toLowerCase().endsWith('.png') || file.type === 'image/png') {
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const commitment = readWorldCommitment(bytes)
+        setLoaded(null)
+        if (!commitment) {
+          setError(
+            'That PNG carries no world commitment. Images written by `scema nft` name the ' +
+              'record they derive from; this one does not, so there is nothing to look up.'
+          )
+        } else {
+          setTicket(commitment)
+        }
+        return
+      }
       const text = await file.text()
       const verification = await verifyRecordText(text, webSha256)
       // Drawn from the raw text for the same reason the digest is: a `JSON.parse` round trip
@@ -253,16 +275,28 @@ export function ScemaWorldTerminal() {
           <label className="block cursor-pointer rounded border border-dashed border-omni-border-hi p-8 text-center hover:border-omni-accent">
             <input
               type="file"
-              accept="application/json,.json"
+              accept="application/json,.json,image/png,.png"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) void load(f)
               }}
             />
-            <span className="text-omni-text">Choose a record…</span>
+            <span className="text-omni-text">Choose a record — or a PNG that names one…</span>
           </label>
           {error && <p className="text-omni-invalid">{error}</p>}
+          {ticket && (
+            <div className="rounded border border-omni-border-hi p-4">
+              <div className="text-omni-accent">This image names a world.</div>
+              <div className="mt-1 break-all font-mono text-xs text-omni-text">{ticket}</div>
+              <p className="mt-2 text-omni-dim">
+                A PNG is a claim ticket, not a map. It says which record it was drawn from; it
+                does not carry the record — the objects, signals and blind spots that make the
+                space do not survive rasterisation. Drop that record here, or fetch it from a
+                vault you hold the token for.
+              </p>
+            </div>
+          )}
           <ul className="space-y-1 text-omni-dim">
             <li>
               <span className="text-omni-text">Blind spots</span> become rifts — lanes that

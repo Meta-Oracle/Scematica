@@ -416,7 +416,30 @@ fn zlib_stored(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
+/// PNG keyword under which the world commitment travels.
+///
+/// A `tEXt` chunk, which is standard and which every decoder ignores if it does not care.
+/// The image is a derivative of a specific record, and until this existed it could not say
+/// which one: the plate draws only a *shortened* digest as glyphs, and pixels are not
+/// invertible anyway. An artefact that cannot name what it depicts is a picture, not a
+/// derivative.
+///
+/// It carries no clock and no counter, so the bytes stay a pure function of the record.
+pub const WORLD_KEYWORD: &str = "scema.world";
+
+/// A `tEXt` chunk: `keyword\0text`, Latin-1.
+///
+/// The digest is 64 hex characters, so the Latin-1 restriction is satisfied by construction
+/// and there is nothing to escape.
+fn text_chunk(out: &mut Vec<u8>, keyword: &str, text: &str) {
+    let mut body = Vec::with_capacity(keyword.len() + 1 + text.len());
+    body.extend_from_slice(keyword.as_bytes());
+    body.push(0);
+    body.extend_from_slice(text.as_bytes());
+    chunk(out, b"tEXt", &body);
+}
+
+fn encode_png(w: usize, h: usize, rgb: &[u8], world: &str) -> Vec<u8> {
     // Filter type 0 (None) on every row. Any other filter is a compression aid, and there is
     // no compression here to aid.
     let mut raw = Vec::with_capacity(h * (1 + w * 3));
@@ -431,6 +454,11 @@ fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     ihdr.extend_from_slice(&(h as u32).to_be_bytes());
     ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit, truecolour RGB
     chunk(&mut out, b"IHDR", &ihdr);
+    // Between IHDR and IDAT, which is where a `tEXt` chunk belongs and where a reader will
+    // find it without decompressing anything.
+    if !world.is_empty() {
+        text_chunk(&mut out, WORLD_KEYWORD, world);
+    }
     chunk(&mut out, b"IDAT", &zlib_stored(&raw));
     chunk(&mut out, b"IEND", &[]);
     out
@@ -439,7 +467,7 @@ fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
 /// Rasterise a scene to a PNG.
 ///
 /// `size` is the output edge in pixels; the scene's coordinate space is `view` units.
-pub fn render_png(prims: &[Prim], view: i64, size: usize, bg: Role) -> Vec<u8> {
+pub fn render_png(prims: &[Prim], view: i64, size: usize, bg: Role, world: &str) -> Vec<u8> {
     let big = size * SS;
     let mut buf = Buf::new(big, big, bg.ink());
 
@@ -496,7 +524,7 @@ pub fn render_png(prims: &[Prim], view: i64, size: usize, bg: Role) -> Vec<u8> {
     }
 
     let rgb = buf.downsample(size, size);
-    encode_png(size, size, &rgb)
+    encode_png(size, size, &rgb, world)
 }
 
 #[cfg(test)]
@@ -505,7 +533,7 @@ mod tests {
 
     #[test]
     fn the_png_has_a_valid_signature_and_the_three_required_chunks() {
-        let png = render_png(&[], 512, 64, Role::Ground);
+        let png = render_png(&[], 512, 64, Role::Ground, "");
         assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
         let has = |k: &[u8]| png.windows(4).any(|w| w == k);
         assert!(has(b"IHDR") && has(b"IDAT") && has(b"IEND"));
@@ -513,7 +541,7 @@ mod tests {
 
     #[test]
     fn the_header_declares_the_size_it_actually_wrote() {
-        let png = render_png(&[], 512, 64, Role::Ground);
+        let png = render_png(&[], 512, 64, Role::Ground, "");
         // IHDR body starts at byte 16: 8 signature + 4 length + 4 type.
         let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
         let h = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
@@ -523,7 +551,7 @@ mod tests {
     #[test]
     fn every_chunk_crc_checks_out() {
         // A wrong CRC is the difference between a file and a file a decoder refuses.
-        let png = render_png(&[], 512, 32, Role::Ground);
+        let png = render_png(&[], 512, 32, Role::Ground, "");
         let mut i = 8usize;
         let mut seen = 0;
         while i + 8 <= png.len() {
@@ -547,12 +575,12 @@ mod tests {
             role: Role::Measured,
             dashed: false,
         }];
-        assert_eq!(render_png(&prims, 512, 128, Role::Ground), render_png(&prims, 512, 128, Role::Ground));
+        assert_eq!(render_png(&prims, 512, 128, Role::Ground, ""), render_png(&prims, 512, 128, Role::Ground, ""));
     }
 
     #[test]
     fn a_drawn_scene_differs_from_an_empty_one() {
-        let empty = render_png(&[], 512, 128, Role::Ground);
+        let empty = render_png(&[], 512, 128, Role::Ground, "");
         let drawn = render_png(
             &[Prim::Line {
                 a: (10_000, 10_000),
@@ -564,6 +592,7 @@ mod tests {
             512,
             128,
             Role::Ground,
+            "",
         );
         assert_ne!(empty, drawn, "the line must reach the pixels");
         assert_eq!(empty.len(), drawn.len(), "stored deflate makes size independent of content");

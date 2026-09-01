@@ -267,6 +267,14 @@ export function step(
   dt: number,
   contacts: Contact[],
   seed: string,
+  /**
+   * Whether the segment a projectile crossed this frame was blocked by geometry.
+   *
+   * Optional so this module keeps no dependency on the collision grid — the same reason it takes
+   * `contacts` rather than reaching for a `Space`. Without it a shot passes through a station and
+   * kills something on the far side, which reads as the geometry being decorative.
+   */
+  blocked?: (from: Vec3, to: Vec3) => boolean,
 ): { combat: Combat; hits: Hit[] } {
   const hits: Hit[] = []
   const alive: Projectile[] = []
@@ -297,6 +305,9 @@ export function step(
     }
     const life = p.life - dt
     const w = p.kind === 'laser' ? LASER : PHOTON
+
+    // Tested before the targets, so a hostile standing behind a dock is genuinely in cover.
+    if (blocked && blocked(p.at, at)) continue
 
     let consumed = false
     for (const contact of contacts) {

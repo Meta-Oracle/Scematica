@@ -798,6 +798,21 @@ Three more rules the 104 checks carry, each paid for:
   star you could fly to would be an object the record never claimed. Draw distance is a constant
   covering the sector: it used to come from sensor range, which conflated what the record knows
   with what the window shows and made an unread world arrive as a *small* one.
+- **What is solid is exactly what was observed** (`collide.ts`). Station, dock, depot, market,
+  origin and derelict collide; **phantom, marker and rift do not**. Making a phantom solid is the
+  game asserting something is there on the strength of a record that says nobody saw it; making
+  it permeable is not the opposite claim, because the game simulates what was *observed* and
+  there is nothing here to hit. The HUD says which, and that sentence is the mechanic. Four bugs
+  came out of building this and none was visible by looking: the ship spawned inside the origin
+  market (and then, once moved, pointed straight at it); avoidance returned a pure sidestep and
+  orbited forever; every class's turn radius (`speed / turn`) exceeded its own standoff, so a
+  gunship circled nineteen million units out for two and a half minutes; and a degenerate normal
+  parked bodies at obstacle centres — which is where every record-signal craft starts, since
+  contacts sit on nodes. Rules that survived: the physics radius **is** the drawn radius (one
+  table); swept, never endpoint; geometry stops fire in **both** directions or the player learns
+  hiding works only for the other side; impact cost is closing speed at the point of contact, so
+  a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
+  collision system becomes flypaper.
 - **A PNG written by `scema nft <record>` carries the record** in an `iTXt` chunk, so the image
   flies in Scema-World and verifies in `/omni` with no vault and no network. `iTXt` not `tEXt`
   (Latin-1 would corrupt a label lifted from an observed page), the **raw text** not a

@@ -182,8 +182,15 @@ export interface DrawList {
   far: number
 }
 
-/** Radius for a node, from what it is. Stations are landmarks; markers barely register. */
-function nodeRadius(role: Role): number {
+/**
+ * Radius for a node, from what it is. Stations are landmarks; markers barely register.
+ *
+ * Exported because `collide.ts` builds its obstacle grid from exactly these numbers. A hit test
+ * that disagrees with the picture is the worst kind of bug in a game — the player flies through
+ * something visibly in the way, or bounces off empty space — so there is one table and both the
+ * renderer and the physics read it.
+ */
+export function nodeRadius(role: Role): number {
   switch (role) {
     case 'origin':
       return R_ORIGIN

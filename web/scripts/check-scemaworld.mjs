@@ -32,7 +32,13 @@ import {
   damage, recharge, MAX_LEVEL,
 } from '../lib/scemaworld/ship.ts'
 import * as Enemy from '../lib/scemaworld/enemy.ts'
-import { JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW } from '../lib/scemaworld/scale.ts'
+import {
+  collidesWith, permeableNote, sweep, resolve, separate, steerAround, passedThrough,
+  closestOnSegment, SEPARATION,
+} from '../lib/scemaworld/collide.ts'
+import { gridFor, NOTICE_MS } from '../lib/scemaworld/game.ts'
+import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
+import { JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER } from '../lib/scemaworld/scale.ts'
 import {
   swarmOf, step as enemyStep, hit as enemyHit, living, decide, leadPoint, turnToward,
   nearestThreat, classRoll, AGGRO_RANGE,
@@ -1772,6 +1778,354 @@ check('a craft that loses you while turning comes back', () => {
   assert(decide(c0, justOutside, 1, 1000) !== 'patrol', 'an engaged craft gave up too easily')
   assert(decide({ ...c0, behaviour: 'patrol' }, justOutside, 1, 1000) === 'patrol',
     'a craft acquired a target beyond its own sensor range')
+})
+
+// ── collisions ───────────────────────────────────────────────────────────────
+
+check('what is solid is exactly what was observed', () => {
+  // The only interesting decision in `collide.ts`. Making a phantom solid is the game asserting
+  // something is there on the strength of a record that says nobody saw it. Making it permeable
+  // is not the opposite claim — the game simulates what was observed, and there is nothing here
+  // to hit because nobody observed anything.
+  for (const kind of ['origin', 'station', 'dock', 'depot', 'market', 'derelict']) {
+    assert(collidesWith(kind), `${kind} was perceived and should be solid`)
+  }
+  for (const kind of ['phantom', 'marker', 'rift']) {
+    assert(!collidesWith(kind), `${kind} is a statement about knowledge, not a thing in space`)
+    assert(permeableNote(kind).length > 10, `${kind} passes through and says nothing about why`)
+  }
+})
+
+check('the physics radius is the drawn radius', () => {
+  // A hit test that disagrees with the picture is the worst kind of bug in a game: the player
+  // bounces off empty space, or flies through something visibly in the way.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const solid = s.nodes.filter((n) => collidesWith(n.kind))
+  let checked = 0
+  for (const [, bucket] of grid.cells) {
+    for (const o of bucket) {
+      assert(o.radius === nodeRadius(roleOfNode(o.node)), `${o.node.kind} uses a private radius`)
+      checked += 1
+    }
+  }
+  assert(checked === solid.length, `${checked} obstacles for ${solid.length} solid nodes`)
+})
+
+check('a sweep catches an obstacle a step would tunnel through', () => {
+  // A bolt covers a few million units a frame and a station is a couple of million across, so an
+  // endpoint check misses it entirely and the shot arrives on the far side.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const from = { x: station.at.x - r * 10, y: station.at.y, z: station.at.z }
+  const to = { x: station.at.x + r * 10, y: station.at.y, z: station.at.z }
+  assert(sweep(grid, from, to, 0), 'a segment straight through a station missed it')
+  // The endpoints themselves are both well clear, which is the whole point.
+  assert(!sweep(grid, from, from, 0), 'the start point was inside the station')
+  assert(!sweep(grid, to, to, 0), 'the end point was inside the station')
+})
+
+check('a sweep returns the first obstacle, not any obstacle', () => {
+  // A shot fired down a line of stations has to stop at the near one.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const solid = s.nodes.filter((n) => collidesWith(n.kind)).slice(0, 40)
+  for (const a of solid) {
+    for (const b of solid) {
+      if (a.id === b.id) continue
+      const hit = sweep(grid, a.at, b.at, 0)
+      if (!hit) continue
+      // Whatever it found, nothing solid may sit strictly nearer along the same segment.
+      for (const o of solid) {
+        const { dist, t } = closestOnSegment(o.at, a.at, b.at)
+        if (dist <= nodeRadius(roleOfNode(o)) && t < hit.t - 1e-9) {
+          assert(false, 'the sweep skipped a nearer obstacle')
+        }
+      }
+      return
+    }
+  }
+})
+
+check('a resolved body ends outside the surface, never touching it', () => {
+  // A body left exactly on the surface re-collides next frame at zero speed and sticks. That is
+  // the classic way a collision system becomes flypaper, and it is how a player who clips a dock
+  // would never get free of it.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const from = { x: station.at.x - r * 6, y: station.at.y, z: station.at.z }
+  const res = resolve(grid, from, station.at, R_PLAYER, 1 / 60)
+  assert(res.hit, 'flying into a station did not collide')
+  const gap = Math.hypot(res.at.x - station.at.x, res.at.y - station.at.y, res.at.z - station.at.z)
+  assert(gap > r + R_PLAYER, `ended ${gap} from the centre, inside the ${r + R_PLAYER} surface`)
+  // And from there, a second resolve must not fire again — that is the flypaper test.
+  assert(!resolve(grid, res.at, res.at, R_PLAYER, 1 / 60).hit, 'a resolved body is stuck')
+})
+
+check('impact speed is closing speed, so a graze is not a crash', () => {
+  // Charging a tangential near-miss the same as a nose-first impact makes collisions feel
+  // arbitrary, which is worse than not having them.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const head = resolve(
+    grid,
+    { x: station.at.x - r * 6, y: station.at.y, z: station.at.z },
+    station.at,
+    R_PLAYER,
+    1 / 60,
+  )
+  const graze = resolve(
+    grid,
+    { x: station.at.x - r * 6, y: station.at.y - r * 0.9, z: station.at.z },
+    { x: station.at.x + r * 6, y: station.at.y - r * 0.9, z: station.at.z },
+    R_PLAYER,
+    1 / 60,
+  )
+  if (graze.hit) assert(graze.impact < head.impact, 'a graze cost as much as a head-on hit')
+})
+
+check('flying into a station costs hull and cuts the drive', () => {
+  const s = generate(world, digest)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  let g = { ...newGame(s), throttle: 1 }
+  g = {
+    ...g,
+    camera: {
+      position: [station.at.x, station.at.y, station.at.z + r * 4],
+      orientation: [0, 0, 0, 1],
+    },
+  }
+  let hit = false
+  for (let f = 0; f < 240 && !hit; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    // Shields absorb an impact exactly as they absorb a shot. Asserting on hull alone said the
+    // collision cost nothing when it had in fact cost the whole buffer.
+    hit = g.ship.shield < shieldMax(0) || g.ship.hull < hullMax(0)
+  }
+  assert(hit, 'flying nose-first into a station cost nothing')
+  assert(g.throttle === 0, 'the drive kept running against the surface')
+  assert((g.notice ?? '').includes('impact'), g.notice)
+  assert(g.ship.hull > 0, 'one collision at cruise killed the ship outright')
+})
+
+check('a phantom is flown through, and the game says why', () => {
+  // The sentence is the mechanic. A player who flies through a station and is told it was
+  // modelled rather than observed has learned what a provenance is, from the cockpit.
+  const objects = world.objects.map((o) => ({
+    ...o,
+    provenance: { kind: 'simulated', age_secs: 0, budget_secs: 1 },
+  }))
+  const s = generate({ ...world, objects }, digest)
+  const phantom = s.nodes.find((n) => n.kind === 'phantom')
+  assert(phantom, 'the fixture produced no phantom')
+  const grid = gridFor(s)
+  assert(!sweep(grid, phantom.at, phantom.at, R_PLAYER), 'a phantom is solid')
+  const through = passedThrough(
+    s,
+    { x: phantom.at.x - 1000, y: phantom.at.y, z: phantom.at.z },
+    { x: phantom.at.x + 1000, y: phantom.at.y, z: phantom.at.z },
+    R_PLAYER,
+  )
+  assert(through && through.kind === 'phantom', 'flying through a phantom went unremarked')
+})
+
+check('separation pushes two overlapping craft apart, symmetrically', () => {
+  // Two wireframes occupying one point is the single cheapest-looking thing this renderer can
+  // produce, and steering alone does not prevent it — a craft that merely steers away still
+  // interpenetrates while it turns.
+  const a = { at: { x: 0, y: 0, z: 0 }, radius: 1000 }
+  const b = { at: { x: 500, y: 0, z: 0 }, radius: 1000 }
+  const push = separate([a, b])
+  assert(push[0].x < 0 && push[1].x > 0, 'they were not pushed apart')
+  assert(Math.abs(push[0].x + push[1].x) < 1e-9, 'the push was not symmetric')
+  const gap = 500 + push[1].x - push[0].x
+  assert(gap >= 2000 * SEPARATION - 1e-6, `ended ${gap} apart, still overlapping`)
+})
+
+check('two craft at exactly the same point still separate, deterministically', () => {
+  // No direction exists to separate along, and the naive form divides by zero. Two players
+  // holding the same record must see the same fight, so the fallback has to be a fixed choice.
+  const same = { at: { x: 7, y: 7, z: 7 }, radius: 500 }
+  const a = separate([{ ...same }, { ...same }])
+  const b = separate([{ ...same }, { ...same }])
+  assert(a[0].x !== 0 || a[0].y !== 0 || a[0].z !== 0, 'coincident craft did not separate')
+  assert(JSON.stringify(a) === JSON.stringify(b), 'separation is not deterministic')
+})
+
+check('avoidance bends a heading rather than replacing it', () => {
+  // The first version returned the pure sidestep and produced a permanent orbit: the craft turned
+  // fully broadside, flew sideways until the obstacle left its probe, turned back, re-acquired
+  // it, and repeated — an enemy politely declining to fight.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const at = { x: station.at.x, y: station.at.y, z: station.at.z + r * 8 }
+  const want = { x: 0, y: 0, z: -1 }
+  // Speed matters: the probe is `speed * lookaheadSecs`, so a craft too slow to reach the station
+  // within its lookahead correctly does not swerve for it.
+  const near = steerAround(grid, at, want, want, r, r * 8)
+  assert(near.urgency > 0, 'an obstacle dead ahead was not seen')
+  assert(near.dir.z < 0, 'the craft was turned away from where it wanted to go entirely')
+
+  const clear = steerAround(grid, at, { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 }, r, r * 4)
+  assert(clear.urgency === 0 && clear.dir.z === 1, 'a clear heading was bent anyway')
+})
+
+check('a craft never ends a tick inside a station', () => {
+  // Avoidance is a heuristic and heuristics miss. The hard resolve is what guarantees a wireframe
+  // hull is never sitting in the middle of a dock.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  let g = newGame(s)
+  for (let f = 0; f < 60 * 30; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    if (f % 120 !== 0) continue
+    for (const c of Enemy.living(g.swarm)) {
+      const inside = sweep(grid, c.at, c.at, 0)
+      assert(!inside, `a ${c.spec.label} is inside ${inside?.obstacle.node.label}`)
+    }
+  }
+})
+
+check('geometry stops fire in both directions', () => {
+  // A station is cover or it is scenery. It must be the same rule for both sides, or the player
+  // learns that hiding works only for the other one.
+  const enemySrc = codeOf(join(here, '..', 'lib', 'scemaworld', 'enemy.ts'))
+  assert(enemySrc.includes('resolve(grid, s.at, at'), 'enemy fire passes through stations')
+  const gameSrc = codeOf(join(here, '..', 'lib', 'scemaworld', 'game.ts'))
+  assert(gameSrc.includes('Collide.sweep(grid, from, to'), 'player fire passes through stations')
+})
+
+check('a bolt is stopped by a station rather than killing what is behind it', () => {
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  const station = s.nodes.find((n) => collidesWith(n.kind) && n.id !== 0)
+  const r = nodeRadius(roleOfNode(station))
+  const from = { x: station.at.x, y: station.at.y, z: station.at.z + r * 5 }
+  const behind = { x: station.at.x, y: station.at.y, z: station.at.z - r * 5 }
+  const target = { ...firstSolid(s), at: behind }
+  let c = newCombat()
+  let hits = []
+  for (let i = 0; i < 30 && hits.length === 0; i += 1) {
+    c = fire(c, from, { x: 0, y: 0, z: -1 }, i * 200, [target])
+    const res = step(c, 0.05, [target], s.seed, (a, b) => sweep(grid, a, b, 0) !== null)
+    c = res.combat
+    hits = res.hits
+  }
+  assert(hits.length === 0, 'a shot passed through a station and hit something behind it')
+})
+
+check('the ship starts outside the origin market and pointed away from it', () => {
+  // Two bugs lived here and both were found by tests. Spawning at the origin put the ship inside
+  // a station, so every frame was an impact — throttle cut, hull ticking down, shots blocked at
+  // the muzzle. Moving it to +Z then had the camera, which looks along −Z, staring into that same
+  // station, so the first press of the throttle flew straight into it.
+  const s = generate(world, digest)
+  const grid = gridFor(s)
+  let g = newGame(s)
+  const at = { x: g.camera.position[0], y: g.camera.position[1], z: g.camera.position[2] }
+  assert(!sweep(grid, at, at, R_PLAYER), 'the ship spawns inside a station')
+
+  const before = Math.hypot(...g.camera.position)
+  for (let f = 0; f < 90; f += 1) {
+    g = tick(g, s, { keys: new Set(['ArrowUp']), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  assert(g.throttle > 0.9, `throttle reached ${g.throttle} — something is in the way`)
+  assert(Math.hypot(...g.camera.position) > before, 'the ship flew toward the origin, not away')
+  assert(g.ship.hull === hullMax(0), 'the ship took damage flying straight ahead from spawn')
+})
+
+check('ramming a craft costs both of you', () => {
+  // A craft you can fly through is a craft that is not there.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  // A raider, deliberately. Contacts from the record sit *on* nodes, so a record-signal craft
+  // starts inside a station and the ship would collide with the station before ever reaching it.
+  const c = Enemy.living(g.swarm).find((k) => k.id.startsWith('raider:'))
+  g = {
+    ...g,
+    throttle: 1,
+    camera: { ...g.camera, position: [c.at.x, c.at.y, c.at.z + c.spec.radius * 0.5] },
+  }
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  assert(g.ship.shield < shieldMax(0) || g.ship.hull < hullMax(0), 'flying into a craft cost nothing')
+  assert((g.notice ?? '').includes('collision'), g.notice)
+  const after = Enemy.living(g.swarm).find((k) => k.id === c.id)
+  assert(!after || after.hull < c.hull, 'the craft was unharmed by the collision')
+  const gap = Math.hypot(
+    g.camera.position[0] - (after ?? c).at.x,
+    g.camera.position[1] - (after ?? c).at.y,
+    g.camera.position[2] - (after ?? c).at.z,
+  )
+  assert(gap >= R_PLAYER + c.spec.radius, 'the two are still inside each other')
+})
+
+check('a class can physically reach the range it wants to fight at', () => {
+  // The invariant that cost two and a half minutes of a gunship orbiting nineteen million units
+  // out, never closing and never disengaging. Turn radius is `speed / turn`, and at cruise every
+  // class here has one two or three times its own standoff — so the eased-off combat throttle is
+  // not a nicety, it is what makes the firing position reachable at all.
+  const COMBAT_THROTTLE = 0.3
+  for (const id of CLASS_IDS) {
+    const c = CLASSES[id]
+    const radius = (c.speed * COMBAT_THROTTLE) / c.turn
+    assert(
+      radius <= c.standoff * 1.6,
+      `${id} turns in ${Math.round(radius / 1e6)}M and wants to fight at ${Math.round(c.standoff / 1e6)}M`,
+    )
+  }
+})
+
+check('the obstacle grid is built once per space', () => {
+  // A thousand nodes against seventy craft and a few dozen bolts is a hundred thousand distance
+  // tests a frame if this is rebuilt. Nodes never move, so there is nothing to invalidate.
+  const s = generate(world, digest)
+  assert(gridFor(s) === gridFor(s), 'the grid is rebuilt on every query')
+  assert(gridFor(generate(world, digest)) !== gridFor(s), 'two spaces share one grid')
+})
+
+check('a notice expires instead of sitting under the crosshair forever', () => {
+  // It used to be `notice ?? state.notice`, which never cleared: an impact message from four
+  // minutes ago stayed on screen for the rest of the session, and a player reading it had no way
+  // to tell whether they had just hit something or once had. A stale message is worse than none —
+  // it is the interface asserting something that is no longer true.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  g = { ...g, throttle: 1, ship: { ...g.ship, fuel: 0 } }
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1000 })
+  assert(g.notice, 'a dry ship said nothing')
+  const raised = g.notice
+
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1000 + NOTICE_MS * 0.5 })
+  assert(g.notice === raised, 'the notice vanished before it could be read')
+
+  // Refuel it, so nothing re-raises the message, then run the clock out.
+  g = { ...g, ship: { ...g.ship, fuel: 100 }, throttle: 0 }
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1000 + NOTICE_MS * 2 })
+  assert(g.notice === null, `notice was still "${g.notice}"`)
+})
+
+check('a notice raised between ticks is stamped by the next one', () => {
+  // Services are single presses handled in the input handler, which has no clock — a held `F`
+  // must refuel once, not sixty times a second. Without the sentinel their notices carry a
+  // timestamp of zero and expire on the very next frame, unread.
+  const s = generate(world, digest)
+  const depot = s.nodes.find((n) => n.kind === 'depot')
+  let g = { ...newGame(s), nearby: depot, ship: { ...newShip(), fuel: 1 } }
+  g = useService(g, 'refuel')
+  assert(g.notice, 'refuelling said nothing')
+  const raised = g.notice
+  // A tick far past any expiry window: the message is new to the tick, so it survives.
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 900_000 })
+  assert(g.notice === raised, 'a message raised by a key press was expired before being seen')
 })
 
 await Promise.all(pending)

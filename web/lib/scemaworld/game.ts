@@ -21,14 +21,86 @@ import * as Ship from './ship.ts'
 import type { Ship as ShipState } from './ship.ts'
 import { forward, rotate, translate, type Camera } from './camera.ts'
 
-import { DOCK_RANGE, JUMP_INHIBIT, SPEED_THRUST } from './scale.ts'
+import { DOCK_RANGE, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SPEED_THRUST } from './scale.ts'
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
+import * as Collide from './collide.ts'
+import { nodeRadius, roleOfNode } from './view.ts'
 
 export { DOCK_RANGE }
 
 /** How fast a hit flash decays, in units per second. Two or three frames of white. */
 const FLASH_DECAY = 5.5
+
+/** How long a HUD notice stays up. Long enough to read once, short enough not to become furniture. */
+export const NOTICE_MS = 3_200
+
+/**
+ * "Stamp me on the next tick."
+ *
+ * `useService`, `purchase` and `route` are called from an input handler, between ticks, and have
+ * no clock — a single press must not become sixty refuels a second, so they cannot live inside
+ * the tick either. Threading a timestamp through three signatures to serve one field would put
+ * the burden on every caller; a sentinel puts it in the one place that already has the clock.
+ */
+const PENDING = -1
+
+/** Keep a fresh notice, or expire an old one. */
+function noticeState(
+  state: GameState,
+  raised: string | null,
+  nowMs: number,
+): { notice: string | null; noticeAt: number } {
+  if (raised) return { notice: raised, noticeAt: nowMs }
+  if (!state.notice) return { notice: null, noticeAt: state.noticeAt }
+  // Raised between ticks by a key press: this is the first tick that has seen it.
+  if (state.noticeAt === PENDING) return { notice: state.notice, noticeAt: nowMs }
+  if (nowMs - state.noticeAt < NOTICE_MS) {
+    return { notice: state.notice, noticeAt: state.noticeAt }
+  }
+  return { notice: null, noticeAt: state.noticeAt }
+}
+
+/**
+ * The obstacle grid, built once per space and cached against it.
+ *
+ * A `WeakMap` rather than a field on `GameState`, so `tick` keeps its signature and the grid
+ * cannot go stale relative to the space it describes — the two are the same object or they are
+ * not. Nodes never move, so there is nothing to invalidate.
+ *
+ * Radii come from `view.ts::nodeRadius`, the same table the renderer draws with. One table, or
+ * the player flies through something visibly in the way and bounces off empty space.
+ */
+const GRIDS = new WeakMap<Space, Collide.Grid>()
+
+export function gridFor(space: Space): Collide.Grid {
+  const cached = GRIDS.get(space)
+  if (cached) return cached
+  const built = Collide.gridOf(space, (n) => nodeRadius(roleOfNode(n)))
+  GRIDS.set(space, built)
+  return built
+}
+
+/**
+ * Damage from flying into something, per unit of closing speed.
+ *
+ * Tuned so a graze at cruise costs a few points and a full-burn nose-first impact into a dock
+ * takes most of a stock hull. Ramming has to be survivable — a player who dies to one mistimed
+ * approach stops approaching anything — and it has to be expensive enough that docking is a
+ * manoeuvre rather than a collision you perform on purpose.
+ */
+const IMPACT_DAMAGE = 26
+
+/** Damage for ramming a craft, per unit of closing speed. Both parties pay. */
+const RAM_DAMAGE = 34
+
+/**
+ * How far the ship starts from the origin node.
+ *
+ * Outside the market's own hull with room to spare, and inside docking range, so the first thing
+ * a new player can do is dock — which is also the first thing they need to learn.
+ */
+const SPAWN_CLEARANCE = Math.round(R_ORIGIN * 2.4)
 
 /** Held keys, by `KeyboardEvent.code`. */
 export type Keys = ReadonlySet<string>
@@ -66,13 +138,31 @@ export interface GameState {
   shake: number
   /** Transient line for the HUD — a hit, a refuel, a refusal. */
   notice: string | null
+  /**
+   * When the current notice was raised, so it can expire.
+   *
+   * It used to be `notice ?? state.notice`, which never cleared: an impact message from four
+   * minutes ago sat under the crosshair for the rest of the session, and a player reading it had
+   * no way to tell whether they had just hit something or once had. A stale message is worse
+   * than none — it is the interface asserting something that is no longer true.
+   */
+  noticeAt: number
   /** True once the hull is gone. The sector keeps rendering; you just cannot act. */
   lost: boolean
 }
 
 export function newGame(space: Space): GameState {
   return {
-    camera: { position: [0, 0, 0], orientation: [0, 0, 0, 1] },
+    // Offset from the origin and pointed *away* from it. Two bugs live here and both were found
+    // by tests rather than by looking. Spawning at [0,0,0] put the ship inside the origin market,
+    // so the moment collision existed every frame was an impact — throttle cut, hull ticking
+    // down, and shots blocked at the muzzle by a station the player could not see they were
+    // standing in. Moving the ship to +Z then had the camera, which looks along −Z, staring
+    // straight into that same station: the first press of the throttle flew into it.
+    //
+    // So: behind the market, looking out. The station is astern, in docking range, and the whole
+    // sector is ahead.
+    camera: { position: [0, 0, -SPAWN_CLEARANCE], orientation: [0, 0, 0, 1] },
     throttle: 0,
     ship: Ship.newShip(),
     combat: Weapons.newCombat(),
@@ -80,6 +170,7 @@ export function newGame(space: Space): GameState {
     // separation between them is a claim about provenance, not about behaviour.
     swarm: Enemy.swarmOf([...space.contacts, ...space.raiders], space.seed),
     nearby: null,
+    noticeAt: -1e9,
     waypoint: null,
     drive: Hyper.IDLE,
     velocity: { x: 0, y: 0, z: 0 },
@@ -167,6 +258,31 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     camera = translate(camera, [strafe * t, lift * t, 0])
   }
 
+  // ── the ship against the furniture ─────────────────────────────────────────
+  // Resolved once, after every source of movement — main drive, thrusters — and before anything
+  // is aimed from the ship's position. Resolving per-source would let a thruster nudge you
+  // through a wall the drive had just been stopped by.
+  const grid = gridFor(space)
+  const wanted = v3(camera.position)
+  const landing = Collide.resolve(grid, v3(was), wanted, R_PLAYER, dt)
+  if (landing.hit) {
+    camera = { ...camera, position: [landing.at.x, landing.at.y, landing.at.z] }
+    const cost = Math.round((landing.impact / Ship.topSpeed(0)) * IMPACT_DAMAGE)
+    if (cost > 0) {
+      ship = Ship.damage(ship, cost, nowMs)
+      notice = `impact — ${landing.hit.node.label} (−${cost})`
+    }
+    // The drive is cut on impact. Leaving it running grinds the hull against the surface for as
+    // long as the key is held, which turns one mistake into a death and reads as the ship being
+    // stuck rather than stopped.
+    throttle = 0
+  } else {
+    // Nothing solid — but the segment may have passed through something the observer never saw.
+    // This is the sentence that teaches a player what a provenance is, from the cockpit.
+    const ghosted = Collide.passedThrough(space, v3(was), wanted, R_PLAYER)
+    if (ghosted) notice = Collide.permeableNote(ghosted.kind)
+  }
+
   // ── the jump drive ─────────────────────────────────────────────────────────
   // Resolved before weapons so a jump that lands this frame puts the ship at its destination
   // before anything is aimed from it — otherwise the first frame after arrival fires from the
@@ -221,7 +337,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   })
 
   if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels)
-  const advanced = Weapons.step(combat, dt, moved, space.seed)
+  const advanced = Weapons.step(combat, dt, moved, space.seed, (from, to) =>
+    Collide.sweep(grid, from, to, 0) !== null,
+  )
   combat = advanced.combat
 
   // Flashes decay every tick and are re-lit by a hit. Decaying first means a hit landing this
@@ -250,7 +368,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   }
 
   // ── the enemy's turn ───────────────────────────────────────────────────────
-  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs)
+  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid)
   swarm = enemyStep.swarm
   let shake = Math.max(0, state.shake - dt * 2.2)
   if (enemyStep.damage > 0) {
@@ -261,9 +379,46 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     shake = Math.min(1, shake + (ship.hull < before ? 0.85 : 0.35))
     notice = ship.hull < before ? 'HULL BREACHED' : 'shields holding'
   }
+  // ── ramming ────────────────────────────────────────────────────────────────
+  // Both parties pay, and the player is pushed clear. A craft you can fly through is a craft
+  // that is not there, and at these closing speeds an interceptor crossing your nose ought to be
+  // an event rather than a texture.
+  let rammed: string | null = null
+  for (const c of Enemy.living(swarm)) {
+    const gap = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
+    const touch = R_PLAYER + c.spec.radius
+    if (gap >= touch) continue
+    const closing = Math.hypot(velocity.x, velocity.y, velocity.z) + c.speed
+    const cost = Math.max(1, Math.round((closing / Ship.topSpeed(0)) * RAM_DAMAGE))
+    ship = Ship.damage(ship, cost, nowMs)
+    const res = Enemy.hit(swarm, c.id, cost, nowMs)
+    swarm = res.swarm
+    if (res.killed) {
+      ship = Ship.bounty(ship, res.bounty)
+      combat = { ...combat, destroyed: [...combat.destroyed, c.id] }
+    }
+    flashes[c.id] = 1
+    shake = Math.min(1, shake + 0.9)
+    // Push out along the line between them, so the two do not sit inside each other next frame.
+    const dir = gap < 1e-6 ? { x: 1, y: 0, z: 0 } : {
+      x: (at.x - c.at.x) / gap,
+      y: (at.y - c.at.y) / gap,
+      z: (at.z - c.at.z) / gap,
+    }
+    const out = touch * 1.02
+    camera = {
+      ...camera,
+      position: [c.at.x + dir.x * out, c.at.y + dir.y * out, c.at.z + dir.z * out],
+    }
+    throttle = 0
+    rammed = `collision — ${c.spec.label} (−${cost})`
+    break
+  }
+  if (rammed) notice = rammed
+
   ship = Ship.recharge(ship, dt, nowMs)
 
-  const nearby = nearestService(space, at)
+  const nearby = nearestService(space, v3(camera.position))
 
   return {
     camera,
@@ -277,7 +432,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     velocity,
     flashes,
     shake,
-    notice: notice ?? state.notice,
+    ...noticeState(state, notice, nowMs),
     lost: Ship.destroyed(ship),
   }
 }
@@ -288,7 +443,7 @@ export function useService(
   service: 'refuel' | 'repair' | 'trade' | 'scavenge',
 ): GameState {
   const node = state.nearby
-  if (!node) return { ...state, notice: 'nothing in range' }
+  if (!node) return { ...state, noticeAt: PENDING, notice: 'nothing in range' }
   if (!servicesOf(node.kind).includes(service)) {
     // A phantom is the interesting refusal: it looks like a station and offers nothing,
     // because the observer modelled it rather than saw it.
@@ -310,14 +465,14 @@ export function useService(
         : service === 'scavenge'
           ? Ship.scavenge(state.ship, node.id)
           : { ship: state.ship, message: 'trading', ok: true }
-  return { ...state, ship: res.ship, notice: res.message }
+  return { ...state, ship: res.ship, notice: res.message, noticeAt: PENDING }
 }
 
 /** Buy an upgrade at a node that trades. */
 export function purchase(state: GameState, c: Ship.Component | string): GameState {
   const node = state.nearby
   if (!node || !servicesOf(node.kind).includes('trade')) {
-    return { ...state, notice: 'no market in range' }
+    return { ...state, noticeAt: PENDING, notice: 'no market in range' }
   }
   const res = Ship.buy(state.ship, c as Ship.Component)
   // A magazine upgrade that did not also load the rounds would look like it did nothing until
@@ -326,7 +481,7 @@ export function purchase(state: GameState, c: Ship.Component | string): GameStat
     res.ok && c === 'missiles'
       ? { ...state.combat, photonsLeft: Ship.photonMagazine(res.ship.levels.missiles) }
       : state.combat
-  return { ...state, ship: res.ship, combat, notice: res.message }
+  return { ...state, ship: res.ship, combat, notice: res.message, noticeAt: PENDING }
 }
 
 /**
@@ -339,7 +494,7 @@ export function route(state: GameState, space: Space, service: Service): GameSta
   const next = Nav.cycle(space, state.camera, service, state.waypoint)
   if (next === null) {
     // A real state, not an error: a world whose observer perceived nothing live has no docks.
-    return { ...state, notice: `this sector has nowhere to ${service}` }
+    return { ...state, noticeAt: PENDING, notice: `this sector has nowhere to ${service}` }
   }
   const fix = Nav.fixOn(space, state.camera, next)
   return {

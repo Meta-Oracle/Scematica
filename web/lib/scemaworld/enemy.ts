@@ -40,6 +40,7 @@
 import type { Contact, Vec3 } from './generate.ts'
 import { durability } from './weapons.ts'
 import { CLASSES, classFor, SHIELD_DELAY_MS, type ClassSpec } from './classes.ts'
+import { resolve, separate, steerAround, type Grid } from './collide.ts'
 import {
   AGGRO_RANGE, ENGAGE_RANGE, LIFE_ENEMY_SHOT, R_PLAYER, SPEED_ENEMY_SHOT,
 } from './scale.ts'
@@ -243,10 +244,20 @@ export function decide(c: Craft, range: number, closing: number, nowMs: number):
   // encounter being to the death.
   if (c.hull < c.spec.hull * 0.33) return 'evade'
   if (c.behaviour === 'overshoot' && nowMs - c.since < OVERSHOOT_MS) return 'overshoot'
-  // Flew past: inside standoff and no longer closing. It cannot turn on a coin, so it commits
-  // to the pass — and that commitment is the window the player is meant to notice and use.
-  if (range < c.spec.standoff * 0.8 && closing < 0) return 'overshoot'
-  if (range < c.spec.standoff * 1.6) return 'attack'
+  // Flew past: close, and now genuinely moving away. It cannot turn on a coin, so it commits to
+  // the pass — and that commitment is the window the player is meant to notice and use. The
+  // threshold is on the *standoff* band rather than a bare radius, so it moved when the attack
+  // band widened; pinned tight to the old number it simply stopped firing and the manoeuvre
+  // quietly disappeared from the game.
+  if (range < c.spec.standoff * 1.5 && closing < -0.2) return 'overshoot'
+  // A wide attack band, and the reason is geometry rather than taste. A craft's turn radius is
+  // `speed / turn`, and at cruise every class here has one two or three times its own standoff —
+  // so a craft that only entered `attack` once it was *already* inside standoff could never get
+  // there: it orbited at constant range, never closing and never giving up, which is exactly
+  // what a gunship parked at nineteen million units did for two and a half minutes. Entering
+  // `attack` early lets the eased-off throttle below shrink the turn radius enough to actually
+  // arrive.
+  if (range < c.spec.standoff * 3.5) return 'attack'
   return 'pursue'
 }
 
@@ -262,6 +273,7 @@ export function step(
   playerVel: Vec3,
   dt: number,
   nowMs: number,
+  grid?: Grid,
 ): StepResult {
   const craft: Craft[] = []
   const shots: EnemyShot[] = []
@@ -291,16 +303,19 @@ export function step(
         break
       case 'pursue':
         want = bearing
-        // Throttle with alignment rather than flat out. A craft at full burn while pointing the
-        // wrong way flies *away* from what it is chasing for as long as its turn takes, which
-        // at these speeds is far enough to lose the target entirely. Easing off through the
-        // turn is both what a pilot does and what makes the pursuit converge.
-        throttle = 0.2 + 0.8 * Math.max(0, closing)
+        // Full burn unless it is pointing the wrong way. A craft at full throttle while facing
+        // away flies *away* from what it is chasing for as long as its turn takes, which at
+        // these speeds loses the target entirely — but scaling smoothly with alignment was the
+        // over-correction: a craft circling at constant range reads a closing rate near zero
+        // forever, throttles down to a crawl, and never converges.
+        throttle = closing > 0.1 ? 1 : 0.25
         break
       case 'attack':
         want = norm(sub(leadPoint(c.at, playerAt, playerVel, ENEMY_SHOT_SPEED), c.at))
-        // Eased off inside standoff so it holds a firing position instead of ramming.
-        throttle = range < c.spec.standoff ? 0.35 : 0.8
+        // Eased off as it arrives, which is what lets it hold a firing position instead of
+        // sailing past. It is also the only thing that makes the position reachable at all:
+        // turn radius is `speed / turn`, so a third of the throttle is a third of the radius.
+        throttle = range < c.spec.standoff * 1.5 ? 0.3 : 0.75
         break
       case 'overshoot':
         // Committed to the pass: it keeps its heading and burns through.
@@ -312,13 +327,39 @@ export function step(
         break
     }
 
+    // Obstacle avoidance overrides the tactical intent, and does so *before* the turn rather
+    // than after the move. A craft that only stops when it touches something has visibly given
+    // up on the fight; one that starts its turn while it can still make it looks piloted. The
+    // lookahead is in seconds, so a destroyer begins earlier than an interceptor without either
+    // number being tuned by hand.
+    if (grid) {
+      const swerve = steerAround(
+        grid,
+        c.at,
+        c.facing,
+        want,
+        c.spec.radius,
+        Math.max(c.speed, c.spec.speed * 0.4),
+      )
+      want = swerve.dir
+      // Ease off in proportion to how hard it is having to bend. Full burn into a turn you are
+      // making in order to miss something is how a craft clips the thing it was avoiding — and a
+      // flat cap here is what made an earlier version crawl for the rest of the fight.
+      if (swerve.urgency > 0) throttle = Math.min(throttle, 1 - swerve.urgency * 0.5)
+    }
+
     const facing = turnToward(c.facing, want, c.spec.turn * dt)
     // Acceleration rather than a snapped velocity, so a craft has mass and a heavy one reads
     // as heavy.
     const target = c.spec.speed * throttle
     const accel = c.spec.speed * (c.spec.capital ? 0.35 : 1.6) * dt
     const speed = c.speed + Math.max(-accel, Math.min(accel, target - c.speed))
-    const at = add(c.at, scale(facing, speed * dt))
+    const wanted = add(c.at, scale(facing, speed * dt))
+    // Avoidance is a heuristic and heuristics miss. The hard resolve is what guarantees a craft
+    // is never *inside* a station — a wireframe hull sitting in the middle of a dock is the
+    // single cheapest-looking thing this renderer can produce.
+    const moved = grid ? resolve(grid, c.at, wanted, c.spec.radius, dt) : null
+    const at = moved ? moved.at : wanted
 
     // ── firing ────────────────────────────────────────────────────────────────
     let lastFire = c.lastFire
@@ -345,7 +386,38 @@ export function step(
         ? c.shield
         : Math.min(c.spec.shield, c.shield + c.spec.shieldRegen * dt)
 
-    craft.push({ ...c, at, facing, speed, behaviour, since, lastFire, burstLeft, shield })
+    craft.push({
+      ...c,
+      at,
+      facing,
+      // A craft that struck something loses its way on. Keeping the speed would have it grinding
+      // against the surface at full burn for as long as it stayed pointed at it.
+      speed: moved && moved.hit ? speed * 0.5 : speed,
+      behaviour,
+      since,
+      lastFire,
+      burstLeft,
+      shield,
+    })
+  }
+
+  // Craft are kept out of each other positionally rather than by steering. A craft that merely
+  // steers away still interpenetrates while it turns, and two wireframes occupying one point is
+  // exactly what reads as cheap. Applied after movement so it corrects the frame's own overlaps.
+  const live = craft.filter((c) => c.alive)
+  if (live.length > 1) {
+    const push = separate(live.map((c) => ({ at: c.at, radius: c.spec.radius })))
+    live.forEach((c, i) => {
+      const p = push[i]
+      if (p.x === 0 && p.y === 0 && p.z === 0) return
+      const shoved = { x: c.at.x + p.x, y: c.at.y + p.y, z: c.at.z + p.z }
+      // Separation runs *after* the obstacle resolve, so it can shove a craft straight back into
+      // the station it was just pushed out of — which is how a lancer ended up sitting inside a
+      // dock with the collision system working correctly at every individual step. Re-resolving
+      // makes the station the authority: two craft may end up closer than they would like, and
+      // neither ends up inside the furniture.
+      c.at = grid ? resolve(grid, c.at, shoved, c.spec.radius, dt).at : shoved
+    })
   }
 
   // Advance existing shots and resolve those that reach the player.
@@ -357,6 +429,10 @@ export function step(
       damage += s.damage
       continue
     }
+    // Geometry stops enemy fire as well as yours, which is what makes a station cover rather
+    // than scenery — and it has to be the same rule in both directions or the player learns that
+    // hiding works only for the other side.
+    if (grid && resolve(grid, s.at, at, 0, dt).hit) continue
     if (life > 0) shots.push({ at, dir: s.dir, life, damage: s.damage })
   }
 

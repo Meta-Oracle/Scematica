@@ -312,7 +312,83 @@ one. Two different things were being conflated — what the record knows and wha
 Legibility now expresses itself as **contact range** on the sensor panel, so a poorly-perceived
 world is one you fly blind *through* rather than one you fly blind *in*.
 
-## Arc 9 — The record rides inside the picture *(done)*
+## Arc 9 — Collisions, and what is allowed to be solid *(done)*
+
+Craft flew through each other and through stations, which is the thing that reads as cheap
+however good the flying underneath is. `lib/scemaworld/collide.ts` is a grid over the static
+nodes — built once per space, since nodes do not move — plus swept tests, positional separation
+between craft, and steering avoidance.
+
+### The only interesting decision in the file
+
+Six kinds of node were **perceived**: station, dock, depot, market, origin, derelict. Three are
+statements about the *limits* of what was perceived: a **phantom** is a station the observer
+modelled rather than saw, a **marker** is a place it looked and found nothing, a **rift** is a
+region it could not read at all.
+
+The first six are solid. The last three are not.
+
+The temptation is to make everything solid, because a mirage you fly through feels like a bug.
+But making a phantom solid is the game asserting that something is there, on the strength of a
+record that says nobody saw it. Making it permeable is *not* the opposite claim: the game
+simulates what was observed, and there is nothing here to hit because nothing was observed —
+which is a fact about the record, not about reality. A rift is the sharpest case, being a hole in
+somebody's knowledge, and a hole cannot be run into.
+
+So the HUD says so the moment you pass through one. **That sentence is the mechanic.** A player
+who flies through a station and is told *"nothing here — that station was modelled, not
+observed"* has learned what a provenance is, from the cockpit, in a way no legend achieves.
+
+### Four bugs, all found by tests, none visible by looking
+
+**The ship spawned inside the origin market.** The origin node is a real station, and the ship
+started at `[0,0,0]`, so the instant collision existed every frame was an impact: throttle cut,
+hull draining, shots blocked at the muzzle by a station the player could not see they were
+standing in. Moving the ship to `+Z` then had the camera — which looks along `−Z` — staring
+straight into that same station, so the first press of the throttle flew into it. It now starts
+*behind* the market, looking out.
+
+**Avoidance orbited.** The first version returned the pure sidestep, so a craft turned fully
+broadside, flew sideways until the obstacle left its probe, turned back toward its target,
+re-acquired the obstacle, and repeated. Steering now *blends* the sidestep into the desired
+heading in proportion to how imminent the obstacle is, so the craft always keeps some of its
+actual intent and comes out the far side rather than circling the near one.
+
+**A craft's turn radius exceeded its own standoff.** Turn radius is `speed / turn`, and at cruise
+every class here has one two or three times the range it wants to fight at — so a gunship
+orbited nineteen million units out for two and a half minutes, never closing and never
+disengaging. The fix is the wide attack band plus the eased-off combat throttle: a third of the
+throttle is a third of the radius. There is now a test asserting the invariant for every class.
+
+**A degenerate normal put bodies at obstacle centres and left them there.** Resolving a collision
+needs a direction to push along, and there is none when the closest approach lands exactly on the
+centre — which happens for a move aimed straight at it, and for a body that is *already* there.
+Record-signal craft are always already there, because contacts sit on nodes. One fallback fixed
+three separate failing tests.
+
+### The rules that came out of it
+
+- **The physics radius is the drawn radius.** One table, read by both. A hit test that disagrees
+  with the picture is the worst kind of bug in a game.
+- **Swept, never an endpoint test.** A bolt covers a few million units a frame and a station is a
+  couple of million across.
+- **Geometry stops fire in both directions.** A station is cover or it is scenery, and it must be
+  the same rule for both sides or the player learns that hiding works only for the other one.
+- **Impact cost is closing speed at the point of contact.** A tangential graze is not a nose-first
+  hit, and charging them the same makes collisions feel arbitrary — which is worse than not
+  having them.
+- **The player stops; craft slide.** A ship that slid along a station is a ship the player is no
+  longer flying. A craft that stopped has visibly given up on the fight.
+- **A resolved body ends a whisker outside the surface.** Left exactly touching, it re-collides
+  next frame at zero speed and sticks, which is how a collision system becomes flypaper.
+
+Ramming costs both parties and pushes them apart. Notices now expire after a few seconds — they
+used to be `notice ?? state.notice`, so an impact message from four minutes ago sat under the
+crosshair for the rest of the session, and a stale message is worse than none.
+
+Measured at **0.68 ms per tick** against a 16.7 ms budget, with 1,080 solid nodes and 77 craft.
+
+## Arc 10 — The record rides inside the picture *(done)*
 
 A PNG named the world it derived from and carried nothing else, which made it a claim ticket: to
 fly the space or verify the record you had to fetch the record from somewhere. That is right for
@@ -411,7 +487,7 @@ be mistaken for lanes inside a world, which are structural.
 ## Running it
 
 ```console
-$ cd web && npm run check:scemaworld     # generator, scale, dogfight, nav, jump, a flight — 146
+$ cd web && npm run check:scemaworld     # generator, scale, dogfight, collision, jump — 166
 $ cd web && npm run dev                  # /scema-world
 ```
 

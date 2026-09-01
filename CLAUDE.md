@@ -745,10 +745,40 @@ that reads on sensors and may not be there — the em-dash rule in the one place
 act on it — legibility is literal sensor range, and an unperceived world has range `null`
 (unknown) rather than `0` (dark). Coordinates are integers for the same reason the raster has
 no floats: two machines disagreeing about where a station is are not playing the same game.
-**There is no economy and there must not be one** — anything that priced a world would make a
-record's content worth misreporting, and a producer paid to hide its blind spots is the one
-failure this project cannot absorb. A test asserts the model carries no price/yield field and
-that the commitment is written down rather than merely true.
+**No quantity in the record may translate into a reward** — this is the sharpened form of an
+earlier, broader "no economy" rule, and it is the one that actually broke. Attach a payout to
+`blind_spots` and you have paid somebody to hide them; attach one to magnitude and you have
+paid them to understate it. There *is* a ship now, with fuel, hull, salvage and six upgradeable
+components, and salvage is earned from **acts** — a kill, a derelict you flew out to strip —
+never from record content. A world with more blind spots is worth the same and is harder to
+survive. The failure was subtle when it happened: hostiles were placed at a rate *per node*,
+and since blind spots become rift nodes and reported extent drives the fractal's depth, a
+record claiming less of both grew a smaller node list and bought itself a quieter sector.
+`raiders.ts` now reads the seed and nothing else — a fixed forty, scattered through the volume
+— so every world is exactly as dangerous as every other. `check:scemaworld` asserts the reward
+path reads no record field, on `ship.ts` **and** on `raiders.ts`.
+
+Three more rules the 104 checks carry, each paid for:
+
+- **The tick is a pure function** (`lib/scemaworld/game.ts`). It was inline in the frame loop,
+  and the draw list was uploaded *once* outside it while `view.ts` had no projectile handling at
+  all — so shots were created, stepped and resolved and nothing ever drew one. The whole game was
+  a still photograph of the record, and every symptom ("the lasers don't work") was that. A pure
+  tick is the only reason the regression test — fire, then assert the shot is in the draw list —
+  can exist without a GPU.
+- **No distance literal outside `lib/scemaworld/scale.ts`**, asserted by a source scan. The
+  sector was enlarged sixty-fold and every radius, range and speed stayed at the old tuning,
+  because they were bare `26_000 * UNIT` in five modules that each declared their own `UNIT`.
+  Nothing failed; the game just became a void with specks in it. Distances are now fractions of
+  the sector and speeds are crossings-per-second, so a number carries its own review.
+- **A raider is not a contact.** Sector-placed hostiles carry `unlogged: true` and live in
+  `space.raiders`, never `space.contacts`, and draw orange rather than red. Game furniture must
+  never become indistinguishable from a signal somebody counted. Its threat reads a real number,
+  unlike a ghost's — the em dash marks a quantity the *record* left unmeasured, and the record
+  makes no statement about a raider at all.
+
+A test also asserts the model carries no price/yield field and that the commitment is written
+down rather than merely true.
 
 `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching

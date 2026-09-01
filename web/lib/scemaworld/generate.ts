@@ -41,18 +41,73 @@
  */
 
 import { growthOf, plannedCuts, Rng, type Growth } from '../omni/fractal.ts'
+import { raidersOf } from './raiders.ts'
 import type { WorldState } from '../omni/types.ts'
 
-/** Integer millis of a space unit, so positions stay exact and reproducible. */
-const UNIT = 1000
+import { EXTENT, MIN_BRANCH } from './scale.ts'
 
-/** Scale of the whole volume. Arbitrary but fixed — a renderer scales it, never the generator. */
-export const EXTENT = 4000 * UNIT
+/**
+ * Scale of the whole volume, re-exported because it is what most callers want from here.
+ *
+ * Sixty times the first version, which was crossable in about four seconds at full throttle
+ * and therefore read as a diagram rather than a sector. Distance is the cheapest way to make
+ * a space feel like one: at this size a lane between two stations is a journey with a fuel
+ * cost, which is what makes docking matter and what makes a rift somewhere out on the frontier
+ * a thing you decide whether to visit.
+ *
+ * Everything derived from it — station radii, weapon reach, aggro range — lives in `scale.ts`.
+ * They were bare literals once, and the sixty-fold enlargement moved the positions and left
+ * them all behind. See that file.
+ */
+export { EXTENT }
 
 export interface Vec3 {
   x: number
   y: number
   z: number
+}
+
+export type NodeKind =
+  | 'origin'
+  | 'station'
+  | 'dock'
+  | 'depot'
+  | 'market'
+  | 'derelict'
+  | 'marker'
+  | 'phantom'
+  | 'rift'
+
+/** What a node will do for you if you approach it. */
+export type Service = 'refuel' | 'repair' | 'trade' | 'scavenge'
+
+/**
+ * Which services a node offers, from its provenance.
+ *
+ * The mapping is the epistemics again, and the `phantom` row is the one worth keeping: a
+ * **simulated** object looks exactly like a station on approach and offers nothing, because it
+ * was modelled rather than observed. Something the observer imagined cannot refuel you.
+ *
+ * A `derelict` is stale — it is really there and no longer answering — so it can be scavenged
+ * once and cannot be traded with. An `absent` marker offers nothing at all: the observer
+ * expected something and found nothing, and flying to it is how you learn that first-hand.
+ */
+export function servicesOf(kind: NodeKind): Service[] {
+  switch (kind) {
+    case 'dock':
+      return ['refuel', 'repair', 'trade']
+    case 'depot':
+      return ['refuel']
+    case 'market':
+      return ['trade', 'repair']
+    case 'station':
+      return ['refuel']
+    case 'derelict':
+      return ['scavenge']
+    // origin, marker, phantom, rift: nothing. A phantom especially — it is a mirage.
+    default:
+      return []
+  }
 }
 
 /** A navigable point. Stations sit on the branch nodes the world tree already produces. */
@@ -61,7 +116,9 @@ export interface Node {
   at: Vec3
   /** Recursion depth this node sits at. 0 is the origin. */
   depth: number
-  kind: 'origin' | 'station' | 'derelict' | 'marker' | 'phantom' | 'rift'
+  kind: NodeKind
+  /** Services this node offers. Empty for anything that cannot be approached. */
+  services: Service[]
   /** The object this came from, when it came from one. */
   label: string
 }
@@ -90,6 +147,15 @@ export interface Contact {
   /** Signal magnitude, 0..1. Drives size, never damage — see the note on economy. */
   magnitude: number
   label: string
+  /**
+   * True for a hostile the *sector* placed rather than one the record reported.
+   *
+   * Set only by `raiders.ts`. It keeps the two apart at the type level, because the one thing
+   * that must not happen is a piece of game furniture becoming indistinguishable from a signal
+   * somebody actually counted — at which point the record's contents stop being checkable by
+   * looking at the screen.
+   */
+  unlogged?: boolean
 }
 
 export interface Space {
@@ -98,6 +164,13 @@ export interface Space {
   nodes: Node[]
   lanes: Lane[]
   contacts: Contact[]
+  /**
+   * Hostiles the sector carries that the record never mentioned. See `raiders.ts`.
+   *
+   * Separate from `contacts` deliberately: a raider is not a claim about anything, and mixing
+   * the two would let furniture pass for evidence.
+   */
+  raiders: Contact[]
   /**
    * How far the player can see, 0..1 of `EXTENT`. From legibility.
    *
@@ -178,7 +251,19 @@ export function generate(world: WorldState, digest: string): Space {
   const rng = new Rng(digest)
   const [riftCount, riftsCapped] = plannedCuts(g)
 
-  const nodes: Node[] = [{ id: 0, at: { x: 0, y: 0, z: 0 }, depth: 0, kind: 'origin', label: 'origin' }]
+  const nodes: Node[] = [
+    {
+      id: 0,
+      at: { x: 0, y: 0, z: 0 },
+      depth: 0,
+      // The core of a world is always a market. It is where you arrive, it is the one place
+      // that is reachable without a journey, and a sector you cannot outfit from is a sector
+      // you can only lose in.
+      kind: 'market',
+      services: servicesOf('market'),
+      label: 'core',
+    },
+  ]
   const lanes: Lane[] = []
 
   // Which objects dress which node. Walked in order so the mapping is stable.
@@ -190,10 +275,13 @@ export function generate(world: WorldState, digest: string): Space {
   const riftLevel = Math.max(1, g.depth - 2)
   let riftsPlaced = 0
 
-  const trunk = Math.trunc(EXTENT / 3)
+  // A long trunk and a slow taper: the tree has to reach the edges of a volume this size or
+  // the sector is a dense knot with emptiness around it, which reads as smaller than a map
+  // half the size that fills its space.
+  const trunk = Math.trunc(EXTENT / 2)
 
   const grow = (parent: number, len: number, yaw: number, pitch: number, depth: number) => {
-    if (depth <= 0 || len < UNIT * 40 || nodes.length > 4000) return
+    if (depth <= 0 || len < MIN_BRANCH || nodes.length > 3600) return
 
     const at = add(nodes[parent].at, polar(len, yaw, pitch))
     const id = nodes.length
@@ -205,11 +293,27 @@ export function generate(world: WorldState, digest: string): Space {
     if (isRift) riftsPlaced += 1
 
     const obj = !isRift && objectCursor < objects.length ? objects[objectCursor++] : null
+    let kind: NodeKind = isRift ? 'rift' : obj ? kindOf(obj.provenance.kind) : 'station'
+
+    // Service nodes among the live stations. Which one becomes what is drawn from the seed
+    // rather than from anything the record measured — a dock is a convenience the sector
+    // happens to have, and deriving it from a reported quantity would make that quantity
+    // worth misreporting. Same reasoning as combat durability.
+    if (kind === 'station') {
+      // Rare, common, commonest. A market on every tenth node makes outfitting a formality;
+      // it should be somewhere you plan a route around.
+      const roll = rng.below(25)
+      if (roll === 0) kind = 'market'
+      else if (roll <= 3) kind = 'dock'
+      else if (roll <= 8) kind = 'depot'
+    }
+
     nodes.push({
       id,
       at,
       depth: level,
-      kind: isRift ? 'rift' : obj ? kindOf(obj.provenance.kind) : 'station',
+      kind,
+      services: servicesOf(kind),
       label: isRift ? 'rift' : (obj?.label ?? `waypoint ${id}`),
     })
     lanes.push({ from: parent, to: id, severed: isRift })
@@ -227,11 +331,17 @@ export function generate(world: WorldState, digest: string): Space {
 
   grow(0, trunk, 0, 0, g.depth)
 
-  // Contacts sit on nodes, spread through the map rather than clustered at the origin.
+  // Contacts sit on nodes, spread through the map.
+  //
+  // **Never on node 0.** That is the origin, and the origin is where the player spawns: the
+  // first signal in the record was placed exactly on top of the ship, so the game opened with
+  // a hostile already inside the cockpit and the first shot fired hit it before leaving the
+  // muzzle. A spawn point has to be a place you can look around from.
   const contacts: Contact[] = []
+  const placeable = nodes.length - 1
   const n = Math.max(1, world.signals.length)
   world.signals.forEach((s, i) => {
-    const node = nodes[Math.trunc((i * nodes.length) / n)]
+    const node = placeable > 0 ? nodes[1 + Math.trunc((i * placeable) / n)] : undefined
     if (!node) return
     contacts.push({
       id: s.id,
@@ -251,6 +361,7 @@ export function generate(world: WorldState, digest: string): Space {
     nodes,
     lanes,
     contacts,
+    raiders: raidersOf(digest),
     sensorRange,
     unbounded: g.unbounded,
     rifts: riftsPlaced,

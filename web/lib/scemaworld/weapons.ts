@@ -26,8 +26,10 @@
  */
 
 import type { Contact, Vec3 } from './generate.ts'
-
-const UNIT = 1000
+import { laserCooldown } from './ship.ts'
+import {
+  LIFE_LASER, LIFE_PHOTON, R_CONTACT, R_CONTACT_SPAN, SPEED_LASER, SPEED_PHOTON,
+} from './scale.ts'
 
 export type WeaponKind = 'laser' | 'photon'
 
@@ -52,10 +54,10 @@ export const LASER: Weapon = {
   name: 'AUTO LASER',
   automatic: true,
   cooldownMs: 110,
-  speed: 2600 * UNIT,
+  speed: SPEED_LASER,
   tracking: false,
   magazine: null,
-  calibre: 9 * UNIT,
+  calibre: Math.round(R_CONTACT * 1.4),
 }
 
 export const PHOTON: Weapon = {
@@ -63,10 +65,10 @@ export const PHOTON: Weapon = {
   name: 'PHOTON MISSILE',
   automatic: false,
   cooldownMs: 900,
-  speed: 900 * UNIT,
+  speed: SPEED_PHOTON,
   tracking: true,
   magazine: 12,
-  calibre: 26 * UNIT,
+  calibre: Math.round(R_CONTACT * 4),
 }
 
 export const WEAPONS: Weapon[] = [LASER, PHOTON]
@@ -199,15 +201,30 @@ export function lockOn(from: Vec3, dir: Vec3, contacts: Contact[], destroyed: st
 }
 
 /** Right click, or right click held for an automatic weapon. */
+/**
+ * Weapon levels from the ship, so an upgrade bought at a market actually does something.
+ *
+ * Optional, and defaulted to level zero, because `weapons.ts` must stay usable without a ship —
+ * `check:scemaworld` fires shots with no game state around them.
+ */
+export interface WeaponLevels {
+  laser: number
+  missiles: number
+}
+
+const STOCK: WeaponLevels = { laser: 0, missiles: 0 }
+
 export function fire(
   c: Combat,
   from: Vec3,
   dir: Vec3,
   nowMs: number,
   contacts: Contact[],
+  levels: WeaponLevels = STOCK,
 ): Combat {
   const w = selected(c)
-  if (nowMs - c.lastFire[w.kind] < w.cooldownMs) return c
+  const cooldown = w.kind === 'laser' ? laserCooldown(levels.laser) : w.cooldownMs
+  if (nowMs - c.lastFire[w.kind] < cooldown) return c
   if (w.kind === 'photon' && c.photonsLeft <= 0) return c
 
   const p: Projectile = {
@@ -216,7 +233,7 @@ export function fire(
     at: from,
     dir: norm(dir),
     speed: w.speed,
-    life: w.kind === 'photon' ? 6 : 2.2,
+    life: w.kind === 'photon' ? LIFE_PHOTON : LIFE_LASER,
     lock: w.tracking ? lockOn(from, norm(dir), contacts, c.destroyed) : null,
   }
   return {
@@ -276,7 +293,11 @@ export function step(
       // Swept along the whole step, so a fast shot cannot pass through a target between
       // frames. The radius is then only what it should be — calibre plus the contact's own
       // size — rather than being inflated to paper over tunnelling.
-      const reach = w.calibre + (6 + Math.round(contact.magnitude * 10)) * UNIT
+      // The same radius `view.ts` draws. A hit test that disagrees with the picture is the
+      // worst kind of bug in a shooter: the player is told they missed something they saw
+      // themselves hit.
+      const reach =
+        w.calibre + R_CONTACT + Math.round(Math.max(0, Math.min(1, contact.magnitude)) * R_CONTACT_SPAN)
       if (distToSegment(contact.at, p.at, at) <= reach) {
         const n = (hitCount[contact.id] ?? 0) + 1
         hitCount[contact.id] = n

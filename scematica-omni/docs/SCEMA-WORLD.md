@@ -130,15 +130,98 @@ player would learn from the targeting computer what the record does not know.
 |---|---|
 | `W` `A` `S` `D` | pitch and yaw — aim the ship |
 | `Q` `E` | roll |
-| arrows | lateral and vertical thrusters |
-| `SHIFT` / `CTRL` | main drive throttle up / down |
+| `↑` `↓` | **throttle level** up / down |
+| `X` | full stop |
+| `←` `→` `SPACE` `SHIFT` | lateral and vertical thrusters |
 | right click | fire |
 | left click | switch weapon |
+| `F` `R` `V` | refuel · repair · scavenge, at a node in range |
+| `M` | market — spend salvage on the ship |
+| `1` `2` `3` `4` | route to fuel · repair · market · salvage |
+| `0` | clear the waypoint |
 
 Roll is on `Q`/`E` because it is the one rotational axis `WASD` leaves unreachable, and a
-space game without roll has an up — which this one does not. The main drive is not in the
-original scheme; a ship that cannot go forward is not a ship, so it is on `SHIFT`/`CTRL` and
-the HUD says so.
+space game without roll has an up — which this one does not.
+
+**Throttle is a level, not a button.** The first version accelerated only while a key was
+held, so the ship was a car with the pedal being tapped. A vessel has a cruise setting, and at
+this sector's size that is the difference between flying and steering: you set 40% and go and
+do something else. `X` cuts the drive, because winding down from cruise at 0.9/s is a long
+wait when a station is coming up fast.
+
+## Arc 7 — A sector rather than a diagram *(done)*
+
+Arcs 1–6 built a correct game that did not play. Four things were wrong and they had one
+cause between them.
+
+**Nothing was drawn but the record.** The draw list was uploaded once, outside the frame loop,
+and `view.ts` had no projectile handling at all. Shots were created, stepped, resolved and hit
+things; craft moved; destroyed contacts were marked — and the screen was a still photograph of
+the record for the whole session. Every symptom the player reported ("the lasers do not work",
+"the photon missiles do not work") was this. **`lib/scemaworld/game.ts`** now holds the whole
+tick as one pure function, which is the only reason that class of bug is catchable: the
+regression test fires a shot and asserts it is in the draw list, with no GPU involved.
+
+**The sector was enlarged sixty-fold and nothing else moved.** Positions scaled; station radii,
+weapon reach, sensor range and aggro range stayed at the tuning for a volume 1/60th the size,
+because they were bare `26_000 * UNIT` literals in five modules that each declared their own
+`UNIT`. The result was technically enormous and unplayable in every specific way — stations
+were sixteen-thousand-unit specks in a three-hundred-and-seventy-five-million-unit void, and a
+laser's entire range was a fifth of the distance at which an enemy first noticed you. Nothing
+failed, because every test compared constants that had all failed to move together.
+
+`lib/scemaworld/scale.ts` is the fix and the note explaining it. Distances are declared as
+**fractions of the sector**, speeds as **how long it takes to cross one**. Read that way a
+number carries its own review: `EXTENT / 26` is "a bit under half a minute to cross", which is
+a claim you can argue with. `9_000 * UNIT` is not. A test asserts no other module in the
+directory contains the token `UNIT` at all.
+
+**The record's first signal was placed on the origin node, which is where the player spawns.**
+The game opened with a hostile inside the cockpit and the first shot hit before leaving the
+muzzle.
+
+**A sector had five things in it.** Hostiles came only from the record's signals, and a record
+has a handful. `lib/scemaworld/raiders.ts` gives the sector its own population — and getting
+its density rule right took two attempts, which is worth recording. Raiders were placed at a
+rate *per node*, which looks uniform and is not: blind spots are placed into the sector as rift
+nodes and reported extent drives the fractal's depth, so a record claiming less of both grew a
+smaller node list and **bought a quieter sector**. That is the `ship.ts` rule broken —
+misreporting rewarded — and the test caught what the reasoning had not. Raiders now touch the
+node list not at all: a fixed forty, scattered through the volume at seed-derived positions.
+Every world is exactly as dangerous as every other and only the arrangement varies.
+
+A raider carries `unlogged: true` and lives in `space.raiders`, never in `space.contacts`. It
+is not a claim about anything — it is furniture the game placed — and the one thing that must
+not happen is furniture becoming indistinguishable from a signal somebody counted. It draws
+orange rather than red and the HUD says *not in the record*. Its threat reads as a real number,
+unlike a ghost's, and that is not an inconsistency: the em dash marks a quantity **the record
+left unmeasured**, and the record makes no statement about a raider at all. The inversion is a
+good one to play — the things the record described are the uncertain ones.
+
+**And you could not find anything.** Enlarging the volume fixed one complaint and created a
+worse one: a thousand stations spread over forty seconds of travel are, from the cockpit, a
+black screen with a few points of light in it, and every service in the game sits on a node you
+have to *reach*. `lib/scemaworld/nav.ts` is a target computer — nearest services by kind, a
+cycling waypoint, range and bearing. It reports **geometry and never a verdict**: it will route
+you to a `phantom`, a station the observer *modelled* rather than saw, and label it one. A nav
+computer that filtered out unreliable destinations would make the record's uncertainty
+invisible at exactly the moment the player acts on it.
+
+### The economy rule, sharpened
+
+Arc 4 said "no economy" and a test enforced it. The rule was aimed at a real failure and stated
+too broadly. The failure is precisely this: **no quantity in the record may translate into a
+reward.** Attach a payout to `blind_spots` and you have paid somebody to hide them; attach one
+to magnitude and you have paid them to understate it.
+
+So there is a ship, and fuel, and salvage, and six upgradeable components — and salvage is
+earned from **what you do**: destroying a hostile, scavenging a derelict you flew out to. A
+world with more blind spots is not worth more. It is worth the same and is harder to survive.
+`check:scemaworld` asserts the reward function reads no record field, and asserts it twice —
+once on `ship.ts` and once on `raiders.ts`, which is where it actually broke.
+
+It stays single-player. No transfer, no price, no token: the moment salvage is worth something
+outside the game, that paragraph stops holding.
 
 ### Arc 5 — Entitlement *(done)*
 
@@ -186,13 +269,22 @@ be mistaken for lanes inside a world, which are structural.
   being the map and the whole argument collapses.
 - **No tuning constants that are not from the record.** A "feels better" multiplier is the
   first step to a random seed with a token stapled to it.
-- **No economy.** See above. This is the one that will be argued for most often.
+- **No record quantity may set a payout.** The sharpened form of "no economy" — see Arc 7.
+  This is the one that will be argued for most often, and the one that broke first.
+- **No distance literals outside `scale.ts`.** The sixty-fold enlargement is not a thing that
+  happens once.
 - **No blocking an invalid record.** Show it, mark it, let people look at a forgery. A verifier
   people cannot experiment with is one they stop believing.
 
 ## Running it
 
 ```console
-$ cd web && npm run check:scemaworld     # the generator, 17 checks
-$ cd web && npm run dev                  # /scema-world once Arc 2 lands
+$ cd web && npm run check:scemaworld     # generator, scale, combat, nav, a whole flight — 107
+$ cd web && npm run dev                  # /scema-world
 ```
+
+The last three checks are end-to-end and are the ones that would have caught Arc 7's bugs:
+ninety seconds of held throttle must put a shot on screen for more than a thousand frames and
+cross the sector; thirty seconds of point-blank fire must destroy a raider and pay a flat
+bounty; and an autopilot must be able to route to a depot, fly there, and refuel — because a
+fuel economy in a volume you cannot navigate is not an economy, it is a timer.

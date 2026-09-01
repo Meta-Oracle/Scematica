@@ -22,6 +22,13 @@ import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
+  dynamicOf, newGame, purchase, route, tick, useService, type GameState,
+} from '@/lib/scemaworld/game'
+import { bearingLabel, fixOn, nearest, rangeLabel } from '@/lib/scemaworld/nav'
+import { MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, upgradeCost, type Component } from '@/lib/scemaworld/ship'
+import { EXTENT, servicesOf } from '@/lib/scemaworld/generate'
+import { NEAR_PLANE } from '@/lib/scemaworld/scale'
+import {
   camera as makeCamera,
   forward,
   mul,
@@ -48,7 +55,6 @@ interface Loaded {
   verification: Verification
 }
 
-const UNIT = 1000
 
 export function ScemaWorldTerminal() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -59,15 +65,14 @@ export function ScemaWorldTerminal() {
 
   // Mutable flight state, deliberately outside React. A camera in state would re-render the
   // tree sixty times a second to move a number the DOM never reads.
-  const cam = useRef<Camera>(makeCamera([0, 200 * UNIT, 900 * UNIT]))
   const keys = useRef<Set<string>>(new Set())
   const renderer = useRef<Renderer | null>(null)
-  const throttle = useRef(0)
-  const combat = useRef<Combat>(newCombat())
   const firing = useRef(false)
+  const game = useRef<GameState | null>(null)
+  /** A shallow copy of the tick state, pushed to React a few times a second for the HUD. */
+  const [hud, setHud] = useState<GameState | null>(null)
   const [weapon, setWeapon] = useState('AUTO LASER')
-  const [ammo, setAmmo] = useState<string>('∞')
-  const [kills, setKills] = useState(0)
+  const [market, setMarket] = useState(false)
 
   const [ticket, setTicket] = useState<string | null>(null)
   const [vault, setVault] = useState('')
@@ -144,7 +149,6 @@ export function ScemaWorldTerminal() {
       const source = await plateSourceFromText(text, webSha256)
       const space = generate(source.world, source.digest)
       setLoaded({ name: file.name, space, verification })
-      cam.current = makeCamera([0, 200 * UNIT, 900 * UNIT])
     } catch (e) {
       setLoaded(null)
       setError(e instanceof Error ? e.message : String(e))
@@ -164,77 +168,54 @@ export function ScemaWorldTerminal() {
     }
     const r = renderer.current
     const list = drawList(loaded.space)
-    r.upload(list)
+    game.current = newGame(loaded.space)
+    setHud(game.current)
 
     let last = 0
     const frame = (t: number) => {
       const dt = last === 0 ? 0.016 : Math.min((t - last) / 1000, 0.1)
       last = t
 
-      // ── input ────────────────────────────────────────────────────────────
-      //
-      // WASD aims the camera, Q/E roll, the arrows are translation thrusters. Roll is on Q/E
-      // because it is the only rotational axis WASD leaves unreachable, and a space game
-      // without roll has an up — which this one does not.
-      const k = keys.current
-      const rate = 1.4 * dt
-      let c = cam.current
-      const pitch = (k.has('KeyS') ? 1 : 0) - (k.has('KeyW') ? 1 : 0)
-      const yaw = (k.has('KeyA') ? 1 : 0) - (k.has('KeyD') ? 1 : 0)
-      const roll = (k.has('KeyQ') ? 1 : 0) - (k.has('KeyE') ? 1 : 0)
-      if (pitch || yaw || roll) c = rotate(c, pitch * rate, yaw * rate, roll * rate)
-
-      // Arrows: vertical and lateral thrust, in the ship's own frame.
-      const lift = (k.has('ArrowUp') ? 1 : 0) - (k.has('ArrowDown') ? 1 : 0)
-      const strafe = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0)
-      const thrust = 620 * UNIT * dt
-      if (lift || strafe) c = translate(c, [strafe * thrust, lift * thrust, 0])
-
-      // Main drive. Not in the given scheme, and a ship that cannot go forward is not one —
-      // so Shift and Control hold the throttle, and the HUD says so.
-      const accel = (k.has('ShiftLeft') ? 1 : 0) - (k.has('ControlLeft') ? 1 : 0)
-      throttle.current = Math.max(0, Math.min(1, throttle.current + accel * dt * 1.5))
-      const v = throttle.current * 900 * UNIT
-      if (v > 0) c = translate(c, [0, 0, -v * dt])
-      cam.current = c
-
-      // ── weapons ──────────────────────────────────────────────────────────
-      const nose = forward(c)
-      const dir = { x: nose[0], y: nose[1], z: nose[2] }
-      const muzzle = { x: c.position[0], y: c.position[1], z: c.position[2] }
-      const live = loaded.space.contacts
-      if (firing.current) {
-        // `fire` enforces its own cooldown, so holding the button on a semi-automatic
-        // weapon is refused there rather than by a flag here — one rule, one place.
-        combat.current = fire(combat.current, muzzle, dir, t, live)
-      }
-      const advanced = step(combat.current, dt, live, loaded.space.seed)
-      combat.current = advanced.combat
-      if (advanced.hits.some((h) => h.destroyed)) {
-        setKills(combat.current.destroyed.length)
+      const g = game.current
+      if (g) {
+        // One pure transition. Everything that used to live inline here — flight, fuel,
+        // weapons, the enemy — is now testable without a GPU, which is how the missing
+        // projectile draw finally became a catchable bug rather than a mystery.
+        game.current = tick(g, loaded.space, {
+          keys: keys.current,
+          firing: firing.current,
+          dt,
+          nowMs: t,
+        })
       }
 
-      // ── draw ─────────────────────────────────────────────────────────────
       const w = canvas.clientWidth
       const h = canvas.clientHeight
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w
         canvas.height = h
       }
-      // Unknown sensor range does not get a made-up default: the far plane falls back to the
-      // full extent so the player sees everything there is, rather than an invented horizon.
-      const far = list.far ?? 6000 * UNIT
-      const proj = perspective(1.15, w / Math.max(1, h), 8 * UNIT, far)
-      r.draw(mul(proj, view(c)), w, h)
+
+      // Re-uploaded every frame. The original uploaded once, so shots, moving craft and
+      // destroyed contacts never appeared — the scene was a still photograph of the record.
+      const live = game.current
+      if (live) {
+        r.upload(drawList(loaded.space, dynamicOf(live, loaded.space)))
+        const far = list.far ?? EXTENT * 1.2
+        const proj = perspective(1.15, w / Math.max(1, h), NEAR_PLANE, far)
+        r.draw(mul(proj, view(live.camera)), w, h)
+      }
 
       raf = requestAnimationFrame(frame)
     }
     raf = requestAnimationFrame(frame)
 
-    const tick = window.setInterval(() => setSpeed(Math.round(throttle.current * 100)), 120)
+    // The HUD reads a snapshot on a timer rather than on every frame: re-rendering the React
+    // tree sixty times a second to move a fuel gauge is how a game loop becomes a slideshow.
+    const pulse = window.setInterval(() => setHud(game.current), 120)
     return () => {
       cancelAnimationFrame(raf)
-      window.clearInterval(tick)
+      window.clearInterval(pulse)
       r.dispose()
       renderer.current = null
     }
@@ -250,19 +231,15 @@ export function ScemaWorldTerminal() {
         e.preventDefault()
         firing.current = true
       } else if (e.button === 0) {
-        combat.current = switchWeapon(combat.current)
-        const w = selected(combat.current)
-        setWeapon(w.name)
-        setAmmo(w.magazine === null ? '∞' : String(combat.current.photonsLeft))
+        const g = game.current
+        if (g) {
+          game.current = { ...g, combat: switchWeapon(g.combat) }
+          setWeapon(selected(game.current.combat).name)
+        }
       }
     }
     const up = (e: MouseEvent) => {
       if (e.button === 2) firing.current = false
-      // A semi-automatic weapon fires once per press. Releasing is what re-arms it, and the
-      // cooldown in `fire` is what stops a fast clicker emptying the tube in one frame.
-      if (selected(combat.current).magazine !== null) {
-        setAmmo(String(combat.current.photonsLeft))
-      }
     }
     const menu = (e: Event) => e.preventDefault()
     canvas.addEventListener('mousedown', down)
@@ -282,6 +259,23 @@ export function ScemaWorldTerminal() {
       // canvas mid-flight.
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
       keys.current.add(e.code)
+
+      const g = game.current
+      if (!g || !loaded) return
+      // Services are single presses rather than held keys, so they are handled here rather
+      // than in the tick — a held `F` should refuel once, not sixty times a second.
+      if (e.code === 'KeyF') game.current = useService(g, 'refuel')
+      else if (e.code === 'KeyR') game.current = useService(g, 'repair')
+      else if (e.code === 'KeyV') game.current = useService(g, 'scavenge')
+      else if (e.code === 'KeyM') setMarket((m) => !m)
+      // The nav computer. With a thousand nodes over a sector this size, a destination you
+      // cannot select is a destination you reach by luck.
+      else if (e.code === 'Digit1') game.current = route(g, loaded.space, 'refuel')
+      else if (e.code === 'Digit2') game.current = route(g, loaded.space, 'repair')
+      else if (e.code === 'Digit3') game.current = route(g, loaded.space, 'trade')
+      else if (e.code === 'Digit4') game.current = route(g, loaded.space, 'scavenge')
+      else if (e.code === 'Digit0') game.current = { ...g, waypoint: null, notice: 'waypoint cleared' }
+      if (game.current !== g) setHud(game.current)
     }
     const upKey = (e: KeyboardEvent) => keys.current.delete(e.code)
     const blur = () => keys.current.clear()
@@ -419,28 +413,93 @@ export function ScemaWorldTerminal() {
               v={`${s.rifts}${s.riftsCapped ? ' (capped)' : ''}`}
               alarm={s.rifts > 0}
             />
-            <Row k="throttle" v={`${speed}%`} />
+            <Row k="throttle" v={`${Math.round((hud?.throttle ?? 0) * 100)}%`} />
+            <Row
+              k="fuel"
+              v={
+                hud
+                  ? `${Math.round(hud.ship.fuel)}/${fuelCapacity(hud.ship.levels.tanks)}`
+                  : '—'
+              }
+              alarm={!!hud && hud.ship.fuel <= 0}
+            />
+            <Row
+              k="hull"
+              v={hud ? `${Math.round(hud.ship.hull)}/${hullMax(hud.ship.levels.hull)}` : '—'}
+              alarm={!!hud && hud.ship.hull < hullMax(hud.ship.levels.hull) * 0.3}
+            />
+            <Row k="salvage" v={hud ? String(hud.ship.salvage) : '—'} />
             <Row k="weapon" v={weapon} />
-            <Row k="ammo" v={ammo} />
-            <Row k="destroyed" v={String(kills)} />
+            <Row
+              k="ammo"
+              v={hud ? (selected(hud.combat).magazine === null ? '∞' : String(hud.combat.photonsLeft)) : '—'}
+            />
+            <Row k="destroyed" v={hud ? String(hud.combat.destroyed.length) : '—'} />
           </div>
 
           {!flying && (
             <div className="pointer-events-none absolute inset-x-0 bottom-8 text-center font-mono text-xs text-omni-dim">
               <div>
-                W/S pitch · A/D yaw · Q/E roll · ARROWS lateral &amp; vertical thrust ·
-                SHIFT/CTRL main drive
+                W/S pitch · A/D yaw · Q/E roll · ↑/↓ throttle level · X full stop ·
+                ←/→ + SPACE/SHIFT thrusters
               </div>
               <div className="mt-1">
-                RIGHT CLICK fire · LEFT CLICK switch weapon · lasers are automatic, photons
-                are not
+                RIGHT CLICK fire · LEFT CLICK switch weapon · F refuel · R repair · V scavenge ·
+                M market
+              </div>
+              <div className="mt-1">
+                1 route to fuel · 2 repair · 3 market · 4 salvage · 0 clear waypoint
               </div>
               <div className="mt-1">click the view to begin</div>
             </div>
           )}
 
-          {s.contacts.length > 0 && (
-            <div className="pointer-events-none absolute bottom-4 left-5 space-y-0.5 font-mono text-[11px]">
+          <div className="pointer-events-none absolute bottom-4 left-5 space-y-0.5 font-mono text-[11px]">
+            {/*
+              The nav computer. Range and bearing only — never a verdict about what is there,
+              which is why it will route you to a phantom and label it one.
+            */}
+            {hud && (
+              <div className="mb-2 space-y-0.5">
+                <div className="text-omni-dim">NAV</div>
+                {(() => {
+                  const fix = hud.waypoint === null ? null : fixOn(s, hud.camera, hud.waypoint)
+                  if (!fix) {
+                    const near = nearest(s, hud.camera, 'refuel', 1)[0]
+                    return (
+                      <div className="text-omni-dim">
+                        no waypoint —{' '}
+                        {near
+                          ? `nearest fuel ${rangeLabel(near.range)} ${bearingLabel(near)}`
+                          : 'this sector has nowhere to refuel'}
+                      </div>
+                    )
+                  }
+                  return (
+                    <div>
+                      <span className="text-omni-valid">{truncate(fix.node.label, 26)}</span>{' '}
+                      <span className="text-omni-dim">({fix.node.kind})</span>{' '}
+                      <span className="text-omni-text">{rangeLabel(fix.range)}</span>{' '}
+                      <span className={fix.ahead > 0.7 ? 'text-omni-valid' : 'text-omni-dim'}>
+                        {bearingLabel(fix)}
+                      </span>
+                      {fix.node.kind === 'phantom' && (
+                        <span className="text-omni-dim"> — simulated, may not be there</span>
+                      )}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+
+            {s.raiders.length > 0 && (
+              <div className="text-omni-dim">
+                {hud ? livingRaiders(hud) : s.raiders.length} raiders — not in the record
+              </div>
+            )}
+
+            {s.contacts.length > 0 && (
+              <>
               <div className="text-omni-dim">CONTACTS — threat as the record reported it</div>
               {s.contacts.slice(0, 6).map((c) => (
                 <div key={c.id}>
@@ -456,6 +515,93 @@ export function ScemaWorldTerminal() {
                   </span>
                 </div>
               ))}
+              </>
+            )}
+          </div>
+
+          {hud?.notice && (
+            <div className="pointer-events-none absolute inset-x-0 top-24 text-center font-mono text-xs text-omni-accent">
+              {hud.notice}
+            </div>
+          )}
+
+          {hud?.nearby && !market && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-20 text-center font-mono text-xs">
+              <span className="text-omni-text">{hud.nearby.label}</span>{' '}
+              <span className="text-omni-dim">
+                ({hud.nearby.kind}) —{' '}
+                {servicesOf(hud.nearby.kind)
+                  .map((x) =>
+                    x === 'refuel' ? 'F refuel' : x === 'repair' ? 'R repair'
+                      : x === 'scavenge' ? 'V scavenge' : 'M market',
+                  )
+                  .join(' · ')}
+              </span>
+            </div>
+          )}
+
+          {market && hud && (
+            <div className="absolute inset-x-0 bottom-16 mx-auto max-w-2xl rounded border border-omni-border-hi bg-black/90 p-4 font-mono text-xs">
+              <div className="mb-2 flex items-baseline gap-3">
+                <b className="text-omni-accent">OUTFITTING</b>
+                <span className="text-omni-dim">
+                  {hud.nearby && servicesOf(hud.nearby.kind).includes('trade')
+                    ? hud.nearby.label
+                    : 'no market in range — fly to a dock or a market'}
+                </span>
+                <span className="ml-auto text-omni-text">{hud.ship.salvage} salvage</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                {(Object.keys(UPGRADES) as Component[]).map((c) => {
+                  const lvl = hud.ship.levels[c]
+                  const cost = upgradeCost(c, lvl)
+                  const can =
+                    cost !== null &&
+                    hud.ship.salvage >= cost &&
+                    !!hud.nearby &&
+                    servicesOf(hud.nearby.kind).includes('trade')
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      disabled={!can}
+                      onClick={() => {
+                        const g = game.current
+                        if (!g) return
+                        game.current = purchase(g, c)
+                        setHud(game.current)
+                      }}
+                      className="rounded border border-omni-border px-2 py-1 text-left hover:border-omni-accent disabled:opacity-40"
+                    >
+                      <div className="text-omni-text">
+                        {UPGRADES[c].label}{' '}
+                        <span className="text-omni-dim">
+                          {'▰'.repeat(lvl)}
+                          {'▱'.repeat(MAX_LEVEL - lvl)}
+                        </span>
+                      </div>
+                      <div className="text-omni-dim">{UPGRADES[c].effect}</div>
+                      <div className={can ? 'text-omni-valid' : 'text-omni-dim'}>
+                        {cost === null ? 'maxed' : `${cost} salvage`}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="mt-2 text-omni-dim">
+                Salvage comes from destroying hostiles and stripping derelicts — never from
+                anything the record reports. A world with more blind spots is not worth more;
+                it is worth the same and is harder to survive.
+              </div>
+            </div>
+          )}
+
+          {hud?.lost && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/70 font-mono">
+              <div className="text-center">
+                <div className="text-lg text-omni-invalid">HULL BREACH</div>
+                <div className="mt-2 text-omni-dim">reload the record to fly it again</div>
+              </div>
             </div>
           )}
 
@@ -470,6 +616,11 @@ export function ScemaWorldTerminal() {
       )}
     </div>
   )
+}
+
+/** Raiders still flying, for the sensor line. Counts the swarm, not the record. */
+function livingRaiders(g: GameState): number {
+  return g.swarm.craft.filter((c) => c.alive && c.id.startsWith('raider:')).length
 }
 
 function truncate(sIn: string, n: number): string {

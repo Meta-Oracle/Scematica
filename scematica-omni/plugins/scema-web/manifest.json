@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Scematica Omni",
-  "version": "1.0.0",
+  "version": "1.23.0",
   "description": "Perceive the current page as a world state and run the Scematica Omni loop against it. Reads nothing until you ask.",
   "minimum_chrome_version": "102",
   "permissions": [

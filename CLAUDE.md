@@ -736,7 +736,21 @@ Rust↔TS commitment arithmetic, the fractal growth, the SVG plate and the **PNG
 (41 checks) against a real sealed record, a real rendered plate and a real rendered PNG —
 including the
 1e-9 float binding, the integer/float tag distinction, byte-wise key ordering, and the
-`JSON.stringify` hazard above. `npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
+`JSON.stringify` hazard above. `npm run check:scemaworld` pins **Scema-World**, the game whose map is a sealed record
+(`web/lib/scemaworld/`, design and arcs in `scematica-omni/docs/SCEMA-WORLD.md`). The world
+tree is already a deterministic function of the commitment, so the record IS the map and two
+players fly the same space with no server and no trust. **The epistemics are the mechanics**:
+one rift per blind spot (a count, never a rate), an *estimated* signal is a **ghost contact**
+that reads on sensors and may not be there — the em-dash rule in the one place a player would
+act on it — legibility is literal sensor range, and an unperceived world has range `null`
+(unknown) rather than `0` (dark). Coordinates are integers for the same reason the raster has
+no floats: two machines disagreeing about where a station is are not playing the same game.
+**There is no economy and there must not be one** — anything that priced a world would make a
+record's content worth misreporting, and a producer paid to hide its blind spots is the one
+failure this project cannot absorb. A test asserts the model carries no price/yield field and
+that the commitment is written down rather than merely true.
+
+`npm run check:escrow` pins the money path (mint decoding against real mainnet fixtures,
 pair legality, base-unit conversion, solvency verdicts). Run it after touching
 `lib/escrow/mintinfo.ts` or `program.ts`.
 

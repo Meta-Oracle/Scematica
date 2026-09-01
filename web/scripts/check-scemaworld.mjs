@@ -23,6 +23,7 @@ import {
   newCombat, selected, switchWeapon, fire, step, durability, threatLabel, lockOn,
   LASER, PHOTON,
 } from '../lib/scemaworld/weapons.ts'
+import { fetchWorld, explain, retryable, matchesRequest } from '../lib/scemaworld/vault.ts'
 
 /** Unit vector from the origin toward a point, for lock tests. */
 function normTo(p) {
@@ -38,14 +39,29 @@ const digest = readFileSync(join(nftDir, 'parity-digest.txt'), 'utf8').trim()
 let pass = 0
 let fail = 0
 
+// Async-aware. A synchronous harness silently swallows a rejected promise, so an async test
+// that failed would report `ok` — and a test that cannot fail is worse than no test at all.
+const pending = []
+
 function check(name, fn) {
+  const record = (e) => {
+    if (e) {
+      console.log(`  FAIL ${name}\n       ${e.message}`)
+      fail += 1
+    } else {
+      console.log(`  ok   ${name}`)
+      pass += 1
+    }
+  }
   try {
-    fn()
-    console.log(`  ok   ${name}`)
-    pass += 1
+    const r = fn()
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(() => record(null), record))
+      return
+    }
+    record(null)
   } catch (e) {
-    console.log(`  FAIL ${name}\n       ${e.message}`)
-    fail += 1
+    record(e)
   }
 }
 
@@ -478,6 +494,115 @@ check('a contact takes its durability in hits and then is destroyed once', () =>
   assert(destroyed === 1, `destroyed fired ${destroyed} times`)
   assert(c.destroyed.includes(target.id), 'the contact was never marked destroyed')
 })
+
+
+// ── vault ─────────────────────────────────────────────────────────────────────
+
+const DIGEST = 'a'.repeat(64)
+
+/** A fetch that answers with one canned response. No network in these checks. */
+function canned(status, body, opts = {}) {
+  return async (url, init) => {
+    if (opts.onCall) opts.onCall(url, init)
+    if (opts.throws) throw new Error('connection refused')
+    return {
+      status,
+      text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+    }
+  }
+}
+
+check('a 200 returns the record text verbatim', () => {
+  // Verbatim matters: the bytes are what the commitment was taken over, and re-serialising
+  // would collapse `0.0` to `0` and change the digest.
+  const text = '{"a": 0.0,\\n "b": 1}'
+  return fetchWorld('http://v', DIGEST, '0x1', canned(200, text)).then((r) => {
+    assert(r.kind === 'ok', `kind was ${r.kind}`)
+    assert(r.record.text === text, 'the body was altered in transit')
+  })
+})
+
+check('a 503 is undetermined and never denied', () => {
+  // The rule carried all the way to the player. Told "you do not own this", somebody goes and
+  // buys a token they already have.
+  return fetchWorld('http://v', DIGEST, '0x1', canned(503, { detail: 'rpc down', retry: true }))
+    .then((r) => {
+      assert(r.kind === 'undetermined', `kind was ${r.kind}`)
+      assert(retryable(r), 'an undetermined result must invite a retry')
+      assert(explain(r).includes('not a denial'), explain(r))
+    })
+})
+
+check('a 403 is a denial and does not invite a retry', () => {
+  return fetchWorld('http://v', DIGEST, '0x1', canned(403, { detail: 'not a holder' }))
+    .then((r) => {
+      assert(r.kind === 'denied')
+      assert(!retryable(r), 'a denial must not tell the player to try again')
+    })
+})
+
+check('a 404 says the gap belongs to the vault, not the holder', () => {
+  return fetchWorld('http://v', DIGEST, '0x1', canned(404, { detail: 'not stored' }))
+    .then((r) => {
+      assert(r.kind === 'absent')
+      assert(explain(r).includes('not in your entitlement'), explain(r))
+    })
+})
+
+check('an unreachable vault names the url it tried', () => {
+  // `/mesh` learned this: collapsing every failure into one diagnosis is wrong exactly when a
+  // healthy service is configured at a bad address.
+  return fetchWorld('http://v', DIGEST, '0x1', canned(0, '', { throws: true })).then((r) => {
+    assert(r.kind === 'unreachable')
+    assert(r.detail.includes('http://v/world/'), r.detail)
+  })
+})
+
+check('a login page is reported with its body rather than a guessed reason', () => {
+  return fetchWorld('http://v', DIGEST, '0x1', canned(302, '<html>sign in</html>')).then((r) => {
+    assert(r.kind === 'unreachable')
+    assert(r.detail.includes('302'), r.detail)
+  })
+})
+
+check('the holder address is sent and the url is not doubled', () => {
+  let seen = null
+  return fetchWorld('http://v/', DIGEST, '0xabc', canned(200, '{}', {
+    onCall: (url, init) => { seen = { url, init } },
+  })).then(() => {
+    assert(seen.url === `http://v/world/${DIGEST}`, seen.url)
+    assert(seen.init.headers['X-Scema-Holder'] === '0xabc', 'holder header missing')
+  })
+})
+
+check('a vault returning a different world is caught, not flown', () => {
+  // The vault serves bytes; it does not certify them. No signature on the record itself can
+  // bind it to the request that asked for it.
+  const other = 'b'.repeat(64)
+  const r = matchesRequest(DIGEST, other, { valid: true })
+  assert(r && r.kind === 'mismatch', 'a swapped world was accepted')
+  assert(r.detail.includes(DIGEST.slice(0, 16)), r.detail)
+})
+
+check('a fetched record that fails verification is rejected', () => {
+  const r = matchesRequest(DIGEST, DIGEST, { valid: false })
+  assert(r && r.kind === 'mismatch', 'an edited record from a vault was accepted')
+  assert(r.detail.includes('edited after sealing'), r.detail)
+})
+
+check('a correct, verified record passes the binding check', () => {
+  assert(matchesRequest(DIGEST, DIGEST, { valid: true }) === null)
+})
+
+check('every vault outcome has an explanation a player can act on', () => {
+  const kinds = ['ok', 'denied', 'undetermined', 'absent', 'mismatch', 'unreachable']
+  for (const kind of kinds) {
+    const msg = explain({ kind, detail: 'x', record: { text: '', commitment: '' } })
+    assert(msg && msg.length > 2, `${kind} has no explanation`)
+  }
+})
+
+await Promise.all(pending)
 
 console.log(`\n${pass}/${pass + fail} checks passed`)
 process.exit(fail === 0 ? 0 : 1)

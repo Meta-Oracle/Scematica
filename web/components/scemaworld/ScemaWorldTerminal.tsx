@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { verifyRecordText, webSha256, type Verification } from '@/lib/omni/verify'
 import { plateSourceFromText } from '@/lib/omni/nft'
 import { readWorldCommitment } from '@/lib/omni/raster'
+import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld/vault'
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
@@ -69,6 +70,50 @@ export function ScemaWorldTerminal() {
   const [kills, setKills] = useState(0)
 
   const [ticket, setTicket] = useState<string | null>(null)
+  const [vault, setVault] = useState('')
+  const [holder, setHolder] = useState('')
+  const [vaultMsg, setVaultMsg] = useState<string | null>(null)
+  const [vaultRetryable, setVaultRetryable] = useState(false)
+  const [fetching, setFetching] = useState(false)
+
+  /** Load a world the player holds the token for. The only network call in the game. */
+  const fromVault = useCallback(
+    async (commitment: string) => {
+      setVaultMsg(null)
+      setFetching(true)
+      try {
+        const r = await fetchWorld(vault, commitment, holder)
+        if (r.kind !== 'ok') {
+          setVaultMsg(explain(r))
+          setVaultRetryable(retryable(r))
+          return
+        }
+        // The vault served bytes; it did not certify them. Verified here exactly as a
+        // dropped file is, and bound to the commitment that was actually requested — no
+        // signature on the record itself can say it is the one you asked for.
+        const verification = await verifyRecordText(r.record.text, webSha256)
+        const source = await plateSourceFromText(r.record.text, webSha256)
+        const bad = matchesRequest(commitment, source.digest, verification)
+        if (bad) {
+          setVaultMsg(explain(bad))
+          setVaultRetryable(false)
+          return
+        }
+        setTicket(null)
+        setLoaded({
+          name: `${commitment.slice(0, 12)}… from vault`,
+          space: generate(source.world, source.digest),
+          verification,
+        })
+      } catch (e) {
+        setVaultMsg(e instanceof Error ? e.message : String(e))
+        setVaultRetryable(true)
+      } finally {
+        setFetching(false)
+      }
+    },
+    [vault, holder],
+  )
 
   const load = useCallback(async (file: File) => {
     setError(null)
@@ -295,6 +340,33 @@ export function ScemaWorldTerminal() {
                 space do not survive rasterisation. Drop that record here, or fetch it from a
                 vault you hold the token for.
               </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <input
+                  value={vault}
+                  onChange={(e) => setVault(e.target.value)}
+                  placeholder="vault url, e.g. http://127.0.0.1:7843"
+                  className="min-w-[16rem] flex-1 rounded border border-omni-border bg-black px-2 py-1 font-mono text-xs text-omni-text"
+                />
+                <input
+                  value={holder}
+                  onChange={(e) => setHolder(e.target.value)}
+                  placeholder="your address"
+                  className="min-w-[10rem] rounded border border-omni-border bg-black px-2 py-1 font-mono text-xs text-omni-text"
+                />
+                <button
+                  type="button"
+                  disabled={!vault || !holder || fetching}
+                  onClick={() => void fromVault(ticket)}
+                  className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent disabled:opacity-40"
+                >
+                  {fetching ? 'fetching…' : 'Fetch from vault'}
+                </button>
+              </div>
+              {vaultMsg && (
+                <p className={`mt-2 ${vaultRetryable ? 'text-omni-stale' : 'text-omni-invalid'}`}>
+                  {vaultMsg}
+                </p>
+              )}
             </div>
           )}
           <ul className="space-y-1 text-omni-dim">

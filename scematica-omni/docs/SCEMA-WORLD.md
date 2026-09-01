@@ -140,12 +140,23 @@ space game without roll has an up — which this one does not. The main drive is
 original scheme; a ship that cannot go forward is not a ship, so it is on `SHIFT`/`CTRL` and
 the HUD says so.
 
-### Arc 5 — Entitlement
+### Arc 5 — Entitlement *(done)*
 
-`scema-vault` already serves a record to the holder of the token committing to it, and
-`scema-entitlement` already binds the two. The game asks the vault for a world it does not have
-locally; a non-holder gets a 403 and a clear reason, and an unreadable chain gets a 503 that
-says *retry* rather than *denied*.
+`lib/scemaworld/vault.ts`. Drop a PNG, get its commitment, fetch the record from a vault you
+hold the token for, fly it. `scema-vault` and `scema-entitlement` already existed; this is the
+client half and the only network call in the whole game.
+
+The three-answer rule survives to the player. A 403 is a fact about the holder and does not
+invite a retry; a **503 is undetermined and says so** — told "you do not own this", somebody
+goes and buys a token they already have. A 404 says the gap belongs to the vault rather than
+to the entitlement. An unreachable vault names the URL it tried, which is the lesson `/mesh`
+paid for: collapsing every failure into one diagnosis is wrong exactly when a healthy service
+is configured at a bad address.
+
+**The vault is not trusted.** It serves bytes; it does not certify them. The record is verified
+in the browser exactly as a dropped file is, *and* bound to the commitment that was requested —
+no signature on a record can say it is the one you asked for, so a vault returning a different
+world is caught rather than flown.
 
 The token's utility is exactly this and nothing more: **the space it describes.**
 

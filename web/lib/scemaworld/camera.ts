@@ -174,6 +174,23 @@ export function view(c: Camera): Mat4 {
   return m
 }
 
+/**
+ * The view matrix with the translation stripped: rotation only.
+ *
+ * For the starfield. Stars are drawn on a unit sphere around the eye and must never parallax —
+ * a star you could fly toward would be an *object*, and the record makes no claim about one.
+ * Reusing `view` and zeroing the translation afterwards would be a second place that has to
+ * agree with the first about which three entries carry it.
+ */
+export function viewRotation(c: Camera): Mat4 {
+  const m = view(c)
+  const r = new Float32Array(m)
+  r[12] = 0
+  r[13] = 0
+  r[14] = 0
+  return r
+}
+
 /** `a * b`, column-major. */
 export function mul(a: Mat4, b: Mat4): Mat4 {
   const o = new Float32Array(16)

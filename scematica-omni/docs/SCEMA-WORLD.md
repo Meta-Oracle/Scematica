@@ -139,6 +139,7 @@ player would learn from the targeting computer what the record does not know.
 | `M` | market — spend salvage on the ship |
 | `1` `2` `3` `4` | route to fuel · repair · market · salvage |
 | `0` | clear the waypoint |
+| hold `J` | **jump** to the waypoint |
 
 Roll is on `Q`/`E` because it is the one rotational axis `WASD` leaves unreachable, and a
 space game without roll has an up — which this one does not.
@@ -207,6 +208,133 @@ you to a `phantom`, a station the observer *modelled* rather than saw, and label
 computer that filtered out unreliable destinations would make the record's uncertainty
 invisible at exactly the moment the player acts on it.
 
+## Arc 8 — A simulator rather than a shooting gallery *(done)*
+
+Arc 7 made the game work. This one makes it a game worth playing twice, and the largest single
+change is in what an enemy *is*.
+
+### The dogfight
+
+A craft used to snap its velocity straight at the player and hold a radius. It could not miss,
+could not be out-manoeuvred and could not be got behind, so a fight was a contest of hit points
+— decided before it started and identical every time. The fix is not more numbers, it is **finite
+turn rate**. An opponent that must fly an arc to point at you is an opponent whose arc you can
+beat, and everything interesting follows from that one constraint: a craft has a facing, turns at
+its class's radians per second, thrusts along its nose, and cannot strafe.
+
+Five behaviours, each earning its place. `patrol` drifts. `pursue` turns on and closes —
+throttling *with* alignment, because a craft at full burn while pointing the wrong way flies away
+from what it is chasing. `attack` holds a firing solution and **leads the target**, which is what
+makes jinking work: the lead comes from your current velocity, so changing it breaks the
+solution. `overshoot` is the pass it committed to because it could not turn on a coin, and it is
+the window you are meant to notice. `evade` is a fighter running at a third hull, which is what
+lets you let one go — a game where every encounter is to the death is a game with one verb.
+
+Two bugs here were found by tests and were both invisible in play. A craft whose target was
+*exactly* astern froze: the naive turn has no unique perpendicular when two vectors are
+antiparallel, so it yielded a zero and the craft faced away forever. And a craft that started
+with the player behind it burned out of its own aggro radius during the turn, dropped to patrol
+and drifted off — fixed with hysteresis, because acquiring should be harder than losing.
+
+### Six classes, and a capital you fight *around*
+
+`classes.ts` is one flat table of silhouette plus statline, because the moment a renderer decides
+which one is the small triangle there are two homes for the decision. Every class trades turn
+against speed along a single line: a skiff is barely armed and exists so a new player has
+something to win against; an interceptor out-turns you and will get behind, and the answer is to
+break and come back on your terms; a gunship is slow and heavily shielded and is beaten by
+out-turning it; a **frigate** and a **destroyer** do not chase and do not need to.
+
+**Both capitals were unreachable for a while and nothing failed.** The class roll was derived
+from `durability`, which returns one of six values, so it covered about half the distribution and
+never once reached the top bracket. A table whose bottom two entries are decoration is exactly
+the bug that hides behind a plausible-looking sector, and it now has two tests.
+
+Raiders arrive in **wings**. Scattered uniformly, sixty craft in a volume this size sit two
+hundred million units apart and you essentially never meet one — the sector reads as empty and
+the whole combat system goes unused. A wing of four mixed classes is an encounter with a shape:
+the interceptors are on you first and the gunship arrives late and hits far harder.
+
+### Shields absorb, hull decides
+
+Both are bars rather than fractions, because in a fight there is no time to read. The shield is a
+buffer that regenerates after a lull; the hull is health that does not and is repaired only at a
+dock, for salvage. That asymmetry is the rhythm — break contact, recover, re-engage — and
+inverting it would make every engagement a war of attrition against a clock rather than a
+decision about whether to commit. A hit that reaches hull flashes the target harder and kicks the
+screen harder than one a shield soaks, because that cue is the only thing telling you whether you
+are making progress or wasting rounds on a buffer.
+
+### The jump drive
+
+The sector crosses in eleven seconds now and that is not what the drive is for. The interesting
+decision is *which* of a thousand nodes to be at, and any travel time long enough to be felt
+turns that decision into a commute; making the ship faster still would flatten the space instead.
+
+So the cost is loaded onto the decision. A separate, scarce fuel that only a **dock** refills —
+and there are six times as many depots as docks. A two-and-a-half-second spin-up during which you
+are flying straight and slow. And an **inhibitor**: the drive will not charge with a hostile
+inside range, which is what stops it being an escape hatch and therefore what makes committing to
+a fight mean anything. Running is still possible — no class can outrun you, by construction — but
+running is a manoeuvre, not a keystroke.
+
+### What it looks like
+
+**Ships are line models.** A shaded solid at these sizes is a grey blob with a highlight on it; a
+wireframe reads its own silhouette at any distance and — the reason that matters — makes *facing*
+obvious, which is the single most important thing to know about an opponent. You cannot tell
+which way a sphere is pointing. The capital's hull is ribbed on purpose: a smooth wedge at that
+scale has nothing on it to judge distance by.
+
+**Projectiles are cylinders, drawn additively.** A sphere travelling at half a sector per second
+is a dot that teleports between frames. A bolt along the direction of travel gives the eye a
+streak to follow, and the streak points back at whatever fired it, which is the most useful thing
+on screen in a fight. Each one is drawn twice — core, then a larger dimmer halo — under additive
+blend with depth *writes* off, so overlapping tracers sum into a hot white core instead of
+occluding each other. That sum is the glow; there is no post-process pass.
+
+**There are stars.** The void was a black rectangle, and a black rectangle has no sense of
+rotation: pitch and yaw produced no visible change until something entered frame, so the ship felt
+like it was sitting still while numbers changed. Stars are the cheapest thing in the renderer and
+they do more for the feeling of being somewhere than anything else in it. Seeded from the
+commitment, so two players see the same sky — the determinism rule applied to something with no
+gameplay effect, precisely because making an exception for cosmetics is how a rule stops being
+one. They never parallax: a star you could fly to would be an *object*, and the record makes no
+claim about one.
+
+**Lanes are nearly invisible.** At a thousand nodes the lane mesh was a bright cage that hid
+everything inside it and the sector read as a diagram of itself. They are drawn at the edge of
+visibility now — followable if you are looking for a route, gone if you are not.
+
+**Draw distance covers the whole sector.** It used to come from sensor range, which put a wall of
+fog around a volume the entire design is about the size of: an unread world arrived as a *small*
+one. Two different things were being conflated — what the record knows and what the window shows.
+Legibility now expresses itself as **contact range** on the sensor panel, so a poorly-perceived
+world is one you fly blind *through* rather than one you fly blind *in*.
+
+## Arc 9 — The record rides inside the picture *(done)*
+
+A PNG named the world it derived from and carried nothing else, which made it a claim ticket: to
+fly the space or verify the record you had to fetch the record from somewhere. That is right for
+*distribution* — `scema-vault` gates exactly that — and wrong for an artefact somebody owns. A
+token whose utility requires a service to be up is a token whose utility can be switched off.
+
+`scema nft <record> --png x.png` now embeds the record in the image. Drop that PNG on
+`/scema-world` and it flies, with no vault and no network; drop it on `/omni` and it verifies.
+
+Three details that are the whole of it. It is an **`iTXt`** chunk, not `tEXt`: `tEXt` is Latin-1
+and a record carries labels lifted from whatever was observed, so one byte above U+00FF would
+corrupt the record on the way in — a verifier reporting tampering that the *writer* caused is the
+worst failure available here. It embeds the **raw text**, never a re-serialisation, for the same
+reason `/omni` verifies raw text: `serde_json` collapses `0.0` to `0`, which moves it from the
+FLOAT tag to the INTEGER tag in the canonical encoding and changes the digest. And it is a
+**post-pass** rather than a parameter on the renderer, so every existing image stays byte-identical
+and the parity fixtures keep pinning the raster rather than the raster plus whatever a caller
+attached.
+
+An embedded record gets no more trust than a dropped file: it goes through the same verifier. The
+image is not a signature.
+
 ### The economy rule, sharpened
 
 Arc 4 said "no economy" and a test enforced it. The rule was aimed at a real failure and stated
@@ -273,13 +401,17 @@ be mistaken for lanes inside a world, which are structural.
   This is the one that will be argued for most often, and the one that broke first.
 - **No distance literals outside `scale.ts`.** The sixty-fold enlargement is not a thing that
   happens once.
+- **No craft may outrun the player.** Disengaging must always be possible, or the game punishes
+  the exploring it is entirely about. Asserted for every class.
+- **A ghost never resolves, even while it is shooting at you.** The pressure to put a number
+  there is strongest exactly then.
 - **No blocking an invalid record.** Show it, mark it, let people look at a forgery. A verifier
   people cannot experiment with is one they stop believing.
 
 ## Running it
 
 ```console
-$ cd web && npm run check:scemaworld     # generator, scale, combat, nav, a whole flight — 107
+$ cd web && npm run check:scemaworld     # generator, scale, dogfight, nav, jump, a flight — 146
 $ cd web && npm run dev                  # /scema-world
 ```
 

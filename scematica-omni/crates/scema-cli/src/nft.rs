@@ -97,7 +97,22 @@ pub fn run(
         if plate {
             bail!("PNG renders the growth; it does not apply to --plate");
         }
-        Some(scema_nft::fractal::render_png(&source.world, &source.digest, png_size))
+        let drawn = scema_nft::fractal::render_png(&source.world, &source.digest, png_size);
+        // A record rides along inside the image, so the picture is self-contained: it
+        // verifies offline and Scema-World can fly it with no vault and no network. A plate
+        // that only *names* its record is a claim ticket, and a token whose utility needs a
+        // service to be up is a token whose utility can be switched off.
+        //
+        // The **raw text** is embedded, never a re-serialisation. `serde_json` would collapse
+        // `0.0` to `0`, which moves it from the FLOAT tag to the INTEGER tag in the canonical
+        // encoding and changes the digest — the record would be intact and would report as
+        // tampered, which is the one failure that teaches a reader to stop believing the
+        // verifier.
+        Some(if source.kind == SourceKind::Record {
+            scema_nft::raster::embed_record(&drawn, &text)
+        } else {
+            drawn
+        })
     } else {
         None
     };
@@ -105,6 +120,10 @@ pub fn run(
     if let (Some(p), Some(bytes)) = (png, png_bytes.as_ref()) {
         std::fs::write(p, bytes).with_context(|| format!("writing {}", p.display()))?;
         eprintln!("wrote {} ({} bytes, {png_size}x{png_size})", p.display(), bytes.len());
+        if source.kind == SourceKind::Record {
+            eprintln!("  the record travels inside it");
+            eprintln!("  this image verifies offline and flies in Scema-World without a vault");
+        }
     }
 
     if let Some(p) = metadata_out {

@@ -439,6 +439,111 @@ fn text_chunk(out: &mut Vec<u8>, keyword: &str, text: &str) {
     chunk(out, b"tEXt", &body);
 }
 
+/// PNG keyword under which a whole decision record travels.
+///
+/// ## Why an image carries a record at all
+///
+/// A plate names the world it derives from and nothing else, which makes it a *claim ticket*:
+/// to fly the space, or to verify the record, you had to go and fetch the record from
+/// somewhere. That is right for distribution — `scema-vault` gates exactly that — and it is
+/// wrong for an artefact somebody owns. A token whose utility requires a service to be up is
+/// a token whose utility can be switched off.
+///
+/// So the record may ride along inside the image. The picture is then self-contained: it
+/// verifies offline, and Scema-World can fly it with no vault and no network.
+///
+/// ## `iTXt`, not `tEXt`
+///
+/// `tEXt` is Latin-1. A record carries labels lifted from whatever was observed — file paths,
+/// page titles, feed names — and one non-Latin-1 byte in any of them would corrupt the record
+/// on the way in, which is the worst available failure: a verifier reporting tampering that
+/// the writer caused. `iTXt` is UTF-8 by specification, stored uncompressed here so the bytes
+/// are a pure function of the record exactly as the pixels are.
+pub const RECORD_KEYWORD: &str = "scema.record";
+
+/// An `iTXt` chunk: `keyword\0 compression_flag compression_method \0 \0 text`, UTF-8.
+fn itxt_chunk(out: &mut Vec<u8>, keyword: &str, text: &str) {
+    let mut body = Vec::with_capacity(keyword.len() + 5 + text.len());
+    body.extend_from_slice(keyword.as_bytes());
+    body.push(0);
+    body.push(0); // uncompressed
+    body.push(0); // compression method, ignored when uncompressed
+    body.push(0); // empty language tag
+    body.push(0); // empty translated keyword
+    body.extend_from_slice(text.as_bytes());
+    chunk(out, b"iTXt", &body);
+}
+
+/// Insert a record into an already-encoded PNG, immediately after `IHDR`.
+///
+/// A post-pass rather than a parameter on `render_png`, deliberately: every existing image
+/// stays byte-identical, so the parity fixtures still pin the raster itself rather than the
+/// raster plus whatever a caller happened to attach. Embedding is a separate decision from
+/// drawing, and the byte-for-byte guarantee belongs to the drawing.
+///
+/// Returns the input unchanged if it is not a PNG, rather than producing a broken one.
+pub fn embed_record(png: &[u8], record: &str) -> Vec<u8> {
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if png.len() < 8 + 12 || png[..8] != SIG {
+        return png.to_vec();
+    }
+    // IHDR is required to be the first chunk, so its end is a fixed offset from the signature.
+    let ihdr_len = u32::from_be_bytes([png[8], png[9], png[10], png[11]]) as usize;
+    let after_ihdr = 8 + 12 + ihdr_len;
+    if after_ihdr > png.len() {
+        return png.to_vec();
+    }
+    let mut out = Vec::with_capacity(png.len() + record.len() + 32);
+    out.extend_from_slice(&png[..after_ihdr]);
+    itxt_chunk(&mut out, RECORD_KEYWORD, record);
+    out.extend_from_slice(&png[after_ihdr..]);
+    out
+}
+
+/// Read back a record embedded by [`embed_record`], if there is one.
+pub fn read_record(png: &[u8]) -> Option<String> {
+    const SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if png.len() < 8 || png[..8] != SIG {
+        return None;
+    }
+    let mut off = 8;
+    while off + 8 <= png.len() {
+        let len = u32::from_be_bytes([png[off], png[off + 1], png[off + 2], png[off + 3]]) as usize;
+        let kind = &png[off + 4..off + 8];
+        if off + 12 + len > png.len() {
+            return None;
+        }
+        if kind == b"iTXt" {
+            let body = &png[off + 8..off + 8 + len];
+            if let Some(nul) = body.iter().position(|&b| b == 0) {
+                if &body[..nul] == RECORD_KEYWORD.as_bytes() && body.len() >= nul + 5 {
+                    // Uncompressed only: a compressed record would need an inflater, and this
+                    // crate deliberately has no decompressor to be wrong about.
+                    if body[nul + 1] != 0 {
+                        return None;
+                    }
+                    // Skip the language tag and translated keyword, both empty here but both
+                    // permitted to be non-empty by a different writer.
+                    let mut i = nul + 3;
+                    let mut seen = 0;
+                    while i < body.len() && seen < 2 {
+                        if body[i] == 0 {
+                            seen += 1;
+                        }
+                        i += 1;
+                    }
+                    return String::from_utf8(body[i..].to_vec()).ok();
+                }
+            }
+        }
+        if kind == b"IEND" {
+            break;
+        }
+        off += 12 + len;
+    }
+    None
+}
+
 fn encode_png(w: usize, h: usize, rgb: &[u8], world: &str) -> Vec<u8> {
     // Filter type 0 (None) on every row. Any other filter is a compression aid, and there is
     // no compression here to aid.
@@ -618,5 +723,58 @@ mod tests {
         // `∅` is how an unmeasured coverage is written everywhere else here; falling back to
         // a box would turn a specific statement into a missing-character marker.
         assert_ne!(glyph('∅'), glyph('\u{4e2d}'));
+    }
+}
+
+#[cfg(test)]
+mod embed_tests {
+    use super::*;
+
+    fn tiny_png() -> Vec<u8> {
+        encode_png(1, 1, &[255, 0, 0], "abc123")
+    }
+
+    #[test]
+    fn a_record_survives_the_round_trip_byte_for_byte() {
+        // The whole point. A record that came back altered would verify as tampered, and a
+        // verifier that cries tamper on an honest round trip is worse than no verifier.
+        let record = r#"{"a":0.0,"b":"é 世界","c":[1,2,3]}"#;
+        let png = embed_record(&tiny_png(), record);
+        assert_eq!(read_record(&png).as_deref(), Some(record));
+    }
+
+    #[test]
+    fn embedding_leaves_the_world_commitment_and_the_pixels_alone() {
+        let base = tiny_png();
+        let png = embed_record(&base, "{}");
+        // Every original chunk is still present, in order: the record was inserted, not
+        // spliced over anything.
+        assert!(png.windows(4).any(|w| w == b"IHDR"));
+        assert!(png.windows(4).any(|w| w == b"IDAT"));
+        assert!(png.windows(4).any(|w| w == b"IEND"));
+        assert!(png.len() > base.len());
+    }
+
+    #[test]
+    fn a_png_without_a_record_reports_none_rather_than_empty() {
+        // "There is no record in this image" and "this image carries an empty record" are
+        // different facts, and only one of them is worth showing somebody a space for.
+        assert_eq!(read_record(&tiny_png()), None);
+    }
+
+    #[test]
+    fn something_that_is_not_a_png_comes_back_unharmed() {
+        // Never produce a broken PNG from a bad input; hand the input back.
+        let junk = b"not a png at all".to_vec();
+        assert_eq!(embed_record(&junk, "{}"), junk);
+        assert_eq!(read_record(&junk), None);
+    }
+
+    #[test]
+    fn embedding_is_deterministic() {
+        // The bytes stay a pure function of the record, exactly as the pixels are.
+        let a = embed_record(&tiny_png(), "{\"x\":1}");
+        let b = embed_record(&tiny_png(), "{\"x\":1}");
+        assert_eq!(a, b);
     }
 }

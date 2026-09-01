@@ -33,7 +33,7 @@ export const UNIT = 1000
  * appreciably more than this in its longest axis — around 1.5×. Treat `EXTENT` as the scale of
  * the place, not as its bounding box.
  */
-export const EXTENT = 240_000 * UNIT
+export const EXTENT = 420_000 * UNIT
 
 // ── distances, as fractions of the sector ────────────────────────────────────
 
@@ -62,10 +62,15 @@ export const R_PLAYER = Math.round(EXTENT * 0.0035)
 /** How close you must be to a node to use its services — about three station radii. */
 export const DOCK_RANGE = Math.round(EXTENT * 0.019)
 
-/** How close a hostile must be before it notices you. ~6% of the sector. */
-export const AGGRO_RANGE = Math.round(EXTENT * 0.06)
-/** How close it then tries to get. Inside this it holds station rather than ramming. */
-export const ENGAGE_RANGE = Math.round(EXTENT * 0.012)
+/**
+ * Default sensor and engagement ranges.
+ *
+ * Every armed class overrides both from `classes.ts` — a destroyer sees further than a skiff,
+ * which is most of what makes the sector feel layered. These remain as the fallback and as the
+ * scale the class table is written against.
+ */
+export const AGGRO_RANGE = Math.round(EXTENT * 0.075)
+export const ENGAGE_RANGE = Math.round(EXTENT * 0.014)
 
 /** Nearest a fractal branch may place two nodes. Below this the sector reads as a clump. */
 export const MIN_BRANCH = Math.round(EXTENT * 0.00375)
@@ -73,29 +78,38 @@ export const MIN_BRANCH = Math.round(EXTENT * 0.00375)
 // ── speeds, as sector crossings ──────────────────────────────────────────────
 
 /**
- * Top speed of a stock engine: a sector width in twenty-six seconds, so the real long axis
- * takes about forty. Fully upgraded is a little over twice that.
+ * Top speed of a stock engine: a sector width in eleven seconds.
+ *
+ * Roughly four times what it was, on a sector nearly twice as large. The volume stopped being
+ * too small and started being too *slow* — the distance was right and crossing it was a chore,
+ * which is the same complaint arriving from the other side. Long hauls are the jump drive's
+ * job now (`hyper.ts`); the main drive is for closing, and for getting out of a fight.
  */
-export const SPEED_SHIP = Math.round(EXTENT / 26)
-export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 57)
+export const SPEED_SHIP = Math.round(EXTENT / 11)
+export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 30)
 
-/** Lateral thrusters. Deliberately slow: they are for docking, not for travel. */
-export const SPEED_THRUST = Math.round(EXTENT / 110)
+/**
+ * Lateral and vertical thrusters.
+ *
+ * Fast enough to matter in a dogfight — a jink sideways is how you break a firing solution,
+ * and a thruster that only helps you dock makes combat a pure turning contest.
+ */
+export const SPEED_THRUST = Math.round(EXTENT / 30)
 
 /**
  * A laser crosses the sector in nine seconds and lives for half of one, so its reach is a bit
  * over a third of `AGGRO_RANGE`. You close to fight; you do not snipe from the edge of sensors.
  */
-export const SPEED_LASER = Math.round(EXTENT / 9)
-export const LIFE_LASER = 0.62
+export const SPEED_LASER = Math.round(EXTENT / 2.2)
+export const LIFE_LASER = 0.3
 
 /** A photon missile is slower and lives far longer, so it reaches — and it tracks. */
-export const SPEED_PHOTON = Math.round(EXTENT / 21)
-export const LIFE_PHOTON = 3.4
+export const SPEED_PHOTON = Math.round(EXTENT / 6)
+export const LIFE_PHOTON = 2.0
 
 /** Enemy fire. Faster than any ship, so closing does not make you safe. */
-export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 15)
-export const LIFE_ENEMY_SHOT = 2.2
+export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 3.4)
+export const LIFE_ENEMY_SHOT = 0.55
 
 /**
  * Hostile craft, base and per-tier.
@@ -104,8 +118,8 @@ export const LIFE_ENEMY_SHOT = 2.2
  * A game where the only answer to a fight you are losing is to die is a game that punishes
  * exploration, and exploring is the whole activity here.
  */
-export const SPEED_CRAFT = Math.round(EXTENT / 62)
-export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 260)
+export const SPEED_CRAFT = Math.round(EXTENT / 20)
+export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 120)
 
 // ── the camera ───────────────────────────────────────────────────────────────
 
@@ -114,4 +128,50 @@ export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 260)
  * near 2000:1 — inside what a 24-bit depth buffer holds without visible fighting between two
  * stations at the far edge.
  */
-export const NEAR_PLANE = Math.round(EXTENT * 0.0006)
+export const NEAR_PLANE = Math.round(EXTENT * 0.0009)
+
+/**
+ * The far plane, always. **Draw distance is no longer a function of sensor range.**
+ *
+ * Sensor range used to gate it, and the result was a wall of fog at the edge of a volume the
+ * whole design is about the size of — you could not see the sector you were flying in. Now the
+ * far plane covers the entire generated space (the fractal reaches roughly 1.6 extents along
+ * its longest axis, so this clears it) and legibility expresses itself where it belongs: in
+ * what the record *knows*, not in how far the window sees.
+ *
+ * The depth ratio against `NEAR_PLANE` is about 2000:1, inside what a 24-bit depth buffer
+ * holds without two distant stations fighting over the same pixel.
+ */
+export const FAR_PLANE = Math.round(EXTENT * 1.9)
+
+// ── projectiles as objects rather than points ────────────────────────────────
+
+/**
+ * How long a bolt is drawn, as a multiple of its radius.
+ *
+ * A shot was a sphere, and a sphere travelling at half the sector per second is a dot that
+ * teleports. A cylinder along the direction of travel is what makes a tracer read as *fast*
+ * rather than as a flicker: the eye gets a streak to follow, and the streak points back at
+ * where the shot came from, which is the most useful thing on screen in a fight.
+ */
+export const BOLT_LENGTH = 16
+/** The additive halo, as a multiple of the core radius. Glow, drawn as geometry. */
+export const BOLT_GLOW = 3.6
+
+// ── the jump drive ───────────────────────────────────────────────────────────
+
+/**
+ * The jump drive turns a big sector from a commute into a map.
+ *
+ * Crossing at full burn takes eleven seconds and used to take forty, and neither is the point:
+ * the interesting decision is *which* of a thousand nodes to be at, and a travel time long
+ * enough to be felt turns that decision into a chore. So a jump is near-instant, costs a
+ * separate and scarce fuel, takes time to charge, and **cannot be charged with a hostile
+ * inside sensor range** — which is what stops it being an escape button and makes committing
+ * to a fight mean something.
+ */
+export const JUMP_CHARGE_MS = 2_600
+/** How close a hostile may be before the drive refuses to spin up. */
+export const JUMP_INHIBIT = Math.round(EXTENT * 0.055)
+/** Where you arrive relative to the target, so a jump never lands you inside a station. */
+export const JUMP_STANDOFF = Math.round(EXTENT * 0.012)

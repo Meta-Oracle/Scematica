@@ -443,6 +443,90 @@ export function readWorldCommitment(png: Uint8Array): string | null {
   return null
 }
 
+/**
+ * PNG keyword under which a whole decision record travels. Port of `raster.rs`.
+ *
+ * A plate that only *names* its record is a claim ticket: to fly the space or verify the
+ * record you had to fetch it from somewhere, and a token whose utility needs a service to be
+ * up is a token whose utility can be switched off. With the record inside, the picture is
+ * self-contained — it verifies offline and Scema-World flies it with no vault and no network.
+ *
+ * `iTXt` rather than `tEXt` because `tEXt` is Latin-1 and a record carries labels lifted from
+ * whatever was observed. One non-Latin-1 byte would corrupt the record on the way in, and a
+ * verifier reporting tampering that the *writer* caused is the worst failure available here.
+ */
+export const RECORD_KEYWORD = 'scema.record'
+
+/**
+ * Read a record embedded by `scema nft`, if there is one.
+ *
+ * Returns the text **exactly** as stored. It must never be parsed and re-serialised on the way
+ * out: `JSON.parse` collapses Rust's `0.0` to `0` and `JSON.stringify` writes it back without
+ * the fraction, which moves it from the FLOAT tag to the INTEGER tag in the canonical encoding
+ * and changes the digest. The record would be intact and would verify as tampered.
+ */
+export function readEmbeddedRecord(png: Uint8Array): string | null {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (png.length < 8 || sig.some((b, i) => png[i] !== b)) return null
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength)
+  let off = 8
+  while (off + 8 <= png.length) {
+    const len = view.getUint32(off)
+    const kind = String.fromCharCode(...png.slice(off + 4, off + 8))
+    if (off + 12 + len > png.length) return null
+    if (kind === 'iTXt') {
+      const body = png.slice(off + 8, off + 8 + len)
+      const nul = body.indexOf(0)
+      if (nul > 0 && String.fromCharCode(...body.slice(0, nul)) === RECORD_KEYWORD) {
+        // Uncompressed only. A compressed record would need an inflater, and there is
+        // deliberately no decompressor in this file to be wrong about.
+        if (body[nul + 1] !== 0) return null
+        // Skip the language tag and the translated keyword. Both are empty as written here
+        // and both are permitted to be non-empty by a different writer.
+        let i = nul + 3
+        let seen = 0
+        while (i < body.length && seen < 2) {
+          if (body[i] === 0) seen += 1
+          i += 1
+        }
+        // UTF-8, per the chunk specification. `String.fromCharCode` would mangle anything
+        // above U+007F — the exact hazard `iTXt` was chosen to avoid.
+        return new TextDecoder('utf-8').decode(body.slice(i))
+      }
+    }
+    if (kind === 'IEND') break
+    off += 12 + len
+  }
+  return null
+}
+
+/**
+ * Insert a record into an already-encoded PNG, immediately after `IHDR`. Port of `raster.rs`.
+ *
+ * A post-pass rather than a parameter on `renderPng`: every existing image stays byte-identical,
+ * so the parity fixtures keep pinning the raster itself rather than the raster plus whatever a
+ * caller attached.
+ */
+export function embedRecord(png: Uint8Array, record: string): Uint8Array {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (png.length < 20 || sig.some((b, i) => png[i] !== b)) return png
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength)
+  const afterIhdr = 8 + 12 + view.getUint32(8)
+  if (afterIhdr > png.length) return png
+
+  const text = new TextEncoder().encode(record)
+  const key = new TextEncoder().encode(RECORD_KEYWORD)
+  const body: number[] = [...key, 0, 0, 0, 0, 0, ...text]
+  const chunkBytes: number[] = []
+  chunk(chunkBytes, 'iTXt', body)
+
+  const out = new Uint8Array(png.length + chunkBytes.length)
+  out.set(png.subarray(0, afterIhdr), 0)
+  out.set(Uint8Array.from(chunkBytes), afterIhdr)
+  out.set(png.subarray(afterIhdr), afterIhdr + chunkBytes.length)
+  return out
+}
+
 function encodePng(
   w: number,
   h: number,

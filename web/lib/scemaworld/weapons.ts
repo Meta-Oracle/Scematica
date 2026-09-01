@@ -47,6 +47,14 @@ export interface Weapon {
   magazine: number | null
   /** World-unit radius counted as a hit. */
   calibre: number
+  /**
+   * Damage per hit.
+   *
+   * A laser is a drip and a photon is an event — nine rounds of one against a shielded gunship
+   * or a single missile. That contrast is the whole reason there are two weapons, and it is
+   * what a burst of laser fire failing to break a shield is supposed to teach.
+   */
+  damage: number
 }
 
 export const LASER: Weapon = {
@@ -58,6 +66,7 @@ export const LASER: Weapon = {
   tracking: false,
   magazine: null,
   calibre: Math.round(R_CONTACT * 1.4),
+  damage: 5,
 }
 
 export const PHOTON: Weapon = {
@@ -69,6 +78,7 @@ export const PHOTON: Weapon = {
   tracking: true,
   magazine: 12,
   calibre: Math.round(R_CONTACT * 4),
+  damage: 42,
 }
 
 export const WEAPONS: Weapon[] = [LASER, PHOTON]
@@ -247,7 +257,8 @@ export function fire(
 
 export interface Hit {
   contact: string
-  destroyed: boolean
+  /** How much damage the round carried. The *swarm* decides what that does to a hull. */
+  damage: number
 }
 
 /** Advance projectiles by `dt` seconds and resolve hits. Pure. */
@@ -299,11 +310,12 @@ export function step(
       const reach =
         w.calibre + R_CONTACT + Math.round(Math.max(0, Math.min(1, contact.magnitude)) * R_CONTACT_SPAN)
       if (distToSegment(contact.at, p.at, at) <= reach) {
-        const n = (hitCount[contact.id] ?? 0) + 1
-        hitCount[contact.id] = n
-        const dead = n >= durability(seed, contact.id)
-        if (dead) destroyed.push(contact.id)
-        hits.push({ contact: contact.id, destroyed: dead })
+        // Counted, but **not** adjudicated. This module used to decide death here from a
+        // seed-derived durability, and `enemy.ts` now owns hull and shields — two authorities
+        // over one fact, which is how a craft ends up dead on one side and firing on the other.
+        // A hit is a report; the swarm decides what it costs.
+        hitCount[contact.id] = (hitCount[contact.id] ?? 0) + 1
+        hits.push({ contact: contact.id, damage: w.damage })
         consumed = true
         break
       }

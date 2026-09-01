@@ -754,8 +754,8 @@ never from record content. A world with more blind spots is worth the same and i
 survive. The failure was subtle when it happened: hostiles were placed at a rate *per node*,
 and since blind spots become rift nodes and reported extent drives the fractal's depth, a
 record claiming less of both grew a smaller node list and bought itself a quieter sector.
-`raiders.ts` now reads the seed and nothing else — a fixed forty, scattered through the volume
-— so every world is exactly as dangerous as every other. `check:scemaworld` asserts the reward
+`raiders.ts` now reads the seed and nothing else — a fixed number of wings, scattered through
+the volume — so every world is exactly as dangerous as every other. `check:scemaworld` asserts the reward
 path reads no record field, on `ship.ts` **and** on `raiders.ts`.
 
 Three more rules the 104 checks carry, each paid for:
@@ -776,6 +776,35 @@ Three more rules the 104 checks carry, each paid for:
   never become indistinguishable from a signal somebody counted. Its threat reads a real number,
   unlike a ghost's — the em dash marks a quantity the *record* left unmeasured, and the record
   makes no statement about a raider at all.
+- **A dogfight is a contest of turn rate against speed, not of hit points** (`classes.ts`,
+  `enemy.ts`). Craft have a finite `turn`, fly where they point and cannot strafe; the five
+  behaviours (`patrol`/`pursue`/`attack`/`overshoot`/`evade`) and the shot lead all follow from
+  that one constraint. **No class may outrun the player** — disengaging must always be possible
+  or the game punishes the exploring it is about — and a class roll must cover its whole range:
+  it was derived from `durability` (six possible values), so both capitals existed in the table
+  and could never be met, and nothing failed. Two tests now.
+- **Shields absorb, hull decides.** Shields regenerate after a lull, hull only at a dock for
+  salvage. Inverting that makes every fight a war of attrition against a clock. A hit reaching
+  hull flashes and kicks harder than one a shield soaks, because that cue is the only thing
+  telling a player whether they are making progress or wasting rounds on a buffer.
+- **The jump drive's cost is on the decision, not the duration** (`hyper.ts`). Scarce fuel that
+  only a *dock* refills, a spin-up, and an inhibitor that refuses to charge with hostiles in
+  range — the last is what stops it being an escape hatch and therefore what makes committing to
+  a fight mean anything.
+- **Ships are line models and bolts are cylinders** (`meshes.ts`, `gl.ts`). A sphere has no
+  visible facing and facing is the most important thing to know about an opponent; a sphere at
+  half a sector per second is a dot that teleports. Glow is two additive passes with depth
+  *writes* off, not a post-process. Stars are seeded from the commitment and never parallax — a
+  star you could fly to would be an object the record never claimed. Draw distance is a constant
+  covering the sector: it used to come from sensor range, which conflated what the record knows
+  with what the window shows and made an unread world arrive as a *small* one.
+- **A PNG written by `scema nft <record>` carries the record** in an `iTXt` chunk, so the image
+  flies in Scema-World and verifies in `/omni` with no vault and no network. `iTXt` not `tEXt`
+  (Latin-1 would corrupt a label lifted from an observed page), the **raw text** not a
+  re-serialisation (`0.0` → `0` changes the canonical tag and the digest), and a **post-pass**
+  not a render parameter, so every existing image stays byte-identical and the parity fixtures
+  keep pinning the raster alone. An embedded record goes through the same verifier as a dropped
+  file — the image is not a signature.
 
 A test also asserts the model carries no price/yield field and that the commitment is written
 down rather than merely true.

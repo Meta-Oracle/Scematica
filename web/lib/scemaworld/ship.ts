@@ -21,13 +21,29 @@
  */
 
 import { SPEED_SHIP, SPEED_SHIP_PER_LEVEL } from './scale.ts'
+import { SHIELD_DELAY_MS } from './classes.ts'
 
-export type Component = 'engine' | 'hull' | 'sensors' | 'laser' | 'missiles' | 'tanks'
+export type Component =
+  | 'engine' | 'hull' | 'sensors' | 'laser' | 'missiles' | 'tanks' | 'shields' | 'drive'
 
 export interface Ship {
   /** Litres, abstract. Runs down with thrust; refuelled at a depot or dock. */
   fuel: number
+  /**
+   * Hull. **The primary health, and the one that does not come back.**
+   *
+   * Shields absorb first and regenerate; hull is repaired only at a dock, for salvage. That
+   * asymmetry is the whole rhythm of a fight — break contact, let shields recover, re-engage —
+   * and inverting it (a regenerating primary bar) would make every engagement a war of
+   * attrition against a clock rather than a decision about whether to commit.
+   */
   hull: number
+  /** Shields. Absorb before hull, and come back after a lull. */
+  shield: number
+  /** Milliseconds of the last hit taken, so regeneration knows when the lull started. */
+  lastHitMs: number
+  /** Charges for the jump drive. Scarce, and refilled only at a dock. */
+  jumpFuel: number
   salvage: number
   /** Level 0..MAX_LEVEL per component. */
   levels: Record<Component, number>
@@ -44,9 +60,11 @@ export const UPGRADES: Record<Component, { label: string; effect: string; base: 
   engine: { label: 'ENGINE', effect: 'top speed', base: 120 },
   tanks: { label: 'TANKS', effect: 'fuel capacity', base: 100 },
   hull: { label: 'HULL', effect: 'integrity', base: 140 },
-  sensors: { label: 'SENSORS', effect: 'draw distance and lock cone', base: 110 },
+  shields: { label: 'SHIELDS', effect: 'buffer and recharge', base: 150 },
+  sensors: { label: 'SENSORS', effect: 'contact range and lock cone', base: 110 },
   laser: { label: 'LASER', effect: 'rate of fire', base: 160 },
   missiles: { label: 'PHOTON', effect: 'magazine', base: 180 },
+  drive: { label: 'JUMP DRIVE', effect: 'jump charges and spin-up', base: 200 },
 }
 
 /** Cost of the next level. Superlinear so late upgrades are a decision, not a formality. */
@@ -59,11 +77,34 @@ export function newShip(): Ship {
   return {
     fuel: fuelCapacity(0),
     hull: hullMax(0),
+    shield: shieldMax(0),
+    lastHitMs: -1e9,
+    jumpFuel: jumpCapacity(0),
     salvage: 0,
-    levels: { engine: 0, hull: 0, sensors: 0, laser: 0, missiles: 0, tanks: 0 },
+    levels: {
+      engine: 0, hull: 0, shields: 0, sensors: 0, laser: 0, missiles: 0, tanks: 0, drive: 0,
+    },
     scavenged: [],
     docked: null,
   }
+}
+
+export function shieldMax(shields: number): number {
+  return 40 + shields * 34
+}
+
+/** Shield points per second, once the lull has elapsed. */
+export function shieldRegen(shields: number): number {
+  return 6 + shields * 4
+}
+
+export function jumpCapacity(drive: number): number {
+  return 3 + drive
+}
+
+/** Milliseconds to spin the drive up. Faster with a better one, never instant. */
+export function jumpCharge(drive: number, base: number): number {
+  return Math.round(base * (1 - drive * 0.15))
 }
 
 export function fuelCapacity(tanks: number): number {
@@ -79,7 +120,14 @@ export function topSpeed(engine: number): number {
   return SPEED_SHIP + engine * SPEED_SHIP_PER_LEVEL
 }
 
-/** Multiplier on the sensor draw distance. */
+/**
+ * Multiplier on contact range — how far out the sensor panel resolves a hostile.
+ *
+ * No longer a multiplier on *draw* distance: the far plane covers the whole sector now, so a
+ * SENSORS upgrade buys information rather than visibility. Those were conflated while draw
+ * distance was gated by legibility, and the conflation was what put a wall of fog around a
+ * volume the entire design is about the size of.
+ */
 export function sensorGain(sensors: number): number {
   return 1 + sensors * 0.35
 }
@@ -116,8 +164,34 @@ export function hasFuel(ship: Ship): boolean {
   return ship.fuel > 0
 }
 
-export function damage(ship: Ship, amount: number): Ship {
-  return { ...ship, hull: Math.max(0, ship.hull - amount) }
+/**
+ * Take a hit: shields first, then hull.
+ *
+ * Overflow carries through in the same hit rather than being absorbed by a shield that had one
+ * point left — a shot that "breaks through" has to actually break through, or the last point of
+ * shield is worth a whole volley and players learn to fight at 1%.
+ */
+export function damage(ship: Ship, amount: number, nowMs: number): Ship {
+  const absorbed = Math.min(ship.shield, amount)
+  return {
+    ...ship,
+    shield: ship.shield - absorbed,
+    hull: Math.max(0, ship.hull - (amount - absorbed)),
+    lastHitMs: nowMs,
+  }
+}
+
+/** Regenerate shields, but only after a lull. Hull never regenerates — see the `Ship` note. */
+export function recharge(ship: Ship, seconds: number, nowMs: number): Ship {
+  if (nowMs - ship.lastHitMs < SHIELD_DELAY_MS) return ship
+  const max = shieldMax(ship.levels.shields)
+  if (ship.shield >= max) return ship
+  return { ...ship, shield: Math.min(max, ship.shield + shieldRegen(ship.levels.shields) * seconds) }
+}
+
+/** True while shields are down, which is what the HUD turns red about. */
+export function exposed(ship: Ship): boolean {
+  return ship.shield <= 0
 }
 
 export function destroyed(ship: Ship): boolean {
@@ -128,10 +202,23 @@ export function destroyed(ship: Ship): boolean {
 
 export type ServiceResult = { ship: Ship; message: string; ok: boolean }
 
-export function refuel(ship: Ship): ServiceResult {
+/**
+ * Refuel. Fills the main tanks and, at a dock, the jump drive too.
+ *
+ * A depot does thrust fuel only. Jump charges are the scarce resource and a sector has six
+ * times as many depots as docks, so where you can jump *from* is a real constraint on a route
+ * rather than a formality.
+ */
+export function refuel(ship: Ship, jump = false): ServiceResult {
   const cap = fuelCapacity(ship.levels.tanks)
-  if (ship.fuel >= cap) return { ship, message: 'tanks already full', ok: false }
-  return { ship: { ...ship, fuel: cap }, message: 'refuelled', ok: true }
+  const jcap = jumpCapacity(ship.levels.drive)
+  const wantsJump = jump && ship.jumpFuel < jcap
+  if (ship.fuel >= cap && !wantsJump) return { ship, message: 'tanks already full', ok: false }
+  return {
+    ship: { ...ship, fuel: cap, jumpFuel: wantsJump ? jcap : ship.jumpFuel },
+    message: wantsJump ? 'refuelled — jump drive charged' : 'refuelled',
+    ok: true,
+  }
 }
 
 export function repair(ship: Ship): ServiceResult {
@@ -182,12 +269,20 @@ export function buy(ship: Ship, c: Component): ServiceResult {
   // did nothing.
   if (c === 'tanks') upgraded.fuel = fuelCapacity(levels.tanks)
   if (c === 'hull') upgraded.hull = hullMax(levels.hull)
+  if (c === 'shields') upgraded.shield = shieldMax(levels.shields)
+  if (c === 'drive') upgraded.jumpFuel = jumpCapacity(levels.drive)
   return { ship: upgraded, message: `${UPGRADES[c].label} → level ${level + 1}`, ok: true }
 }
 
-/** Salvage for destroying a hostile. Flat: see the module note on what may not set a payout. */
+/**
+ * Salvage for destroying a hostile.
+ *
+ * The amount comes from the victim's **class** (`classes.ts`), never from anything the record
+ * reported about it — see the module note. `BOUNTY` remains as the default for a kill whose
+ * class is unknown, and as the unit the tests count in.
+ */
 export const BOUNTY = 25
 
-export function bounty(ship: Ship): Ship {
-  return { ...ship, salvage: ship.salvage + BOUNTY }
+export function bounty(ship: Ship, amount: number = BOUNTY): Ship {
+  return { ...ship, salvage: ship.salvage + amount }
 }

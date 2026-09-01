@@ -12,10 +12,12 @@
  */
 
 import { EXTENT, type Contact, type Node, type Space, type Vec3 } from './generate.ts'
+import { FAR_PLANE } from './scale.ts'
 import {
   R_CONTACT, R_CONTACT_SPAN, R_DEPOT, R_DERELICT, R_DOCK, R_LASER, R_MARKER, R_MARKET,
   R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
 } from './scale.ts'
+import type { ClassSpec, Shape } from './classes.ts'
 
 /**
  * Every role the renderer can draw. A role is a claim about what a thing *is*, not a colour.
@@ -41,6 +43,7 @@ export type Role =
   | 'enemy-shot'
   | 'raider'
   | 'waypoint'
+  | 'capital'
 
 /** RGB in 0..1, for a shader. One table, so a palette change moves every surface at once. */
 export const PALETTE: Record<Role, readonly [number, number, number]> = {
@@ -71,6 +74,9 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // A raider is not from the record. Orange rather than red keeps that visible from the
   // cockpit: red things are signals somebody reported, orange things are just out here.
   raider: [1.0, 0.55, 0.2],
+  // A capital is the same orange family, pushed toward bronze so it reads as a different
+  // *weight* of thing rather than a bigger fighter. Silhouette carries the rest.
+  capital: [1.0, 0.72, 0.34],
   // The nav computer's marker. Deliberately the brightest thing in the palette — it is the
   // only body on screen the player put there.
   waypoint: [0.6, 1.0, 0.85],
@@ -88,6 +94,23 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
 export function isGhost(role: Role): boolean {
   return role === 'ghost-hostile' || role === 'ghost-salvage'
 }
+
+/**
+ * The silhouette for a body. The **only** place a shape is chosen.
+ *
+ * Same arrangement as `PALETTE` and for the same reason: a renderer that decided the fast one
+ * was the small triangle would be a second home for the class table, and the two would drift.
+ */
+export function shapeOf(b: Body): Shape {
+  if (b.shape) return b.shape
+  if (b.role === 'laser' || b.role === 'photon' || b.role === 'enemy-shot') return 'bolt'
+  return b.solid ? 'sphere' : 'shell'
+}
+
+/** How faint a lane is drawn. See `Segment.alpha`. */
+export const LANE_ALPHA = 0.07
+/** A severed lane is a claim about a blind spot, so it gets a little more presence. */
+export const LANE_SEVERED_ALPHA = 0.14
 
 export function roleOfNode(n: Node): Role {
   return n.kind
@@ -110,25 +133,53 @@ export interface Body {
   /** False draws an outline instead of a filled body. */
   solid: boolean
   label: string
+  /**
+   * Which way it points. Absent for anything that has no facing — a station does not have one.
+   *
+   * Load-bearing for craft and for bolts. A wireframe hull with no facing is a shape with no
+   * information in it, and the whole reason ships are line models is that you can see which way
+   * an opponent is about to break.
+   */
+  facing?: Vec3
+  /**
+   * Hit flash, 0..1. Raised for a few frames after damage lands and decayed by the tick.
+   *
+   * This is the entirety of the game's feedback that a shot connected against a hull, and it is
+   * deliberately loud: a shooter where you cannot tell a hit from a miss is a shooter with no
+   * skill expression in it, however good the ballistics underneath are.
+   */
+  flash?: number
+  /** Silhouette. Defaults from the role; a craft overrides it from its class. */
+  shape?: Shape
 }
 
 export interface Segment {
   from: Vec3
   to: Vec3
   role: Role
+  /**
+   * How strongly to draw it, 0..1.
+   *
+   * Lanes are structure, not traffic. At a thousand nodes the lane mesh was a bright cage that
+   * hid everything inside it — the sector read as a diagram of itself rather than as a place —
+   * so lanes are drawn at the edge of visibility: present enough to follow a route deliberately,
+   * faint enough to disappear when you are not looking for one.
+   */
+  alpha: number
 }
 
 export interface DrawList {
   bodies: Body[]
   segments: Segment[]
   /**
-   * How far the renderer may draw, in world units. `null` when sensor range is unknown.
+   * How far the renderer may draw, in world units.
    *
-   * A renderer must not substitute a default here. Unknown range is a real state — nothing
-   * was perceived — and picking a number for it would tell the player the map is small when
-   * the truth is that nobody measured it.
+   * A constant now, covering the whole generated sector. It used to come from sensor range, and
+   * that conflated two different things: what the *record* knows and what the *window* shows. A
+   * record that perceived little should leave you flying blind to what is coming — which is
+   * `sensorFar`, on the sensor panel — not unable to see the space you are in.
    */
-  far: number | null
+  far: number
 }
 
 /** Radius for a node, from what it is. Stations are landmarks; markers barely register. */
@@ -162,12 +213,20 @@ function nodeRadius(role: Role): number {
  * where the eye is; this decides what exists and how each thing must look.
  */
 export interface Dynamic {
-  /** Player projectiles in flight. */
-  shots: { at: Vec3; kind: 'laser' | 'photon' }[]
+  /** Player projectiles in flight, with the direction they are travelling. */
+  shots: { at: Vec3; kind: 'laser' | 'photon'; dir: Vec3 }[]
   /** Enemy fire in flight. */
-  incoming: { at: Vec3 }[]
-  /** Live enemy craft, by contact id. */
-  craft: { id: string; at: Vec3; solid: boolean }[]
+  incoming: { at: Vec3; dir: Vec3 }[]
+  /** Live enemy craft, by contact id, with everything the renderer needs to draw a hull. */
+  craft: {
+    id: string
+    at: Vec3
+    solid: boolean
+    facing: Vec3
+    spec: ClassSpec
+    /** Hit flash, decayed by the tick. */
+    flash: number
+  }[]
   /** Contact ids destroyed, so they stop being drawn. */
   destroyed: string[]
   /** The nav computer's selected node, drawn as a ring you can steer at. */
@@ -210,11 +269,29 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     const role = roleOfContact(c)
     const live = craftAt.get(c.id)
     if (c.hostility === 'hostile' && dyn !== NOTHING && !live) continue
+    if (live) {
+      // An armed craft is drawn as its class: a wireframe hull, at the class's own size, facing
+      // where it is going. Magnitude does not size a craft — its class does — because a craft's
+      // size is now a claim about how dangerous it is, and that must never come from a number
+      // in the record.
+      bodies.push({
+        at: live.at,
+        role: live.spec.capital ? 'capital' : role,
+        radius: live.spec.radius,
+        solid: !isGhost(role),
+        label: `${live.spec.label} ${c.label}`,
+        facing: live.facing,
+        flash: live.flash,
+        shape: live.spec.shape,
+      })
+      continue
+    }
     bodies.push({
-      at: live ? live.at : c.at,
+      at: c.at,
       role,
-      // Magnitude drives size. Never damage, never yield — a signal's magnitude measures a
-      // concern, and turning it into a number that rewards would invite tuning the record.
+      // Magnitude drives size for an inert contact. Never damage, never yield — a signal's
+      // magnitude measures a concern, and turning it into a number that rewards would invite
+      // tuning the record.
       radius: R_CONTACT + Math.round(clamp01(c.magnitude) * R_CONTACT_SPAN),
       solid: !isGhost(role),
       label: c.label,
@@ -230,10 +307,18 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       radius: s.kind === 'photon' ? R_PHOTON : R_LASER,
       solid: true,
       label: s.kind,
+      facing: s.dir,
     })
   }
   for (const s of dyn.incoming) {
-    bodies.push({ at: s.at, role: 'enemy-shot', radius: R_LASER, solid: true, label: 'incoming' })
+    bodies.push({
+      at: s.at,
+      role: 'enemy-shot',
+      radius: R_LASER,
+      solid: true,
+      label: 'incoming',
+      facing: s.dir,
+    })
   }
 
   // The waypoint, drawn hollow: it marks a place, and a filled body would read as a thing.
@@ -252,29 +337,33 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     const a = byId.get(l.from)
     const b = byId.get(l.to)
     if (!a || !b) continue
-    segments.push({ from: a.at, to: b.at, role: l.severed ? 'lane-severed' : 'lane' })
+    segments.push({
+      from: a.at,
+      to: b.at,
+      role: l.severed ? 'lane-severed' : 'lane',
+      alpha: l.severed ? LANE_SEVERED_ALPHA : LANE_ALPHA,
+    })
   }
 
-  return {
-    bodies,
-    segments,
-    far: space.sensorRange === null ? null : sensorFar(space.sensorRange),
-  }
+  return { bodies, segments, far: FAR_PLANE }
 }
 
 /**
- * Draw distance from sensor range.
+ * Contact range from sensor legibility. **No longer the draw distance.**
  *
- * A floor, because a fully illegible world must still show the cockpit's immediate
- * surroundings — a black screen is indistinguishable from a broken renderer, and "the game did
- * not load" is the wrong lesson to teach about an unreadable world. The floor is small enough
- * that the darkness is unmistakably the point.
+ * Legibility used to gate how far the renderer drew, and the result was a wall of fog around a
+ * volume the whole design is about the size of — you could not see the sector you were flying
+ * in, which made "expansive" arrive as "empty". The far plane is now a constant that clears the
+ * entire generated space (`FAR_PLANE`), and legibility expresses itself where it belongs: in how
+ * far out the *sensor panel* resolves a hostile. A poorly-perceived world is one you fly through
+ * blind to what is coming, not one you fly through unable to see.
+ *
+ * The floor stays, for the same reason it always did: an unperceived world must still tell you
+ * something about your immediate surroundings, or "the game did not load" becomes the lesson.
  */
 export function sensorFar(range: number): number {
-  // Scaled to the sector, not to a constant: these were tuned when a world was 4,000 units
-  // across and would have drawn a 60x larger sector as a wall of fog.
-  const MIN = Math.round(EXTENT * 0.06)
-  const MAX = Math.round(EXTENT * 1.15)
+  const MIN = Math.round(EXTENT * 0.05)
+  const MAX = Math.round(EXTENT * 0.45)
   return Math.round(MIN + (MAX - MIN) * Math.max(0, Math.min(1, range)))
 }
 

@@ -25,7 +25,7 @@ import { canonicalBytes, parseCanonical, toFixed, toHex } from '../lib/omni/cano
 import { verifyRecordText } from '../lib/omni/verify.ts'
 import { cell, abstentionHeadline } from '../lib/omni/view.ts'
 import { renderFractal, renderFractalPng, growthOf, plannedCuts } from '../lib/omni/fractal.ts'
-import { readWorldCommitment } from '../lib/omni/raster.ts'
+import { readWorldCommitment, readEmbeddedRecord, embedRecord } from '../lib/omni/raster.ts'
 import {
   arcPath,
   base64,
@@ -599,6 +599,89 @@ await check('a zero seed does not collapse the rng', () => {
   const b = renderFractal(plateWorld, '00000001')
   assert(a !== b, 'a zero seed must not be a special case')
 })
+
+// ── a record that travels inside its own picture ─────────────────────────────
+
+check('a record embedded in a PNG comes back byte for byte', () => {
+  // The whole point, and the one thing that must not be approximate. A record that came back
+  // altered would verify as *tampered* — a verifier crying tamper on an honest round trip is
+  // the failure that teaches a reader to stop believing it.
+  const { world, digest, recordText } = fixture()
+  const embedded = embedRecord(renderFractalPng(world, digest, 64), recordText)
+  assert(readEmbeddedRecord(embedded) === recordText, 'the record did not survive the round trip')
+})
+
+check('an embedded record survives characters `tEXt` could not carry', () => {
+  // A record carries labels lifted from whatever was observed — file paths, page titles, feed
+  // names. `tEXt` is Latin-1 and one byte above U+00FF in any of them would corrupt the record
+  // on the way in, which is why this is an `iTXt` chunk.
+  const { world, digest } = fixture()
+  const awkward = JSON.stringify({ label: 'café · 世界 · Ω', zero: 0.0 })
+  const png = embedRecord(renderFractalPng(world, digest, 64), awkward)
+  assert(readEmbeddedRecord(png) === awkward, 'a non-Latin-1 record was mangled')
+})
+
+check('embedding changes nothing else about the image', () => {
+  // The parity fixtures pin the raster. Embedding is a post-pass precisely so they keep pinning
+  // the raster rather than the raster plus whatever a caller attached.
+  const { world, digest, recordText } = fixture()
+  const png = renderFractalPng(world, digest, 64)
+  const embedded = embedRecord(png, recordText)
+  assert(readWorldCommitment(embedded) === digest, 'the commitment chunk was disturbed')
+  assert(embedded.length > png.length, 'nothing was added')
+  // Every original byte is still present in order, either side of the inserted chunk.
+  const idat = indexOfChunk(png, 'IDAT')
+  const idat2 = indexOfChunk(embedded, 'IDAT')
+  assert(idat2 > idat, 'the record was not inserted before the pixels')
+  assert(
+    png.slice(idat).every((b, i) => b === embedded[idat2 + i]),
+    'the pixel data changed',
+  )
+})
+
+check('a PNG with no record reports none rather than empty', () => {
+  // "There is no record in this image" and "this image carries an empty record" are different
+  // facts, and only one of them is worth showing somebody a space for.
+  const { world, digest } = fixture()
+  assert(readEmbeddedRecord(renderFractalPng(world, digest, 64)) === null)
+  assert(readEmbeddedRecord(new Uint8Array([1, 2, 3])) === null, 'junk was read as a record')
+})
+
+check('embedding is deterministic, exactly as the pixels are', () => {
+  const { world, digest, recordText } = fixture()
+  const png = renderFractalPng(world, digest, 64)
+  const a = embedRecord(png, recordText)
+  const b = embedRecord(png, recordText)
+  assert(a.every((v, i) => v === b[i]), 'two embeds of one record differ')
+})
+
+check('an image that is not a PNG comes back unharmed', () => {
+  // Never produce a broken PNG from a bad input; hand the input back.
+  const junk = new Uint8Array([1, 2, 3, 4])
+  assert(embedRecord(junk, '{}') === junk, 'a non-PNG was rewritten')
+})
+
+/** The parity world, its digest, and a record-shaped document to embed. */
+function fixture() {
+  return {
+    world: JSON.parse(readFileSync(join(nftDir, 'parity-world.json'), 'utf8')),
+    digest: readFileSync(join(nftDir, 'parity-digest.txt'), 'utf8').trim(),
+    recordText: readFileSync(join(here, '..', 'lib', 'omni', 'fixtures', 'record.json'), 'utf8'),
+  }
+}
+
+/** Byte offset of a chunk's length field, by name. */
+function indexOfChunk(png, name) {
+  let off = 8
+  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength)
+  while (off + 8 <= png.length) {
+    const len = dv.getUint32(off)
+    const kind = String.fromCharCode(...png.slice(off + 4, off + 8))
+    if (kind === name) return off
+    off += 12 + len
+  }
+  return -1
+}
 
 console.log(`\n${checks - failures}/${checks} checks passed`)
 if (failures > 0) process.exit(1)

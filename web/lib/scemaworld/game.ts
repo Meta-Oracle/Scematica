@@ -21,9 +21,14 @@ import * as Ship from './ship.ts'
 import type { Ship as ShipState } from './ship.ts'
 import { forward, rotate, translate, type Camera } from './camera.ts'
 
-import { DOCK_RANGE, SPEED_THRUST } from './scale.ts'
+import { DOCK_RANGE, JUMP_INHIBIT, SPEED_THRUST } from './scale.ts'
+import * as Hyper from './hyper.ts'
+import { CLASSES } from './classes.ts'
 
 export { DOCK_RANGE }
+
+/** How fast a hit flash decays, in units per second. Two or three frames of white. */
+const FLASH_DECAY = 5.5
 
 /** Held keys, by `KeyboardEvent.code`. */
 export type Keys = ReadonlySet<string>
@@ -45,6 +50,20 @@ export interface GameState {
   nearby: Node | null
   /** The nav computer's selected node id, or null. Set by `route`. */
   waypoint: number | null
+  /** The jump drive. See `hyper.ts` for why it costs what it costs. */
+  drive: Hyper.Drive
+  /**
+   * The player's world velocity this tick, so enemies can lead their shots.
+   *
+   * Kept on the state rather than recomputed, because the camera is a position and an
+   * orientation — there is nowhere else the velocity exists, and passing zero would make every
+   * enemy shot aim at where the player *was*, which is a silent way to make the game trivial.
+   */
+  velocity: Vec3
+  /** Hit flash per craft id, 0..1, decayed each tick. The game's whole "you hit it" feedback. */
+  flashes: Record<string, number>
+  /** Raised when the player takes damage, so the HUD can shake and redden. */
+  shake: number
   /** Transient line for the HUD — a hit, a refuel, a refusal. */
   notice: string | null
   /** True once the hull is gone. The sector keeps rendering; you just cannot act. */
@@ -62,6 +81,10 @@ export function newGame(space: Space): GameState {
     swarm: Enemy.swarmOf([...space.contacts, ...space.raiders], space.seed),
     nearby: null,
     waypoint: null,
+    drive: Hyper.IDLE,
+    velocity: { x: 0, y: 0, z: 0 },
+    flashes: {},
+    shake: 0,
     notice: null,
     lost: false,
   }
@@ -107,6 +130,7 @@ export interface TickInput {
 export function tick(state: GameState, space: Space, input: TickInput): GameState {
   const { keys, firing, dt, nowMs } = input
   if (state.lost) return state
+  const was = state.camera.position
 
   // ── attitude ───────────────────────────────────────────────────────────────
   const rate = 1.4 * dt
@@ -143,16 +167,53 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     camera = translate(camera, [strafe * t, lift * t, 0])
   }
 
+  // ── the jump drive ─────────────────────────────────────────────────────────
+  // Resolved before weapons so a jump that lands this frame puts the ship at its destination
+  // before anything is aimed from it — otherwise the first frame after arrival fires from the
+  // old position, which reads as a shot coming out of nowhere.
+  const threat = Enemy.nearestThreat(state.swarm, v3(camera.position))
+  const waypointNode =
+    state.waypoint === null ? null : (space.nodes.find((n) => n.id === state.waypoint) ?? null)
+  const jump = Hyper.advance(
+    state.drive,
+    {
+      threat: threat ? threat.range : null,
+      charges: ship.jumpFuel,
+      driveLevel: ship.levels.drive,
+      waypoint: state.waypoint,
+    },
+    waypointNode,
+    keys.has('KeyJ'),
+    dt,
+  )
+  if (jump.arriveAt) {
+    camera = { ...camera, position: [jump.arriveAt.x, jump.arriveAt.y, jump.arriveAt.z] }
+    // Arriving at rest. A jump that preserved momentum would drop you into a station at a
+    // tenth of the sector per second, which is a collision the game has no answer for.
+    throttle = 0
+  }
+  if (jump.spent) ship = { ...ship, jumpFuel: ship.jumpFuel - 1 }
+  if (jump.notice) notice = jump.notice
+
   const at = v3(camera.position)
   const nose = v3(forward(camera))
+  // What the ship actually did this tick, including a jump. Enemies lead off this.
+  const velocity: Vec3 = jump.arriveAt
+    ? { x: 0, y: 0, z: 0 }
+    : {
+        x: (camera.position[0] - was[0]) / Math.max(dt, 1e-6),
+        y: (camera.position[1] - was[1]) / Math.max(dt, 1e-6),
+        z: (camera.position[2] - was[2]) / Math.max(dt, 1e-6),
+      }
 
   // ── the player's weapons ───────────────────────────────────────────────────
   let combat = state.combat
   const alive = Enemy.living(state.swarm)
-  const targets = [...space.contacts, ...space.raiders].filter((c) => {
-    if (c.hostility !== 'hostile') return !combat.destroyed.includes(c.id)
-    return alive.some((k) => k.id === c.id)
-  })
+  // Only live hostiles. Weapons no longer adjudicates death — it reports damage and the swarm
+  // decides — so an inert salvage contact in this list would produce hits that nothing consumes.
+  const targets = [...space.contacts, ...space.raiders].filter(
+    (c) => c.hostility === 'hostile' && alive.some((k) => k.id === c.id),
+  )
   // Hostiles have moved, so aim at where they are rather than where the record put them.
   const moved = targets.map((c) => {
     const k = alive.find((x) => x.id === c.id)
@@ -163,23 +224,44 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   const advanced = Weapons.step(combat, dt, moved, space.seed)
   combat = advanced.combat
 
+  // Flashes decay every tick and are re-lit by a hit. Decaying first means a hit landing this
+  // frame is at full brightness rather than one frame stale.
+  const flashes: Record<string, number> = {}
+  for (const [id, v] of Object.entries(state.flashes)) {
+    const next = v - FLASH_DECAY * dt
+    if (next > 0) flashes[id] = next
+  }
+
   let swarm = state.swarm
   for (const h of advanced.hits) {
-    const res = Enemy.hit(swarm, h.contact)
+    const res = Enemy.hit(swarm, h.contact, h.damage, nowMs)
     swarm = res.swarm
+    // A hit on hull flashes harder than one soaked by a shield. That is the only cue telling a
+    // player whether they are making progress or wasting rounds on a buffer, and without it a
+    // heavily-shielded gunship reads as invulnerable.
+    flashes[h.contact] = res.throughShield ? 1 : 0.45
     if (res.killed) {
-      ship = Ship.bounty(ship)
-      notice = `destroyed — +${Ship.BOUNTY} salvage`
+      ship = Ship.bounty(ship, res.bounty)
+      // `combat.destroyed` is what stops it being drawn. Written here rather than in
+      // `weapons.ts` for the same reason the damage is: one authority over one fact.
+      combat = { ...combat, destroyed: [...combat.destroyed, h.contact] }
+      notice = `destroyed — +${res.bounty} salvage`
     }
   }
 
   // ── the enemy's turn ───────────────────────────────────────────────────────
-  const enemyStep = Enemy.step(swarm, at, dt, nowMs, space.seed)
+  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs)
   swarm = enemyStep.swarm
+  let shake = Math.max(0, state.shake - dt * 2.2)
   if (enemyStep.damage > 0) {
-    ship = Ship.damage(ship, enemyStep.damage)
-    notice = 'taking fire'
+    const before = ship.hull
+    ship = Ship.damage(ship, enemyStep.damage, nowMs)
+    // The screen kicks harder when the hit reached hull. Same reasoning as the enemy flash:
+    // shields absorbing and hull being opened must not feel identical.
+    shake = Math.min(1, shake + (ship.hull < before ? 0.85 : 0.35))
+    notice = ship.hull < before ? 'HULL BREACHED' : 'shields holding'
   }
+  ship = Ship.recharge(ship, dt, nowMs)
 
   const nearby = nearestService(space, at)
 
@@ -191,6 +273,10 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     swarm,
     nearby,
     waypoint: state.waypoint,
+    drive: jump.drive,
+    velocity,
+    flashes,
+    shake,
     notice: notice ?? state.notice,
     lost: Ship.destroyed(ship),
   }
@@ -216,7 +302,9 @@ export function useService(
   }
   const res =
     service === 'refuel'
-      ? Ship.refuel(state.ship)
+      ? // A dock charges the jump drive too; a depot does thrust fuel only. Six times as many
+        // depots as docks is what makes a jump charge worth planning around.
+        Ship.refuel(state.ship, node.kind === 'dock')
       : service === 'repair'
         ? Ship.repair(state.ship)
         : service === 'scavenge'
@@ -268,10 +356,47 @@ export function dynamicOf(state: GameState, space?: Space) {
       ? (space.nodes.find((n) => n.id === state.waypoint)?.at ?? null)
       : null
   return {
-    shots: state.combat.projectiles.map((p) => ({ at: p.at, kind: p.kind })),
-    incoming: state.swarm.shots.map((s) => ({ at: s.at })),
-    craft: Enemy.living(state.swarm).map((c) => ({ id: c.id, at: c.at, solid: c.solid })),
+    shots: state.combat.projectiles.map((p) => ({ at: p.at, kind: p.kind, dir: p.dir })),
+    incoming: state.swarm.shots.map((s) => ({ at: s.at, dir: s.dir })),
+    craft: Enemy.living(state.swarm).map((c) => ({
+      id: c.id,
+      at: c.at,
+      solid: c.solid,
+      facing: c.facing,
+      spec: c.spec,
+      flash: state.flashes[c.id] ?? 0,
+    })),
     destroyed: state.combat.destroyed,
     waypoint: wp,
   }
+}
+
+/**
+ * Whether the jump drive would refuse right now, and why. For the HUD.
+ *
+ * Reported rather than merely enforced: a drive that silently does nothing is indistinguishable
+ * from a broken key, and "jump inhibited — hostiles in range" is the sentence that teaches the
+ * player the mechanic exists at all.
+ */
+export function jumpRefusal(state: GameState): string | null {
+  const threat = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  return Hyper.refusal({
+    threat: threat ? threat.range : null,
+    charges: state.ship.jumpFuel,
+    driveLevel: state.ship.levels.drive,
+    waypoint: state.waypoint,
+  })
+}
+
+/** How far the nearest hostile is, and what it is. `null` when sensors are clear. */
+export function contact(state: GameState) {
+  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  if (!t) return null
+  return { spec: t.craft.spec, range: t.range, behaviour: t.craft.behaviour, id: t.craft.id }
+}
+
+/** True while a hostile is close enough to inhibit the jump drive. */
+export function inhibited(state: GameState): boolean {
+  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  return t !== null && t.range < JUMP_INHIBIT
 }

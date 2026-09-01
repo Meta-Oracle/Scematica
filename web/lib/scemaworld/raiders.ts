@@ -46,13 +46,21 @@ import { Rng } from '../omni/fractal.ts'
 import { AGGRO_RANGE, EXTENT } from './scale.ts'
 
 /**
- * How many raiders a sector carries. A constant, not a rate — see the module note.
+ * How many raiders a sector carries, and how they are arranged.
  *
- * Forty over a volume this size works out to one every few seconds of travel along a busy
- * axis and long stretches of nothing elsewhere, which is the density that makes the emptiness
- * read as distance rather than as absence.
+ * A constant, not a rate — see the module note.
+ *
+ * **They come in wings.** Scattered uniformly, sixty craft in a volume this size sit two
+ * hundred million units apart, which means you essentially never meet one: the sector reads as
+ * empty and the entire combat system goes unused. Clustering fixes both halves at once — long
+ * genuinely empty stretches, and then a *wing*, which is an encounter rather than a loner.
+ *
+ * It is also the better fight. Four craft of mixed classes arrive with different turn rates and
+ * different standoffs, so the engagement has a shape: the interceptors are on you first and the
+ * gunship arrives late and hits far harder.
  */
-const RAIDERS = 40
+const WINGS = 18
+const PER_WING = 4
 
 /**
  * Place the sector's raiders.
@@ -70,36 +78,44 @@ export function raidersOf(seed: string): Contact[] {
   const rng = new Rng(seed.slice(8, 16) || seed)
   const out: Contact[] = []
 
-  for (let i = 0; i < RAIDERS; i += 1) {
+  for (let w = 0; w < WINGS; w += 1) {
     // A cube rather than a sphere: the fractal fills a boxy volume, so a sphere would leave the
     // corners — where the longest branches end — unpopulated.
     const span = EXTENT * 2
-    let at = {
+    let anchor = {
       x: rng.below(span) - EXTENT,
       y: Math.trunc((rng.below(span) - EXTENT) * 0.7),
       z: rng.below(span) - EXTENT,
     }
     // Never within sensor range of the spawn point. Opening the game already inside an
     // engagement reads as the game being broken before you have touched a control.
-    while (Math.hypot(at.x, at.y, at.z) < AGGRO_RANGE * 1.5) {
-      at = { x: at.x * 2, y: at.y * 2, z: at.z * 2 + AGGRO_RANGE * 2 }
+    while (Math.hypot(anchor.x, anchor.y, anchor.z) < AGGRO_RANGE * 2) {
+      anchor = { x: anchor.x * 2, y: anchor.y * 2, z: anchor.z * 2 + AGGRO_RANGE * 2 }
     }
 
-    // Magnitude here drives size and hit radius only, exactly as it does for a contact, and it
-    // comes from the seed rather than from any reported figure. See `weapons.ts` on why a
-    // reported magnitude may never become a hit-point pool.
-    const magnitude = 0.25 + rng.below(60) / 100
-
-    out.push({
-      id: `raider:${i}`,
-      at,
-      hostility: 'hostile',
-      // Solid: the sector knows these are there. A raider is not an estimate.
-      solid: true,
-      magnitude,
-      label: 'RAIDER',
-      unlogged: true,
-    })
+    // Spread inside a wing is a fraction of engagement range, so it arrives together rather
+    // than trickling in one craft at a time.
+    const spread = Math.round(AGGRO_RANGE * 0.3)
+    for (let i = 0; i < PER_WING; i += 1) {
+      // Magnitude drives size and hit radius only, exactly as it does for a contact, and comes
+      // from the seed rather than any reported figure. See `weapons.ts` on why a reported
+      // magnitude may never become a hit-point pool.
+      const magnitude = 0.25 + rng.below(60) / 100
+      out.push({
+        id: `raider:${w}:${i}`,
+        at: {
+          x: anchor.x + rng.below(spread * 2) - spread,
+          y: anchor.y + rng.below(spread * 2) - spread,
+          z: anchor.z + rng.below(spread * 2) - spread,
+        },
+        hostility: 'hostile',
+        // Solid: the sector knows these are there. A raider is not an estimate.
+        solid: true,
+        magnitude,
+        label: 'RAIDER',
+        unlogged: true,
+      })
+    }
   }
   return out
 }

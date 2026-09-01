@@ -17,22 +17,29 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { verifyRecordText, webSha256, type Verification } from '@/lib/omni/verify'
 import { plateSourceFromText } from '@/lib/omni/nft'
-import { readWorldCommitment } from '@/lib/omni/raster'
+import { readWorldCommitment, readEmbeddedRecord } from '@/lib/omni/raster'
 import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld/vault'
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
-  dynamicOf, newGame, purchase, route, tick, useService, type GameState,
+  contact as nearestContact, dynamicOf, inhibited, jumpRefusal, newGame, purchase, route, tick,
+  useService, type GameState,
 } from '@/lib/scemaworld/game'
+import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
 import { bearingLabel, fixOn, nearest, rangeLabel } from '@/lib/scemaworld/nav'
-import { MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, upgradeCost, type Component } from '@/lib/scemaworld/ship'
+import {
+  MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, jumpCapacity, shieldMax, upgradeCost,
+  type Component,
+} from '@/lib/scemaworld/ship'
 import { EXTENT, servicesOf } from '@/lib/scemaworld/generate'
-import { NEAR_PLANE } from '@/lib/scemaworld/scale'
+import { FAR_PLANE, JUMP_INHIBIT, NEAR_PLANE } from '@/lib/scemaworld/scale'
+import { fuelCapacity as _fc } from '@/lib/scemaworld/ship'
 import {
   camera as makeCamera,
   forward,
   mul,
   perspective,
+  viewRotation,
   rotate,
   translate,
   view,
@@ -120,16 +127,32 @@ export function ScemaWorldTerminal() {
     [vault, holder],
   )
 
+  const flyRecordText = useCallback(async (text: string, name: string) => {
+    const verification = await verifyRecordText(text, webSha256)
+    // Drawn from the raw text for the same reason the digest is: a `JSON.parse` round trip
+    // collapses Rust's `0.0` to `0` and would change the commitment the space is seeded by.
+    const source = await plateSourceFromText(text, webSha256)
+    setLoaded({ name, space: generate(source.world, source.digest), verification })
+  }, [])
+
   const load = useCallback(async (file: File) => {
     setError(null)
     setTicket(null)
     try {
-      // A PNG is a *claim ticket*, not a map. The image names the world it derives from in a
-      // `tEXt` chunk, but it does not contain the world — the space needs the objects, the
-      // signals and the blind spots, and none of those survive rasterisation. So a PNG tells
-      // you which record to go and get; it cannot stand in for one.
       if (file.name.toLowerCase().endsWith('.png') || file.type === 'image/png') {
         const bytes = new Uint8Array(await file.arrayBuffer())
+        // An image written by `scema nft <record>` carries the record itself, so it flies
+        // with no vault and no network. Read from the raw chunk bytes and handed straight to
+        // the same verifier a dropped `.json` goes through — an embedded record gets no more
+        // trust than a file, because the image is not a signature.
+        const embedded = readEmbeddedRecord(bytes)
+        if (embedded) {
+          await flyRecordText(embedded, file.name)
+          return
+        }
+        // Otherwise the image only *names* a world. That is still useful — it is a claim
+        // ticket for a vault — but the space needs the objects, the signals and the blind
+        // spots, and none of those survive rasterisation.
         const commitment = readWorldCommitment(bytes)
         setLoaded(null)
         if (!commitment) {
@@ -143,17 +166,12 @@ export function ScemaWorldTerminal() {
         return
       }
       const text = await file.text()
-      const verification = await verifyRecordText(text, webSha256)
-      // Drawn from the raw text for the same reason the digest is: a `JSON.parse` round trip
-      // collapses Rust's `0.0` to `0` and would change the commitment the space is seeded by.
-      const source = await plateSourceFromText(text, webSha256)
-      const space = generate(source.world, source.digest)
-      setLoaded({ name: file.name, space, verification })
+      await flyRecordText(text, file.name)
     } catch (e) {
       setLoaded(null)
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [flyRecordText])
 
   // Renderer lifecycle.
   useEffect(() => {
@@ -167,7 +185,9 @@ export function ScemaWorldTerminal() {
       return
     }
     const r = renderer.current
-    const list = drawList(loaded.space)
+    // The sky is a function of the commitment, so it is built once per world rather than per
+    // frame — and two players holding the same record see the same stars.
+    r.sky(loaded.space.seed)
     game.current = newGame(loaded.space)
     setHud(game.current)
 
@@ -201,9 +221,10 @@ export function ScemaWorldTerminal() {
       const live = game.current
       if (live) {
         r.upload(drawList(loaded.space, dynamicOf(live, loaded.space)))
-        const far = list.far ?? EXTENT * 1.2
-        const proj = perspective(1.15, w / Math.max(1, h), NEAR_PLANE, far)
-        r.draw(mul(proj, view(live.camera)), w, h)
+        // The far plane covers the whole generated sector. It used to be gated by sensor range,
+        // which put a wall of fog around a volume the entire design is about the size of.
+        const proj = perspective(1.15, w / Math.max(1, h), NEAR_PLANE, FAR_PLANE)
+        r.draw(mul(proj, view(live.camera)), viewRotation(live.camera), w, h)
       }
 
       raf = requestAnimationFrame(frame)
@@ -424,9 +445,9 @@ export function ScemaWorldTerminal() {
               alarm={!!hud && hud.ship.fuel <= 0}
             />
             <Row
-              k="hull"
-              v={hud ? `${Math.round(hud.ship.hull)}/${hullMax(hud.ship.levels.hull)}` : '—'}
-              alarm={!!hud && hud.ship.hull < hullMax(hud.ship.levels.hull) * 0.3}
+              k="jump"
+              v={hud ? `${hud.ship.jumpFuel}/${jumpCapacity(hud.ship.levels.drive)}` : '—'}
+              alarm={!!hud && hud.ship.jumpFuel <= 0}
             />
             <Row k="salvage" v={hud ? String(hud.ship.salvage) : '—'} />
             <Row k="weapon" v={weapon} />
@@ -436,6 +457,66 @@ export function ScemaWorldTerminal() {
             />
             <Row k="destroyed" v={hud ? String(hud.combat.destroyed.length) : '—'} />
           </div>
+
+          {/*
+            Shields over hull, both as bars rather than fractions.
+            A number is read; a bar is *seen*, and in a fight there is no time to read. The two
+            are stacked in that order and coloured differently because they mean different
+            things: the shield is a buffer that comes back, the hull is health that does not,
+            and a player who cannot tell at a glance which one is being eaten cannot decide
+            whether to press or break off — which is the only decision combat here is about.
+          */}
+          {hud && flying && (
+            <div className="pointer-events-none absolute bottom-6 left-1/2 w-72 -translate-x-1/2 space-y-1 font-mono text-[11px]">
+              <Gauge
+                label="SHIELD"
+                value={hud.ship.shield}
+                max={shieldMax(hud.ship.levels.shields)}
+                tone={hud.ship.shield <= 0 ? 'down' : 'shield'}
+              />
+              <Gauge
+                label="HULL"
+                value={hud.ship.hull}
+                max={hullMax(hud.ship.levels.hull)}
+                tone={hud.ship.hull < hullMax(hud.ship.levels.hull) * 0.3 ? 'down' : 'hull'}
+              />
+              {(() => {
+                const charge = jumpProgress(hud.drive, hud.ship.levels.drive)
+                if (hud.drive.phase === 'idle' && charge === 0) return null
+                return (
+                  <Gauge
+                    label={hud.drive.phase === 'inhibited' ? 'JUMP INHIBITED' : 'JUMP'}
+                    value={hud.drive.phase === 'inhibited' ? 1 : charge}
+                    max={1}
+                    tone={hud.drive.phase === 'inhibited' ? 'down' : 'jump'}
+                  />
+                )
+              })()}
+            </div>
+          )}
+
+          {/*
+            The sensor readout. A ghost's threat still reads an em dash while it is shooting at
+            you — the pressure to put a number there is strongest exactly here, and inventing one
+            is what the whole project exists not to do.
+          */}
+          {hud && flying && nearestContact(hud) && (
+            <div className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 text-right font-mono text-[11px]">
+              {(() => {
+                const c = nearestContact(hud)!
+                return (
+                  <>
+                    <div className="text-omni-dim">NEAREST</div>
+                    <div className={c.range < JUMP_INHIBIT ? 'text-omni-invalid' : 'text-omni-text'}>
+                      {c.spec.label}
+                    </div>
+                    <div className="text-omni-dim">{rangeLabel(c.range)}</div>
+                    <div className="text-omni-dim">{c.behaviour.toUpperCase()}</div>
+                  </>
+                )
+              })()}
+            </div>
+          )}
 
           {!flying && (
             <div className="pointer-events-none absolute inset-x-0 bottom-8 text-center font-mono text-xs text-omni-dim">
@@ -449,6 +530,10 @@ export function ScemaWorldTerminal() {
               </div>
               <div className="mt-1">
                 1 route to fuel · 2 repair · 3 market · 4 salvage · 0 clear waypoint
+              </div>
+              <div className="mt-1 text-omni-accent">
+                HOLD J to jump to the waypoint — the drive will not spin up with hostiles in
+                range
               </div>
               <div className="mt-1">click the view to begin</div>
             </div>
@@ -518,6 +603,22 @@ export function ScemaWorldTerminal() {
               </>
             )}
           </div>
+
+          {/*
+            A damage vignette rather than a camera shake. Shaking the *canvas* would move the
+            crosshair, which punishes the player twice for one hit — being shot should feel
+            violent, not make aiming unfair.
+          */}
+          {hud && hud.shake > 0.02 && (
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                boxShadow: `inset 0 0 ${Math.round(60 + hud.shake * 140)}px rgba(255,60,60,${(
+                  hud.shake * 0.55
+                ).toFixed(3)})`,
+              }}
+            />
+          )}
 
           {hud?.notice && (
             <div className="pointer-events-none absolute inset-x-0 top-24 text-center font-mono text-xs text-omni-accent">
@@ -621,6 +722,44 @@ export function ScemaWorldTerminal() {
 /** Raiders still flying, for the sensor line. Counts the swarm, not the record. */
 function livingRaiders(g: GameState): number {
   return g.swarm.craft.filter((c) => c.alive && c.id.startsWith('raider:')).length
+}
+
+/**
+ * One HUD bar.
+ *
+ * The bar is the message and the number is the footnote, which is the opposite of the rest of
+ * this project's readouts — and correct here, because the reader is being shot at. `tone` names
+ * a role and `globals.css` owns the colour, same rule as everywhere else.
+ */
+function Gauge({
+  label,
+  value,
+  max,
+  tone,
+}: {
+  label: string
+  value: number
+  max: number
+  tone: 'hull' | 'shield' | 'jump' | 'down'
+}) {
+  const pct = max <= 0 ? 0 : Math.max(0, Math.min(1, value / max))
+  const colour = {
+    hull: 'bg-omni-accent',
+    shield: 'bg-omni-valid',
+    jump: 'bg-omni-text',
+    down: 'bg-omni-invalid',
+  }[tone]
+  return (
+    <div>
+      <div className="flex justify-between text-omni-dim">
+        <span>{label}</span>
+        <span>{max === 1 ? `${Math.round(pct * 100)}%` : `${Math.round(value)}/${Math.round(max)}`}</span>
+      </div>
+      <div className="h-1.5 w-full bg-omni-border">
+        <div className={`h-full ${colour}`} style={{ width: `${pct * 100}%` }} />
+      </div>
+    </div>
+  )
 }
 
 function truncate(sIn: string, n: number): string {

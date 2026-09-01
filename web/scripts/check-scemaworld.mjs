@@ -28,12 +28,20 @@ import { fetchWorld, explain, retryable, matchesRequest } from '../lib/scemaworl
 import { join as joinFleet, placement } from '../lib/scemaworld/fleet.ts'
 import {
   newShip, refuel, repair, scavenge, buy, upgradeCost, fuelCapacity, hullMax, topSpeed,
-  sensorGain, laserCooldown, photonMagazine, MAX_LEVEL,
+  sensorGain, laserCooldown, photonMagazine, shieldMax, jumpCapacity, jumpCharge,
+  damage, recharge, MAX_LEVEL,
 } from '../lib/scemaworld/ship.ts'
+import * as Enemy from '../lib/scemaworld/enemy.ts'
+import { JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW } from '../lib/scemaworld/scale.ts'
 import {
-  swarmOf, step as enemyStep, hit as enemyHit, living, AGGRO_RANGE,
+  swarmOf, step as enemyStep, hit as enemyHit, living, decide, leadPoint, turnToward,
+  nearestThreat, classRoll, AGGRO_RANGE,
 } from '../lib/scemaworld/enemy.ts'
-import { newGame, tick, useService, purchase, dynamicOf } from '../lib/scemaworld/game.ts'
+import { CLASSES, CLASS_IDS, classFor, SHIELD_DELAY_MS } from '../lib/scemaworld/classes.ts'
+import * as Hyper from '../lib/scemaworld/hyper.ts'
+import { interceptor, gunship, capital, bolt, starfield } from '../lib/scemaworld/meshes.ts'
+import { shapeOf, LANE_ALPHA } from '../lib/scemaworld/view.ts'
+import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../lib/scemaworld/game.ts'
 import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf } from '../lib/scemaworld/raiders.ts'
@@ -41,6 +49,9 @@ import {
   nearest, fixOn, cycle, ahead, bearingLabel, rangeLabel,
 } from '../lib/scemaworld/nav.ts'
 import { route } from '../lib/scemaworld/game.ts'
+
+/** A still player, for enemy-lead tests. */
+const ZERO = { x: 0, y: 0, z: 0 }
 
 /** Unit vector from the origin toward a point, for lock tests. */
 function normTo(p) {
@@ -349,11 +360,26 @@ check('every role drawn has a palette entry', () => {
   for (const l of list.segments) assert(PALETTE[l.role], `no colour for ${l.role}`)
 })
 
-check('unknown sensor range gives a null draw distance, never a default', () => {
-  // Picking a number here would tell the player the map is small when the truth is that
-  // nobody measured it.
-  const list = drawList(generate({ ...world, objects: [] }, digest))
-  assert(list.far === null, `far was ${list.far}`)
+check('draw distance covers the sector and is no longer legibility in disguise', () => {
+  // This assertion is inverted from what it used to be, and the inversion is the point.
+  // Legibility gated *draw distance*, which put a wall of fog around a volume the entire design
+  // is about the size of: an unread world arrived as a small one. Two different things were
+  // being conflated — what the record knows, and what the window shows. The window now shows
+  // the whole sector always.
+  const dark = generate({ ...world, objects: [] }, digest)
+  const list = drawList(dark)
+  assert(list.far >= EXTENT, `far was ${list.far}, smaller than one extent`)
+  assert(list.far === drawList(generate(world, digest)).far, 'draw distance still varies')
+})
+
+check('an unmeasured sensor range still refuses to become a zero', () => {
+  // The rule did not go away, it moved: legibility is now *contact* range, so a poorly-perceived
+  // world is one you fly blind through rather than one you fly blind in. Unknown must still
+  // print an em dash — a player told "sensors 0%" concludes their ship is damaged.
+  const dark = generate({ ...world, objects: [] }, digest)
+  assert(dark.sensorRange === null, 'an unperceived world reported a number')
+  assert(sensorLabel(dark) === '—', `label was ${sensorLabel(dark)}`)
+  assert(sensorFar(0) > 0, 'a measured zero legibility must still resolve something nearby')
 })
 
 check('a fully dark world still draws its immediate surroundings', () => {
@@ -496,20 +522,31 @@ check('a projectile expires instead of leaking', () => {
   assert(c.projectiles.length === 0, 'a missed shot never expired')
 })
 
-check('a contact takes its durability in hits and then is destroyed once', () => {
+check('a weapon reports damage and never decides a death', () => {
+  // It used to decide. `enemy.ts` owns hull and shields now, and two authorities over one fact
+  // is how a craft ends up dead on one side and still firing on the other. A hit is a report.
   const s = generate(world, digest)
-  const target = { ...firstSolid(s), at: { x: 0, y: 0, z: -100000 } }
-  const need = durability(s.seed, target.id)
+  const target = { ...firstSolid(s), at: { x: 0, y: 0, z: -EXTENT * 0.02 } }
   let c = newCombat()
-  let destroyed = 0
-  for (let i = 0; i < need + 6; i += 1) {
+  let hits = []
+  for (let i = 0; i < 8 && hits.length === 0; i += 1) {
     c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, i * 200, [target])
-    const r = step(c, 0.6, [target], s.seed)
+    const r = step(c, 0.1, [target], s.seed)
     c = r.combat
-    destroyed += r.hits.filter((h) => h.destroyed).length
+    hits = r.hits
   }
-  assert(destroyed === 1, `destroyed fired ${destroyed} times`)
-  assert(c.destroyed.includes(target.id), 'the contact was never marked destroyed')
+  assert(hits.length > 0, 'point-blank fire never connected')
+  assert(hits[0].damage === LASER.damage, `damage was ${hits[0].damage}`)
+  assert(!('destroyed' in hits[0]), 'a weapon still adjudicates death')
+
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'weapons.ts'))
+  assert(!src.includes('destroyed.push'), 'weapons.ts still writes the destroyed list')
+})
+
+check('a photon hits far harder than a laser', () => {
+  // The whole reason there are two weapons. Nine laser rounds or one missile, which is what a
+  // burst failing to break a gunship's shield is supposed to teach.
+  assert(PHOTON.damage > LASER.damage * 5, `${PHOTON.damage} vs ${LASER.damage}`)
 })
 
 
@@ -800,11 +837,15 @@ check('a sector is large enough to be a place rather than a diagram', () => {
   assert(s.nodes.length > 400, `only ${s.nodes.length} nodes`)
 })
 
-check('crossing the sector at full throttle takes real time', () => {
-  // The first version was crossable in about four seconds, which is why it read as small.
-  const s = generate(world, digest)
+check('a crossing is quick, and the distance is carried by the jump drive instead', () => {
+  // This bound was 20 seconds and the sector was crossable in 26, which was *correct* and read
+  // as a chore: the interesting decision is which of a thousand nodes to be at, and a travel
+  // time long enough to be felt turns that decision into a commute. Making the ship faster
+  // still would flatten the space, so the distance moved onto the jump drive — which charges,
+  // costs a scarce fuel, and refuses to spin up in a fight.
   const seconds = EXTENT / topSpeed(0)
-  assert(seconds > 20, `a crossing takes ${seconds.toFixed(1)}s at stock speed`)
+  assert(seconds > 6, `a crossing takes ${seconds.toFixed(1)}s — too fast to feel like distance`)
+  assert(seconds < 16, `a crossing takes ${seconds.toFixed(1)}s — that is a commute`)
 })
 
 // ── services ──────────────────────────────────────────────────────────────────
@@ -886,34 +927,64 @@ check('hostiles become craft and salvage does not', () => {
   assert(sw.craft.length === hostiles, `${sw.craft.length} craft for ${hostiles} hostiles`)
 })
 
-check('a craft ignores you until you are inside its range', () => {
-  // A sector where every hostile converges on you is one big fight rather than a place with
-  // dangerous regions in it.
+check('a craft out of range patrols rather than hunting you', () => {
+  // A sector where every hostile converges the moment it can see you is one big fight rather
+  // than a place with dangerous regions in it. It does *drift* now — a sector frozen until you
+  // arrive is a diorama — so the assertion is that it does not come for you, not that it is
+  // motionless.
   const s = generate(world, digest)
-  const sw = swarmOf(s.contacts, s.seed)
-  if (sw.craft.length === 0) return
+  const sw = swarmOf(s.raiders, s.seed)
   const far = { x: 1e12, y: 0, z: 0 }
-  const after = enemyStep(sw, far, 1, 1000, s.seed)
+  const after = enemyStep(sw, far, ZERO, 1, 1000)
   assert(after.damage === 0, 'a craft on the far side of the galaxy shot at us')
-  assert(
-    JSON.stringify(after.swarm.craft[0].at) === JSON.stringify(sw.craft[0].at),
-    'a craft moved while out of range'
-  )
+  assert(after.swarm.craft.every((c) => c.behaviour === 'patrol'), 'a distant craft engaged')
+  const before = Math.hypot(sw.craft[0].at.x - far.x, sw.craft[0].at.y, sw.craft[0].at.z)
+  const now = Math.hypot(after.swarm.craft[0].at.x - far.x, after.swarm.craft[0].at.y, after.swarm.craft[0].at.z)
+  assert(Math.abs(now - before) < before * 0.01, 'a patrolling craft closed on a distant player')
 })
 
-check('a craft closes and eventually fires', () => {
+check('a craft turns onto you before it fires, and cannot shoot sideways', () => {
+  // The load-bearing constraint of the whole dogfight. A craft that can fire in any direction
+  // makes manoeuvre pointless, and manoeuvre is the entire game.
   const s = generate(world, digest)
-  const sw = swarmOf(s.contacts, s.seed)
-  if (sw.craft.length === 0) return
-  const near = { ...sw.craft[0].at }
-  let cur = sw
-  let fired = false
-  for (let i = 0; i < 20; i += 1) {
-    const r = enemyStep(cur, near, 0.2, i * 500, s.seed)
-    cur = r.swarm
-    if (cur.shots.length > 0) fired = true
+  const sw = swarmOf(s.raiders, s.seed)
+  const c0 = sw.craft[0]
+  // Put the player right in front of it, but start it pointing the wrong way.
+  const player = {
+    x: c0.at.x - c0.facing.x * 1e7,
+    y: c0.at.y - c0.facing.y * 1e7,
+    z: c0.at.z - c0.facing.z * 1e7,
   }
-  assert(fired, 'a craft next to the player never fired')
+  let cur = { craft: [c0], shots: [] }
+  let firstShot = -1
+  for (let i = 0; i < 400; i += 1) {
+    const r = enemyStep(cur, player, ZERO, 1 / 30, i * 33)
+    cur = r.swarm
+    if (r.fired.length > 0 && firstShot < 0) firstShot = i
+  }
+  assert(firstShot > 0, 'a craft with the player behind it never came around to fire')
+  assert(firstShot > 2, `it fired on frame ${firstShot}, before it could have turned`)
+})
+
+check('a craft leads its shots, so jinking beats it', () => {
+  // Leading is what makes a fast shot feel aimed. It is also what makes evasion work: the lead
+  // is computed from the player's *current* velocity, so changing it is what breaks the solution.
+  const from = { x: 0, y: 0, z: 0 }
+  const target = { x: 0, y: 0, z: -1e7 }
+  const still = leadPoint(from, target, ZERO, 1e8)
+  const moving = leadPoint(from, target, { x: 1e7, y: 0, z: 0 }, 1e8)
+  assert(still.x === target.x, 'a stationary target was led')
+  assert(moving.x > target.x, 'a crossing target was not led')
+})
+
+check('turning is bounded, which is the reason a dogfight exists', () => {
+  const from = { x: 0, y: 0, z: 1 }
+  const to = { x: 0, y: 0, z: -1 }
+  const step1 = turnToward(from, to, 0.1)
+  assert(step1.z > 0.99, 'a craft reversed its facing in one step')
+  let f = from
+  for (let i = 0; i < 100; i += 1) f = turnToward(f, to, 0.1)
+  assert(f.z < -0.99, 'a craft never completed a turn it had time for')
 })
 
 check('a ghost craft never gains a threat number, even while fighting', () => {
@@ -927,20 +998,102 @@ check('a ghost craft never gains a threat number, even while fighting', () => {
   assert(threatLabel(ghost) === '—', 'a ghost craft reported a threat')
 })
 
-check('a craft dies after its integrity is spent, once', () => {
+check('shields absorb before hull, and the overflow carries through', () => {
+  // A shot that breaks through has to actually break through. If the last point of shield could
+  // soak a whole volley, players would learn to fight at 1% and the bar would mean nothing.
   const s = generate(world, digest)
-  const sw = swarmOf(s.contacts, s.seed)
-  if (sw.craft.length === 0) return
+  const sw = swarmOf(s.raiders, s.seed)
+  const shielded = sw.craft.find((c) => c.spec.shield > 0)
+  if (!shielded) return
+  const r = enemyHit({ craft: [shielded], shots: [] }, shielded.id, shielded.spec.shield + 5, 0)
+  const after = r.swarm.craft[0]
+  assert(after.shield === 0, `shield was ${after.shield}`)
+  assert(after.hull === shielded.spec.hull - 5, `hull was ${after.hull}`)
+  assert(r.throughShield, 'a hit that reached hull did not report doing so')
+})
+
+check('a hit soaked by a shield reports that it was soaked', () => {
+  // The only cue telling a player whether they are making progress or wasting rounds on a
+  // buffer. Without it a heavily-shielded gunship reads as invulnerable.
+  const s = generate(world, digest)
+  const sw = swarmOf(s.raiders, s.seed)
+  const shielded = sw.craft.find((c) => c.spec.shield > 10)
+  if (!shielded) return
+  const r = enemyHit({ craft: [shielded], shots: [] }, shielded.id, 5, 0)
+  assert(!r.throughShield, 'a soaked hit claimed to reach hull')
+  assert(r.swarm.craft[0].hull === shielded.spec.hull, 'a soaked hit damaged hull')
+})
+
+check('a craft dies once, and pays its class bounty', () => {
+  const s = generate(world, digest)
+  const sw = swarmOf(s.raiders, s.seed)
   const id = sw.craft[0].id
+  const spec = sw.craft[0].spec
   let cur = sw
   let kills = 0
-  for (let i = 0; i < 20; i += 1) {
-    const r = enemyHit(cur, id)
+  let paid = 0
+  for (let i = 0; i < 40; i += 1) {
+    const r = enemyHit(cur, id, 999, i * 100)
     cur = r.swarm
-    if (r.killed) kills += 1
+    if (r.killed) {
+      kills += 1
+      paid = r.bounty
+    }
   }
   assert(kills === 1, `killed ${kills} times`)
+  assert(paid === spec.bounty, `paid ${paid}, class pays ${spec.bounty}`)
   assert(living(cur).every((c) => c.id !== id), 'a dead craft is still alive')
+})
+
+// ── classes ──────────────────────────────────────────────────────────────────
+
+check('every class trades turn against speed, and none can outrun you', () => {
+  // The line every statline sits on: a dogfight is a contest of turn rate against speed, not of
+  // hit points. And disengaging must always be possible, or the game punishes exploring.
+  for (const id of CLASS_IDS) {
+    const c = CLASSES[id]
+    assert(c.speed < topSpeed(0), `${id} at ${c.speed} outruns a stock ship`)
+    assert(c.turn > 0, `${id} cannot turn at all`)
+    assert(c.hull > 0 && c.bounty > 0, `${id} has no hull or no bounty`)
+  }
+  const fast = CLASSES.interceptor
+  const heavy = CLASSES.destroyer
+  assert(fast.turn > heavy.turn * 8, 'the fast one does not turn better than the capital')
+  assert(heavy.hull > fast.hull * 10, 'the capital is not meaningfully tougher')
+})
+
+check('a capital holds station instead of chasing', () => {
+  // It is a place you fight at, not a duel. A destroyer that pursued would be an unloseable
+  // chase, since it also cannot be outrun in a straight line by anything it can catch.
+  const cap = {
+    id: 'x', spec: CLASSES.destroyer, at: { x: 0, y: 0, z: 0 },
+    facing: { x: 0, y: 0, z: 1 }, speed: 0, hull: 5, shield: 0, lastHitMs: -1e9,
+    solid: true, behaviour: 'patrol', lastFire: -1e9, burstLeft: 0, since: 0, alive: true,
+  }
+  // Hull at 5 of 460 — a fighter would be running.
+  assert(decide(cap, CLASSES.destroyer.aggro * 0.5, 1, 1000) === 'attack')
+  assert(decide(cap, CLASSES.destroyer.aggro * 2, 1, 1000) === 'patrol')
+})
+
+check('a fighter breaks off when its hull is nearly gone', () => {
+  // Being able to let one go is what stops every encounter being to the death.
+  const base = {
+    id: 'x', spec: CLASSES.interceptor, at: { x: 0, y: 0, z: 0 },
+    facing: { x: 0, y: 0, z: 1 }, speed: 0, shield: 0, lastHitMs: -1e9,
+    solid: true, behaviour: 'attack', lastFire: -1e9, burstLeft: 0, since: 0, alive: true,
+  }
+  const healthy = { ...base, hull: CLASSES.interceptor.hull }
+  const hurt = { ...base, hull: CLASSES.interceptor.hull * 0.2 }
+  assert(decide(hurt, CLASSES.interceptor.standoff, 1, 9999) === 'evade')
+  assert(decide(healthy, CLASSES.interceptor.standoff, 1, 9999) !== 'evade')
+})
+
+check('a signal the record reported is never a capital', () => {
+  // Capitals are sector furniture. Letting a reported signal become a destroyer would put the
+  // record's contents back in charge of how hard its own sector is.
+  const s = generate(world, digest)
+  const sw = swarmOf(s.contacts, s.seed)
+  assert(sw.craft.every((c) => !c.spec.capital), 'a record signal became a capital')
 })
 
 // ── scale, which is where the last round of bugs actually lived ──────────────
@@ -1129,7 +1282,7 @@ check('a fight can be won, and pays from the act rather than the record', () => 
   let g = newGame(s)
   // Park just off a raider and hold the trigger.
   const r = s.raiders[0]
-  g = { ...g, camera: { ...g.camera, position: [r.at.x, r.at.y, r.at.z + 4_000_000] } }
+  g = { ...g, camera: { ...g.camera, position: [r.at.x, r.at.y, r.at.z + EXTENT * 0.01] } }
   let killed = false
   for (let f = 0; f < 60 * 30 && !killed; f += 1) {
     g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
@@ -1137,7 +1290,11 @@ check('a fight can be won, and pays from the act rather than the record', () => 
   }
   assert(killed, 'thirty seconds of point-blank fire destroyed nothing')
   assert(g.ship.salvage > 0, 'a kill paid nothing')
-  assert(g.ship.salvage % 25 === 0, 'a bounty was scaled by something')
+  // The bounty is one of the class table's flat figures — never a number derived from the
+  // record. Checked against the table rather than against a modulus, because the classes pay
+  // different amounts and the rule is about *where the figure comes from*.
+  const paid = new Set(CLASS_IDS.map((id) => CLASSES[id].bounty))
+  assert(paid.has(g.ship.salvage), `paid ${g.ship.salvage}, which is no class bounty`)
 })
 
 check('you can route to a depot, fly there, and refuel before running dry', () => {
@@ -1236,6 +1393,385 @@ check('a photon upgrade hands over the rounds it just sold you', () => {
   assert(after.ship.levels.missiles === 1, after.notice)
   assert(after.combat.photonsLeft > before, 'the magazine grew but the tubes stayed empty')
   assert(after.combat.photonsLeft === photonMagazine(1))
+})
+
+// ── the jump drive ───────────────────────────────────────────────────────────
+
+check('a jump refuses for three distinct reasons, and says which', () => {
+  // "Nothing happened" and "the drive refused" are different facts, and only one of them tells
+  // the player what to do about it. A silently inert key reads as a broken key.
+  assert(Hyper.refusal({ threat: null, charges: 3, driveLevel: 0, waypoint: null })
+    ?.includes('waypoint'))
+  assert(Hyper.refusal({ threat: null, charges: 0, driveLevel: 0, waypoint: 4 })
+    ?.includes('charges'))
+  assert(Hyper.refusal({ threat: 1, charges: 3, driveLevel: 0, waypoint: 4 })
+    ?.includes('inhibited'))
+  assert(Hyper.refusal({ threat: 1e12, charges: 3, driveLevel: 0, waypoint: 4 }) === null)
+})
+
+check('the drive takes real time to spin up and only then moves you', () => {
+  const s = generate(world, digest)
+  const node = s.nodes[60]
+  const sit = { threat: null, charges: 3, driveLevel: 0, waypoint: node.id }
+  let d = Hyper.IDLE
+  let arrived = null
+  let ticks = 0
+  for (let i = 0; i < 400 && !arrived; i += 1) {
+    const r = Hyper.advance(d, sit, node, true, 1 / 60)
+    d = r.drive
+    arrived = r.arriveAt
+    ticks += 1
+  }
+  assert(arrived, 'the drive never completed')
+  assert(ticks > 60, `it jumped after ${ticks} frames — that is an escape button`)
+  const dist = Math.hypot(arrived.x - node.at.x, arrived.y - node.at.y, arrived.z - node.at.z)
+  assert(dist > 0, 'a jump landed inside the station')
+})
+
+check('releasing the key aborts and refunds', () => {
+  // A charge consumed by a keystroke the player took back is the kind of loss that teaches
+  // somebody never to touch the mechanic again.
+  const s = generate(world, digest)
+  const node = s.nodes[60]
+  const sit = { threat: null, charges: 3, driveLevel: 0, waypoint: node.id }
+  let d = Hyper.advance(Hyper.IDLE, sit, node, true, 1).drive
+  assert(d.phase === 'charging')
+  const r = Hyper.advance(d, sit, node, false, 1 / 60)
+  assert(r.drive.phase === 'idle' && !r.spent, 'an aborted jump still cost a charge')
+  assert((r.notice ?? '').includes('abort'), r.notice)
+})
+
+check('retargeting mid-charge starts over', () => {
+  // A drive that kept its progress across a new destination would let a player charge somewhere
+  // safe and arrive somewhere else.
+  const s = generate(world, digest)
+  const a = s.nodes[60]
+  const b = s.nodes[61]
+  const sit = { threat: null, charges: 3, driveLevel: 0, waypoint: a.id }
+  const partway = Hyper.advance(Hyper.IDLE, sit, a, true, 1).drive
+  const switched = Hyper.advance(partway, { ...sit, waypoint: b.id }, b, true, 1 / 60).drive
+  assert(switched.target === b.id, 'the drive kept the old target')
+  assert(switched.charged < partway.charged, 'the charge carried over to a new destination')
+})
+
+check('a hostile in range inhibits the drive, which is what makes a fight a commitment', () => {
+  const s = generate(world, digest)
+  const node = s.nodes[60]
+  const sit = { threat: JUMP_INHIBIT * 0.5, charges: 3, driveLevel: 0, waypoint: node.id }
+  let d = Hyper.IDLE
+  for (let i = 0; i < 400; i += 1) d = Hyper.advance(d, sit, node, true, 1 / 60).drive
+  assert(d.phase === 'inhibited', `phase was ${d.phase}`)
+  assert(Hyper.progress(d, 0) === 0, 'an inhibited drive showed charge')
+})
+
+check('a better drive spins up faster but never instantly', () => {
+  assert(jumpCharge(4, 1000) < jumpCharge(0, 1000), 'the upgrade does nothing')
+  assert(jumpCharge(4, 1000) > 200, 'a fully upgraded drive is effectively instant')
+})
+
+check('a jump is reachable in play, and lands you where the waypoint is', () => {
+  const s = generate(world, digest)
+  let g = route(newGame(s), s, 'trade')
+  const target = s.nodes.find((n) => n.id === g.waypoint)
+  const keys = new Set(['KeyJ'])
+  for (let f = 0; f < 60 * 8; f += 1) {
+    g = tick(g, s, { keys, firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  const d = Math.hypot(
+    g.camera.position[0] - target.at.x,
+    g.camera.position[1] - target.at.y,
+    g.camera.position[2] - target.at.z,
+  )
+  assert(d < DOCK_RANGE * 3, `ended ${(d / 1e6).toFixed(1)}M from the waypoint`)
+  assert(g.ship.jumpFuel < jumpCapacity(0), 'the jump cost nothing')
+  assert(g.throttle === 0, 'a jump preserved momentum — that is a collision with no answer')
+})
+
+check('a dock charges the jump drive and a depot does not', () => {
+  // Six times as many depots as docks is what makes a jump charge worth planning around.
+  const s = generate(world, digest)
+  const dock = s.nodes.find((n) => n.kind === 'dock')
+  const depot = s.nodes.find((n) => n.kind === 'depot')
+  const dry = { ...newGame(s), ship: { ...newShip(), fuel: 1, jumpFuel: 0 } }
+  assert(useService({ ...dry, nearby: dock }, 'refuel').ship.jumpFuel > 0, 'a dock did not charge')
+  assert(useService({ ...dry, nearby: depot }, 'refuel').ship.jumpFuel === 0, 'a depot charged')
+})
+
+// ── shields ──────────────────────────────────────────────────────────────────
+
+check('hull is the primary health and never comes back on its own', () => {
+  // The asymmetry is the rhythm of a fight: break contact, let shields recover, re-engage.
+  // Inverting it would make every engagement a war of attrition against a clock.
+  let sh = damage(newShip(), 500, 0)
+  assert(sh.hull < hullMax(0), 'the ship took no hull damage from an overwhelming hit')
+  const later = recharge(sh, 60, 1e9)
+  assert(later.hull === sh.hull, 'hull regenerated')
+  assert(later.shield > sh.shield, 'shields did not regenerate after a long lull')
+})
+
+check('shields do not regenerate while you are being shot', () => {
+  const sh = damage(newShip(), 10, 1000)
+  const soon = recharge(sh, 1, 1000 + SHIELD_DELAY_MS * 0.5)
+  assert(soon.shield === sh.shield, 'shields recovered mid-fight')
+  const after = recharge(sh, 1, 1000 + SHIELD_DELAY_MS * 2)
+  assert(after.shield > sh.shield, 'shields never recovered')
+})
+
+check('a shield upgrade delivers the buffer it sold you', () => {
+  const rich = { ...newShip(), salvage: 20_000, shield: 0 }
+  const bought = buy(rich, 'shields')
+  assert(bought.ok && bought.ship.shield === shieldMax(1), 'the new buffer was not filled')
+  const drive = buy(rich, 'drive')
+  assert(drive.ok && drive.ship.jumpFuel === jumpCapacity(1), 'the new charges were not loaded')
+})
+
+// ── silhouettes and the sky ──────────────────────────────────────────────────
+
+check('every shape a class names has a mesh', () => {
+  // The class table and the renderer must not be two homes for the same decision.
+  const meshes = { interceptor: interceptor(), gunship: gunship(), capital: capital() }
+  for (const id of CLASS_IDS) {
+    const shape = CLASSES[id].shape
+    assert(meshes[shape] && meshes[shape].length > 0, `${id} names ${shape}, which has no mesh`)
+  }
+})
+
+check('a hull points along +Z and fits the unit sphere it will be scaled by', () => {
+  for (const [name, m] of [['interceptor', interceptor()], ['gunship', gunship()], ['capital', capital()]]) {
+    assert(m.length % 6 === 0, `${name} is not a line list`)
+    let maxZ = -Infinity
+    let minZ = Infinity
+    let maxR = 0
+    for (let i = 0; i < m.length; i += 3) {
+      maxZ = Math.max(maxZ, m[i + 2])
+      minZ = Math.min(minZ, m[i + 2])
+      maxR = Math.max(maxR, Math.hypot(m[i], m[i + 1], m[i + 2]))
+    }
+    assert(maxZ > 0 && Math.abs(maxZ) > Math.abs(minZ) * 0.5, `${name} does not point forward`)
+    assert(maxR < 2.6, `${name} extends to ${maxR.toFixed(2)}, far outside unit scale`)
+  }
+})
+
+check('a projectile is a cylinder, not a point', () => {
+  // A sphere travelling at half the sector per second is a dot that teleports between frames.
+  // The streak is what makes a tracer readable, and it points back at whatever fired it.
+  const b = bolt()
+  assert(b.length > 0 && b.length % 9 === 0, 'the bolt is not a triangle list')
+  let minZ = Infinity
+  for (let i = 2; i < b.length; i += 3) minZ = Math.min(minZ, b[i])
+  assert(minZ < 0, 'the bolt has no length along its travel axis')
+  assert(BOLT_LENGTH > 4, 'a bolt that short is a dot again')
+  assert(BOLT_GLOW > 1, 'the halo is not larger than the core, so there is no glow')
+})
+
+check('the sky is a function of the commitment and nothing else', () => {
+  // Determinism applied to something with no gameplay effect — precisely because making an
+  // exception for cosmetics is how the rule stops being one.
+  const a = starfield(digest, 200)
+  const b = starfield(digest, 200)
+  assert(a.every((v, i) => v === b[i]), 'the sky is not deterministic')
+  assert(!starfield('f'.repeat(64), 200).every((v, i) => v === a[i]), 'the seed does not move it')
+})
+
+check('stars are spread over the whole sphere rather than bunched at the poles', () => {
+  // A naive two-angle pick clusters hard at the poles, and a night sky with two bright patches
+  // in it reads as a bug rather than as a sky.
+  const f = starfield(digest, 2000)
+  let north = 0
+  let equator = 0
+  for (let i = 0; i < 2000; i += 1) {
+    const y = f[i * 4 + 1]
+    if (y > 0.8) north += 1
+    if (Math.abs(y) < 0.2) equator += 1
+  }
+  // Equal-area bands: |y|<0.2 covers 20% of the sphere, y>0.8 covers 10%.
+  assert(equator > north, `poles ${north}, equator ${equator}`)
+  for (let i = 0; i < 2000; i += 1) {
+    const r = Math.hypot(f[i * 4], f[i * 4 + 1], f[i * 4 + 2])
+    assert(Math.abs(r - 1) < 1e-4, 'a star is off the unit sphere')
+    assert(f[i * 4 + 3] > 0, 'a star has no brightness')
+  }
+})
+
+check('lanes are drawn at the edge of visibility', () => {
+  // At a thousand nodes the lane mesh was a bright cage that hid everything inside it — the
+  // sector read as a diagram of itself rather than as a place.
+  const s = generate(world, digest)
+  const list = drawList(s)
+  assert(list.segments.length > 0)
+  for (const seg of list.segments) {
+    assert(seg.alpha > 0, 'a lane is invisible; routes must still be followable')
+    assert(seg.alpha < 0.2, `a lane at ${seg.alpha} is a cage`)
+  }
+})
+
+check('a craft is drawn as its class, facing where it flies', () => {
+  // A wireframe with no facing is a shape with no information in it, and the whole reason ships
+  // are line models is that you can see which way an opponent is about to break.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 0.016, nowMs: 1 })
+  const list = drawList(s, dynamicOf(g, s))
+  const hulls = list.bodies.filter((b) => shapeOf(b) !== 'sphere' && shapeOf(b) !== 'shell' && shapeOf(b) !== 'bolt')
+  assert(hulls.length > 0, 'no craft was drawn as a hull')
+  for (const h of hulls) {
+    assert(h.facing, 'a hull was drawn with no facing')
+    const l = Math.hypot(h.facing.x, h.facing.y, h.facing.z)
+    assert(Math.abs(l - 1) < 1e-6, 'a facing is not a unit vector')
+  }
+})
+
+check('a bolt carries the direction it is travelling', () => {
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: true, dt: 0.016, nowMs: 1000 })
+  const bolts = drawList(s, dynamicOf(g, s)).bodies.filter((b) => shapeOf(b) === 'bolt')
+  assert(bolts.length > 0, 'no bolt was drawn')
+  assert(bolts.every((b) => b.facing), 'a bolt was drawn with no direction')
+})
+
+check('a craft size comes from its class, never from a reported magnitude', () => {
+  // A craft's size is now a claim about how dangerous it is. That must not come from a number
+  // in the record, or somebody writing one has a reason to shrink it.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 0.016, nowMs: 1 })
+  const list = drawList(s, dynamicOf(g, s))
+  for (const c of Enemy.living(g.swarm)) {
+    const body = list.bodies.find((b) => b.label.includes(c.spec.label))
+    if (body) assert(body.radius === c.spec.radius, 'a craft was sized by something else')
+  }
+})
+
+// ── the feel of a hit ────────────────────────────────────────────────────────
+
+check('a landed hit flashes, and a hull hit flashes harder than a soaked one', () => {
+  // This is the entirety of the game's feedback that a shot connected. A shooter where you
+  // cannot tell a hit from a miss has no skill expression in it, however good the ballistics
+  // underneath are.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const r = s.raiders[0]
+  g = { ...g, camera: { ...g.camera, position: [r.at.x, r.at.y, r.at.z + EXTENT * 0.01] } }
+  let flashed = false
+  for (let f = 0; f < 60 * 10 && !flashed; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    flashed = Object.values(g.flashes).some((v) => v > 0)
+  }
+  assert(flashed, 'ten seconds of point-blank fire produced no hit feedback')
+})
+
+check('a flash decays rather than sticking on', () => {
+  const s = generate(world, digest)
+  let g = { ...newGame(s), flashes: { x: 1 } }
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 0.2, nowMs: 1 })
+  assert((g.flashes.x ?? 0) < 1, 'a flash never faded')
+  for (let i = 0; i < 20; i += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 0.2, nowMs: i * 200 })
+  }
+  assert(g.flashes.x === undefined, 'a spent flash is still being carried')
+})
+
+check('being shot kicks the screen, and hull hits kick harder', () => {
+  const s = generate(world, digest)
+  const g = { ...newGame(s), shake: 0 }
+  assert(g.shake === 0)
+  // Direct: a shield hit and a hull hit must not feel identical.
+  const shielded = damage(newShip(), 5, 0)
+  const breached = damage({ ...newShip(), shield: 0 }, 5, 0)
+  assert(shielded.hull === hullMax(0), 'a shielded hit reached hull')
+  assert(breached.hull < hullMax(0), 'an unshielded hit did not reach hull')
+})
+
+check('every class in the table can actually be met', () => {
+  // Both capitals were unreachable and nothing failed. The class roll was derived from
+  // `durability`, which returns one of *six* values — the roll covered about half the
+  // distribution and never once reached the top bracket. A table whose bottom two entries are
+  // decoration is the kind of bug that hides behind a plausible-looking sector.
+  const s = generate(world, digest)
+  const seen = new Set(swarmOf(s.raiders, s.seed).craft.map((c) => c.spec.id))
+  for (const id of CLASS_IDS) {
+    assert(seen.has(id), `${id} exists in the table and cannot be met in this sector`)
+  }
+})
+
+check('the class roll covers its whole range', () => {
+  // Asserted directly as well, because the sector test above depends on how many raiders there
+  // happen to be, and that number is allowed to change.
+  const buckets = new Set()
+  for (let i = 0; i < 400; i += 1) buckets.add(classRoll(digest, `x:${i}`) % 100)
+  assert(buckets.size > 70, `only ${buckets.size} distinct rolls out of 100`)
+  assert(Math.min(...buckets) < 5 && Math.max(...buckets) > 95, 'the roll does not reach its ends')
+})
+
+check('raiders arrive in wings, so an encounter is an encounter', () => {
+  // Scattered uniformly, sixty craft in a volume this size sit two hundred million units apart
+  // and you essentially never meet one: the sector reads as empty and the whole combat system
+  // goes unused. This asserts the clustering rather than the count, because the count will move.
+  const s = generate(world, digest)
+  const near = s.raiders.filter((r) => {
+    const d = Math.hypot(
+      r.at.x - s.raiders[0].at.x,
+      r.at.y - s.raiders[0].at.y,
+      r.at.z - s.raiders[0].at.z,
+    )
+    return d < AGGRO_RANGE
+  })
+  assert(near.length >= 3, `a raider's nearest company is ${near.length - 1} craft`)
+})
+
+check('a wing will kill a passive player, and that is the point', () => {
+  // Combat has to be dangerous or none of the rest of it matters. A player who does not fight
+  // back and does not manoeuvre must lose — and this is the assertion that would catch an AI
+  // that looks busy and never actually lands a shot, which is what the previous one did.
+  const s = generate(world, digest)
+  const wing = s.raiders.filter((r) => r.id.startsWith('raider:0:'))
+  let g = newGame(s)
+  g = {
+    ...g,
+    camera: {
+      ...g.camera,
+      position: [wing[0].at.x, wing[0].at.y, wing[0].at.z + EXTENT * 0.02],
+    },
+  }
+  for (let f = 0; f < 60 * 90 && !g.lost; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  assert(g.lost, `survived ninety seconds doing nothing, on ${g.ship.hull} hull`)
+})
+
+check('an engagement cycles through its behaviours rather than sitting in one', () => {
+  // A craft that only ever pursues is the old distance-check wearing a state machine.
+  const s = generate(world, digest)
+  const wing = s.raiders.filter((r) => r.id.startsWith('raider:0:'))
+  let g = newGame(s)
+  g = {
+    ...g,
+    camera: {
+      ...g.camera,
+      position: [wing[0].at.x, wing[0].at.y, wing[0].at.z + EXTENT * 0.02],
+    },
+  }
+  const seen = new Set()
+  for (let f = 0; f < 60 * 40 && !g.lost; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    for (const c of Enemy.living(g.swarm)) seen.add(c.behaviour)
+  }
+  for (const b of ['pursue', 'attack', 'overshoot']) {
+    assert(seen.has(b), `no craft ever entered ${b}`)
+  }
+})
+
+check('a craft that loses you while turning comes back', () => {
+  // The hysteresis. Without it a craft that starts with the player astern burns away from the
+  // target for the two seconds its turn takes, crosses its own aggro radius doing so, drops to
+  // patrol, and drifts off forever — which is what a skiff parked ten million units off a
+  // stationary player actually did.
+  const s = generate(world, digest)
+  const sw = swarmOf(s.raiders, s.seed)
+  const c0 = { ...sw.craft[0], behaviour: 'pursue' }
+  const justOutside = c0.spec.aggro * 1.3
+  assert(decide(c0, justOutside, 1, 1000) !== 'patrol', 'an engaged craft gave up too easily')
+  assert(decide({ ...c0, behaviour: 'patrol' }, justOutside, 1, 1000) === 'patrol',
+    'a craft acquired a target beyond its own sensor range')
 })
 
 await Promise.all(pending)

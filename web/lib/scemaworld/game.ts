@@ -607,6 +607,55 @@ export function dynamicOf(state: GameState, space?: Space) {
 }
 
 /**
+ * What a key press does, as a pure function.
+ *
+ * ## Why this is here and not in the component
+ *
+ * It was in the component, inside a `useEffect` whose dependency array was empty. The effect ran
+ * once on mount — *before* a record was loaded — so the handler closed over `loaded === null` for
+ * the rest of the session and every service key hit an early return. `F`, `R`, `V`, `M` and the
+ * course keys were dead from the first frame.
+ *
+ * It presented as "refuelling does not work", and it was invisible from every angle: the
+ * mechanics were tested and correct, the buttons were wired and correct, and movement worked —
+ * because held keys are recorded *before* that early return, so flying and firing were unaffected
+ * while every single-press command was not. It also explained the jump drive: the course keys are
+ * how a waypoint gets set, so with them dead the drive refused for want of one, forever.
+ *
+ * Pure, tested, and returning `null` when a key is not a command, so the component is a
+ * dispatcher with nothing in it that can be wrong on its own.
+ */
+export function command(state: GameState, space: Space, code: string): GameState | null {
+  switch (code) {
+    // Services are single presses rather than held keys — a held `F` should refuel once, not
+    // sixty times a second, which is why these are not read from the key set in `tick`.
+    case 'KeyF':
+      return useService(state, 'refuel')
+    case 'KeyR':
+      return useService(state, 'repair')
+    case 'KeyV':
+      return useService(state, 'scavenge')
+    case 'Digit1':
+      return route(state, space, 'refuel')
+    case 'Digit2':
+      return route(state, space, 'repair')
+    case 'Digit3':
+      return route(state, space, 'trade')
+    case 'Digit4':
+      return route(state, space, 'scavenge')
+    case 'Digit0':
+      return { ...state, waypoint: null, noticeAt: PENDING, notice: 'course cleared' }
+    default:
+      return null
+  }
+}
+
+/** Every key `command` answers to, so the pause menu and the tests share one list. */
+export const COMMAND_KEYS = [
+  'KeyF', 'KeyR', 'KeyV', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit0',
+]
+
+/**
  * Convert salvage to SCEMA at a market.
  *
  * Only at a market, because the spread is the point: an exchange available anywhere makes the two

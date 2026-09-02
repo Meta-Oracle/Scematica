@@ -45,7 +45,9 @@ import { HULLS, HULL_IDS } from '../lib/scemaworld/hulls.ts'
 import {
   exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SCEMA_NOTE,
 } from '../lib/scemaworld/economy.ts'
-import { acquire, exchangeAt } from '../lib/scemaworld/game.ts'
+import {
+  acquire, exchangeAt, command, COMMAND_KEYS, jumpRefusal,
+} from '../lib/scemaworld/game.ts'
 import { course as courseOf } from '../lib/scemaworld/view.ts'
 import { refit, noseOffset } from '../lib/scemaworld/ship.ts'
 import {
@@ -3242,6 +3244,74 @@ check('pausing releases every held key', () => {
   // leaves without you.
   const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
   assert(src.includes('keys.current.clear()'), 'held keys survive a pause')
+})
+
+// ── the command table ────────────────────────────────────────────────────────
+
+check('every command key does something', () => {
+  // The bug this replaces: the whole table lived inside a `useEffect` with an empty dependency
+  // array, so it closed over `loaded === null` at mount and every service key hit an early return
+  // for the rest of the session. It presented as "refuelling does not work" and was invisible
+  // from every angle — the mechanics were tested and correct, the buttons were wired and correct,
+  // and *movement worked*, because held keys are recorded before that check.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  g = { ...g, ship: { ...g.ship, fuel: 5, hull: 20, salvage: 5000 } }
+  for (const key of COMMAND_KEYS) {
+    const next = command(g, s, key)
+    assert(next !== null, `${key} is not a command at all`)
+    assert(next !== g, `${key} returned the state unchanged`)
+    assert(next.notice, `${key} did nothing a player could see`)
+  }
+})
+
+check('a key that is not a command says so rather than guessing', () => {
+  const s = generate(world, digest)
+  const g = newGame(s)
+  for (const key of ['KeyW', 'KeyZ', 'F13', 'Digit9']) {
+    assert(command(g, s, key) === null, `${key} was treated as a command`)
+  }
+})
+
+check('the service keys work from where the player starts', () => {
+  // End to end through the same function the keyboard calls, at the spawn point, in the order a
+  // new player would press them.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  assert(g.nearby, 'nothing in range at spawn')
+
+  g = { ...g, ship: { ...g.ship, fuel: 5 } }
+  const fuelled = command(g, s, 'KeyF')
+  assert(fuelled.ship.fuel > 5, `F did not refuel: ${fuelled.notice}`)
+
+  g = { ...g, ship: { ...g.ship, hull: 20, salvage: 5000 } }
+  const fixed = command(g, s, 'KeyR')
+  assert(fixed.ship.hull > 20, `R did not repair: ${fixed.notice}`)
+})
+
+check('the course keys are what make the jump drive usable', () => {
+  // The chain that made "holding J does nothing" look like a separate bug: the course keys set
+  // the waypoint, the drive needs one, and with the keys dead it refused forever.
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  assert((jumpRefusal(g) ?? '').includes('waypoint'), 'the drive refuses for some other reason')
+
+  g = command(g, s, 'Digit3')
+  assert(g.waypoint !== null, 'the course key set no waypoint')
+  const why = jumpRefusal(g)
+  assert(!why || !why.includes('waypoint'), `still no waypoint after routing: ${why}`)
+
+  const cleared = command(g, s, 'Digit0')
+  assert(cleared.waypoint === null, '0 did not clear the course')
+})
+
+check('the component only dispatches; the table lives where it is tested', () => {
+  // The structural half of the fix. A key table inside a component is a key table nobody can run.
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('command(g, world.space, e.code)'), 'the component does not dispatch')
+  assert(!src.includes("e.code === 'KeyF'"), 'the component still decides what a key means')
+  // And it reads the world at the moment of the press, not the moment of attachment.
+  assert(src.includes('loadedRef.current'), 'the handler still closes over render-scope state')
 })
 
 await Promise.all(pending)

@@ -22,8 +22,8 @@ import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
-  contact as nearestContact, dynamicOf, inhibited, jumpRefusal, newGame, purchase, route,
-  sensors, tick, useService, type GameState,
+  command, contact as nearestContact, dynamicOf, inhibited, jumpRefusal, newGame, purchase,
+  route, sensors, tick, useService, type GameState,
 } from '@/lib/scemaworld/game'
 import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
 import { acquire, exchangeAt } from '@/lib/scemaworld/game'
@@ -112,6 +112,16 @@ export function ScemaWorldTerminal() {
   const [paused, setPaused] = useState(false)
   /** Held in a ref as well, because the frame loop closes over its own copy of state. */
   const pausedRef = useRef(false)
+  /**
+   * The loaded world, reachable from event handlers.
+   *
+   * The keyboard listener is attached once and lives for the session, so anything it reads from
+   * the render scope is frozen at mount. It read `loaded` directly and `loaded` is `null` at
+   * mount, which silently killed every single-press command for the whole session — and left
+   * movement working, because held keys are recorded before that check. A ref is read at the
+   * moment of the press rather than at the moment of attachment.
+   */
+  const loadedRef = useRef<Loaded | null>(null)
 
   const [ticket, setTicket] = useState<string | null>(null)
   const [vault, setVault] = useState('')
@@ -334,21 +344,18 @@ export function ScemaWorldTerminal() {
       setGreeted(true)
 
       const g = game.current
-      if (!g || !loaded) return
-      // Services are single presses rather than held keys, so they are handled here rather
-      // than in the tick — a held `F` should refuel once, not sixty times a second.
-      if (e.code === 'KeyF') game.current = useService(g, 'refuel')
-      else if (e.code === 'KeyR') game.current = useService(g, 'repair')
-      else if (e.code === 'KeyV') game.current = useService(g, 'scavenge')
-      else if (e.code === 'KeyM') setMarket((m) => !m)
-      // The nav computer. With a thousand nodes over a sector this size, a destination you
-      // cannot select is a destination you reach by luck.
-      else if (e.code === 'Digit1') game.current = route(g, loaded.space, 'refuel')
-      else if (e.code === 'Digit2') game.current = route(g, loaded.space, 'repair')
-      else if (e.code === 'Digit3') game.current = route(g, loaded.space, 'trade')
-      else if (e.code === 'Digit4') game.current = route(g, loaded.space, 'scavenge')
-      else if (e.code === 'Digit0') game.current = { ...g, waypoint: null, notice: 'waypoint cleared' }
-      if (game.current !== g) setHud(game.current)
+      const world = loadedRef.current
+      if (!g || !world) return
+      if (e.code === 'KeyM') {
+        setMarket((m) => !m)
+        return
+      }
+      // Everything else is one pure function in `game.ts`, tested there. This is a dispatcher.
+      const next = command(g, world.space, e.code)
+      if (next && next !== g) {
+        game.current = next
+        setHud(next)
+      }
     }
     const upKey = (e: KeyboardEvent) => keys.current.delete(e.code)
     const blur = () => keys.current.clear()
@@ -361,6 +368,11 @@ export function ScemaWorldTerminal() {
       window.removeEventListener('blur', blur)
     }
   }, [])
+
+  // Mirrored during render rather than in an effect: an effect runs *after* the paint, so a key
+  // pressed in that window would still see the previous world. This is the bug the ref exists to
+  // prevent, one frame smaller.
+  loadedRef.current = loaded
 
   const s = loaded?.space
 

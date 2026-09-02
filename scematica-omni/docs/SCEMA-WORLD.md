@@ -474,7 +474,111 @@ probe covers a large fraction of the sector, and the query walked hundreds of ce
 longer swerve, the sweep stopped allocating per bucket, and the two per-frame node scans reject on
 an axis before the square root. **0.51 ms**, and there is now a test.
 
-## Arc 11 — The record rides inside the picture *(done)*
+## Arc 11 — An inhabited sector *(done)*
+
+### The three "broken" mechanics were all refusing correctly, in silence
+
+Refuelling, jumping and the market were reported as not working. Every one of them was behaving
+exactly as designed and saying so in a notice that faded after three seconds: you start with full
+tanks, so `F` said *tanks already full*; you start with no salvage, so every market button was
+grey; and a jump needs a waypoint, a charge, and no hostiles inside range — three conditions,
+none of them visible.
+
+**A refusal nobody reads is indistinguishable from a dead key.** So there is a permanent station
+panel with a real button per service, each of which says why it is unavailable; a permanent jump
+readout that names the missing condition; and a market that explains an empty wallet rather than
+greying out and leaving you to infer it. Keys still work — they are the shortcut now, not the
+interface.
+
+One of the two was a genuine bug as well: the **home station was a market**, which offers trade
+and repair and no fuel. The first key a new player pressed answered *"core does not offer
+refuel"*. The origin is its own kind now and offers all three.
+
+### The sector is genuinely much larger, and the nodes are not clustered
+
+`EXTENT` tripled again, to a span near five thousand million units. That alone does nothing:
+enlarging a fractal makes the trunk longer and leaves the twigs exactly as close together, so the
+sector gains empty margin and the part you fly through is as cluttered as it was.
+
+`MIN_NODE_GAP` is what actually spread it out — a floor on the distance between *any* two nodes,
+enforced with a spatial index during growth. `MIN_BRANCH` bounds a node against its own parent and
+says nothing about two branches from different parents folding back toward each other, which is
+precisely how a sector ends up with stations a few hundred thousand units apart in a volume three
+thousand million across.
+
+Sensor range is now `SENSOR_MULTIPLIER` times engagement range. It used to be the *same* number, so
+a sector was quiet until something was already on you — an ambush rather than a decision. The gap
+between seeing and fighting is where the decision to fight or leave actually lives.
+
+Fuel burns at roughly a quarter of the old rate. A full tank was fifty seconds of open throttle,
+which on a sector this size is a countdown rather than an economy — you spent all of it reaching
+the first thing you saw.
+
+### Traffic
+
+A volume this size where everything that moves is hostile is a shooting range with long gaps in
+it; the emptiness between fights is not space, it is waiting. `lib/scemaworld/factions.ts` adds
+three more factions:
+
+- **Courier** (neon blue). Fast, unarmed, running between markets. The commonest thing out here.
+- **Freighter** (blue). Slow and heavy, running between depots, visible from a long way off.
+- **Marshal** (yellow). Anti-raider patrol. Hunts raiders and **ignores the player entirely**.
+
+Marshals fight raiders whether or not anyone is watching — a test flies nobody for two and a half
+minutes and asserts the raider count *falls*. Arrive at a fight already in progress and you may
+pick a side or leave, and the outcome differs depending on whether you were there. That is the
+difference between a world and a backdrop.
+
+Traffic density is a **constant**, like raider density and for the same reason. Routes run between
+real service nodes, which is a *use* of the record's contents rather than a reward derived from
+them: a sector with more depots has freighters flying between more places, not more freighters.
+
+A friendly on sensors does not inhibit the jump drive. `nearestThreat` counts only factions that
+will shoot at *you* — counting a marshal would inhibit the drive because a patrol flew past, which
+reads as the mechanic being broken.
+
+### War classes are beatable now, and the reason they were not is instructive
+
+A leviathan killed a fully upgraded ship every time, and the cause was not balance. **The hit test
+was using the contact's magnitude-derived radius while the renderer drew the craft at its class
+radius.** A leviathan is drawn seven hundred and sixty million units across and its hitbox was
+*ten*. Sustained fire at something filling the entire window connected almost never.
+
+This is the exact failure the comment above that code already warned about — *"a hit test that
+disagrees with the picture is the worst kind of bug in a shooter"* — reintroduced the moment craft
+started being sized by class rather than by magnitude. Craft now carry their class radius into the
+hit test.
+
+With that fixed and the war-class alpha strike reduced from six hundred damage a volley to two
+hundred, the fight resolves the way it should:
+
+| | |
+|---|---|
+| stock ship, weaving | dies at 60s, leviathan untouched |
+| upgraded, flying straight at it | dies at 91s, leviathan at **160 of 4200** |
+| upgraded, weaving | **destroys it** at 97s, with 249 of 340 hull left |
+
+Upgrades, then a manoeuvre. A hull that turns at a twentieth of a radian per second cannot bring a
+broadside onto something that keeps moving laterally, and flying straight at one loses by a
+whisker — which is the lesson rather than a balance failure.
+
+### You no longer get stuck inside a capital
+
+A leviathan's radius is a quarter of a sector, and treating that sphere as a hull put the ship
+permanently inside a hurtbox: every frame re-collided, charged damage, zeroed the throttle, and
+pushed the ship a quarter of a sector in a near-arbitrary direction. Stuck, then dead.
+
+A capital now has a **core** — a fifth of its drawn radius — and only that collides. The rest is
+superstructure you fly between, which is also the tactic that beats one. A ram is charged **on
+entry** rather than per frame, and the drive is never cut inside a capital: doing so strands the
+ship in the one place it most needs to leave.
+
+Separation between craft also now corrects a quarter of an overlap per frame rather than all of
+it. Craft start deeply overlapped — a wing shares an anchor, and traffic is placed on the nodes
+the record's own signals sit on — and resolving that in one step scattered ships twenty million
+units the instant a world loaded.
+
+## Arc 12 — The record rides inside the picture *(done)*
 
 A PNG named the world it derived from and carried nothing else, which made it a claim ticket: to
 fly the space or verify the record you had to fetch the record from somewhere. That is right for
@@ -573,7 +677,7 @@ be mistaken for lanes inside a world, which are structural.
 ## Running it
 
 ```console
-$ cd web && npm run check:scemaworld     # generator, scale, dogfight, structures, jump — 182
+$ cd web && npm run check:scemaworld     # generation, combat, factions, services, jump — 196
 $ cd web && npm run dev                  # /scema-world
 ```
 

@@ -108,7 +108,7 @@ export function jumpCharge(drive: number, base: number): number {
 }
 
 export function fuelCapacity(tanks: number): number {
-  return 100 + tanks * 45
+  return 120 + tanks * 60
 }
 
 export function hullMax(hull: number): number {
@@ -150,7 +150,11 @@ export function photonMagazine(missiles: number): number {
  */
 export function burnRate(throttle: number, engine: number): number {
   const t = Math.max(0, Math.min(1, throttle))
-  return (0.6 + engine * 0.12) * (t * t * 3.2)
+  // Roughly a quarter of what it was. A full tank used to be fifty seconds of open throttle,
+  // which on a sector this size is not a fuel economy, it is a countdown — you spent the whole
+  // of it reaching the first thing you saw. It is now a few minutes of hard flying, so running
+  // dry is a consequence of a decision rather than of leaving the hangar.
+  return (0.16 + engine * 0.03) * (t * t * 3.2)
 }
 
 /** Spend fuel. Returns the ship unchanged when the tank is dry — thrust simply stops. */

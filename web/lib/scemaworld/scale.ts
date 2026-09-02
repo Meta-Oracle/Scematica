@@ -33,7 +33,7 @@ export const UNIT = 1000
  * appreciably more than this in its longest axis — around 1.5×. Treat `EXTENT` as the scale of
  * the place, not as its bounding box.
  */
-export const EXTENT = 1_050_000 * UNIT
+export const EXTENT = 3_200_000 * UNIT
 
 // ── distances, as fractions of the sector ────────────────────────────────────
 
@@ -92,8 +92,35 @@ export const DOCK_RANGE = Math.round(EXTENT * 0.055)
 export const AGGRO_RANGE = Math.round(EXTENT * 0.075)
 export const ENGAGE_RANGE = Math.round(EXTENT * 0.014)
 
-/** Nearest a fractal branch may place two nodes. Below this the sector reads as a clump. */
-export const MIN_BRANCH = Math.round(EXTENT * 0.00375)
+/**
+ * How much further everything *sees* than it engages.
+ *
+ * Detection was the same number as aggression, so a sector was quiet until something was already
+ * on you. Sensor contact should arrive long before a fight does — that gap is where the decision
+ * to fight or leave actually lives, and without it there is no decision, only an ambush.
+ */
+export const SENSOR_MULTIPLIER = 3.4
+
+/**
+ * Nearest a fractal branch may place two nodes.
+ *
+ * Raised hard, and it is the number that decides whether a sector reads as *expansive* or as a
+ * dense knot floating in a void. Growing `EXTENT` alone does not spread a fractal out: the trunk
+ * gets longer and the twigs stay exactly as close together, so the sector gains empty margin and
+ * the part you actually fly through is as cluttered as it was. Cutting the recursion earlier is
+ * what puts distance *between the things*.
+ */
+export const MIN_BRANCH = Math.round(EXTENT * 0.014)
+
+/**
+ * Smallest gap the generator will tolerate between any two nodes.
+ *
+ * A second, blunter guarantee on top of `MIN_BRANCH`. Branches from different parents can land
+ * near each other however conservative the recursion is, and two stations a few hundred thousand
+ * units apart in a sector three thousand million across is the specific thing that reads as
+ * clustering.
+ */
+export const MIN_NODE_GAP = Math.round(EXTENT * 0.025)
 
 // ── speeds, as sector crossings ──────────────────────────────────────────────
 

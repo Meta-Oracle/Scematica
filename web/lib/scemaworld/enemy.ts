@@ -40,6 +40,8 @@
 import type { Contact, Vec3 } from './generate.ts'
 import { durability } from './weapons.ts'
 import { CLASSES, classFor, SHIELD_DELAY_MS, type ClassSpec } from './classes.ts'
+import { civilian, hostileTo, nextStop, routeNodes, type Civilian, type Faction } from './factions.ts'
+import type { Node, Space } from './generate.ts'
 import { separate, steerAround, type Grid } from './collide.ts'
 import {
   AGGRO_RANGE, ENGAGE_RANGE, LIFE_ENEMY_SHOT, R_PLAYER, SPEED_ENEMY_SHOT,
@@ -51,8 +53,19 @@ export const ENEMY_SHOT_SPEED = SPEED_ENEMY_SHOT
 export type Behaviour = 'patrol' | 'pursue' | 'attack' | 'overshoot' | 'evade'
 
 export interface Craft {
-  /** The contact this craft is. Ids match `Space.contacts` or `Space.raiders`. */
+  /** The contact this craft is. Ids match `Space.contacts`, `Space.raiders`, or traffic. */
   id: string
+  /**
+   * Who it flies for.
+   *
+   * Drives *everything* about its behaviour, because "hostile" was never one question. A raider
+   * wants the player; a marshal wants the nearest raider and does not care about the player at
+   * all; a courier wants to be somewhere else. One flag decides which of those a craft is, and
+   * `hostileTo` is the only place that decides whether it will shoot at you.
+   */
+  faction: Faction
+  /** Node it is routing to, for traffic. Null for anything that fights. */
+  destination: number | null
   spec: ClassSpec
   at: Vec3
   /** Unit vector. A craft flies where it points; it cannot strafe. */
@@ -208,6 +221,8 @@ export function swarmOf(contacts: Contact[], seed: string): Swarm {
           shield: spec.shield,
           lastHitMs: -1e9,
           solid: c.solid,
+          faction: 'raider' as Faction,
+          destination: null,
           behaviour: 'patrol' as Behaviour,
           lastFire: -1e9,
           burstLeft: 0,
@@ -220,12 +235,46 @@ export function swarmOf(contacts: Contact[], seed: string): Swarm {
   }
 }
 
+/** Fold the sector's traffic into a swarm, so one loop steps everything that flies. */
+export function withTraffic(swarm: Swarm, traffic: Civilian[]): Swarm {
+  return {
+    ...swarm,
+    craft: [
+      ...swarm.craft,
+      ...traffic.map((c) => ({
+        id: c.id,
+        faction: c.faction,
+        destination: c.destination,
+        spec: c.spec,
+        at: c.at,
+        facing: { x: 0, y: 0, z: 1 },
+        speed: 0,
+        hull: c.spec.hull,
+        shield: c.spec.shield,
+        lastHitMs: -1e9,
+        solid: true,
+        behaviour: 'patrol' as Behaviour,
+        lastFire: -1e9,
+        burstLeft: 0,
+        since: 0,
+        lastRange: Infinity,
+        alive: true,
+      })),
+    ],
+  }
+}
+
 export interface StepResult {
   swarm: Swarm
   /** Damage dealt to the player this step, before their shields absorb any of it. */
   damage: number
   /** Ids that fired this step, so the renderer can flash a muzzle. */
   fired: string[]
+}
+
+/** Live craft of a given faction. */
+export function of(swarm: Swarm, faction: Faction): Craft[] {
+  return swarm.craft.filter((c) => c.alive && c.faction === faction)
 }
 
 /** How long a craft commits to an overshoot before turning back. */
@@ -292,6 +341,30 @@ export function decide(c: Craft, range: number, closing: number, nowMs: number):
  * `playerVel` is needed for the lead. Passing zero aims every shot at where the player *is*,
  * which at these speeds means everything misses — a silent way to make the game trivial.
  */
+/**
+ * The nearest live craft of an opposing faction, for a marshal picking a fight.
+ *
+ * Linear over the swarm, which is a couple of hundred entries. A spatial index here would be a
+ * structure to keep correct in exchange for a fraction of a millisecond.
+ */
+function nearestEnemyOf(swarm: Swarm, c: Craft): Craft | null {
+  let best: Craft | null = null
+  let bestD = c.spec.aggro * 2.5
+  for (const other of swarm.craft) {
+    if (!other.alive || other.id === c.id) continue
+    // Marshals hunt raiders. Raiders do not go looking for marshals — they are here for the
+    // player and fight back only when engaged, which is what keeps a sector's ambient violence
+    // from consuming itself before anybody arrives.
+    if (!(c.faction === 'marshal' && other.faction === 'raider')) continue
+    const d = len(sub(other.at, c.at))
+    if (d < bestD) {
+      bestD = d
+      best = other
+    }
+  }
+  return best
+}
+
 export function step(
   swarm: Swarm,
   playerAt: Vec3,
@@ -299,10 +372,12 @@ export function step(
   dt: number,
   nowMs: number,
   grid?: Grid,
+  space?: Space,
 ): StepResult {
   const craft: Craft[] = []
   const shots: EnemyShot[] = []
   const fired: string[] = []
+  const civilianHits: { id: string; damage: number }[] = []
   let damage = 0
 
   for (const c of swarm.craft) {
@@ -310,13 +385,45 @@ export function step(
       craft.push(c)
       continue
     }
-    const toPlayer = sub(playerAt, c.at)
-    const range = len(toPlayer)
-    const bearing = norm(toPlayer)
+
+    // ── who this craft is interested in ──────────────────────────────────────
+    // A raider wants the player. A marshal wants the nearest raider and is indifferent to the
+    // player entirely. A courier or a freighter wants to be somewhere else and will run from
+    // whatever is shooting near it.
+    let focusAt = playerAt
+    let focusVel = playerVel
+    let routeTo: Node | null = null
+
+    if (c.faction === 'marshal') {
+      const quarry = nearestEnemyOf(swarm, c)
+      if (quarry) {
+        focusAt = quarry.at
+        focusVel = scale(quarry.facing, quarry.speed)
+      } else {
+        // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which
+        // would look exactly like a hostile closing in.
+        focusAt = add(c.at, scale(c.facing, c.spec.aggro * 4))
+        focusVel = { x: 0, y: 0, z: 0 }
+      }
+    } else if (civilian(c.faction) && space) {
+      const route = routeNodes(space, c.faction)
+      routeTo = route.find((n) => n.id === c.destination) ?? route[0] ?? null
+      focusAt = routeTo ? routeTo.at : add(c.at, scale(c.facing, c.spec.aggro * 4))
+      focusVel = { x: 0, y: 0, z: 0 }
+    }
+
+    const toFocus = sub(focusAt, c.at)
+    const range = len(toFocus)
+    const bearing = norm(toFocus)
     // Positive when the craft is getting closer along its own nose.
     const closing = dot(c.facing, bearing)
 
-    const behaviour = decide(c, range, closing, nowMs)
+    // Traffic does not fight. It flies its route at cruise and runs when something armed is
+    // close — which is the whole of its behaviour, and deliberately so: a courier that duelled
+    // would be a fighter with a different colour.
+    const behaviour: Behaviour = civilian(c.faction)
+      ? 'pursue'
+      : decide(c, range, closing, nowMs)
     const since = behaviour === c.behaviour ? c.since : nowMs
 
     // Where it wants to point, and how hard it is pushing.
@@ -380,6 +487,14 @@ export function step(
       if (swerve.urgency > 0) throttle = Math.min(throttle, 1 - swerve.urgency * 0.5)
     }
 
+    // Traffic that has arrived picks its next stop, deterministically from its own id and the
+    // node it just left. A random pick would make two players' sectors diverge the moment
+    // anything docked — the same failure the placement rules exist to prevent, delayed a minute.
+    let destination = c.destination
+    if (civilian(c.faction) && space && routeTo && range < c.spec.radius * 30) {
+      destination = nextStop(routeNodes(space, c.faction), c.id, routeTo.id)
+    }
+
     const facing = turnToward(c.facing, want, c.spec.turn * dt)
     // Acceleration rather than a snapped velocity, so a craft has mass and a heavy one reads
     // as heavy.
@@ -399,13 +514,26 @@ export function step(
     // It only fires while actually pointing at the solution. A craft that can shoot sideways
     // makes manoeuvre pointless, which is the entire game here.
     const onTarget = dot(facing, aim) > 0.985
-    const canFire = behaviour === 'attack' && range < c.spec.aggro && onTarget
+    // Unarmed factions never fire, whatever state they are in. Checked on `damage` rather than
+    // on the faction so a class with a gun cannot be made peaceful by accident, or the reverse.
+    const canFire =
+      c.spec.damage > 0 && behaviour === 'attack' && range < c.spec.aggro && onTarget
     // Within a burst the rounds come fast; between bursts is the full cooldown. That rhythm is
     // most of what makes incoming fire feel like an event rather than a drip.
     const gap = burstLeft > 0 ? 90 : c.spec.cooldownMs
     if (canFire && nowMs - lastFire > gap) {
       if (burstLeft <= 0) burstLeft = c.spec.burst
-      shots.push({ at, dir: aim, life: LIFE_ENEMY_SHOT, damage: c.spec.damage })
+      // A marshal's rounds are resolved directly against its quarry rather than becoming a
+      // projectile. Two reasons: a shot fired at another *craft* would otherwise have to be
+      // tested against every craft every frame, and — the one that matters — a marshal's stray
+      // round hitting the player would make an ally indistinguishable from an enemy at the only
+      // moment it counts.
+      if (c.faction === 'marshal') {
+        const quarry = nearestEnemyOf(swarm, c)
+        if (quarry) civilianHits.push({ id: quarry.id, damage: c.spec.damage })
+      } else {
+        shots.push({ at, dir: aim, life: LIFE_ENEMY_SHOT, damage: c.spec.damage })
+      }
       fired.push(c.id)
       lastFire = nowMs
       burstLeft -= 1
@@ -423,6 +551,7 @@ export function step(
       facing,
       speed,
       behaviour,
+      destination,
       since,
       lastFire,
       burstLeft,
@@ -459,7 +588,14 @@ export function step(
     if (life > 0) shots.push({ at, dir: s.dir, life, damage: s.damage })
   }
 
-  return { swarm: { craft, shots }, damage, fired }
+  // Marshal fire, applied after every craft has moved. Done here rather than inline so a
+  // marshal cannot kill something that the same loop has not finished stepping.
+  let out: Swarm = { craft, shots }
+  for (const h of civilianHits) {
+    out = hit(out, h.id, h.damage, nowMs).swarm
+  }
+
+  return { swarm: out, damage, fired }
 }
 
 function nearSegment(p: Vec3, a: Vec3, b: Vec3): number {
@@ -509,7 +645,10 @@ export function living(swarm: Swarm): Craft[] {
 /** The nearest live hostile — for the sensor panel and for the jump inhibitor. */
 export function nearestThreat(swarm: Swarm, at: Vec3): { craft: Craft; range: number } | null {
   let best: { craft: Craft; range: number } | null = null
-  for (const c of living(swarm)) {
+  // Only factions that will actually shoot at *you*. A marshal on the sensor board is not a
+  // threat, and counting one would inhibit the jump drive because a friendly patrol flew past —
+  // which is the kind of bug that reads as the mechanic being broken.
+  for (const c of living(swarm).filter((k) => hostileTo(k.faction))) {
     const range = len(sub(c.at, at))
     if (!best || range < best.range) best = { craft: c, range }
   }

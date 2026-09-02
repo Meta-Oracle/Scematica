@@ -44,6 +44,9 @@ export type Role =
   | 'raider'
   | 'waypoint'
   | 'capital'
+  | 'courier'
+  | 'freighter'
+  | 'marshal'
 
 /** RGB in 0..1, for a shader. One table, so a palette change moves every surface at once. */
 export const PALETTE: Record<Role, readonly [number, number, number]> = {
@@ -77,6 +80,16 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // A capital is the same orange family, pushed toward bronze so it reads as a different
   // *weight* of thing rather than a bigger fighter. Silhouette carries the rest.
   capital: [1.0, 0.72, 0.34],
+  // Traffic. Blues for the two civilian factions and yellow for the patrol, chosen so that the
+  // three of them together are unmistakable against the orange-red the hostiles occupy — at a
+  // glance, across a sector, the question "is that coming for me" has to answer itself.
+  //
+  // Colour is doing real work here and it is still not doing it alone: a courier is a fighter
+  // silhouette, a freighter is a gunship silhouette, and a marshal carries a hostile's shape
+  // with a friendly hue precisely because it *is* an armed ship — one that is not after you.
+  courier: [0.35, 0.85, 1.0],
+  freighter: [0.36, 0.55, 0.95],
+  marshal: [1.0, 0.9, 0.3],
   // The nav computer's marker. Deliberately the brightest thing in the palette — it is the
   // only body on screen the player put there.
   waypoint: [0.6, 1.0, 0.85],

@@ -63,6 +63,9 @@ export type ClassId =
   | 'destroyer'
   | 'dreadnought'
   | 'leviathan'
+  | 'courier'
+  | 'freighter'
+  | 'marshal'
 
 export interface ClassSpec {
   id: ClassId
@@ -142,29 +145,79 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     speed: S(1 / 150), turn: 0.09, aggro: S(0.2), standoff: S(0.1),
     damage: 24, cooldownMs: 800, burst: 6, bounty: 1200, capital: true,
   },
-  // War-class. Fifteen stations end to end, with a broadside that will strip a stock hull in
-  // two volleys. It is not a fight to be picked; it is a thing to be *seen*, from a long way
-  // off, and decided about.
+  // War-class. Fifteen stations end to end.
+  //
+  // The broadside used to one-shot a fully upgraded ship — ten rounds of sixty-two is six
+  // hundred damage against a maximum of five hundred and fifty, so no amount of hull made it
+  // survivable and there was no tactic to find. A capital has to be beaten by *manoeuvre*: it
+  // turns at a twentieth of a radian per second, so a fighter that keeps moving laterally is
+  // never in its arc, and one that flies straight at it deserves what it gets. Per-shot damage
+  // is now low enough that being caught once is a mistake rather than the end.
   dreadnought: {
     id: 'dreadnought', label: 'DREADNOUGHT', shape: 'dreadnought',
     radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.26), standoff: S(0.16),
-    damage: 40, cooldownMs: 700, burst: 8, bounty: 4000, capital: true,
+    damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
   // The largest thing in any sector, and rare enough that most worlds have none. At this size
   // the ribbing on the hull is doing real work: it is the only cue for how far away it is, and
   // without it a leviathan at range reads as a nearby triangle.
+  //
+  // Beating one takes minutes of sustained fire and constant lateral movement. That is the
+  // intent: perseverance and a manoeuvre, not a bigger number.
   leviathan: {
     id: 'leviathan', label: 'LEVIATHAN', shape: 'dreadnought',
     radius: S(0.24), hull: 4200, shield: 2600, shieldRegen: 44,
     speed: S(1 / 420), turn: 0.028, aggro: S(0.34), standoff: S(0.26),
-    damage: 62, cooldownMs: 620, burst: 10, bounty: 14000, capital: true,
+    damage: 21, cooldownMs: 800, burst: 10, bounty: 14000, capital: true,
+  },
+
+  // ── traffic ────────────────────────────────────────────────────────────────
+  // Not hostile, and `classFor` never rolls them: they are placed by `factions.ts` on routes
+  // between real service nodes. They carry statlines because they can be shot at — a ship you
+  // cannot destroy is scenery, and scenery that dodges is worse than none.
+
+  // Neon blue. Small, quick, and everywhere; the commonest thing in the sector and the reason
+  // the markets look like they are for something.
+  courier: {
+    id: 'courier', label: 'COURIER', shape: 'interceptor',
+    radius: S(0.0024), hull: 10, shield: 6, shieldRegen: 3,
+    speed: S(1 / 13), turn: 2.0, aggro: S(0.06), standoff: S(0.01),
+    damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
+  },
+  // Blue. Slow and heavy, running fuel between depots. Visible from a long way off, which is
+  // most of its job: a sector where the only distant silhouettes are threats is a tense one for
+  // the wrong reason.
+  freighter: {
+    id: 'freighter', label: 'FREIGHTER', shape: 'gunship',
+    radius: S(0.009), hull: 60, shield: 30, shieldRegen: 4,
+    speed: S(1 / 42), turn: 0.6, aggro: S(0.06), standoff: S(0.014),
+    damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
+  },
+  // Yellow. Anti-raider patrol: hunts raiders, ignores the player, and fights whether or not
+  // anyone is watching. Deliberately a match for an interceptor rather than an overmatch — a
+  // patrol that always wins makes the sector safe, which is not the point of having one.
+  marshal: {
+    id: 'marshal', label: 'MARSHAL', shape: 'interceptor',
+    radius: S(0.0032), hull: 22, shield: 18, shieldRegen: 5,
+    speed: S(1 / 14), turn: 2.2, aggro: S(0.11), standoff: S(0.012),
+    damage: 8, cooldownMs: 700, burst: 2, bounty: 0, capital: false,
   },
 }
 
+/**
+ * The classes `classFor` may roll — the hostile roster only.
+ *
+ * Traffic is placed by `factions.ts` and never rolled, so it is excluded here. Keeping one list
+ * of "everything" and filtering at each use site is how a courier eventually turns up in a raider
+ * wing, which would be both a gameplay bug and a lie about who is out there.
+ */
 export const CLASS_IDS: ClassId[] = [
   'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer', 'dreadnought', 'leviathan',
 ]
+
+/** Every class, hostile and otherwise. */
+export const ALL_CLASS_IDS: ClassId[] = [...CLASS_IDS, 'courier', 'freighter', 'marshal']
 
 /** Milliseconds without taking a hit before shields begin to come back. */
 export const SHIELD_DELAY_MS = 4_200

@@ -315,11 +315,18 @@ export function step(
       // Swept along the whole step, so a fast shot cannot pass through a target between
       // frames. The radius is then only what it should be — calibre plus the contact's own
       // size — rather than being inflated to paper over tunnelling.
-      // The same radius `view.ts` draws. A hit test that disagrees with the picture is the
-      // worst kind of bug in a shooter: the player is told they missed something they saw
-      // themselves hit.
-      const reach =
-        w.calibre + R_CONTACT + Math.round(Math.max(0, Math.min(1, contact.magnitude)) * R_CONTACT_SPAN)
+      // The same radius `view.ts` draws — and for an armed craft that is its **class** radius,
+      // not one derived from a reported magnitude.
+      //
+      // This was the bug that made the war classes unbeatable, and it is the exact failure this
+      // comment already warned about. A leviathan is drawn seven hundred and sixty million units
+      // across and its hit radius was ten: the magnitude formula describes an inert *signal*, and
+      // once craft were sized by class the two stopped agreeing. Sustained fire at something that
+      // filled the window connected almost never, so no amount of perseverance beat one.
+      const size =
+        contact.radius ??
+        R_CONTACT + Math.round(Math.max(0, Math.min(1, contact.magnitude)) * R_CONTACT_SPAN)
+      const reach = w.calibre + size
       if (distToSegment(contact.at, p.at, at) <= reach) {
         // Counted, but **not** adjudicated. This module used to decide death here from a
         // seed-derived durability, and `enemy.ts` now owns hull and shields — two authorities

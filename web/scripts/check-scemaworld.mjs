@@ -28,7 +28,7 @@ import { fetchWorld, explain, retryable, matchesRequest } from '../lib/scemaworl
 import { join as joinFleet, placement } from '../lib/scemaworld/fleet.ts'
 import {
   newShip, refuel, repair, scavenge, buy, upgradeCost, fuelCapacity, hullMax, topSpeed,
-  sensorGain, laserCooldown, photonMagazine, shieldMax, jumpCapacity, jumpCharge,
+  sensorGain, laserCooldown, photonMagazine, shieldMax, jumpCapacity, jumpCharge, burnRate,
   damage, recharge, MAX_LEVEL,
 } from '../lib/scemaworld/ship.ts'
 import * as Enemy from '../lib/scemaworld/enemy.ts'
@@ -36,10 +36,12 @@ import {
   collidesWith, registers, permeableNote, passageNote, sweep, resolve, separate, steerAround,
   passedThrough, crossed, closestOnSegment, SEPARATION,
 } from '../lib/scemaworld/collide.ts'
-import { gridFor, NOTICE_MS } from '../lib/scemaworld/game.ts'
+import { gridFor, NOTICE_MS, sensors } from '../lib/scemaworld/game.ts'
+import { hostileTo, routeNodes, trafficOf } from '../lib/scemaworld/factions.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
-  JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX,
+  JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
+  SENSOR_MULTIPLIER, AGGRO_RANGE as SENSOR_BASE, SPEED_LASER, LIFE_LASER,
 } from '../lib/scemaworld/scale.ts'
 import {
   swarmOf, step as enemyStep, hit as enemyHit, living, decide, leadPoint, turnToward,
@@ -1132,6 +1134,16 @@ check('the sector is playable at its own scale', () => {
   assert(SCALE.R_STATION < EXTENT / 40, 'a station is a continent')
 })
 
+check('a full tank is a journey rather than a countdown', () => {
+  // It was fifty seconds of open throttle, which on a sector this size is not a fuel economy —
+  // you spent the whole of it reaching the first thing you saw. Running dry has to be the
+  // consequence of a decision, not of leaving the hangar.
+  const seconds = fuelCapacity(0) / burnRate(1, 0)
+  assert(seconds > 150, `a full tank is ${seconds.toFixed(0)}s at full burn`)
+  assert(seconds < 900, `a full tank is ${seconds.toFixed(0)}s — fuel has stopped mattering`)
+  assert(burnRate(0.4, 0) < burnRate(1, 0) / 4, 'cruising is not meaningfully cheaper than burning')
+})
+
 check('a fleeing player can always outrun a hostile', () => {
   // The design rule behind the numbers: a fight you are losing must have an exit, or the game
   // punishes the exploring it is entirely about.
@@ -1283,7 +1295,7 @@ check('ninety seconds of play produces a game rather than a still photograph', (
   assert(sampledWithCraft > 0, 'no hostile was ever drawn')
   assert(g.throttle === 1, 'ninety seconds of ArrowUp did not reach full throttle')
   assert(Math.hypot(...g.camera.position) > EXTENT, 'the ship did not cross the sector')
-  assert(g.ship.fuel === 0, 'ninety seconds at full throttle cost no fuel')
+  assert(g.ship.fuel < fuelCapacity(0), 'ninety seconds at full throttle cost no fuel')
 })
 
 check('a fight can be won, and pays from the act rather than the record', () => {
@@ -2018,11 +2030,22 @@ check('separation pushes two overlapping craft apart, symmetrically', () => {
   // interpenetrates while it turns.
   const a = { at: { x: 0, y: 0, z: 0 }, radius: 1000 }
   const b = { at: { x: 500, y: 0, z: 0 }, radius: 1000 }
-  const push = separate([a, b])
+  let push = separate([a, b])
   assert(push[0].x < 0 && push[1].x > 0, 'they were not pushed apart')
   assert(Math.abs(push[0].x + push[1].x) < 1e-9, 'the push was not symmetric')
-  const gap = 500 + push[1].x - push[0].x
-  assert(gap >= 2000 * SEPARATION - 1e-6, `ended ${gap} apart, still overlapping`)
+  // A fraction per frame, not the whole overlap: craft can start deeply overlapped and resolving
+  // that in one step scattered ships twenty million units the instant a world loaded.
+  assert(push[1].x - push[0].x < 2000 * SEPARATION, 'the whole overlap was corrected at once')
+  // It still converges, and quickly.
+  let A = { ...a, at: { ...a.at } }
+  let B = { ...b, at: { ...b.at } }
+  for (let i = 0; i < 60; i += 1) {
+    push = separate([A, B])
+    A = { ...A, at: { x: A.at.x + push[0].x, y: A.at.y, z: A.at.z } }
+    B = { ...B, at: { x: B.at.x + push[1].x, y: B.at.y, z: B.at.z } }
+  }
+  const gap = B.at.x - A.at.x
+  assert(gap >= 2000 * SEPARATION - 1, `converged to ${gap}, still overlapping`)
 })
 
 check('two craft at exactly the same point still separate, deterministically', () => {
@@ -2134,10 +2157,18 @@ check('ramming a craft costs both of you', () => {
   let g = newGame(s)
   // A raider, deliberately. Contacts from the record sit *on* nodes, so a record-signal craft
   // starts inside a station and the ship would collide with the station before ever reaching it.
-  const c = Enemy.living(g.swarm).find((k) => k.id.startsWith('raider:'))
+  // A raider, and not a capital: contacts from the record sit *on* nodes, and a capital's
+  // collidable core is a fraction of its drawn radius, so half a radius is outside it.
+  // Settle first. Craft start overlapped — a wing shares an anchor, and traffic is placed on the
+  // nodes the record's signals also sit on — so separation is still moving them on frame one.
+  for (let f = 0; f < 120; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: f })
+  }
+  const c = Enemy.living(g.swarm).find((k) => k.id.startsWith('raider:') && !k.spec.capital)
   g = {
     ...g,
     throttle: 1,
+    touching: [],
     camera: { ...g.camera, position: [c.at.x, c.at.y, c.at.z + c.spec.radius * 0.5] },
   }
   g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
@@ -2145,12 +2176,16 @@ check('ramming a craft costs both of you', () => {
   assert((g.notice ?? '').includes('collision'), g.notice)
   const after = Enemy.living(g.swarm).find((k) => k.id === c.id)
   assert(!after || after.hull < c.hull, 'the craft was unharmed by the collision')
-  const gap = Math.hypot(
-    g.camera.position[0] - (after ?? c).at.x,
-    g.camera.position[1] - (after ?? c).at.y,
-    g.camera.position[2] - (after ?? c).at.z,
-  )
-  assert(gap >= R_PLAYER + c.spec.radius, 'the two are still inside each other')
+  // Only meaningful if it survived — there is nothing to be inside otherwise, and comparing
+  // against the dead craft's last known position measures a step that already happened.
+  if (after) {
+    const gap = Math.hypot(
+      g.camera.position[0] - after.at.x,
+      g.camera.position[1] - after.at.y,
+      g.camera.position[2] - after.at.z,
+    )
+    assert(gap >= R_PLAYER + c.spec.radius, 'the two are still inside each other')
+  }
 })
 
 check('a class can physically reach the range it wants to fight at', () => {
@@ -2350,6 +2385,250 @@ check('a tick stays well inside a frame', () => {
   }
   const per = (Date.now() - t0) / N
   assert(per < 4, `${per.toFixed(2)}ms per tick, against a 16.7ms frame`)
+})
+
+// ── the hit test must agree with the picture ─────────────────────────────────
+
+check('a craft is hit at the size it is drawn', () => {
+  // The bug that made the war classes unbeatable, and it is the exact failure the code comment
+  // already warned about. A leviathan is drawn seven hundred and sixty million units across and
+  // its hit radius was *ten* — inherited from the magnitude formula, which describes an inert
+  // signal. Sustained fire at something filling the window connected almost never.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital)
+  if (!cap) return
+  const target = { ...firstSolid(s), at: cap.at, radius: cap.spec.radius }
+  // Well outside any magnitude-derived radius, well inside the drawn hull.
+  const from = { x: cap.at.x, y: cap.at.y, z: cap.at.z + cap.spec.radius * 0.6 }
+  let c = newCombat()
+  let hits = []
+  for (let i = 0; i < 20 && hits.length === 0; i += 1) {
+    c = fire(c, from, { x: 0, y: 0, z: -1 }, i * 200, [target])
+    const r = step(c, 0.05, [target], s.seed)
+    c = r.combat
+    hits = r.hits
+  }
+  assert(hits.length > 0, 'a shot into the middle of a capital hull missed it')
+})
+
+check('the game hands weapons the craft radius, not the signal radius', () => {
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'game.ts'))
+  assert(src.includes('radius: k.spec.radius'), 'the hit test is back on the magnitude formula')
+})
+
+// ── war classes are beatable ─────────────────────────────────────────────────
+
+check('a war class can be destroyed by a fully upgraded ship', () => {
+  // Perseverance and a manoeuvre, not a bigger number. This runs the fight: close, hold half
+  // laser reach, and weave so the hull — which turns at a fraction of a radian per second —
+  // never brings its broadside to bear.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital && c.spec.id !== 'frigate')
+  if (!cap) return
+  const lv = 4
+  g = {
+    ...g,
+    ship: {
+      ...g.ship,
+      levels: { engine: lv, hull: lv, shields: lv, sensors: lv, laser: lv, missiles: lv, tanks: lv, drive: lv },
+      hull: hullMax(lv),
+      shield: shieldMax(lv),
+      fuel: 1e9,
+    },
+    camera: { ...g.camera, position: [cap.at.x, cap.at.y, cap.at.z + cap.spec.radius * 1.4] },
+  }
+  let killed = false
+  for (let f = 0; f < 60 * 200 && !g.lost && !killed; f += 1) {
+    const live = Enemy.living(g.swarm).find((c) => c.id === cap.id)
+    if (!live) {
+      killed = true
+      break
+    }
+    const keys = flyAt(g.camera, live.at)
+    // The manoeuvre. Without it the fight is lost with the target at a few per cent of hull,
+    // which is the intended lesson rather than a balance failure.
+    keys.add(['ArrowLeft', 'Space', 'ArrowRight', 'ShiftLeft'][Math.floor(f / 40) % 4])
+    g = tick(g, s, { keys, firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  assert(killed, `the war class survived; player hull ${g.ship.hull.toFixed(0)}`)
+})
+
+/** Keys that turn onto a target and hold roughly half laser reach. */
+function flyAt(cam, target) {
+  const f = forward(cam)
+  const u = up(cam)
+  const r = right(cam)
+  const d = [target.x - cam.position[0], target.y - cam.position[1], target.z - cam.position[2]]
+  const l = Math.hypot(...d) || 1
+  const n = d.map((v) => v / l)
+  const lx = r[0] * n[0] + r[1] * n[1] + r[2] * n[2]
+  const ly = u[0] * n[0] + u[1] * n[1] + u[2] * n[2]
+  const lz = f[0] * n[0] + f[1] * n[1] + f[2] * n[2]
+  const keys = new Set()
+  // Turn until the target is genuinely *ahead*, not merely un-lateral: with only the lateral
+  // components checked, a target directly astern reads as aligned and the ship burns away from
+  // it. That mistake cost three debugging passes.
+  if (lz < 0.995) {
+    if (Math.abs(lx) > Math.abs(ly)) keys.add(lx > 0 ? 'KeyD' : 'KeyA')
+    else keys.add(ly > 0 ? 'KeyW' : 'KeyS')
+    if (Math.abs(lx) < 0.02 && Math.abs(ly) < 0.02 && lz < 0) keys.add('KeyD')
+  }
+  if (lz > 0.9 && l > SPEED_LASER * LIFE_LASER * 0.5) keys.add('ArrowUp')
+  else keys.add('KeyX')
+  return keys
+}
+
+check('you never get stuck inside a capital hull', () => {
+  // A leviathan's radius is a quarter of a sector. Treating that sphere as a hull put the ship
+  // permanently inside a hurtbox: every frame re-collided, charged damage and zeroed the
+  // throttle, and pushed the ship a quarter of a sector in a near-arbitrary direction.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital)
+  if (!cap) return
+  g = {
+    ...g,
+    throttle: 1,
+    ship: { ...g.ship, fuel: 1e9 },
+    camera: { ...g.camera, position: [cap.at.x, cap.at.y, cap.at.z] },
+  }
+  let charged = 0
+  const start = g.ship.hull + g.ship.shield
+  for (let f = 0; f < 300; f += 1) {
+    const before = g.ship.hull + g.ship.shield
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: f * 16 })
+    if (g.ship.hull + g.ship.shield < before) charged += 1
+  }
+  assert(charged <= 2, `charged ${charged} times for sitting inside one hull`)
+  assert(g.throttle === 1, 'the drive was cut inside a capital, stranding the ship')
+  assert(!g.lost, `sitting inside a capital killed the ship (${start} -> 0)`)
+})
+
+// ── traffic ──────────────────────────────────────────────────────────────────
+
+check('the sector carries traffic that is not trying to kill you', () => {
+  // A volume this size where everything that moves is hostile is a shooting range with long gaps
+  // in it. The emptiness between fights is not space, it is waiting.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  for (const f of ['courier', 'freighter', 'marshal']) {
+    assert(Enemy.of(g.swarm, f).length > 0, `no ${f} anywhere in the sector`)
+  }
+  assert(!hostileTo('courier') && !hostileTo('freighter') && !hostileTo('marshal'))
+  assert(hostileTo('raider'), 'raiders stopped being hostile')
+})
+
+check('traffic is unarmed and a marshal is not', () => {
+  assert(CLASSES.courier.damage === 0, 'a courier carries a gun')
+  assert(CLASSES.freighter.damage === 0, 'a freighter carries a gun')
+  assert(CLASSES.marshal.damage > 0, 'the anti-raider patrol is unarmed')
+  assert(CLASSES.courier.bounty === 0 && CLASSES.marshal.bounty === 0, 'traffic pays a bounty')
+})
+
+check('a friendly on sensors does not inhibit the jump drive', () => {
+  // `nearestThreat` counts only factions that will shoot at *you*. Counting a marshal would
+  // inhibit the drive because a patrol flew past, which reads as the mechanic being broken.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const marshal = Enemy.of(g.swarm, 'marshal')[0]
+  // Park on top of it, far from anything hostile.
+  g = { ...g, camera: { ...g.camera, position: [marshal.at.x, marshal.at.y, marshal.at.z] } }
+  const t = Enemy.nearestThreat(g.swarm, {
+    x: marshal.at.x, y: marshal.at.y, z: marshal.at.z,
+  })
+  assert(!t || t.craft.faction === 'raider', 'a friendly registered as a threat')
+})
+
+check('marshals fight raiders whether or not anyone is watching', () => {
+  // The part that makes a sector feel inhabited rather than staged: arrive at a fight already in
+  // progress, and the outcome differs depending on whether you were there.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const before = Enemy.of(g.swarm, 'raider').length
+  for (let f = 0; f < 60 * 150; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  const after = Enemy.of(g.swarm, 'raider').length
+  assert(after < before, `raiders went ${before} -> ${after} with nobody hunting them`)
+  assert(g.combat.destroyed.length === 0, 'the player was credited with kills it did not make')
+})
+
+check('civilians route between real service nodes', () => {
+  // A *use* of the record's contents rather than a reward derived from them: a sector with more
+  // depots has freighters flying between more places, not more freighters.
+  const s = generate(world, digest)
+  assert(routeNodes(s, 'courier').every((n) => servicesOf(n.kind).includes('trade')))
+  assert(routeNodes(s, 'freighter').every((n) => servicesOf(n.kind).includes('refuel')))
+  assert(routeNodes(s, 'marshal').length === 0, 'a patrol has a trade route')
+
+  let g = newGame(s)
+  for (let f = 0; f < 60 * 90; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  const dests = new Set(Enemy.of(g.swarm, 'courier').map((c) => c.destination))
+  assert(dests.size > 3, `couriers are all heading to ${dests.size} place(s)`)
+})
+
+check('traffic density is a constant, never derived from the record', () => {
+  // Same rule as raiders, and this is where it would be easiest to break: more markets, more
+  // couriers, and a record's contents are worth misreporting again.
+  const s = generate(world, digest)
+  const richer = { ...world, signals: [...world.signals, ...world.signals] }
+  const a = trafficOf(s, s.seed).length
+  const b = trafficOf(generate(richer, digest), s.seed).length
+  assert(a === b, `traffic went ${a} -> ${b} when the record reported more`)
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'factions.ts'))
+  for (const f of ['blind_spots', 'blindSpots', 'magnitude', 'legibility']) {
+    assert(!src.includes(f), `factions.ts reads \`${f}\` from the record`)
+  }
+})
+
+check('the sector is deterministic down to its traffic', () => {
+  const s = generate(world, digest)
+  assert(JSON.stringify(trafficOf(s, s.seed)) === JSON.stringify(trafficOf(s, s.seed)))
+  assert(
+    JSON.stringify(trafficOf(s, 'f'.repeat(64))) !== JSON.stringify(trafficOf(s, s.seed)),
+    'the seed does not move the traffic',
+  )
+})
+
+// ── the sector is genuinely spread out ───────────────────────────────────────
+
+check('nodes are not clustered', () => {
+  // Enlarging `EXTENT` alone does not spread a fractal out: the trunk gets longer and the twigs
+  // stay exactly as close together, so the sector gains empty margin and the part you fly through
+  // is as cluttered as it was. `MIN_NODE_GAP` is what puts distance between the things.
+  const s = generate(world, digest)
+  let closest = Infinity
+  for (let i = 0; i < s.nodes.length; i += 1) {
+    for (let j = i + 1; j < s.nodes.length; j += 1) {
+      const a = s.nodes[i].at
+      const b = s.nodes[j].at
+      closest = Math.min(closest, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z))
+    }
+  }
+  assert(closest >= MIN_NODE_GAP * 0.999, `two nodes are ${Math.round(closest / 1e6)}M apart`)
+  // Against an ordinary station rather than the single largest node. There is exactly one
+  // origin per sector, so demanding twice *its* radius costs hundreds of nodes to guard a case
+  // that cannot arise — and a sector with four markets in five thousand million units is spread
+  // out in the way an empty room is.
+  assert(MIN_NODE_GAP > R_STATION * 2, 'the floor is smaller than the things it separates')
+  assert(s.nodes.filter((n) => n.kind === 'market').length > 5, 'too few markets to plan around')
+})
+
+check('sensors reach far beyond engagement', () => {
+  // Detection was the same number as aggression, so a sector was quiet until something was
+  // already on you. The gap is where the decision to fight or leave lives; without it there is
+  // no decision, only an ambush.
+  assert(SENSOR_MULTIPLIER > 2, 'sensors barely see further than a fight starts')
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  const reach = SENSOR_BASE * SENSOR_MULTIPLIER
+  for (const c of sensors(g, 20)) {
+    assert(c.range <= reach * 2, 'the sensor board reports something out of range')
+  }
 })
 
 await Promise.all(pending)

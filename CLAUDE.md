@@ -798,6 +798,31 @@ Three more rules the 104 checks carry, each paid for:
   star you could fly to would be an object the record never claimed. Draw distance is a constant
   covering the sector: it used to come from sensor range, which conflated what the record knows
   with what the window shows and made an unread world arrive as a *small* one.
+- **A hit test must use the radius the renderer draws.** Reintroduced and paid for twice: craft
+  started being sized by *class* while `weapons.ts` still sized them from a signal's `magnitude`,
+  so a leviathan drawn 760M across had a 10M hitbox and the war classes were unbeatable by
+  construction. Craft carry `radius` into the hit test now.
+- **A capital is a volume you fly through, with a small solid core.** Treating the drawn sphere as
+  a hull trapped the ship inside a hurtbox — re-collided every frame, charged every frame, pushed
+  a quarter of a sector per frame. A ram is charged **on entry**, and the drive is never cut
+  inside a capital or the ship is stranded where it most needs to leave. Flying inside the
+  superstructure is also the tactic that beats one.
+- **Three factions of traffic, and they are not scenery** (`factions.ts`). Couriers (neon blue) run
+  between markets, freighters (blue) between depots, marshals (yellow) hunt raiders and ignore the
+  player. Marshals kill raiders with nobody watching — a test asserts the raider count falls over
+  two minutes of an idle player. Density is a **constant**; routes use the record's service nodes,
+  which is a use of its contents rather than a reward derived from them. `nearestThreat` counts
+  only factions hostile *to the player*, or a passing patrol inhibits the jump drive.
+- **A refusal nobody reads is indistinguishable from a dead key.** Refuelling, jumping and the
+  market were all reported broken and all three were refusing correctly in a notice that faded in
+  three seconds — full tanks, no salvage, no waypoint. The fix is a permanent station panel with a
+  real button per service that states *why* it is unavailable, a permanent jump readout naming the
+  missing condition, and a market that explains an empty wallet. One real bug underneath: the home
+  station was a *market*, so the first key a new player pressed said "core does not offer refuel".
+- **Enlarging `EXTENT` does not spread a fractal out.** The trunk gets longer and the twigs stay as
+  close together, so the sector gains empty margin and the part you fly through is unchanged.
+  `MIN_NODE_GAP` — a floor between *any* two nodes, enforced with a spatial index during growth —
+  is what actually did it; `MIN_BRANCH` only bounds a node against its own parent.
 - **Nodes are open wireframe structures you fly through, one silhouette per kind** (`meshes.ts`).
   They were shaded spheres, so a market and a rift were the same ball in different colours and the
   record's vocabulary arrived as a *palette* — the failure mode colour-only distinctions always

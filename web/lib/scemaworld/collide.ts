@@ -291,6 +291,17 @@ export interface Mover {
 export const SEPARATION = 1.35
 
 /**
+ * How much of an overlap is corrected per frame.
+ *
+ * Not all of it. Craft can start deeply overlapped — a raider wing shares an anchor, and traffic
+ * is placed on the nodes the record's own signals also sit on — and resolving that in one step
+ * displaced ships by twenty million units on the first frame, which on screen is a scatter
+ * explosion the instant a world loads. A quarter per frame converges in well under a second and
+ * never teleports anything.
+ */
+export const SEPARATION_RATE = 0.25
+
+/**
  * Positional separation for a list of movers.
  *
  * Returns a displacement per mover, to be applied by the caller — this file never mutates. It is
@@ -315,7 +326,7 @@ export function separate(movers: Mover[]): Vec3[] {
       // do; what matters is that they pick one and that the choice is deterministic, because two
       // players holding the same record must see the same fight.
       const dir = dist < 1e-6 ? { x: 1, y: 0, z: 0 } : norm(d)
-      const half = (want - dist) / 2
+      const half = ((want - dist) / 2) * SEPARATION_RATE
       push[i] = { x: push[i].x - dir.x * half, y: push[i].y - dir.y * half, z: push[i].z - dir.z * half }
       push[j] = { x: push[j].x + dir.x * half, y: push[j].y + dir.y * half, z: push[j].z + dir.z * half }
     }

@@ -44,7 +44,7 @@ import { growthOf, plannedCuts, Rng, type Growth } from '../omni/fractal.ts'
 import { raidersOf } from './raiders.ts'
 import type { WorldState } from '../omni/types.ts'
 
-import { EXTENT, MIN_BRANCH } from './scale.ts'
+import { EXTENT, MIN_BRANCH, MIN_NODE_GAP } from './scale.ts'
 
 /**
  * Scale of the whole volume, re-exported because it is what most callers want from here.
@@ -161,6 +161,14 @@ export interface Contact {
    * looking at the screen.
    */
   unlogged?: boolean
+  /**
+   * Hit radius, when this target is a live craft rather than an inert signal.
+   *
+   * Set by `game.ts` from the craft's class, because that is what the renderer draws. Absent for
+   * a static contact, which falls back to the magnitude formula — a signal is a reading and its
+   * size is a claim about how big a concern somebody counted.
+   */
+  radius?: number
 }
 
 export interface Space {
@@ -290,10 +298,63 @@ export function generate(world: WorldState, digest: string): Space {
   // half the size that fills its space.
   const trunk = Math.trunc(EXTENT / 2)
 
+  /**
+   * A coarse spatial index of placed nodes, so the gap check below is not quadratic.
+   *
+   * Cells are `MIN_NODE_GAP` across, which means a candidate can only be too close to something
+   * in its own cell or one of the twenty-six around it.
+   */
+  const placed = new Map<string, Vec3[]>()
+  const cellKey = (v: Vec3) =>
+    `${Math.floor(v.x / MIN_NODE_GAP)},${Math.floor(v.y / MIN_NODE_GAP)},${Math.floor(v.z / MIN_NODE_GAP)}`
+
+  /**
+   * Whether a candidate position is far enough from every node already placed.
+   *
+   * `MIN_BRANCH` alone does not give this. It bounds the distance between a node and its own
+   * *parent*, and says nothing about two branches from different parents folding back toward
+   * each other — which is precisely how a sector ends up with stations a few hundred thousand
+   * units apart in a volume three thousand million across. Enlarging `EXTENT` cannot fix that
+   * either: a longer trunk moves the whole knot further out and leaves it just as tight.
+   */
+  const clear = (v: Vec3): boolean => {
+    const cx = Math.floor(v.x / MIN_NODE_GAP)
+    const cy = Math.floor(v.y / MIN_NODE_GAP)
+    const cz = Math.floor(v.z / MIN_NODE_GAP)
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const bucket = placed.get(`${cx + dx},${cy + dy},${cz + dz}`)
+          if (!bucket) continue
+          for (const o of bucket) {
+            if (Math.hypot(v.x - o.x, v.y - o.y, v.z - o.z) < MIN_NODE_GAP) return false
+          }
+        }
+      }
+    }
+    return true
+  }
+
+  const remember = (v: Vec3) => {
+    const k = cellKey(v)
+    const bucket = placed.get(k)
+    if (bucket) bucket.push(v)
+    else placed.set(k, [v])
+  }
+
+  remember(nodes[0].at)
+
   const grow = (parent: number, len: number, yaw: number, pitch: number, depth: number) => {
     if (depth <= 0 || len < MIN_BRANCH || nodes.length > 3600) return
 
     const at = add(nodes[parent].at, polar(len, yaw, pitch))
+    // Too close to something already placed: this branch stops rather than being nudged. Nudging
+    // would break determinism's easiest guarantee — that the tree is a pure function of the
+    // record — by making a node's position depend on the order its siblings were visited.
+    // Stopping depends on that order too, but stopping is *visible* as a shorter branch rather
+    // than as a station somewhere it does not belong.
+    if (!clear(at)) return
+    remember(at)
     const id = nodes.length
     const level = g.depth - depth
 

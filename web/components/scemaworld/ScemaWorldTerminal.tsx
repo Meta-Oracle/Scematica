@@ -22,8 +22,8 @@ import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
-  contact as nearestContact, dynamicOf, inhibited, jumpRefusal, newGame, purchase, route, tick,
-  useService, type GameState,
+  contact as nearestContact, dynamicOf, inhibited, jumpRefusal, newGame, purchase, route,
+  sensors, tick, useService, type GameState,
 } from '@/lib/scemaworld/game'
 import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
 import { bearingLabel, fixOn, nearest, rangeLabel } from '@/lib/scemaworld/nav'
@@ -502,21 +502,22 @@ export function ScemaWorldTerminal() {
             you — the pressure to put a number there is strongest exactly here, and inventing one
             is what the whole project exists not to do.
           */}
-          {hud && flying && nearestContact(hud) && (
-            <div className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 text-right font-mono text-[11px]">
-              {(() => {
-                const c = nearestContact(hud)!
-                return (
-                  <>
-                    <div className="text-omni-dim">NEAREST</div>
-                    <div className={c.range < JUMP_INHIBIT ? 'text-omni-invalid' : 'text-omni-text'}>
-                      {c.spec.label}
-                    </div>
-                    <div className="text-omni-dim">{rangeLabel(c.range)}</div>
-                    <div className="text-omni-dim">{c.behaviour.toUpperCase()}</div>
-                  </>
-                )
-              })()}
+{/*
+            The sensor board. Everything within sensor range, not only what is trying to kill you
+            — a sector where the only things you can see are threats is a shooting range with long
+            gaps in it. Colour is the faction and it matches what the renderer draws, so a yellow
+            line on the board and a yellow ship in the window are the same claim.
+          */}
+          {hud && flying && (
+            <div className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 space-y-0.5 text-right font-mono text-[11px]">
+              <div className="text-omni-dim">SENSORS</div>
+              {sensors(hud, 7).length === 0 && <div className="text-omni-dim">clear</div>}
+              {sensors(hud, 7).map((c) => (
+                <div key={c.id}>
+                  <span className={FACTION_TONE[c.faction]}>{c.spec.label}</span>{' '}
+                  <span className="text-omni-dim">{rangeLabel(c.range)}</span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -628,18 +629,83 @@ export function ScemaWorldTerminal() {
             </div>
           )}
 
-          {hud?.nearby && !market && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-20 text-center font-mono text-xs">
-              <span className="text-omni-text">{hud.nearby.label}</span>{' '}
-              <span className="text-omni-dim">
-                ({hud.nearby.kind}) —{' '}
-                {servicesOf(hud.nearby.kind)
-                  .map((x) =>
-                    x === 'refuel' ? 'F refuel' : x === 'repair' ? 'R repair'
-                      : x === 'scavenge' ? 'V scavenge' : 'M market',
+{/*
+            The station panel.
+
+            It replaces a transient one-line notice, and that change is the whole of the reported
+            "refuelling does not work". Every one of those systems was refusing *correctly* — you
+            start with full tanks, no salvage and no waypoint — and saying so in a message that
+            faded in three seconds. A refusal nobody reads is indistinguishable from a dead key.
+
+            So the state is permanent and every action is a real button that says why it is
+            unavailable. Keys still work; they are now the shortcut rather than the interface.
+          */}
+          {hud && flying && !market && (
+            <div className="absolute inset-x-0 bottom-20 mx-auto w-fit rounded border border-omni-border bg-black/80 px-4 py-2 font-mono text-xs">
+              {hud.nearby ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-omni-accent">{hud.nearby.label}</span>
+                  <span className="text-omni-dim">{hud.nearby.kind}</span>
+                  {(['refuel', 'repair', 'scavenge', 'trade'] as const).map((svc) => {
+                    const offered = servicesOf(hud.nearby!.kind).includes(svc)
+                    const key = { refuel: 'F', repair: 'R', scavenge: 'V', trade: 'M' }[svc]
+                    return (
+                      <button
+                        key={svc}
+                        type="button"
+                        disabled={!offered}
+                        title={offered ? '' : `${hud.nearby!.label} does not offer ${svc}`}
+                        onClick={() => {
+                          const g = game.current
+                          if (!g) return
+                          if (svc === 'trade') setMarket(true)
+                          else game.current = useService(g, svc)
+                          setHud(game.current)
+                        }}
+                        className="rounded border border-omni-border px-2 py-0.5 text-omni-text hover:border-omni-accent disabled:border-omni-border disabled:text-omni-dim disabled:opacity-40"
+                      >
+                        {key} {svc}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="text-omni-dim">
+                  no station in range —{' '}
+                  <span className="text-omni-text">1</span> fuel ·{' '}
+                  <span className="text-omni-text">2</span> repair ·{' '}
+                  <span className="text-omni-text">3</span> market to set a course
+                </div>
+              )}
+            </div>
+          )}
+
+          {/*
+            The jump readout, always on. Jumping needs a waypoint, a charge, and no hostiles
+            inside `JUMP_INHIBIT` — three conditions, none of which were visible, so holding J and
+            watching nothing happen read as a broken key rather than as an inhibited drive.
+          */}
+          {hud && flying && (
+            <div className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 font-mono text-[11px]">
+              <div className="text-omni-dim">JUMP DRIVE</div>
+              {(() => {
+                const why = jumpRefusal(hud)
+                if (!why) {
+                  return (
+                    <div className="text-omni-valid">
+                      ready — hold J
+                      <div className="text-omni-dim">
+                        {hud.ship.jumpFuel} charge{hud.ship.jumpFuel === 1 ? '' : 's'}
+                      </div>
+                    </div>
                   )
-                  .join(' · ')}
-              </span>
+                }
+                return (
+                  <div className={inhibited(hud) ? 'text-omni-invalid' : 'text-omni-dim'}>
+                    {why}
+                  </div>
+                )
+              })()}
             </div>
           )}
 
@@ -650,10 +716,28 @@ export function ScemaWorldTerminal() {
                 <span className="text-omni-dim">
                   {hud.nearby && servicesOf(hud.nearby.kind).includes('trade')
                     ? hud.nearby.label
-                    : 'no market in range — fly to a dock or a market'}
+                    : 'no market in range — press 3 to route to one'}
                 </span>
                 <span className="ml-auto text-omni-text">{hud.ship.salvage} salvage</span>
+                <button
+                  type="button"
+                  onClick={() => setMarket(false)}
+                  className="rounded border border-omni-border px-2 py-0.5 text-omni-dim hover:border-omni-accent hover:text-omni-text"
+                >
+                  close
+                </button>
               </div>
+              {/*
+                Why a button is disabled, said once at the top rather than implied by greying.
+                Starting salvage is zero, so on a first visit every button is grey and the panel
+                reads as broken — which is what it was reported as.
+              */}
+              {hud.ship.salvage === 0 && (
+                <div className="mb-2 text-omni-dim">
+                  Nothing to spend yet. Salvage comes from destroying hostiles and stripping
+                  derelicts — press 4 to route to one.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
                 {(Object.keys(UPGRADES) as Component[]).map((c) => {
                   const lvl = hud.ship.levels[c]
@@ -663,11 +747,20 @@ export function ScemaWorldTerminal() {
                     hud.ship.salvage >= cost &&
                     !!hud.nearby &&
                     servicesOf(hud.nearby.kind).includes('trade')
+                  const why =
+                    cost === null
+                      ? 'at maximum'
+                      : !hud.nearby || !servicesOf(hud.nearby.kind).includes('trade')
+                        ? 'no market in range'
+                        : hud.ship.salvage < cost
+                          ? `needs ${cost - hud.ship.salvage} more salvage`
+                          : ''
                   return (
                     <button
                       key={c}
                       type="button"
                       disabled={!can}
+                      title={why}
                       onClick={() => {
                         const g = game.current
                         if (!g) return
@@ -686,6 +779,7 @@ export function ScemaWorldTerminal() {
                       <div className="text-omni-dim">{UPGRADES[c].effect}</div>
                       <div className={can ? 'text-omni-valid' : 'text-omni-dim'}>
                         {cost === null ? 'maxed' : `${cost} salvage`}
+                        {why && cost !== null ? ` — ${why}` : ''}
                       </div>
                     </button>
                   )
@@ -719,6 +813,21 @@ export function ScemaWorldTerminal() {
       )}
     </div>
   )
+}
+
+/**
+ * A faction's colour class.
+ *
+ * Mirrors `PALETTE` in `view.ts`, which is the authority — a board that disagreed with the window
+ * about who is friendly would be worse than no board. Tailwind cannot read a runtime value, so
+ * this is a table rather than a lookup, and `check:scemaworld` asserts the two agree on which
+ * factions exist.
+ */
+const FACTION_TONE: Record<string, string> = {
+  raider: 'text-omni-absent',
+  courier: 'text-omni-valid',
+  freighter: 'text-omni-text',
+  marshal: 'text-omni-accent',
 }
 
 /** Raiders still flying, for the sensor line. Counts the swarm, not the record. */

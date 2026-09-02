@@ -21,9 +21,13 @@ import * as Ship from './ship.ts'
 import type { Ship as ShipState } from './ship.ts'
 import { forward, rotate, translate, type Camera } from './camera.ts'
 
-import { DOCK_RANGE, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SPEED_THRUST } from './scale.ts'
+import {
+  AGGRO_RANGE, DOCK_RANGE, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SENSOR_MULTIPLIER, SPEED_THRUST,
+} from './scale.ts'
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
+import { hostileTo } from './factions.ts'
+import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
 import { nodeRadius, roleOfNode } from './view.ts'
 
@@ -90,6 +94,15 @@ export function gridFor(space: Space): Collide.Grid {
 const RAM_DAMAGE = 34
 
 /**
+ * How much of a capital's drawn radius is actually solid.
+ *
+ * The rest is superstructure. It is what makes flying *inside* a dreadnought possible, and
+ * flying inside one is the tactic that makes it beatable: a hull that turns at a twentieth of a
+ * radian per second cannot bring a gun to bear on something already past its nose.
+ */
+const CAPITAL_CORE = 0.22
+
+/**
  * How far the ship starts from the origin node.
  *
  * Outside the market's own hull with room to spare, and inside docking range, so the first thing
@@ -131,6 +144,14 @@ export interface GameState {
   flashes: Record<string, number>
   /** Raised when the player takes damage, so the HUD can shake and redden. */
   shake: number
+  /**
+   * Craft the ship is currently overlapping.
+   *
+   * A ram is charged on *entry*. Without this the ship inside a leviathan was charged every
+   * frame it stayed there and pushed a quarter of a sector on each one — stuck, then dead, which
+   * is the reported "you get stuck inside their hurtboxes".
+   */
+  touching: string[]
   /** Transient line for the HUD — a hit, a refuel, a refusal. */
   notice: string | null
   /**
@@ -161,9 +182,14 @@ export function newGame(space: Space): GameState {
     throttle: 0,
     ship: Ship.newShip(),
     combat: Weapons.newCombat(),
-    // Raiders fly alongside the record's own hostiles and are stepped by the same code. The
-    // separation between them is a claim about provenance, not about behaviour.
-    swarm: Enemy.swarmOf([...space.contacts, ...space.raiders], space.seed),
+    // Raiders fly alongside the record's own hostiles and are stepped by the same code; the
+    // separation between them is a claim about provenance, not about behaviour. Traffic —
+    // couriers, freighters and marshals — joins the same swarm for the same reason: one loop
+    // steps everything that flies, so an ally and an enemy cannot drift apart in how they move.
+    swarm: Enemy.withTraffic(
+      Enemy.swarmOf([...space.contacts, ...space.raiders], space.seed),
+      trafficOf(space, space.seed),
+    ),
     nearby: null,
     noticeAt: -1e9,
     waypoint: null,
@@ -171,6 +197,7 @@ export function newGame(space: Space): GameState {
     velocity: { x: 0, y: 0, z: 0 },
     flashes: {},
     shake: 0,
+    touching: [],
     notice: null,
     lost: false,
   }
@@ -322,7 +349,11 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // Hostiles have moved, so aim at where they are rather than where the record put them.
   const moved = targets.map((c) => {
     const k = alive.find((x) => x.id === c.id)
-    return k ? { ...c, at: k.at } : c
+    // The craft's *class* radius travels with it, so the hit test matches the silhouette on
+    // screen. Without it a leviathan drawn seven hundred million units across had a ten-million
+    // hitbox inherited from the magnitude formula, and sustained fire at something filling the
+    // window connected almost never.
+    return k ? { ...c, at: k.at, radius: k.spec.radius } : c
   })
 
   if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels)
@@ -360,7 +391,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // Craft still avoid nodes even though they cannot hit them. A wing flying *through* a station
   // ring is technically correct and looks like the geometry is decorative; steering round one
   // costs nothing and reads as piloting.
-  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid)
+  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid, space)
   swarm = enemyStep.swarm
   let shake = Math.max(0, state.shake - dt * 2.2)
   if (enemyStep.damage > 0) {
@@ -375,23 +406,46 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // Both parties pay, and the player is pushed clear. A craft you can fly through is a craft
   // that is not there, and at these closing speeds an interceptor crossing your nose ought to be
   // an event rather than a texture.
+  //
+  // ## Capitals are volumes you fly *through*, not walls
+  //
+  // A leviathan's radius is a quarter of a sector. Treating that sphere as a hull meant flying
+  // into one put the ship permanently inside a hurtbox: every frame re-collided, every frame
+  // charged damage and zeroed the throttle, and the push-out teleported the ship a quarter of a
+  // sector in a near-arbitrary direction. Stuck, and then dead.
+  //
+  // So a capital has a **core** — a small fraction of its drawn radius — and only that collides.
+  // The rest is superstructure you can fly between, which is also the tactic that makes a
+  // dreadnought survivable: get inside its guns' arc, where a hull that turns at a twentieth of a
+  // radian per second cannot bring anything to bear.
+  //
+  // And a ram is charged **on entry**, not while overlapping. Charging per frame is what turns
+  // one mistake into a death.
   let rammed: string | null = null
+  const touching: string[] = []
   for (const c of Enemy.living(swarm)) {
     const gap = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
-    const touch = R_PLAYER + c.spec.radius
+    const core = c.spec.capital ? c.spec.radius * CAPITAL_CORE : c.spec.radius
+    const touch = R_PLAYER + core
     if (gap >= touch) continue
+    touching.push(c.id)
+    // Already inside it last frame: no second charge, no second push. Flying out is the player's
+    // problem and takes as long as it takes.
+    if (state.touching.includes(c.id)) continue
+
     const closing = Math.hypot(velocity.x, velocity.y, velocity.z) + c.speed
     const cost = Math.max(1, Math.round((closing / Ship.topSpeed(0)) * RAM_DAMAGE))
     ship = Ship.damage(ship, cost, nowMs)
     const res = Enemy.hit(swarm, c.id, cost, nowMs)
     swarm = res.swarm
     if (res.killed) {
-      ship = Ship.bounty(ship, res.bounty)
+      if (hostileTo(c.faction)) ship = Ship.bounty(ship, res.bounty)
       combat = { ...combat, destroyed: [...combat.destroyed, c.id] }
     }
     flashes[c.id] = 1
     shake = Math.min(1, shake + 0.9)
-    // Push out along the line between them, so the two do not sit inside each other next frame.
+    // Nudged clear along the line between them rather than placed on the surface. A placement is
+    // a teleport at capital scale; a nudge lets the ship keep flying the way it was going.
     const dir = gap < 1e-6 ? { x: 1, y: 0, z: 0 } : {
       x: (at.x - c.at.x) / gap,
       y: (at.y - c.at.y) / gap,
@@ -402,7 +456,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
       ...camera,
       position: [c.at.x + dir.x * out, c.at.y + dir.y * out, c.at.z + dir.z * out],
     }
-    throttle = 0
+    // The drive is cut for a fighter-sized impact only. Cutting it inside a capital would strand
+    // the ship in the one place it most needs to be able to leave.
+    if (!c.spec.capital) throttle = 0
     rammed = `collision — ${c.spec.label} (−${cost})`
     break
   }
@@ -424,6 +480,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     velocity,
     flashes,
     shake,
+    touching,
     ...noticeState(state, notice, nowMs),
     lost: Ship.destroyed(ship),
   }
@@ -540,6 +597,30 @@ export function contact(state: GameState) {
   const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
   if (!t) return null
   return { spec: t.craft.spec, range: t.range, behaviour: t.craft.behaviour, id: t.craft.id }
+}
+
+/**
+ * Everything on sensors, nearest first, with its faction.
+ *
+ * Sensor range is `SENSOR_MULTIPLIER` times what anything engages at, and the gap is the point:
+ * contact should arrive long before a fight does, because that gap is where the decision to fight
+ * or leave actually lives. Detection used to be the same number as aggression, so a sector was
+ * quiet until something was already on you — an ambush, not a decision.
+ */
+export function sensors(state: GameState, limit = 6) {
+  const at = v3(state.camera.position)
+  const reach = AGGRO_RANGE * SENSOR_MULTIPLIER * Ship.sensorGain(state.ship.levels.sensors)
+  const out = Enemy.living(state.swarm)
+    .map((c) => ({
+      id: c.id,
+      faction: c.faction,
+      spec: c.spec,
+      behaviour: c.behaviour,
+      range: Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z),
+    }))
+    .filter((c) => c.range < reach)
+  out.sort((a, b) => a.range - b.range)
+  return out.slice(0, limit)
 }
 
 /** True while a hostile is close enough to inhibit the jump drive. */

@@ -28,6 +28,8 @@
 import type { Contact, Vec3 } from './generate.ts'
 import { laserCooldown } from './ship.ts'
 import type { HullId } from './hulls.ts'
+import { capsuleOf, strikes } from './hitbox.ts'
+import type { Shape } from './classes.ts'
 import {
   LIFE_LASER, LIFE_PHOTON, R_CONTACT, R_CONTACT_SPAN, SPEED_LASER, SPEED_PHOTON,
 } from './scale.ts'
@@ -314,22 +316,36 @@ export function step(
     let consumed = false
     for (const contact of contacts) {
       if (destroyed.includes(contact.id)) continue
-      // Swept along the whole step, so a fast shot cannot pass through a target between
-      // frames. The radius is then only what it should be — calibre plus the contact's own
-      // size — rather than being inflated to paper over tunnelling.
-      // The same radius `view.ts` draws — and for an armed craft that is its **class** radius,
-      // not one derived from a reported magnitude.
+      // Swept along the whole step, so a fast shot cannot pass through a target between frames.
       //
-      // This was the bug that made the war classes unbeatable, and it is the exact failure this
-      // comment already warned about. A leviathan is drawn seven hundred and sixty million units
-      // across and its hit radius was ten: the magnitude formula describes an inert *signal*, and
-      // once craft were sized by class the two stopped agreeing. Sustained fire at something that
-      // filled the window connected almost never, so no amount of perseverance beat one.
+      // ## The target is a shape, not a sphere around one
+      //
+      // An armed craft is tested as a **capsule along its own hull**, built from the mesh the
+      // renderer draws. A sphere of the class radius was the second version of this bug: the
+      // `dreadnought` mesh reaches 2.1 along its nose and 0.72 across, so a sphere of radius 1
+      // misses the entire prow and the entire stern while covering a lot of empty space beside
+      // the ship — and the larger the hull, the worse it gets, which is exactly backwards. Fire
+      // aimed squarely at the middle of a visible war hull kept missing.
+      //
+      // The first version of the same bug sized craft from a *signal's* magnitude while the
+      // renderer sized them by class. Both are the one failure this file's oldest comment warns
+      // about: a hit test that disagrees with the picture.
+      //
+      // An inert contact keeps the sphere, because a signal genuinely is round — its size is a
+      // claim about how big a concern somebody counted, not the shape of an object.
       const size =
         contact.radius ??
         R_CONTACT + Math.round(Math.max(0, Math.min(1, contact.magnitude)) * R_CONTACT_SPAN)
-      const reach = w.calibre + size
-      if (distToSegment(contact.at, p.at, at) <= reach) {
+      const struck =
+        contact.facing && contact.shape
+          ? strikes(
+              capsuleOf(contact.at, contact.facing, size, contact.shape as Shape),
+              p.at,
+              at,
+              w.calibre,
+            )
+          : distToSegment(contact.at, p.at, at) <= w.calibre + size
+      if (struck) {
         // Counted, but **not** adjudicated. This module used to decide death here from a
         // seed-derived durability, and `enemy.ts` now owns hull and shields — two authorities
         // over one fact, which is how a craft ends up dead on one side and firing on the other.

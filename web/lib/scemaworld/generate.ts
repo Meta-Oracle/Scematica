@@ -169,6 +169,12 @@ export interface Contact {
    * size is a claim about how big a concern somebody counted.
    */
   radius?: number
+  /**
+   * The craft's facing and silhouette, so the hit test can be the *shape* rather than a sphere
+   * around it. Absent for an inert contact, which is genuinely round.
+   */
+  facing?: Vec3
+  shape?: string
 }
 
 export interface Space {

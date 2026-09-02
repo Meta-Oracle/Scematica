@@ -48,6 +48,9 @@ import {
 import { acquire, exchangeAt } from '../lib/scemaworld/game.ts'
 import { course as courseOf } from '../lib/scemaworld/view.ts'
 import { refit } from '../lib/scemaworld/ship.ts'
+import {
+  HITBOX, capsuleOf, strikes, segmentDistance,
+} from '../lib/scemaworld/hitbox.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
   JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
@@ -2968,6 +2971,162 @@ check('the cockpit is live the moment a record loads', () => {
   const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
   assert(src.includes('useState(true)'), 'the cockpit still starts inert')
   assert(!src.includes('{!flying &&'), 'something is still hidden until the canvas is clicked')
+})
+
+// ── hitboxes that match the hulls ────────────────────────────────────────────
+
+check('a hitbox is measured from the mesh, never declared', () => {
+  // A hand-written table of extents is a second description of a shape, and the two drift the
+  // first time a silhouette is tweaked — at which point the hit test and the picture disagree,
+  // which is the failure this project has now paid for twice.
+  for (const shape of ['interceptor', 'gunship', 'capital', 'dreadnought']) {
+    const b = HITBOX[shape]
+    const measured = Meshes.boundsOf(Meshes[shape]())
+    assert(b.ahead === measured.ahead, `${shape} ahead is not the mesh's`)
+    assert(b.behind === measured.behind, `${shape} behind is not the mesh's`)
+    assert(b.cross === measured.cross, `${shape} cross is not the mesh's`)
+  }
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'hitbox.ts'))
+  assert(src.includes('Mesh.boundsOf'), 'the extents stopped being measured')
+})
+
+check('a hull is longer than it is wide, which is why a sphere was wrong', () => {
+  // The whole argument in one assertion. The war hull reaches 2.1 along its nose and 1.05
+  // across, so a bounding sphere of radius 1 misses the prow and the stern outright while
+  // covering empty space beside the ship — and the bigger the hull, the worse it gets.
+  for (const shape of ['capital', 'dreadnought', 'interceptor']) {
+    const b = HITBOX[shape]
+    assert(b.ahead > b.cross, `${shape} is not longer than it is wide`)
+  }
+  assert(HITBOX.dreadnought.ahead > 1.5, 'the war hull no longer overhangs a unit sphere')
+})
+
+check('a war hull is hit at its prow and its stern, not only its middle', () => {
+  // The reported bug, directly. Fire aimed squarely at the visible nose of a capital connected
+  // almost never, because the test was a sphere around the *centre* and the nose is outside it.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital && c.spec.id !== 'frigate')
+  if (!cap) return
+  const R = cap.spec.radius
+  const f = cap.facing
+  const capsule = capsuleOf(cap.at, f, R, cap.spec.shape)
+  const side = { x: -f.z, y: 0, z: f.x }
+
+  for (const t of [-1.2, -0.5, 0, 0.8, 1.4]) {
+    const aim = { x: cap.at.x + f.x * R * t, y: cap.at.y + f.y * R * t, z: cap.at.z + f.z * R * t }
+    const from = { x: aim.x + side.x * R * 6, y: aim.y, z: aim.z + side.z * R * 6 }
+    const d = { x: aim.x - from.x, y: aim.y - from.y, z: aim.z - from.z }
+    const l = Math.hypot(d.x, d.y, d.z)
+    const to = {
+      x: from.x + (d.x / l) * R * 12,
+      y: from.y + (d.y / l) * R * 12,
+      z: from.z + (d.z / l) * R * 12,
+    }
+    assert(strikes(capsule, from, to, LASER.calibre), `a shot aimed at t=${t} along the hull missed`)
+  }
+})
+
+check('the capsule is tighter across the hull than a sphere was', () => {
+  // It is not simply a bigger hitbox. A capital's mesh is 0.64 wide against a sphere of 1, so
+  // shots that used to connect with empty space beside the ship now miss — which is the other
+  // half of "the hit test agrees with the picture".
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.shape === 'capital')
+  if (!cap) return
+  const R = cap.spec.radius
+  const capsule = capsuleOf(cap.at, cap.facing, R, 'capital')
+  // Normalised. `{-fz, 0, fx}` is perpendicular to the facing but is *shorter* than a unit
+  // vector whenever the facing has a vertical component, so an offset measured along it lands
+  // closer to the axis than intended — and the test then measures a point that really is inside
+  // the hull.
+  const raw = { x: -cap.facing.z, y: 0, z: cap.facing.x }
+  const rl = Math.hypot(raw.x, raw.y, raw.z) || 1
+  const side = { x: raw.x / rl, y: raw.y / rl, z: raw.z / rl }
+  // Abeam at 0.85 of the sphere radius: inside the old sphere, outside the real hull.
+  const aim = { x: cap.at.x + side.x * R * 0.85, y: cap.at.y, z: cap.at.z + side.z * R * 0.85 }
+  const from = { x: aim.x, y: aim.y + R * 6, z: aim.z }
+  const to = { x: aim.x, y: aim.y - R * 6, z: aim.z }
+  assert(!strikes(capsule, from, to, 0), 'a shot well beside the hull still counted as a hit')
+})
+
+check('segment distance handles the degenerate cases it will actually meet', () => {
+  // A stationary craft and a zero-length step both happen constantly, and the closed-form solve
+  // divides by zero on each.
+  const o = { x: 0, y: 0, z: 0 }
+  assert(segmentDistance(o, o, o, o) === 0, 'two coincident points')
+  assert(segmentDistance(o, o, { x: 3, y: 0, z: 0 }, { x: 3, y: 0, z: 0 }) === 3, 'two points')
+  assert(segmentDistance(o, { x: 10, y: 0, z: 0 }, { x: 5, y: 4, z: 0 }, { x: 5, y: 4, z: 0 }) === 4)
+  const par = segmentDistance(o, { x: 10, y: 0, z: 0 }, { x: 0, y: 2, z: 0 }, { x: 10, y: 2, z: 0 })
+  assert(Math.abs(par - 2) < 1e-9, `parallel segments reported ${par}`)
+  const cross = segmentDistance(
+    { x: -5, y: 0, z: 0 }, { x: 5, y: 0, z: 0 },
+    { x: 0, y: -5, z: 0 }, { x: 0, y: 5, z: 0 },
+  )
+  assert(Math.abs(cross) < 1e-9, `crossing segments reported ${cross}`)
+})
+
+check('a shot still cannot tunnel through a long hull', () => {
+  // The target being a segment is not a licence to make the *shot* a point. A bolt covers
+  // millions of units a frame, and the ships this exists to make hittable are exactly the ones
+  // it would skip over.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital)
+  if (!cap) return
+  const R = cap.spec.radius
+  const capsule = capsuleOf(cap.at, cap.facing, R, cap.spec.shape)
+  const from = { x: cap.at.x - R * 20, y: cap.at.y, z: cap.at.z }
+  const to = { x: cap.at.x + R * 20, y: cap.at.y, z: cap.at.z }
+  assert(strikes(capsule, from, to, 0), 'a step straight through the hull missed it')
+  assert(!strikes(capsule, from, from, 0), 'the start point was inside the hull')
+})
+
+check('an inert contact keeps its sphere', () => {
+  // A signal genuinely is round: its size is a claim about how big a concern somebody counted,
+  // not the shape of an object. Giving it a hull would be inventing geometry for a reading.
+  const s = generate(world, digest)
+  const target = { ...firstSolid(s), at: { x: 0, y: 0, z: -EXTENT * 0.01 } }
+  assert(target.facing === undefined && target.shape === undefined, 'a signal has a silhouette')
+  let c = newCombat()
+  let hits = []
+  for (let i = 0; i < 12 && hits.length === 0; i += 1) {
+    c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, i * 200, [target])
+    const r = step(c, 0.05, [target], s.seed)
+    c = r.combat
+    hits = r.hits
+  }
+  assert(hits.length > 0, 'an inert contact stopped being hittable')
+})
+
+check('a war class is hit in play, from off its nose', () => {
+  // End to end. It asserts *hits landed* rather than damage totals, because the previous shape of
+  // this test passed while the fight was still unwinnable.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const cap = Enemy.living(g.swarm).find((c) => c.spec.capital && c.spec.id !== 'frigate')
+  if (!cap) return
+  const R = cap.spec.radius
+  g = {
+    ...g,
+    camera: {
+      ...g.camera,
+      position: [
+        cap.at.x + cap.facing.x * R * 1.6,
+        cap.at.y + cap.facing.y * R * 1.6,
+        cap.at.z + cap.facing.z * R * 1.6,
+      ],
+    },
+  }
+  let struck = 0
+  for (let f = 0; f < 60 * 20; f += 1) {
+    const before = g.swarm.craft.find((c) => c.id === cap.id)
+    g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    const after = g.swarm.craft.find((c) => c.id === cap.id)
+    if (before && after && after.shield + after.hull < before.shield + before.hull) struck += 1
+  }
+  assert(struck > 0, 'twenty seconds of fire off a capital nose landed nothing')
 })
 
 await Promise.all(pending)

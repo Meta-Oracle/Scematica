@@ -355,7 +355,12 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     // screen. Without it a leviathan drawn seven hundred million units across had a ten-million
     // hitbox inherited from the magnitude formula, and sustained fire at something filling the
     // window connected almost never.
-    return k ? { ...c, at: k.at, radius: k.spec.radius } : c
+    // Facing and silhouette travel with it, so the hit test is the *hull* rather than a sphere
+    // around it. A sphere misses the prow and the stern of anything long, and the bigger the
+    // ship the worse it gets.
+    return k
+      ? { ...c, at: k.at, radius: k.spec.radius, facing: k.facing, shape: k.spec.shape }
+      : c
   })
 
   if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels, ship.frame)

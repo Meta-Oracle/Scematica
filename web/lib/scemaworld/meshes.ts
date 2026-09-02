@@ -20,6 +20,42 @@
 /** A line list: pairs of points, `[x,y,z, x,y,z, ...]`. */
 export type Wire = Float32Array
 
+/**
+ * The extent of a mesh along its own axes, in local units.
+ *
+ * `ahead` and `behind` are along +Z (the nose) and −Z; `cross` is the largest distance from the
+ * axis. A hull is not a sphere and the difference is not cosmetic: `dreadnought` reaches 2.1
+ * forward and 0.72 sideways, so a bounding sphere of radius 1 misses the prow entirely and
+ * covers a great deal of empty space beside the ship.
+ */
+export interface Bounds {
+  ahead: number
+  behind: number
+  cross: number
+}
+
+/**
+ * Measure a mesh.
+ *
+ * **Measured, never declared.** A hand-written table of extents is a second description of a
+ * shape, and the two drift the first time a silhouette is tweaked — at which point the hit test
+ * and the picture disagree, which is the failure this project has now paid for twice. Deriving
+ * the numbers from the vertex data means a mesh edit moves the hitbox with it, by construction.
+ */
+export function boundsOf(w: Wire): Bounds {
+  let ahead = 0
+  let behind = 0
+  let cross = 0
+  for (let i = 0; i < w.length; i += 3) {
+    const z = w[i + 2]
+    if (z > ahead) ahead = z
+    if (-z > behind) behind = -z
+    const r = Math.hypot(w[i], w[i + 1])
+    if (r > cross) cross = r
+  }
+  return { ahead, behind, cross }
+}
+
 function wire(points: number[][], edges: [number, number][]): Wire {
   const out: number[] = []
   for (const [a, b] of edges) {

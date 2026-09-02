@@ -12,7 +12,7 @@
  */
 
 import { EXTENT, type Contact, type Node, type Space, type Vec3 } from './generate.ts'
-import { FAR_PLANE } from './scale.ts'
+import { COURSE_CLEAR, COURSE_DASHES, FAR_PLANE } from './scale.ts'
 import {
   R_CONTACT, R_CONTACT_SPAN, R_DEPOT, R_DERELICT, R_DOCK, R_LASER, R_MARKER, R_MARKET,
   R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
@@ -43,6 +43,7 @@ export type Role =
   | 'enemy-shot'
   | 'raider'
   | 'waypoint'
+  | 'course'
   | 'capital'
   | 'courier'
   | 'freighter'
@@ -50,20 +51,28 @@ export type Role =
 
 /** RGB in 0..1, for a shader. One table, so a palette change moves every surface at once. */
 export const PALETTE: Record<Role, readonly [number, number, number]> = {
-  origin: [0.66, 0.42, 1.0],
-  station: [0.55, 0.78, 1.0],
+  // Node colours are a *legend*, and the legend is the point: a player should be able to answer
+  // "where can I refuel" by looking out of the window rather than by opening a map. Fuel is
+  // green, trade is red, the places you dock are purple, and everything else — an ordinary
+  // station the observer perceived and that sells nothing — is blue.
+  //
+  // Silhouette still carries it independently (`meshes.ts`), because colour alone fails on a bad
+  // monitor, at a glance, and for a colour-blind player. The two agree; neither depends on the
+  // other.
+  origin: [0.72, 0.45, 1.0],
+  station: [0.42, 0.62, 1.0],
   derelict: [0.55, 0.5, 0.42],
   // A marker is where something should be and is not. Deliberately close to the void colour:
   // it should be hard to see, because that is the honest rendering of an absence.
   marker: [0.3, 0.28, 0.36],
-  phantom: [0.42, 0.36, 0.6],
+  phantom: [0.45, 0.7, 0.95],
   rift: [0.44, 0.4, 0.56],
   // Services are cyan-ward so they read as *infrastructure* rather than as a contact. A
   // player scanning for somewhere to refuel should not have to distinguish a depot from a
   // hostile by shade.
-  dock: [0.42, 0.86, 0.95],
-  depot: [0.34, 0.68, 0.8],
-  market: [0.95, 0.78, 0.38],
+  dock: [0.78, 0.5, 1.0],
+  depot: [0.3, 1.0, 0.5],
+  market: [1.0, 0.35, 0.38],
   lane: [0.36, 0.3, 0.55],
   'lane-severed': [0.44, 0.4, 0.56],
   hostile: [1.0, 0.35, 0.38],
@@ -93,6 +102,9 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // The nav computer's marker. Deliberately the brightest thing in the palette — it is the
   // only body on screen the player put there.
   waypoint: [0.6, 1.0, 0.85],
+  // The course line. Green, and the only green in the palette, so it can never be confused with
+  // anything the sector contains — a marker the *player* placed must not look like a reading.
+  course: [0.3, 1.0, 0.45],
 }
 
 /**
@@ -124,6 +136,9 @@ export function isGhost(role: Role): boolean {
 export function shapeOf(b: Body): Shape {
   if (b.shape) return b.shape
   if (b.role === 'laser' || b.role === 'photon' || b.role === 'enemy-shot') return 'bolt'
+  // The course rides the bolt pass to get its glow: additive, depth-writes off, so it brightens
+  // where it overlaps and is occluded by whatever it passes behind.
+  if (b.role === 'course') return 'bolt'
   switch (b.role) {
     case 'origin':
     case 'station':
@@ -157,6 +172,38 @@ export function nodeFacing(id: number): Vec3 {
   const z = ((id * 5) % 11) - 5 || 3
   const l = Math.hypot(x, y, z) || 1
   return { x: x / l, y: y / l, z: z / l }
+}
+
+/**
+ * The dashes marking a course.
+ *
+ * Spacing is a fixed fraction of the distance, so the dashes crowd as they recede and the line
+ * reads as a road going away. Size scales with the leg so a course across the sector is visible
+ * and one across a docking approach is not a wall of light.
+ */
+export function course(from: Vec3, to: Vec3): Body[] {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dz = to.z - from.z
+  const dist = Math.hypot(dx, dy, dz)
+  if (dist < 1) return []
+  const dir = { x: dx / dist, y: dy / dist, z: dz / dist }
+  const out: Body[] = []
+  // Dash radius from the leg, floored so a short hop still shows one, and capped so a very long
+  // one does not put beach balls across the window.
+  const radius = Math.max(R_LASER * 0.6, Math.min(R_PHOTON * 1.4, dist / 900))
+  for (let i = 1; i <= COURSE_DASHES; i += 1) {
+    const t = (i / (COURSE_DASHES + 1)) * COURSE_CLEAR
+    out.push({
+      at: { x: from.x + dx * t, y: from.y + dy * t, z: from.z + dz * t },
+      role: 'course',
+      radius,
+      solid: true,
+      label: 'course',
+      facing: dir,
+    })
+  }
+  return out
 }
 
 /** How faint a lane is drawn. See `Segment.alpha`. */
@@ -285,11 +332,22 @@ export interface Dynamic {
     spec: ClassSpec
     /** Hit flash, decayed by the tick. */
     flash: number
+    /** Who it flies for. Drives colour for anything with no contact behind it. */
+    faction?: string
   }[]
   /** Contact ids destroyed, so they stop being drawn. */
   destroyed: string[]
   /** The nav computer's selected node, drawn as a ring you can steer at. */
   waypoint?: Vec3 | null
+  /**
+   * Where the ship is, so the course line can start from it.
+   *
+   * The line is drawn in world space from the ship to the waypoint. Drawing it as a screen-space
+   * overlay would be cheaper and would be a different thing: an overlay sits in front of the
+   * sector, a course lies *in* it and is occluded by whatever it passes behind — which is what
+   * makes it read as a route rather than as a HUD element.
+   */
+  from?: Vec3 | null
 }
 
 export const NOTHING: Dynamic = { shots: [], incoming: [], craft: [], destroyed: [] }
@@ -329,6 +387,40 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
   // Hostiles are drawn from the swarm, which knows where they have moved to; a hostile that
   // is not in the swarm has been destroyed. Salvage contacts are static and drawn as-is.
   const craftAt = new Map(dyn.craft.map((c) => [c.id, c]))
+
+  /**
+   * A live craft, drawn as its class.
+   *
+   * Shared by the two paths below because there are two: a craft that *has* a contact behind it
+   * (a record signal, or a raider) and one that does not (traffic). Traffic was stepped, hunted,
+   * shot at and reported on the sensor board — and never once drawn, because this loop iterated
+   * the contact lists and traffic is in neither. Exactly the bug that made the projectiles
+   * invisible, in a new place: the thing existed everywhere except on screen.
+   */
+  const hull = (
+    live: NonNullable<ReturnType<typeof craftAt.get>>,
+    role: Role,
+    label: string,
+  ): Body => ({
+    at: live.at,
+    role: live.spec.capital ? 'capital' : role,
+    radius: live.spec.radius,
+    solid: !isGhost(role),
+    label: `${live.spec.label} ${label}`,
+    facing: live.facing,
+    flash: live.flash,
+    shape: live.spec.shape,
+  })
+
+  // Traffic first: everything in the swarm that no contact accounts for.
+  const accounted = new Set([...space.contacts, ...space.raiders].map((c) => c.id))
+  for (const live of dyn.craft) {
+    if (accounted.has(live.id)) continue
+    // Faction is the role, so a courier is neon blue and a marshal is yellow — the same table the
+    // sensor board reads, so the window and the board can never disagree about who is friendly.
+    bodies.push(hull(live, (live.faction ?? 'raider') as Role, ''))
+  }
+
   for (const c of [...space.contacts, ...space.raiders]) {
     if (dyn.destroyed.includes(c.id)) continue
     const role = roleOfContact(c)
@@ -339,16 +431,7 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       // where it is going. Magnitude does not size a craft — its class does — because a craft's
       // size is now a claim about how dangerous it is, and that must never come from a number
       // in the record.
-      bodies.push({
-        at: live.at,
-        role: live.spec.capital ? 'capital' : role,
-        radius: live.spec.radius,
-        solid: !isGhost(role),
-        label: `${live.spec.label} ${c.label}`,
-        facing: live.facing,
-        flash: live.flash,
-        shape: live.spec.shape,
-      })
+      bodies.push(hull(live, role, c.label))
       continue
     }
     bodies.push({
@@ -395,6 +478,10 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       solid: false,
       label: 'waypoint',
     })
+    // And the course to it, as glowing dashes. They ride the bolt pass, which is additive with
+    // depth writes off, so the line brightens where it overlaps itself and is hidden by anything
+    // it passes behind — a route lying in the sector rather than an overlay drawn on glass.
+    if (dyn.from) bodies.push(...course(dyn.from, dyn.waypoint))
   }
 
   const segments: Segment[] = []

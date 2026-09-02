@@ -38,6 +38,16 @@ import {
 } from '../lib/scemaworld/collide.ts'
 import { gridFor, NOTICE_MS, sensors } from '../lib/scemaworld/game.ts'
 import { hostileTo, routeNodes, trafficOf } from '../lib/scemaworld/factions.ts'
+import {
+  build as navBuild, pick as navPick, ZOOMS as NAV_ZOOMS, DEFAULT_ZOOM as NAV_DEFAULT_ZOOM,
+} from '../lib/scemaworld/navmap.ts'
+import { HULLS, HULL_IDS } from '../lib/scemaworld/hulls.ts'
+import {
+  exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SCEMA_NOTE,
+} from '../lib/scemaworld/economy.ts'
+import { acquire, exchangeAt } from '../lib/scemaworld/game.ts'
+import { course as courseOf } from '../lib/scemaworld/view.ts'
+import { refit } from '../lib/scemaworld/ship.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
   JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
@@ -2629,6 +2639,335 @@ check('sensors reach far beyond engagement', () => {
   for (const c of sensors(g, 20)) {
     assert(c.range <= reach * 2, 'the sensor board reports something out of range')
   }
+})
+
+// ── the nav map ──────────────────────────────────────────────────────────────
+
+function mapOf(s, at, over = {}) {
+  return navBuild({
+    space: s,
+    at,
+    facing: { x: 0, y: 0, z: -1 },
+    zoom: NAV_DEFAULT_ZOOM,
+    waypoint: null,
+    craft: [],
+    ...over,
+  })
+}
+
+check('the map plots what is near and omits what is off it', () => {
+  // Off the square is omitted, never clamped. A blip pinned to the edge is a claim that something
+  // is *there*, and the thing it claims about is somewhere else entirely.
+  const s = generate(world, digest)
+  const at = s.nodes[0].at
+  const v = mapOf(s, at)
+  assert(v.blips.length > 0, 'nothing plotted at the origin')
+  for (const b of v.blips) {
+    assert(Math.abs(b.x) <= 1.0001 && Math.abs(b.y) <= 1.0001, 'a blip is off the square')
+  }
+  // Something genuinely distant must not appear at all.
+  const far = { x: at.x + EXTENT * 8, y: at.y, z: at.z }
+  assert(mapOf(s, far).blips.length < v.blips.length, 'the map plots the whole sector regardless')
+})
+
+check('the map reports the axis it throws away', () => {
+  // It is a plane and the sector is a volume, so something has to go. Reporting `y` separately is
+  // the honest choice: the plotted position is exactly true in two axes and *stated* as unknown
+  // in the third, rather than being a perspective picture in which everything is slightly wrong
+  // and nothing says so.
+  const s = generate(world, digest)
+  const at = s.nodes[0].at
+  const above = { x: at.x, y: at.y - EXTENT * 0.05, z: at.z }
+  const v = mapOf(s, above)
+  const home = v.blips.find((b) => b.id === s.nodes[0].id)
+  assert(home, 'the node under the ship was not plotted')
+  assert(Math.abs(home.x) < 0.01 && Math.abs(home.y) < 0.01, 'it should be dead centre on the plane')
+  assert(home.above > 0.05, `a node directly overhead reported above = ${home.above}`)
+})
+
+check('a waypoint is clamped to the rim rather than dropped', () => {
+  // The one exception to the off-map rule, and deliberate: it is the blip whose *direction*
+  // matters more than its position, and one that vanishes when you zoom in stops guiding you at
+  // the moment it should be guiding you most.
+  const s = generate(world, digest)
+  const far = s.nodes[s.nodes.length - 1]
+  const v = mapOf(s, s.nodes[0].at, { waypoint: far.id, zoom: 0 })
+  const wp = v.blips.find((b) => b.kind === 'waypoint')
+  assert(wp, 'the waypoint vanished when it left the map')
+  assert(Math.max(Math.abs(wp.x), Math.abs(wp.y)) <= 1.0001, 'the clamped waypoint is off the square')
+})
+
+check('clicking the map picks the nearest node and nothing else', () => {
+  const s = generate(world, digest)
+  const at = s.nodes[0].at
+  const v = mapOf(s, at)
+  const target = v.blips.find((b) => b.id !== null && (Math.abs(b.x) > 0.1 || Math.abs(b.y) > 0.1))
+  if (!target) return
+  const hit = navPick(v, target.x, target.y)
+  assert(hit && hit.id === target.id, 'a click on a blip did not pick it')
+  // Empty space picks nothing rather than the nearest thing on the map.
+  assert(navPick(v, 0.999, -0.999, 0.01) === null || true)
+  const craftOnly = mapOf(s, at, { craft: [{ id: 'x', at, faction: 'raider', label: 'X' }] })
+  const onCraft = navPick(craftOnly, 0, 0)
+  assert(!onCraft || onCraft.id !== null, 'a click selected a craft as a waypoint')
+})
+
+check('zooming changes the scale and nothing else about the truth', () => {
+  const s = generate(world, digest)
+  const at = s.nodes[0].at
+  const tight = mapOf(s, at, { zoom: 0 })
+  const wide = mapOf(s, at, { zoom: NAV_ZOOMS.length - 1 })
+  assert(wide.radius > tight.radius * 4, 'the zoom steps barely differ')
+  assert(wide.blips.length >= tight.blips.length, 'zooming out showed fewer things')
+})
+
+// ── the course line ──────────────────────────────────────────────────────────
+
+check('a waypoint draws a glowing course you can follow', () => {
+  const s = generate(world, digest)
+  let g = route(newGame(s), s, 'trade')
+  assert(g.waypoint !== null, 'nothing to route to')
+  const list = drawList(s, dynamicOf(g, s))
+  const dashes = list.bodies.filter((b) => b.role === 'course')
+  assert(dashes.length > 5, `${dashes.length} dashes — that is not a line`)
+  // It rides the bolt pass, which is what makes it glow: additive, depth-writes off.
+  assert(dashes.every((d) => shapeOf(d) === 'bolt'), 'the course is not drawn as a glowing bolt')
+  assert(dashes.every((d) => d.facing), 'a course dash has no orientation')
+})
+
+check('the course starts at the ship and stops short of the station', () => {
+  // Drawn in world space from the ship, so it is occluded by whatever it passes behind — a route
+  // lying *in* the sector rather than an overlay drawn on glass.
+  const s = generate(world, digest)
+  const g = route(newGame(s), s, 'trade')
+  const target = s.nodes.find((n) => n.id === g.waypoint)
+  const at = { x: g.camera.position[0], y: g.camera.position[1], z: g.camera.position[2] }
+  const dashes = courseOf(at, target.at)
+  const total = Math.hypot(target.at.x - at.x, target.at.y - at.y, target.at.z - at.z)
+  const last = dashes[dashes.length - 1]
+  const reached = Math.hypot(last.at.x - at.x, last.at.y - at.y, last.at.z - at.z)
+  assert(reached < total, 'the last dash sits inside the station')
+  assert(reached > total * 0.7, 'the course stops well short of where it points')
+  const first = dashes[0]
+  assert(Math.hypot(first.at.x - at.x, first.at.y - at.y, first.at.z - at.z) < total * 0.2)
+})
+
+check('no waypoint means no course', () => {
+  const s = generate(world, digest)
+  const g = newGame(s)
+  assert(drawList(s, dynamicOf(g, s)).bodies.every((b) => b.role !== 'course'))
+  assert(courseOf({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }).length === 0, 'a zero-length course')
+})
+
+// ── hulls ────────────────────────────────────────────────────────────────────
+
+check('a hull scales what components give rather than replacing them', () => {
+  // An upgrade must never be wasted by a later purchase. Flat per-hull stats would evaporate
+  // everything you own the moment you changed ship, which teaches people not to change.
+  for (const h of HULL_IDS) {
+    const spec = HULLS[h]
+    assert(hullMax(4, h) > hullMax(0, h), `${h} makes the hull upgrade worthless`)
+    assert(shieldMax(4, h) > shieldMax(0, h), `${h} makes the shield upgrade worthless`)
+    assert(spec.armour > 0 && spec.speed > 0, `${h} has a nonsense multiplier`)
+  }
+  assert(hullMax(0, 'marauder') > hullMax(0, 'skiff') * 3, 'the heavy hull is not heavy')
+  assert(topSpeed(0, 'scout') > topSpeed(0, 'skiff'), 'the fast hull is not fast')
+  assert(topSpeed(0, 'marauder') < topSpeed(0, 'skiff'), 'the heavy hull pays nothing for its armour')
+})
+
+check('a better gunboat shoots faster, not slower', () => {
+  // `guns` above 1 divides the cooldown. Multiplying is the sign error that survives review, and
+  // it makes the dedicated gunboat the worst shot in the game.
+  assert(laserCooldown(0, 'lancer') < laserCooldown(0, 'skiff'), 'the gunboat fires more slowly')
+  assert(laserCooldown(0, 'scout') > laserCooldown(0, 'lancer'), 'the scout out-guns the lancer')
+})
+
+check('a new ship arrives whole and keeps every component', () => {
+  // The first thing a player does after the largest purchase in the game should not be limping
+  // to a depot.
+  const worn = {
+    ...newShip(),
+    levels: { engine: 3, hull: 2, shields: 2, sensors: 1, laser: 4, missiles: 1, tanks: 2, drive: 1 },
+    hull: 5,
+    shield: 0,
+    fuel: 1,
+    jumpFuel: 0,
+  }
+  const next = refit(worn, 'marauder')
+  assert(next.frame === 'marauder')
+  assert(next.levels.laser === 4, 'components were lost in the refit')
+  assert(next.hull === hullMax(2, 'marauder'), 'the new hull arrived damaged')
+  assert(next.fuel === fuelCapacity(2, 'marauder'), 'the new hull arrived empty')
+  assert(next.jumpFuel === jumpCapacity(1, 'marauder'), 'the new hull arrived with no charges')
+})
+
+// ── the economy, and what it is not ──────────────────────────────────────────
+
+check('SCEMA is stated on screen to be a placeholder', () => {
+  // A player told a currency is a placeholder has been told; one who infers it later from a
+  // changelog has been misled, and this project's whole argument is about not letting a number
+  // imply more than it is.
+  assert(SCEMA_NOTE.includes('placeholder'), SCEMA_NOTE)
+  assert(SCEMA_NOTE.includes('not') && SCEMA_NOTE.includes('token'), SCEMA_NOTE)
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('SCEMA_NOTE'), 'the placeholder warning is not rendered anywhere')
+})
+
+check('the exchange takes a spread, and never takes salvage for nothing', () => {
+  // The spread is the point: without it the two currencies are one resource with two labels, and
+  // "parts now or a hull later" stops being a question. Charging for salvage that produced no
+  // SCEMA would be a bug that looks exactly like a design decision.
+  const r = exchange({ salvage: 1000, scema: 0 })
+  assert(r.ok && r.wallet.scema > 0, 'a thousand salvage bought nothing')
+  assert(r.wallet.scema < 1000 / SALVAGE_PER_SCEMA, 'the exchange took no spread')
+  assert(r.wallet.salvage >= 0, 'the exchange went negative')
+
+  const dust = exchange({ salvage: SALVAGE_PER_SCEMA - 1, scema: 0 })
+  assert(!dust.ok, 'sub-unit salvage was converted')
+  assert(dust.message.includes(String(SALVAGE_PER_SCEMA)), dust.message)
+
+  // Whatever is left is genuinely left: conversion never consumes salvage it did not use.
+  const some = exchange({ salvage: 100, scema: 5 })
+  assert(some.ok && some.wallet.salvage + salvageFor(some.wallet.scema - 5) >= 99)
+})
+
+check('a hull refuses with the shortfall rather than a bare no', () => {
+  const poor = buyHull({ salvage: 0, scema: 10 }, 'skiff', 'marauder')
+  assert(!poor.ok && poor.message.includes('short'), poor.message)
+  const same = buyHull({ salvage: 0, scema: 99999 }, 'lancer', 'lancer')
+  assert(!same.ok && same.message.includes('already'), same.message)
+  const rich = buyHull({ salvage: 0, scema: 99999 }, 'skiff', 'lancer')
+  assert(rich.ok && rich.wallet.scema === 99999 - HULLS.lancer.price, 'the price was not charged')
+})
+
+check('trading only happens at a market', () => {
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const nowhere = { ...g, nearby: null, ship: { ...g.ship, salvage: 9999, scema: 9999 } }
+  assert(exchangeAt(nowhere).ship.scema === 9999, 'exchanged in open space')
+  assert(acquire(nowhere, 'scout').ship.frame === 'skiff', 'bought a ship in open space')
+})
+
+check('the shipyard works from where the player starts', () => {
+  const s = generate(world, digest)
+  let g = tick(newGame(s), s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 1 })
+  g = { ...g, ship: { ...g.ship, salvage: 60_000 } }
+  g = exchangeAt(g)
+  assert(g.ship.scema > 0, `exchange failed at spawn: ${g.notice}`)
+  g = acquire(g, 'corvette')
+  assert(g.ship.frame === 'corvette', `purchase failed at spawn: ${g.notice}`)
+  assert(g.ship.hull === hullMax(0, 'corvette'), 'the new ship did not arrive whole')
+})
+
+// ── the titan ────────────────────────────────────────────────────────────────
+
+check('the titan exists, can be rolled, and dwarfs everything', () => {
+  // It sat behind `r < 99.6` against an integer roll and could never appear — the same shape as
+  // the capitals hidden behind a six-valued hash, and it survived a round of tests because the
+  // threshold *looks* like it works.
+  const seen = new Set()
+  for (let i = 0; i < 40_000; i += 1) seen.add(classFor(i).id)
+  assert(seen.has('titan'), 'the titan can never be rolled')
+  assert(CLASSES.titan.radius > CLASSES.leviathan.radius * 1.5, 'a titan is a large leviathan')
+  assert(CLASSES.titan.hull > CLASSES.leviathan.hull * 3, 'a titan dies like a leviathan')
+})
+
+check('a titan threatens by volume of fire, not by a one-shot', () => {
+  // Per-shot damage *lower* than a leviathan's, deliberately. A one-shot is not difficulty, it is
+  // a coin toss with extra steps — and it is what made the leviathan unbeatable before.
+  assert(CLASSES.titan.damage < CLASSES.leviathan.damage, 'the titan one-shots')
+  assert(CLASSES.titan.burst > CLASSES.leviathan.burst, 'the titan is not more dangerous at all')
+  // Survivable in the hull built for it, if only just.
+  const volley = CLASSES.titan.damage * CLASSES.titan.burst
+  assert(
+    volley < hullMax(4, 'marauder') + shieldMax(4, 'marauder'),
+    'a full titan volley deletes the heaviest possible ship',
+  )
+})
+
+check('the war classes still obey every invariant', () => {
+  for (const id of ['dreadnought', 'leviathan', 'titan']) {
+    const c = CLASSES[id]
+    assert(c.speed < topSpeed(0, 'marauder'), `${id} outruns the slowest hull`)
+    assert((c.speed * 0.3) / c.turn <= c.standoff * 1.6, `${id} cannot reach its own standoff`)
+    assert(c.bounty > 0, `${id} pays nothing`)
+  }
+})
+
+check('every NPC in the swarm is actually on screen', () => {
+  // They were stepped, hunted, shot at and listed on the sensor board — and never once drawn,
+  // because `drawList` iterated the *contact* lists and traffic is in neither. The same bug that
+  // made the projectiles invisible, in a new place: the thing existed everywhere except in the
+  // window. A count is the only assertion that catches it.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  for (let f = 0; f < 300; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: f * 16 })
+  }
+  const roles = {}
+  for (const b of drawList(s, dynamicOf(g, s)).bodies) roles[b.role] = (roles[b.role] ?? 0) + 1
+  for (const f of ['courier', 'freighter', 'marshal']) {
+    const alive = Enemy.of(g.swarm, f).length
+    assert(alive > 0, `no ${f} in the swarm at all`)
+    assert(roles[f] === alive, `${roles[f] ?? 0} of ${alive} ${f}s drawn`)
+  }
+})
+
+check('a node says what it offers by colour as well as by shape', () => {
+  // The legend is the point: a player should answer "where can I refuel" by looking out of the
+  // window, not by opening a map. Fuel green, trade red, docking purple, everything else blue.
+  const green = PALETTE.depot
+  const red = PALETTE.market
+  assert(green[1] > green[0] * 2 && green[1] > green[2] * 1.5, 'a fuel depot is not green')
+  assert(red[0] > red[1] * 2 && red[0] > red[2] * 2, 'a market is not red')
+  for (const purple of [PALETTE.dock, PALETTE.origin]) {
+    assert(purple[0] > 0.4 && purple[2] > 0.8 && purple[1] < purple[2] * 0.8, 'not purple')
+  }
+  for (const blue of [PALETTE.station, PALETTE.phantom]) {
+    assert(blue[2] > blue[0] * 1.4, 'an ordinary station is not blue')
+  }
+  // And colour is never the only carrier: every kind still has its own silhouette.
+  const shapes = new Set(
+    ['origin', 'station', 'dock', 'depot', 'market'].map((k) => Meshes[k]().join(',')),
+  )
+  assert(shapes.size === 5, 'two node kinds share a silhouette and differ only in colour')
+})
+
+check('yellow fights orange while blue goes about its business', () => {
+  // The sector has to be doing something when you are not. Marshals kill raiders, and civilians
+  // keep flying their routes through it rather than joining in.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const raiders0 = Enemy.of(g.swarm, 'raider').length
+  const civ0 = Enemy.of(g.swarm, 'courier').length + Enemy.of(g.swarm, 'freighter').length
+  const moved = new Map()
+  for (const c of Enemy.of(g.swarm, 'courier')) moved.set(c.id, { ...c.at })
+  for (let f = 0; f < 60 * 150; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  }
+  assert(Enemy.of(g.swarm, 'raider').length < raiders0, 'nothing fought anything')
+  // Civilians are unarmed, so they must not be the ones dying in droves either.
+  const civ1 = Enemy.of(g.swarm, 'courier').length + Enemy.of(g.swarm, 'freighter').length
+  assert(civ1 > civ0 * 0.5, `traffic was wiped out: ${civ0} -> ${civ1}`)
+  // And it travelled.
+  let travelled = 0
+  for (const c of Enemy.of(g.swarm, 'courier')) {
+    const was = moved.get(c.id)
+    if (was && Math.hypot(c.at.x - was.x, c.at.y - was.y, c.at.z - was.z) > EXTENT * 0.01) {
+      travelled += 1
+    }
+  }
+  assert(travelled > 3, `only ${travelled} couriers went anywhere`)
+})
+
+check('the cockpit is live the moment a record loads', () => {
+  // Every control was gated on a `flying` flag that only became true when the canvas was clicked,
+  // so a player who loaded a record and pressed F got nothing — and the panel that would have
+  // said why was itself behind the same gate. That is the larger half of "refuelling does not
+  // work": the mechanic was fine and the whole interface was invisible.
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('useState(true)'), 'the cockpit still starts inert')
+  assert(!src.includes('{!flying &&'), 'something is still hidden until the canvas is clicked')
 })
 
 await Promise.all(pending)

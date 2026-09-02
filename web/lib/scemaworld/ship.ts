@@ -22,11 +22,23 @@
 
 import { SPEED_SHIP, SPEED_SHIP_PER_LEVEL } from './scale.ts'
 import { SHIELD_DELAY_MS } from './classes.ts'
+import { HULLS, type HullId } from './hulls.ts'
 
 export type Component =
   | 'engine' | 'hull' | 'sensors' | 'laser' | 'missiles' | 'tanks' | 'shields' | 'drive'
 
 export interface Ship {
+  /**
+   * The hull being flown. Scales what every component gives.
+   *
+   * A multiplier rather than a replacement, so an upgrade is never wasted by a later purchase:
+   * buying a marauder does not make level-four shields irrelevant, it makes them worth more.
+   * Flat per-hull stats would evaporate everything you own the moment you changed ship, which
+   * teaches people not to change.
+   */
+  frame: HullId
+  /** Placeholder currency. See `economy.ts` — it is a number in a tab, not a token. */
+  scema: number
   /** Litres, abstract. Runs down with thrust; refuelled at a depot or dock. */
   fuel: number
   /**
@@ -75,6 +87,8 @@ export function upgradeCost(c: Component, level: number): number | null {
 
 export function newShip(): Ship {
   return {
+    frame: 'skiff',
+    scema: 0,
     fuel: fuelCapacity(0),
     hull: hullMax(0),
     shield: shieldMax(0),
@@ -89,8 +103,8 @@ export function newShip(): Ship {
   }
 }
 
-export function shieldMax(shields: number): number {
-  return 40 + shields * 34
+export function shieldMax(shields: number, frame: HullId = 'skiff'): number {
+  return Math.round((40 + shields * 34) * HULLS[frame].shields)
 }
 
 /** Shield points per second, once the lull has elapsed. */
@@ -98,8 +112,8 @@ export function shieldRegen(shields: number): number {
   return 6 + shields * 4
 }
 
-export function jumpCapacity(drive: number): number {
-  return 3 + drive
+export function jumpCapacity(drive: number, frame: HullId = 'skiff'): number {
+  return 3 + drive + HULLS[frame].jump
 }
 
 /** Milliseconds to spin the drive up. Faster with a better one, never instant. */
@@ -107,17 +121,17 @@ export function jumpCharge(drive: number, base: number): number {
   return Math.round(base * (1 - drive * 0.15))
 }
 
-export function fuelCapacity(tanks: number): number {
-  return 120 + tanks * 60
+export function fuelCapacity(tanks: number, frame: HullId = 'skiff'): number {
+  return Math.round((120 + tanks * 60) * HULLS[frame].tanks)
 }
 
-export function hullMax(hull: number): number {
-  return 100 + hull * 60
+export function hullMax(hull: number, frame: HullId = 'skiff'): number {
+  return Math.round((100 + hull * 60) * HULLS[frame].armour)
 }
 
 /** World units per second at full throttle. */
-export function topSpeed(engine: number): number {
-  return SPEED_SHIP + engine * SPEED_SHIP_PER_LEVEL
+export function topSpeed(engine: number, frame: HullId = 'skiff'): number {
+  return Math.round((SPEED_SHIP + engine * SPEED_SHIP_PER_LEVEL) * HULLS[frame].speed)
 }
 
 /**
@@ -133,8 +147,10 @@ export function sensorGain(sensors: number): number {
 }
 
 /** Seconds between laser shots. */
-export function laserCooldown(laser: number): number {
-  return Math.max(40, 110 - laser * 18)
+export function laserCooldown(laser: number, frame: HullId = 'skiff'): number {
+  // `guns` above 1 is *faster*, so it divides. A hull that multiplied the cooldown would make
+  // the better gunboat shoot more slowly, which is the kind of sign error that survives review.
+  return Math.max(26, Math.round((110 - laser * 18) / HULLS[frame].guns))
 }
 
 export function photonMagazine(missiles: number): number {
@@ -188,7 +204,7 @@ export function damage(ship: Ship, amount: number, nowMs: number): Ship {
 /** Regenerate shields, but only after a lull. Hull never regenerates — see the `Ship` note. */
 export function recharge(ship: Ship, seconds: number, nowMs: number): Ship {
   if (nowMs - ship.lastHitMs < SHIELD_DELAY_MS) return ship
-  const max = shieldMax(ship.levels.shields)
+  const max = shieldMax(ship.levels.shields, ship.frame)
   if (ship.shield >= max) return ship
   return { ...ship, shield: Math.min(max, ship.shield + shieldRegen(ship.levels.shields) * seconds) }
 }
@@ -200,6 +216,41 @@ export function exposed(ship: Ship): boolean {
 
 export function destroyed(ship: Ship): boolean {
   return ship.hull <= 0
+}
+
+/**
+ * A ship's current maxima, with its hull applied.
+ *
+ * One place, because every one of these was previously a bare level lookup and adding a frame
+ * parameter to each created five chances to pass the wrong thing. Callers ask the ship.
+ */
+export function limits(ship: Ship) {
+  return {
+    fuel: fuelCapacity(ship.levels.tanks, ship.frame),
+    hull: hullMax(ship.levels.hull, ship.frame),
+    shield: shieldMax(ship.levels.shields, ship.frame),
+    jump: jumpCapacity(ship.levels.drive, ship.frame),
+    speed: topSpeed(ship.levels.engine, ship.frame),
+    cooldown: laserCooldown(ship.levels.laser, ship.frame),
+  }
+}
+
+/**
+ * Move to a different hull, carrying every component across and topping everything up.
+ *
+ * A new ship arrives fuelled and whole. Delivering one empty would mean the first thing a player
+ * does after the largest purchase in the game is limp to a depot, which is a strange lesson to
+ * attach to a reward.
+ */
+export function refit(ship: Ship, frame: HullId): Ship {
+  const next = { ...ship, frame }
+  return {
+    ...next,
+    fuel: fuelCapacity(next.levels.tanks, frame),
+    hull: hullMax(next.levels.hull, frame),
+    shield: shieldMax(next.levels.shields, frame),
+    jumpFuel: jumpCapacity(next.levels.drive, frame),
+  }
 }
 
 // ── services ──────────────────────────────────────────────────────────────────
@@ -214,8 +265,8 @@ export type ServiceResult = { ship: Ship; message: string; ok: boolean }
  * rather than a formality.
  */
 export function refuel(ship: Ship, jump = false): ServiceResult {
-  const cap = fuelCapacity(ship.levels.tanks)
-  const jcap = jumpCapacity(ship.levels.drive)
+  const cap = fuelCapacity(ship.levels.tanks, ship.frame)
+  const jcap = jumpCapacity(ship.levels.drive, ship.frame)
   const wantsJump = jump && ship.jumpFuel < jcap
   if (ship.fuel >= cap && !wantsJump) return { ship, message: 'tanks already full', ok: false }
   return {
@@ -226,7 +277,7 @@ export function refuel(ship: Ship, jump = false): ServiceResult {
 }
 
 export function repair(ship: Ship): ServiceResult {
-  const max = hullMax(ship.levels.hull)
+  const max = hullMax(ship.levels.hull, ship.frame)
   if (ship.hull >= max) return { ship, message: 'hull intact', ok: false }
   // Repair costs salvage, and being unable to afford it is a real state — a player stranded
   // with a broken hull and no salvage has to fly carefully rather than being rescued.
@@ -271,10 +322,10 @@ export function buy(ship: Ship, c: Component): ServiceResult {
   // A tank or hull upgrade is worthless if it does not also carry the fuel or integrity it
   // just paid for, and a player who bought one and saw no change would reasonably think it
   // did nothing.
-  if (c === 'tanks') upgraded.fuel = fuelCapacity(levels.tanks)
-  if (c === 'hull') upgraded.hull = hullMax(levels.hull)
-  if (c === 'shields') upgraded.shield = shieldMax(levels.shields)
-  if (c === 'drive') upgraded.jumpFuel = jumpCapacity(levels.drive)
+  if (c === 'tanks') upgraded.fuel = fuelCapacity(levels.tanks, ship.frame)
+  if (c === 'hull') upgraded.hull = hullMax(levels.hull, ship.frame)
+  if (c === 'shields') upgraded.shield = shieldMax(levels.shields, ship.frame)
+  if (c === 'drive') upgraded.jumpFuel = jumpCapacity(levels.drive, ship.frame)
   return { ship: upgraded, message: `${UPGRADES[c].label} → level ${level + 1}`, ok: true }
 }
 

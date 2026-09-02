@@ -63,6 +63,7 @@ export type ClassId =
   | 'destroyer'
   | 'dreadnought'
   | 'leviathan'
+  | 'titan'
   | 'courier'
   | 'freighter'
   | 'marshal'
@@ -172,6 +173,23 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     damage: 21, cooldownMs: 800, burst: 10, bounty: 14000, capital: true,
   },
 
+  // The titan. One per sector at most, and most sectors have none.
+  //
+  // A third of the sector across: from the far side it is a shape on the sky rather than a
+  // contact, and closing on one takes long enough that the decision to do it is made well before
+  // you arrive. Beating it is a marauder, every component at maximum, and several minutes of
+  // holding a firing solution while never once flying straight.
+  //
+  // Its per-shot damage is deliberately *lower* than a leviathan's. The threat is the volume of
+  // fire and the time you must survive inside it, not a number that deletes you — a one-shot is
+  // not difficulty, it is a coin toss with extra steps.
+  titan: {
+    id: 'titan', label: 'TITAN', shape: 'dreadnought',
+    radius: S(0.4), hull: 14000, shield: 9000, shieldRegen: 70,
+    speed: S(1 / 700), turn: 0.014, aggro: S(0.45), standoff: S(0.4),
+    damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
+  },
+
   // ── traffic ────────────────────────────────────────────────────────────────
   // Not hostile, and `classFor` never rolls them: they are placed by `factions.ts` on routes
   // between real service nodes. They carry statlines because they can be shot at — a ship you
@@ -214,6 +232,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
  */
 export const CLASS_IDS: ClassId[] = [
   'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer', 'dreadnought', 'leviathan',
+  'titan',
 ]
 
 /** Every class, hostile and otherwise. */
@@ -230,13 +249,19 @@ export const SHIELD_DELAY_MS = 4_200
  * Capitals are rare because a sector with several is a sector you cannot cross.
  */
 export function classFor(roll: number): ClassSpec {
-  const r = roll % 100
-  if (r < 24) return CLASSES.skiff
-  if (r < 54) return CLASSES.interceptor
-  if (r < 73) return CLASSES.lancer
-  if (r < 88) return CLASSES.gunship
-  if (r < 95) return CLASSES.frigate
-  if (r < 98) return CLASSES.destroyer
-  if (r < 99) return CLASSES.dreadnought
-  return CLASSES.leviathan
+  // Per *mille*, not per cent. The roll is an integer, so a hundred buckets cannot express
+  // anything rarer than one in a hundred — the titan sat behind `r < 99.6` against a value that
+  // is only ever a whole number, and could never be rolled at all. Same shape as the bug that
+  // hid both capitals behind a six-valued hash, and it survived one round of tests because the
+  // threshold *looks* like it works.
+  const r = roll % 1000
+  if (r < 240) return CLASSES.skiff
+  if (r < 540) return CLASSES.interceptor
+  if (r < 730) return CLASSES.lancer
+  if (r < 880) return CLASSES.gunship
+  if (r < 950) return CLASSES.frigate
+  if (r < 980) return CLASSES.destroyer
+  if (r < 994) return CLASSES.dreadnought
+  if (r < 999) return CLASSES.leviathan
+  return CLASSES.titan
 }

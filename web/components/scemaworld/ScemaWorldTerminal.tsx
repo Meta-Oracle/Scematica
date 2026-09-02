@@ -26,6 +26,11 @@ import {
   sensors, tick, useService, type GameState,
 } from '@/lib/scemaworld/game'
 import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
+import { acquire, exchangeAt } from '@/lib/scemaworld/game'
+import { HULLS, HULL_IDS, type HullId } from '@/lib/scemaworld/hulls'
+import { SALVAGE_PER_SCEMA, SCEMA_NOTE, toScema } from '@/lib/scemaworld/economy'
+import { DEFAULT_ZOOM } from '@/lib/scemaworld/navmap'
+import { NavMap } from './NavMap'
 import { bearingLabel, fixOn, nearest, rangeLabel } from '@/lib/scemaworld/nav'
 import {
   MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, jumpCapacity, shieldMax, upgradeCost,
@@ -67,7 +72,21 @@ export function ScemaWorldTerminal() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [flying, setFlying] = useState(false)
+  /**
+   * Whether the cockpit is live.
+   *
+   * **Starts true.** It started false and became true only when the canvas was clicked, and every
+   * control in the game — the station panel, the jump readout, the sensor board, the nav map —
+   * was gated on it. A player who loaded a record and pressed `F` got nothing, because the panel
+   * that would have said *why* was itself hidden behind a click nobody had been told to make.
+   * That is the larger half of "refuelling does not work": the mechanic was fine and the entire
+   * interface was invisible.
+   *
+   * The controls card now dismisses on the first input instead, which is what it was really for.
+   */
+  const [flying, setFlying] = useState(true)
+  /** Cleared on the first keypress, so the controls card is a greeting rather than a gate. */
+  const [greeted, setGreeted] = useState(false)
   const [speed, setSpeed] = useState(0)
 
   // Mutable flight state, deliberately outside React. A camera in state would re-render the
@@ -80,6 +99,9 @@ export function ScemaWorldTerminal() {
   const [hud, setHud] = useState<GameState | null>(null)
   const [weapon, setWeapon] = useState('AUTO LASER')
   const [market, setMarket] = useState(false)
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM)
+  /** Which half of the market is showing. Components are the common case, so it opens there. */
+  const [shop, setShop] = useState<'parts' | 'ships'>('parts')
 
   const [ticket, setTicket] = useState<string | null>(null)
   const [vault, setVault] = useState('')
@@ -282,6 +304,7 @@ export function ScemaWorldTerminal() {
       // canvas mid-flight.
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
       keys.current.add(e.code)
+      setGreeted(true)
 
       const g = game.current
       if (!g || !loaded) return
@@ -411,7 +434,10 @@ export function ScemaWorldTerminal() {
           <canvas
             ref={canvasRef}
             className="block h-[calc(100vh-3.25rem)] w-full"
-            onClick={() => setFlying(true)}
+            onClick={() => {
+              setFlying(true)
+              setGreeted(true)
+            }}
           />
 
           <div className="pointer-events-none absolute left-5 top-4 space-y-1 font-mono text-xs">
@@ -441,17 +467,23 @@ export function ScemaWorldTerminal() {
               k="fuel"
               v={
                 hud
-                  ? `${Math.round(hud.ship.fuel)}/${fuelCapacity(hud.ship.levels.tanks)}`
+                  ? `${Math.round(hud.ship.fuel)}/${fuelCapacity(hud.ship.levels.tanks, hud.ship.frame)}`
                   : '—'
               }
               alarm={!!hud && hud.ship.fuel <= 0}
             />
             <Row
               k="jump"
-              v={hud ? `${hud.ship.jumpFuel}/${jumpCapacity(hud.ship.levels.drive)}` : '—'}
+              v={
+                hud
+                  ? `${hud.ship.jumpFuel}/${jumpCapacity(hud.ship.levels.drive, hud.ship.frame)}`
+                  : '—'
+              }
               alarm={!!hud && hud.ship.jumpFuel <= 0}
             />
             <Row k="salvage" v={hud ? String(hud.ship.salvage) : '—'} />
+            <Row k="scema" v={hud ? String(hud.ship.scema) : '—'} />
+            <Row k="hull class" v={hud ? HULLS[hud.ship.frame].label : '—'} />
             <Row k="weapon" v={weapon} />
             <Row
               k="ammo"
@@ -473,14 +505,18 @@ export function ScemaWorldTerminal() {
               <Gauge
                 label="SHIELD"
                 value={hud.ship.shield}
-                max={shieldMax(hud.ship.levels.shields)}
+                max={shieldMax(hud.ship.levels.shields, hud.ship.frame)}
                 tone={hud.ship.shield <= 0 ? 'down' : 'shield'}
               />
               <Gauge
                 label="HULL"
                 value={hud.ship.hull}
-                max={hullMax(hud.ship.levels.hull)}
-                tone={hud.ship.hull < hullMax(hud.ship.levels.hull) * 0.3 ? 'down' : 'hull'}
+                max={hullMax(hud.ship.levels.hull, hud.ship.frame)}
+                tone={
+                  hud.ship.hull < hullMax(hud.ship.levels.hull, hud.ship.frame) * 0.3
+                    ? 'down'
+                    : 'hull'
+                }
               />
               {(() => {
                 const charge = jumpProgress(hud.drive, hud.ship.levels.drive)
@@ -521,7 +557,7 @@ export function ScemaWorldTerminal() {
             </div>
           )}
 
-          {!flying && (
+          {!greeted && (
             <div className="pointer-events-none absolute inset-x-0 bottom-8 text-center font-mono text-xs text-omni-dim">
               <div>
                 W/S pitch · A/D yaw · Q/E roll · ↑/↓ throttle level · X full stop ·
@@ -538,7 +574,9 @@ export function ScemaWorldTerminal() {
                 HOLD J to jump to the waypoint — the drive will not spin up with hostiles in
                 range
               </div>
-              <div className="mt-1">click the view to begin</div>
+              <div className="mt-1 text-omni-accent">
+                every one of these is also a button on the panel below — click the view to begin
+              </div>
             </div>
           )}
 
@@ -630,6 +668,40 @@ export function ScemaWorldTerminal() {
           )}
 
 {/*
+            The nav map. It is a *control*, not a readout: with four hundred nodes over five
+            thousand million units, cycling waypoints with a key is a way to arrive somewhere by
+            luck, and clicking one on a map is a way to arrive on purpose.
+          */}
+          {hud && flying && (
+            <div className="absolute bottom-4 left-5">
+              <NavMap
+                space={s}
+                at={{
+                  x: hud.camera.position[0],
+                  y: hud.camera.position[1],
+                  z: hud.camera.position[2],
+                }}
+                facing={(() => {
+                  const f = forward(hud.camera)
+                  return { x: f[0], y: f[1], z: f[2] }
+                })()}
+                zoom={zoom}
+                waypoint={hud.waypoint}
+                craft={hud.swarm.craft
+                  .filter((c) => c.alive)
+                  .map((c) => ({ id: c.id, at: c.at, faction: c.faction, label: c.spec.label }))}
+                onPick={(id) => {
+                  const g = game.current
+                  if (!g) return
+                  game.current = { ...g, waypoint: id, noticeAt: -1, notice: 'course set' }
+                  setHud(game.current)
+                }}
+                onZoom={setZoom}
+              />
+            </div>
+          )}
+
+          {/*
             The station panel.
 
             It replaces a transient one-line notice, and that change is the whole of the reported
@@ -718,7 +790,37 @@ export function ScemaWorldTerminal() {
                     ? hud.nearby.label
                     : 'no market in range — press 3 to route to one'}
                 </span>
-                <span className="ml-auto text-omni-text">{hud.ship.salvage} salvage</span>
+                <span className="ml-auto text-omni-text">
+                  {hud.ship.salvage} salvage · {hud.ship.scema} SCEMA
+                </span>
+                <button
+                  type="button"
+                  disabled={toScema(hud.ship.salvage) <= 0}
+                  title={
+                    toScema(hud.ship.salvage) > 0 ? '' : `${SALVAGE_PER_SCEMA} salvage buys 1 SCEMA`
+                  }
+                  onClick={() => {
+                    const g = game.current
+                    if (!g) return
+                    game.current = exchangeAt(g)
+                    setHud(game.current)
+                  }}
+                  className="rounded border border-omni-border px-2 py-0.5 text-omni-text hover:border-omni-accent disabled:opacity-40"
+                >
+                  exchange → {toScema(hud.ship.salvage)} SCEMA
+                </button>
+                {(['parts', 'ships'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setShop(tab)}
+                    className={`px-2 py-0.5 ${
+                      shop === tab ? 'text-omni-accent' : 'text-omni-dim hover:text-omni-text'
+                    }`}
+                  >
+                    {tab}
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => setMarket(false)}
@@ -738,7 +840,55 @@ export function ScemaWorldTerminal() {
                   derelicts — press 4 to route to one.
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+              {shop === 'ships' && (
+                <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                  {HULL_IDS.map((h) => {
+                    const spec = HULLS[h]
+                    const owned = hud.ship.frame === h
+                    const can =
+                      !owned &&
+                      hud.ship.scema >= spec.price &&
+                      !!hud.nearby &&
+                      servicesOf(hud.nearby.kind).includes('trade')
+                    return (
+                      <button
+                        key={h}
+                        type="button"
+                        disabled={!can}
+                        onClick={() => {
+                          const g = game.current
+                          if (!g) return
+                          game.current = acquire(g, h as HullId)
+                          setHud(game.current)
+                        }}
+                        className="rounded border border-omni-border px-2 py-1 text-left hover:border-omni-accent disabled:opacity-40"
+                      >
+                        <div className="text-omni-text">
+                          {spec.label} {owned && <span className="text-omni-valid">— flying</span>}
+                        </div>
+                        <div className="text-omni-dim">{spec.note}</div>
+                        <div className="text-omni-dim">
+                          hull ×{spec.armour} · shield ×{spec.shields} · speed ×{spec.speed}
+                        </div>
+                        <div className={can ? 'text-omni-valid' : 'text-omni-dim'}>
+                          {owned
+                            ? 'current hull'
+                            : `${spec.price} SCEMA${
+                                hud.ship.scema < spec.price
+                                  ? ` — ${spec.price - hud.ship.scema} short`
+                                  : ''
+                              }`}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              <div
+                className={`grid grid-cols-2 gap-1 sm:grid-cols-3 ${
+                  shop === 'ships' ? 'hidden' : ''
+                }`}
+              >
                 {(Object.keys(UPGRADES) as Component[]).map((c) => {
                   const lvl = hud.ship.levels[c]
                   const cost = upgradeCost(c, lvl)
@@ -790,6 +940,12 @@ export function ScemaWorldTerminal() {
                 anything the record reports. A world with more blind spots is not worth more;
                 it is worth the same and is harder to survive.
               </div>
+              {/*
+                Said on screen, not only in a comment. A player told a currency is a placeholder
+                has been told; one who infers it later from a changelog has been misled, and this
+                project's whole argument is about not letting a number imply more than it is.
+              */}
+              <div className="mt-1 text-omni-stale">{SCEMA_NOTE}</div>
             </div>
           )}
 

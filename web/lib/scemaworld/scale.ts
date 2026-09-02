@@ -205,6 +205,24 @@ export const BOLT_LENGTH = 16
 /** The additive halo, as a multiple of the core radius. Glow, drawn as geometry. */
 export const BOLT_GLOW = 3.6
 
+// ── the course line ─────────────────────────────────────────────────────────
+
+/**
+ * How many glowing dashes mark the course to a waypoint.
+ *
+ * Dashes rather than one long line, and it is not decoration. A solid line to a destination four
+ * hundred million units away is a bright bar across the middle of the window that hides whatever
+ * is behind it — and what is behind it is the direction you are flying. A dashed line gives the
+ * same guidance and occupies a fraction of the screen; the gaps are where you see the sector.
+ *
+ * They also give **distance**. Fixed spacing means the dashes crowd together as they recede, so
+ * the line reads as a road going away rather than as an overlay drawn on glass.
+ */
+export const COURSE_DASHES = 34
+
+/** How far along the course the dashes stop, so the last one does not sit inside the station. */
+export const COURSE_CLEAR = 0.94
+
 // ── the jump drive ───────────────────────────────────────────────────────────
 
 /**

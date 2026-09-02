@@ -27,6 +27,8 @@ import {
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
 import { hostileTo } from './factions.ts'
+import * as Economy from './economy.ts'
+import type { HullId } from './hulls.ts'
 import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
 import { nodeRadius, roleOfNode } from './view.ts'
@@ -274,7 +276,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   if (wantsThrust && dry) notice = 'tanks dry — find a depot'
 
   if (effective > 0) {
-    camera = translate(camera, [0, 0, -Ship.topSpeed(ship.levels.engine) * effective * dt])
+    camera = translate(camera, [0, 0, -Ship.limits(ship).speed * effective * dt])
   }
   // Lateral thrusters are free of the main drive and cost nothing: they are for docking, and
   // a player unable to line up on a depot because they ran dry is stuck forever.
@@ -356,7 +358,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     return k ? { ...c, at: k.at, radius: k.spec.radius } : c
   })
 
-  if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels)
+  if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels, ship.frame)
   // No geometry blocks a shot any more: a wireframe frame is not cover. The seam stays because
   // the alternative is deleting a parameter that a future obstacle would have to reintroduce.
   const advanced = Weapons.step(combat, dt, moved, space.seed)
@@ -434,6 +436,10 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     if (state.touching.includes(c.id)) continue
 
     const closing = Math.hypot(velocity.x, velocity.y, velocity.z) + c.speed
+    // Scaled against the *stock* top speed, not this hull's. A marauder is slower, and charging
+    // it less for the same collision would make the heaviest ship the safest to fly into things
+    // with — a hull's armour already covers that, and doing it twice is how a stat becomes a
+    // dominant strategy.
     const cost = Math.max(1, Math.round((closing / Ship.topSpeed(0)) * RAM_DAMAGE))
     ship = Ship.damage(ship, cost, nowMs)
     const res = Enemy.hit(swarm, c.id, cost, nowMs)
@@ -569,10 +575,57 @@ export function dynamicOf(state: GameState, space?: Space) {
       facing: c.facing,
       spec: c.spec,
       flash: state.flashes[c.id] ?? 0,
+      // Carried so the renderer can colour traffic, which has no contact behind it to take a
+      // role from. Without it every courier in the sector was invisible.
+      faction: c.faction,
     })),
     destroyed: state.combat.destroyed,
     waypoint: wp,
+    from: wp ? v3(state.camera.position) : null,
   }
+}
+
+/**
+ * Convert salvage to SCEMA at a market.
+ *
+ * Only at a market, because the spread is the point: an exchange available anywhere makes the two
+ * currencies one resource with two labels, and the choice between a component now and a hull
+ * later stops being a question.
+ */
+export function exchangeAt(state: GameState, salvage?: number): GameState {
+  const node = state.nearby
+  if (!node || !servicesOf(node.kind).includes('trade')) {
+    return { ...state, noticeAt: PENDING, notice: 'no market in range' }
+  }
+  const r = Economy.exchange({ salvage: state.ship.salvage, scema: state.ship.scema }, salvage)
+  if (!r.ok) return { ...state, noticeAt: PENDING, notice: r.message }
+  return {
+    ...state,
+    ship: { ...state.ship, salvage: r.wallet.salvage, scema: r.wallet.scema },
+    noticeAt: PENDING,
+    notice: r.message,
+  }
+}
+
+/**
+ * Buy a hull at a market. Everything you own comes across and the new ship arrives whole.
+ *
+ * Delivering one empty would mean the first thing a player does after the largest purchase in the
+ * game is limp to a depot, which is a strange lesson to attach to a reward.
+ */
+export function acquire(state: GameState, frame: HullId): GameState {
+  const node = state.nearby
+  if (!node || !servicesOf(node.kind).includes('trade')) {
+    return { ...state, noticeAt: PENDING, notice: 'no shipyard in range' }
+  }
+  const r = Economy.buyHull(
+    { salvage: state.ship.salvage, scema: state.ship.scema },
+    state.ship.frame,
+    frame,
+  )
+  if (!r.ok) return { ...state, noticeAt: PENDING, notice: r.message }
+  const refitted = Ship.refit({ ...state.ship, scema: r.wallet.scema }, frame)
+  return { ...state, ship: refitted, noticeAt: PENDING, notice: r.message }
 }
 
 /**

@@ -27,6 +27,7 @@
 
 import type { Contact, Vec3 } from './generate.ts'
 import { laserCooldown } from './ship.ts'
+import type { HullId } from './hulls.ts'
 import {
   LIFE_LASER, LIFE_PHOTON, R_CONTACT, R_CONTACT_SPAN, SPEED_LASER, SPEED_PHOTON,
 } from './scale.ts'
@@ -231,9 +232,10 @@ export function fire(
   nowMs: number,
   contacts: Contact[],
   levels: WeaponLevels = STOCK,
+  frame: HullId = 'skiff',
 ): Combat {
   const w = selected(c)
-  const cooldown = w.kind === 'laser' ? laserCooldown(levels.laser) : w.cooldownMs
+  const cooldown = w.kind === 'laser' ? laserCooldown(levels.laser, frame) : w.cooldownMs
   if (nowMs - c.lastFire[w.kind] < cooldown) return c
   if (w.kind === 'photon' && c.photonsLeft <= 0) return c
 

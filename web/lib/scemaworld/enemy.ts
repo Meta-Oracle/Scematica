@@ -179,6 +179,9 @@ export function leadPoint(from: Vec3, target: Vec3, targetVel: Vec3, shotSpeed: 
  * sector was simply missing its top two classes, which is exactly the kind of bug a table with
  * a plausible-looking output hides.
  *
+ * Per *mille* rather than per cent, so the table can express something rarer than one in a
+ * hundred. The titan needs it, and a hundred buckets is how the titan was unreachable too.
+ *
  * Never from the contact's reported magnitude: a class derived from a record's numbers would
  * hand anybody who writes one a reason to understate them.
  */
@@ -190,7 +193,7 @@ export function classRoll(seed: string, contactId: string): number {
       h = Math.imul(h, 16777619) >>> 0
     }
   }
-  return h % 100
+  return h % 1000
 }
 
 /**

@@ -144,8 +144,31 @@ export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 30)
 export const SPEED_THRUST = Math.round(EXTENT / 30)
 
 /**
- * A laser crosses the sector in nine seconds and lives for half of one, so its reach is a bit
- * over a third of `AGGRO_RANGE`. You close to fight; you do not snipe from the edge of sensors.
+ * A laser crosses the sector in a little over two seconds and lives for three tenths of one, so
+ * its reach is about **0.14 of the sector — roughly 1.8 times `AGGRO_RANGE`**.
+ *
+ * ## What that buys, stated as the property it actually is
+ *
+ * The reach outranges the awareness of **every fighter class and no capital**: a skiff, an
+ * interceptor, a lancer and a gunship can all be engaged from beyond the range at which they
+ * would notice you, while a frigate and everything above it sees you first. So a patient pilot
+ * can pick off escorts at range, and nothing larger than a gunship can be approached unseen.
+ * `check:scemaworld` pins both halves of that, because it is a *line* through the class table
+ * and one new statline could quietly cross it.
+ *
+ * ## Why this comment is worded like a claim under test
+ *
+ * It previously read "a laser crosses the sector in nine seconds and lives for half of one, so
+ * its reach is a bit over a third of `AGGRO_RANGE`. You close to fight; you do not snipe from
+ * the edge of sensors." Every clause of that was false: the crossing was 2.2 seconds, the life
+ * 0.3, and the reach 1.8 times the aggro range rather than a third of it — so the design
+ * statement in the last sentence was the exact opposite of what the constants did.
+ *
+ * Nothing had gone wrong with the game. `SPEED_LASER` and `AGGRO_RANGE` were each changed for
+ * good reasons, months apart, and the sentence describing their relationship was not — because
+ * no test was reading it. A figure in a comment is a claim, and a claim with no test is a claim
+ * that will be wrong eventually; the only question is when somebody notices. Found by an
+ * external audit rather than by this repository, which is the point.
  */
 export const SPEED_LASER = Math.round(EXTENT / 2.2)
 export const LIFE_LASER = 0.3

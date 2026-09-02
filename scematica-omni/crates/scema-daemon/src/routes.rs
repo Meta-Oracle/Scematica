@@ -293,8 +293,14 @@ pub fn handle(state: &State, req: Request) -> Response {
             }
         }
         ("GET", ["decisions"]) => decisions(state),
-        ("GET", ["decisions", id]) => decision(state, id),
-        ("GET", ["decisions", id, "verify"]) => decision_verify(state, id),
+        ("GET", ["decisions", id]) if is_record_id(id) => decision(state, id),
+        ("GET", ["decisions", id, "verify"]) if is_record_id(id) => decision_verify(state, id),
+        // A malformed id is refused here, before anything builds a path out of it.
+        ("GET", ["decisions", _]) | ("GET", ["decisions", _, "verify"]) => Response::error(
+            400,
+            "bad_id",
+            anyhow::anyhow!("a record id is lower-case hex, 1 to 64 characters"),
+        ),
         ("GET", ["memory", "stats"]) => memory_stats(state),
         (_, _) if segments.is_empty() => Response::error(
             404,
@@ -370,6 +376,33 @@ fn decisions(state: &State) -> Response {
     ok_json(&summaries)
 }
 
+/// Whether a path segment is a record id.
+///
+/// ## Why this is a guard and not a sanitiser
+///
+/// `RecordStore::path_for` builds `<root>/decisions/{id}.json` by `join`, and `join` will
+/// happily walk out of the directory given a relative path. `segments()` splits on `/` only, so
+/// a slash can never reach here — but a **backslash** could, and on Windows, which is this
+/// project's primary platform, a backslash is a path separator. `%5c` percent-decodes into one
+/// *inside* a segment, so `GET /decisions/..%5csecret` reached `path_for` as a relative path and
+/// the daemon opened a file outside its own store.
+///
+/// It never disclosed contents: only a document that parses as a `DecisionRecord` is ever
+/// returned, so the traversal produced a parse error rather than a file. That is the whole
+/// problem with it. The safety came from a *later* step failing, not from this one refusing —
+/// so it distinguished an existing file from a missing one (a file-existence oracle over any
+/// `.json` path, plus an absolute path in the error), and the day something serves a record's
+/// raw bytes instead of a parsed one, it becomes disclosure.
+///
+/// Record ids are hex digests and unique prefixes of them, so the accepting set is exactly
+/// `[0-9a-f]{1,64}`. That excludes `.`, `..`, both separators, a percent, a NUL and upper-case
+/// spellings in one statement, and it excludes them *before* a path exists.
+fn is_record_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn decision(state: &State, id: &str) -> Response {
     match RecordStore::new(state.root.clone()).load(id) {
         Ok(r) => ok_json(&r),
@@ -434,6 +467,103 @@ mod tests {
             root: root.clone(),
             allow_decide,
         }
+    }
+
+    /// A record id is a *name*, not a path, and the router has to treat it as one.
+    ///
+    /// `segments()` splits on `/` only, so a slash cannot survive into an id. Nothing
+    /// rejected a **backslash** — and on Windows, this project's primary platform, a
+    /// backslash is a path separator. `%5c` percent-decodes into one *inside* a segment,
+    /// so `/decisions/..%5c..%5csecret` reaches `RecordStore::path_for` as a relative path
+    /// and `join` walks straight out of the store.
+    ///
+    /// Gated behind loopback and a 256-bit bearer token, so it is not a remote hole. It is
+    /// still an authenticated read of any `.json` file the process can reach, and a Solana
+    /// keypair is a `.json` file.
+    #[test]
+    /// A traversed id is refused *before* a path is built from it.
+    ///
+    /// It used to be refused afterwards, by accident: the daemon opened the file and the
+    /// parse failed, so the answer was 404 and nothing leaked but the difference between an
+    /// existing file and a missing one — a file-existence oracle over any `.json` path, with
+    /// an absolute path in the error. Safety that comes from a later step failing is safety
+    /// that the next refactor removes without touching this file.
+    ///
+    /// The distinguishing assertion is the status: 400 means the id was rejected as
+    /// malformed, 404 means something went looking.
+    #[test]
+    fn a_traversed_id_never_reaches_the_filesystem() {
+        let root = scratch();
+        std::fs::create_dir_all(root.join("decisions")).unwrap();
+        // A plausible target: a Solana keypair is a `.json` file, and the store appends
+        // `.json` to whatever it is given.
+        std::fs::write(root.join("outside.json"), r#"{"secret":1}"#).unwrap();
+        let s = state(&root, false);
+
+        let ids = [
+            "..\\outside",
+            "..\\..\\outside",
+            "../outside",
+            "sub\\nested",
+            "..",
+            ".",
+            "ABCDEF",
+            "zzzz",
+            "a%2fb",
+            // Deliberately not the empty id: `/decisions/` drops the empty segment and is the
+            // collection route, which correctly answers 200. It is not a traversal.
+        ];
+        for id in ids {
+            for suffix in ["", "/verify"] {
+                let path = format!("/decisions/{id}{suffix}");
+                let got = handle(&s, req("GET", &path, Some(&s.token), ""));
+                let body = String::from_utf8_lossy(&got.body).to_string();
+                assert!(!body.contains("secret"), "{path} served a file: {body}");
+                assert_ne!(got.status, 200, "{path} was served");
+                // An id containing a literal `/` never reaches the id slot at all — it splits
+                // into extra segments and matches no route, which is a 404 for a different and
+                // equally good reason. Everything that *does* reach the slot must be refused as
+                // malformed, which is what 400 distinguishes: 404 would mean something went
+                // looking on the filesystem first.
+                if !id.contains('/') {
+                    assert_eq!(got.status, 400, "{path} reached the filesystem");
+                }
+            }
+        }
+    }
+
+    /// The file-existence oracle is closed.
+    ///
+    /// Before the guard, a traversed id that hit a real file answered `parsing <absolute path>`
+    /// and one that hit nothing answered `no decision record matching ...` — two different
+    /// bodies, so any `.json` path could be probed for existence. Now both are the same
+    /// refusal, and neither names a path.
+    #[test]
+    fn a_traversed_id_reveals_nothing_about_the_filesystem() {
+        let root = scratch();
+        std::fs::create_dir_all(root.join("decisions")).unwrap();
+        std::fs::write(root.join("present.json"), r#"{"secret":1}"#).unwrap();
+        let s = state(&root, false);
+        let ask = |id: &str| {
+            let got = handle(&s, req("GET", &format!("/decisions/{id}"), Some(&s.token), ""));
+            (got.status, String::from_utf8_lossy(&got.body).to_string())
+        };
+        let (hs, hb) = ask("..\\present");
+        let (ms, mb) = ask("..\\absent");
+        assert_eq!(hs, ms, "status distinguishes an existing file from a missing one");
+        assert_eq!(hb, mb, "body distinguishes an existing file from a missing one");
+        assert!(!hb.contains("present"), "the refusal echoes the probed path: {hb}");
+        assert!(!hb.to_lowercase().contains("temp"), "the refusal leaks an absolute path: {hb}");
+    }
+
+    /// And a real id still works, so the guard is not simply refusing everything.
+    #[test]
+    fn a_well_formed_id_is_still_accepted() {
+        assert!(is_record_id("9365761b"));
+        assert!(is_record_id(&"0123456789abcdef".repeat(4)));
+        assert!(!is_record_id(&"a".repeat(65)), "longer than a digest");
+        assert!(!is_record_id("9365761B"), "upper case");
+        assert!(!is_record_id("9365761g"), "not hex");
     }
 
     fn req(method: &str, path: &str, token: Option<&str>, body: &str) -> Request {

@@ -56,7 +56,8 @@ import {
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
   JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
-  SENSOR_MULTIPLIER, AGGRO_RANGE as SENSOR_BASE, SPEED_LASER, LIFE_LASER,
+  SENSOR_MULTIPLIER, AGGRO_RANGE as SENSOR_BASE, SPEED_LASER, LIFE_LASER, SPEED_PHOTON,
+  SPEED_ENEMY_SHOT, SPEED_CRAFT, SPEED_CRAFT_PER_TIER, FAR_PLANE, NEAR_PLANE,
 } from '../lib/scemaworld/scale.ts'
 import {
   swarmOf, step as enemyStep, hit as enemyHit, living, decide, leadPoint, turnToward,
@@ -3312,6 +3313,61 @@ check('the component only dispatches; the table lives where it is tested', () =>
   assert(!src.includes("e.code === 'KeyF'"), 'the component still decides what a key means')
   // And it reads the world at the moment of the press, not the moment of attachment.
   assert(src.includes('loadedRef.current'), 'the handler still closes over render-scope state')
+})
+
+// ── the claims the scale table makes about itself ────────────────────────────
+
+check('the laser reach comment is the reach the constants give', () => {
+  // D-1 from the external audit, and the reason it is pinned rather than merely corrected: the
+  // sentence said the reach was "a bit over a third of AGGRO_RANGE" and it was 1.8 *times* it.
+  // Nothing had gone wrong with the game — `SPEED_LASER` and `AGGRO_RANGE` were each changed for
+  // good reasons, months apart, and the sentence about their relationship was not, because no
+  // test was reading it.
+  const reach = SPEED_LASER * LIFE_LASER
+  assert(reach > SENSOR_BASE, 'the reach no longer exceeds the aggro range the comment cites')
+  const ratio = reach / SENSOR_BASE
+  assert(ratio > 1.6 && ratio < 2.1, `reach is ${ratio.toFixed(2)}x aggro; the comment says ~1.8`)
+  const asExtent = reach / EXTENT
+  assert(asExtent > 0.12 && asExtent < 0.16, `reach is ${asExtent.toFixed(3)}·EXTENT, not ~0.14`)
+  const crossing = EXTENT / SPEED_LASER
+  assert(crossing > 1.8 && crossing < 2.6, `a laser crosses in ${crossing.toFixed(1)}s, not ~2`)
+})
+
+check('a laser outranges every fighter and no capital', () => {
+  // The design line the corrected comment states. It is a *line through the class table*, so one
+  // new statline could cross it without anything else failing — which is precisely the shape of
+  // the drift that produced the wrong comment in the first place.
+  const reach = SPEED_LASER * LIFE_LASER
+  for (const id of CLASS_IDS) {
+    const c = CLASSES[id]
+    if (c.capital) {
+      assert(
+        c.aggro > reach,
+        `${id} is a capital and can be engaged from outside its awareness (${(c.aggro / EXTENT).toFixed(3)} vs ${(reach / EXTENT).toFixed(3)})`,
+      )
+    } else {
+      assert(
+        c.aggro < reach,
+        `${id} is a fighter and cannot be engaged from outside its awareness`,
+      )
+    }
+  }
+})
+
+check('every figure the scale table quotes about itself is true', () => {
+  // The general form of D-1. A figure in a comment is a claim, and a claim with no test is a
+  // claim that will be wrong eventually. These are the ones `scale.ts` states in prose.
+  const claims = [
+    ['stock engine crosses the sector in eleven seconds', EXTENT / topSpeed(0), 10.4, 11.6],
+    ['the depth ratio is about 2000:1', FAR_PLANE / NEAR_PLANE, 1600, 2400],
+    ['a photon is slower than a laser', SPEED_LASER / SPEED_PHOTON, 1.01, 99],
+    ['enemy fire is faster than any ship', SPEED_ENEMY_SHOT / topSpeed(4), 1.01, 99],
+  ]
+  for (const [claim, actual, lo, hi] of claims) {
+    assert(actual >= lo && actual <= hi, `"${claim}" — actually ${Number(actual).toFixed(2)}`)
+  }
+  // And the one the file makes about craft never outrunning you, which `classes.ts` relies on.
+  assert(SPEED_CRAFT + 4 * SPEED_CRAFT_PER_TIER < topSpeed(0), 'a craft can outrun a stock ship')
 })
 
 await Promise.all(pending)

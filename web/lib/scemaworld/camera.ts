@@ -205,3 +205,33 @@ export function mul(a: Mat4, b: Mat4): Mat4 {
   }
   return o
 }
+
+/**
+ * The chase camera for a ship.
+ *
+ * ## Why this is a function and not a second piece of state
+ *
+ * `GameState.camera` is the **ship's** transform — its position and its orientation — and
+ * everything in the simulation reads it as such: where shots come from, what is in docking range,
+ * what a raider is leading. Making the view a derived function of that keeps one authority. The
+ * alternative, a camera that is separately animated and separately stored, gives the game two
+ * ideas about where the player *is*, and every one of the questions above then has to pick one.
+ *
+ * So the camera is placed behind and above the ship along the ship's own axes and shares its
+ * orientation exactly. No damping, no spring, no lag: a lagging chase camera is pleasant to look
+ * at and it decouples the crosshair from the nose, which in a game where you are aiming is the
+ * difference between a shot going where you pointed and going somewhere near it.
+ *
+ * `back` and `up` are in world units — they scale with the hull, so a marauder sits further from
+ * the lens than a skiff and both fill about the same part of the frame.
+ */
+export function chase(ship: Camera, back: number, up: number): Camera {
+  // The offset is expressed in the ship's *local* frame and rotated with it, which is what makes
+  // the camera roll with the ship. Rolling is the whole reason `Q`/`E` exist, and a camera pinned
+  // to world-up throws that information away — you would roll and see nothing move.
+  const d = qRotate(ship.orientation, [0, up, back])
+  return {
+    position: [ship.position[0] + d[0], ship.position[1] + d[1], ship.position[2] + d[2]],
+    orientation: ship.orientation,
+  }
+}

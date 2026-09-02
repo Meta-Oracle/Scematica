@@ -44,6 +44,7 @@ export type Role =
   | 'raider'
   | 'waypoint'
   | 'course'
+  | 'self'
   | 'capital'
   | 'courier'
   | 'freighter'
@@ -105,6 +106,9 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // The course line. Green, and the only green in the palette, so it can never be confused with
   // anything the sector contains — a marker the *player* placed must not look like a reading.
   course: [0.3, 1.0, 0.45],
+  // Your own hull. Near-white, and the only near-white in the palette: in third person it is on
+  // screen every frame, so it has to be the one thing you never mistake for something else.
+  self: [0.92, 0.94, 1.0],
 }
 
 /**
@@ -150,6 +154,11 @@ export function shapeOf(b: Body): Shape {
     case 'phantom':
     case 'marker':
       return b.role
+    case 'self':
+      // Never reached: the player's body always carries an explicit `shape` from its hull, and
+      // the early return above takes it. Present so the switch is exhaustive rather than relying
+      // on a caller always setting the field.
+      return 'interceptor'
     default:
       // Contacts and the waypoint keep the sphere. A signal is a *reading*, not a structure, and
       // giving it architecture would claim the observer saw a thing where it counted an event.
@@ -337,6 +346,14 @@ export interface Dynamic {
   }[]
   /** Contact ids destroyed, so they stop being drawn. */
   destroyed: string[]
+  /**
+   * The player's own ship.
+   *
+   * Absent in first person and present in third, which is the whole of the difference as far as
+   * this file is concerned: the camera's placement is `camera.ts`'s problem, and what is *in* the
+   * world is this one's. Drawing yourself is not a camera feature, it is another body.
+   */
+  self?: { at: Vec3; facing: Vec3; shape: Shape; radius: number } | null
   /** The nav computer's selected node, drawn as a ring you can steer at. */
   waypoint?: Vec3 | null
   /**
@@ -411,6 +428,18 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     flash: live.flash,
     shape: live.spec.shape,
   })
+
+  if (dyn.self) {
+    bodies.push({
+      at: dyn.self.at,
+      role: 'self',
+      radius: dyn.self.radius,
+      solid: false,
+      label: 'you',
+      facing: dyn.self.facing,
+      shape: dyn.self.shape,
+    })
+  }
 
   // Traffic first: everything in the swarm that no contact accounts for.
   const accounted = new Set([...space.contacts, ...space.raiders].map((c) => c.id))

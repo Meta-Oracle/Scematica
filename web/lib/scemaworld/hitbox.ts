@@ -38,6 +38,8 @@ export const HITBOX: Record<Shape, Mesh.Bounds> = {
   gunship: Mesh.boundsOf(Mesh.gunship()),
   capital: Mesh.boundsOf(Mesh.capital()),
   dreadnought: Mesh.boundsOf(Mesh.dreadnought()),
+  corvette: Mesh.boundsOf(Mesh.corvette()),
+  marauder: Mesh.boundsOf(Mesh.marauder()),
   station: Mesh.boundsOf(Mesh.station()),
   market: Mesh.boundsOf(Mesh.market()),
   dock: Mesh.boundsOf(Mesh.dock()),

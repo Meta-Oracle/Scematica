@@ -27,6 +27,16 @@ export type HullId = 'skiff' | 'scout' | 'corvette' | 'lancer' | 'marauder'
 export interface HullSpec {
   id: HullId
   label: string
+  /**
+   * The silhouette flown in third person.
+   *
+   * Player hulls get their own shapes rather than borrowing an enemy's, because in third person
+   * you look at yours for the whole session — and a ship indistinguishable from the thing
+   * shooting at you is a bad thing to identify with.
+   */
+  shape: 'interceptor' | 'corvette' | 'gunship' | 'marauder'
+  /** Drawn size, as a fraction of `EXTENT`. Also the chase camera's distance scale. */
+  size: number
   /** One line, shown in the shipyard. */
   note: string
   /** Multiplier on `hullMax`. */
@@ -50,29 +60,34 @@ export const HULLS: Record<HullId, HullSpec> = {
   // that the shipyard is optional.
   skiff: {
     id: 'skiff', label: 'SKIFF', note: 'the hull you arrived in',
+    shape: 'interceptor', size: 0.0022,
     armour: 1, shields: 1, speed: 1, tanks: 1, guns: 1, jump: 0, price: 0,
   },
   // Fast and fragile. The exploration hull: it will not survive a wing, and it will reach the
   // far side of the sector on one tank and be gone before anything closes.
   scout: {
     id: 'scout', label: 'SCOUT', note: 'fast, long-legged, and made of paper',
+    shape: 'interceptor', size: 0.0019,
     armour: 0.7, shields: 0.9, speed: 1.5, tanks: 1.8, guns: 0.9, jump: 2, price: 400,
   },
   // The all-rounder, and the one most people should buy first.
   corvette: {
     id: 'corvette', label: 'CORVETTE', note: 'no weakness and no speciality',
+    shape: 'corvette', size: 0.0032,
     armour: 1.6, shields: 1.5, speed: 1.15, tanks: 1.2, guns: 1.2, jump: 1, price: 900,
   },
   // The gunboat. Slower than a raider, which means committing: you cannot disengage from a fight
   // in this, so you pick the ones you intend to finish.
   lancer: {
     id: 'lancer', label: 'LANCER', note: 'guns and shields, at the cost of running away',
+    shape: 'gunship', size: 0.0046,
     armour: 2.2, shields: 2.6, speed: 0.92, tanks: 1, guns: 1.7, jump: 1, price: 2200,
   },
   // What a titan is fought in. Enormous, ponderous, and the only hull that survives a war-class
   // broadside long enough to answer it.
   marauder: {
     id: 'marauder', label: 'MARAUDER', note: 'built to stand in front of a capital',
+    shape: 'marauder', size: 0.0078,
     armour: 4.5, shields: 4.2, speed: 0.8, tanks: 1.6, guns: 2.1, jump: 2, price: 6500,
   },
 }

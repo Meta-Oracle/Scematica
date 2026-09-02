@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 
 import { generate, EXTENT } from '../lib/scemaworld/generate.ts'
 import {
-  camera, forward, up, right, rotate, translate, view, perspective, mul, qNorm,
+  camera, forward, up, right, rotate, translate, view, perspective, mul, qNorm, chase,
 } from '../lib/scemaworld/camera.ts'
 import {
   drawList, isGhost, roleOfContact, sensorFar, sensorLabel, boundaryLabel, PALETTE,
@@ -47,7 +47,7 @@ import {
 } from '../lib/scemaworld/economy.ts'
 import { acquire, exchangeAt } from '../lib/scemaworld/game.ts'
 import { course as courseOf } from '../lib/scemaworld/view.ts'
-import { refit } from '../lib/scemaworld/ship.ts'
+import { refit, noseOffset } from '../lib/scemaworld/ship.ts'
 import {
   HITBOX, capsuleOf, strikes, segmentDistance,
 } from '../lib/scemaworld/hitbox.ts'
@@ -3127,6 +3127,121 @@ check('a war class is hit in play, from off its nose', () => {
     if (before && after && after.shield + after.hull < before.shield + before.hull) struck += 1
   }
   assert(struck > 0, 'twenty seconds of fire off a capital nose landed nothing')
+})
+
+// ── third person ─────────────────────────────────────────────────────────────
+
+check('the camera is derived from the ship, never stored beside it', () => {
+  // `GameState.camera` is the *ship's* transform and everything in the simulation reads it as
+  // such: where shots come from, what is in docking range, what a raider is leading. A separately
+  // animated camera would give the game two ideas about where the player is, and every one of
+  // those questions would then have to pick one.
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('chase(live.camera'), 'the view is not derived from the ship')
+  const state = codeOf(join(here, '..', 'lib', 'scemaworld', 'game.ts'))
+  assert(!state.includes('eye:'), 'a second camera transform crept into the state')
+})
+
+check('the chase camera sits behind and above, and rolls with the ship', () => {
+  // Rolling is the whole reason Q/E exist. A camera pinned to world-up throws that away — you
+  // would roll and see nothing move.
+  const ship = camera([0, 0, 0])
+  const eye = chase(ship, 100, 30)
+  // The camera looks down −Z, so "behind" is +Z.
+  assert(eye.position[2] > 90, `camera is at z=${eye.position[2]}, not behind the ship`)
+  assert(eye.position[1] > 20, 'camera is not above the ship')
+  assert(eye.orientation.every((v, i) => v === ship.orientation[i]), 'the eye has its own attitude')
+
+  // Rolled 180° about the nose: "above" becomes below, in world terms.
+  const rolled = rotate(camera([0, 0, 0]), 0, 0, Math.PI)
+  const eye2 = chase(rolled, 100, 30)
+  assert(eye2.position[1] < -20, 'the camera did not roll with the ship')
+})
+
+check('the chase distance scales with the hull', () => {
+  // A marauder is four times a skiff. A fixed camera distance either buries the lens in the big
+  // hull or leaves the small one a speck.
+  const ship = camera([0, 0, 0])
+  const near = chase(ship, EXTENT * HULLS.skiff.size * 7.5, 0)
+  const far = chase(ship, EXTENT * HULLS.marauder.size * 7.5, 0)
+  assert(far.position[2] > near.position[2] * 2, 'the camera does not back off for a bigger hull')
+})
+
+check('you can see your own ship, as the hull you actually bought', () => {
+  const s = generate(world, digest)
+  for (const frame of HULL_IDS) {
+    const g = { ...newGame(s), ship: refit(newShip(), frame) }
+    const dyn = dynamicOf(g, s)
+    assert(dyn.self, `no ship body in ${frame}`)
+    assert(dyn.self.shape === HULLS[frame].shape, `${frame} is drawn as ${dyn.self.shape}`)
+    const body = drawList(s, dyn).bodies.find((b) => b.role === 'self')
+    assert(body, `the ${frame} is not in the draw list`)
+    assert(shapeOf(body) === HULLS[frame].shape, 'the hull draws as something else')
+    assert(body.facing, 'your own ship has no facing')
+    assert(body.radius > 0, 'your own ship has no size')
+  }
+})
+
+check('each player hull has its own silhouette where it matters', () => {
+  // In third person you look at yours for the whole session, and a ship indistinguishable from
+  // the thing shooting at you is a poor thing to identify with.
+  const shapes = new Set(HULL_IDS.map((h) => HULLS[h].shape))
+  assert(shapes.size >= 4, `only ${shapes.size} distinct player silhouettes`)
+  for (const shape of shapes) {
+    assert(typeof Meshes[shape] === 'function', `${shape} has no mesh`)
+    assert(Meshes[shape]().length > 0, `${shape} builds an empty mesh`)
+    assert(HITBOX[shape], `${shape} has no hitbox`)
+  }
+})
+
+check('shots leave the nose, not the lens', () => {
+  // In third person the camera sits behind and above, so a shot spawned at the lens starts inside
+  // your own hull and appears to come out of the middle of the screen rather than out of the guns.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: 1000 })
+  const shot = g.combat.projectiles[0]
+  assert(shot, 'nothing was fired')
+  const at = g.camera.position
+  const ahead = Math.hypot(shot.at.x - at[0], shot.at.y - at[1], shot.at.z - at[2])
+  assert(ahead > 0, 'the shot spawned at the ship centre, inside the hull')
+  // At least the nose offset. `step` advances the shot within the same tick, so the distance from
+  // the hull only grows from there — bounding it above would be measuring a frame's travel, not
+  // the muzzle.
+  assert(
+    ahead >= noseOffset(g.ship.frame),
+    `the shot is ${ahead} from centre, inside a hull that reaches ${noseOffset(g.ship.frame)}`,
+  )
+  // And it is *ahead*, not behind: the dot with the ship's forward must be positive.
+  const f = forward(g.camera)
+  const dot =
+    f[0] * (shot.at.x - at[0]) + f[1] * (shot.at.y - at[1]) + f[2] * (shot.at.z - at[2])
+  assert(dot > 0, 'the muzzle is behind the ship')
+})
+
+check('a bigger hull fires from further forward', () => {
+  assert(
+    noseOffset('marauder') > noseOffset('skiff') * 2,
+    'every hull fires from the same point regardless of length',
+  )
+})
+
+check('the controls are reachable after the first keypress', () => {
+  // A controls card that only ever appears before the first input is a card nobody can get back
+  // to, and this game has eighteen bindings.
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('PAUSED'), 'there is no pause menu')
+  assert(src.includes("'Escape'"), 'nothing opens it')
+  for (const binding of ['pitch', 'roll', 'throttle level', 'switch weapon', 'jump to course']) {
+    assert(src.includes(binding), `the pause menu does not list ${binding}`)
+  }
+})
+
+check('pausing releases every held key', () => {
+  // Otherwise a throttle held when the menu opened is still held when it closes, and the ship
+  // leaves without you.
+  const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
+  assert(src.includes('keys.current.clear()'), 'held keys survive a pause')
 })
 
 await Promise.all(pending)

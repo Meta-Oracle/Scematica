@@ -22,13 +22,14 @@ import type { Ship as ShipState } from './ship.ts'
 import { forward, rotate, translate, type Camera } from './camera.ts'
 
 import {
-  AGGRO_RANGE, DOCK_RANGE, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SENSOR_MULTIPLIER, SPEED_THRUST,
+  AGGRO_RANGE, DOCK_RANGE, EXTENT, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SENSOR_MULTIPLIER,
+  SPEED_THRUST,
 } from './scale.ts'
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
 import { hostileTo } from './factions.ts'
 import * as Economy from './economy.ts'
-import type { HullId } from './hulls.ts'
+import { HULLS, type HullId } from './hulls.ts'
 import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
 import { nodeRadius, roleOfNode } from './view.ts'
@@ -363,7 +364,16 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
       : c
   })
 
-  if (firing) combat = Weapons.fire(combat, at, nose, nowMs, moved, ship.levels, ship.frame)
+  // Fired from the ship's **nose**, not from the camera. In third person the camera sits behind
+  // and above, so a shot spawned at the lens starts inside your own hull and appears to come out
+  // of the middle of the screen rather than out of the guns. The offset is the hull's own length,
+  // so a marauder's rounds leave a marauder's prow.
+  const muzzle = {
+    x: at.x + nose.x * Ship.noseOffset(ship.frame),
+    y: at.y + nose.y * Ship.noseOffset(ship.frame),
+    z: at.z + nose.z * Ship.noseOffset(ship.frame),
+  }
+  if (firing) combat = Weapons.fire(combat, muzzle, nose, nowMs, moved, ship.levels, ship.frame)
   // No geometry blocks a shot any more: a wireframe frame is not cover. The seam stays because
   // the alternative is deleting a parameter that a future obstacle would have to reintroduce.
   const advanced = Weapons.step(combat, dt, moved, space.seed)
@@ -587,6 +597,12 @@ export function dynamicOf(state: GameState, space?: Space) {
     destroyed: state.combat.destroyed,
     waypoint: wp,
     from: wp ? v3(state.camera.position) : null,
+    self: {
+      at: v3(state.camera.position),
+      facing: v3(forward(state.camera)),
+      shape: HULLS[state.ship.frame].shape,
+      radius: Math.round(EXTENT * HULLS[state.ship.frame].size),
+    },
   }
 }
 

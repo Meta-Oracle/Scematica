@@ -44,6 +44,8 @@ export type Shape =
   | 'gunship'
   | 'capital'
   | 'dreadnought'
+  | 'corvette'
+  | 'marauder'
   | 'station'
   | 'market'
   | 'dock'

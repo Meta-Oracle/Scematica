@@ -165,6 +165,78 @@ export function capital(): Wire {
 }
 
 /**
+ * A corvette: the player's all-rounder.
+ *
+ * Chunkier than an interceptor and clearly a *hull* rather than a dart, with a visible cockpit
+ * spine and four engine nacelles. Player ships get their own shapes because in third person you
+ * are looking at yours for the whole session, and reusing an enemy silhouette would make the
+ * thing you identify with indistinguishable from the thing shooting at you.
+ */
+export function corvette(): Wire {
+  const p: number[][] = [
+    [0, 0.02, 1.25], // 0 nose
+    [-0.34, 0.16, 0.35], [0.34, 0.16, 0.35], [-0.34, -0.16, 0.35], [0.34, -0.16, 0.35],
+    [-0.42, 0.14, -0.75], [0.42, 0.14, -0.75], [-0.42, -0.14, -0.75], [0.42, -0.14, -0.75],
+    [0, 0.34, -0.1], // 9 cockpit spine
+    [-0.8, 0, -0.2], [0.8, 0, -0.2], // 10,11 wingtips
+    [-0.8, 0, -0.7], [0.8, 0, -0.7], // 12,13
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+    [9, 1], [9, 2], [9, 5], [9, 6],
+    [10, 12], [11, 13], [10, 1], [11, 2], [12, 5], [13, 6],
+  ]
+  // Four nacelles at the stern, which is what reads as "engine" at any distance.
+  let n = p.length
+  for (const [x, y] of [[-0.28, 0.1], [0.28, 0.1], [-0.28, -0.1], [0.28, -0.1]]) {
+    p.push([x, y, -0.75], [x, y, -1.05])
+    e.push([n, n + 1])
+    n += 2
+  }
+  return wire(p, e)
+}
+
+/**
+ * A marauder: the heaviest thing a player can fly.
+ *
+ * Broad, slab-sided and ribbed, so it reads as *mass*. Deliberately close in feel to a capital
+ * without being one — you are meant to look at it and believe it can stand in front of a titan.
+ */
+export function marauder(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.3],
+    [-0.55, 0.28, 0.3], [0.55, 0.28, 0.3], [-0.55, -0.28, 0.3], [0.55, -0.28, 0.3],
+    [-0.7, 0.3, -0.95], [0.7, 0.3, -0.95], [-0.7, -0.3, -0.95], [0.7, -0.3, -0.95],
+    [0, 0.6, -0.3], [0, -0.6, -0.3],
+    [-1.05, 0.05, -0.3], [1.05, 0.05, -0.3],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+    [9, 1], [9, 2], [9, 5], [9, 6],
+    [10, 3], [10, 4], [10, 7], [10, 8],
+    [11, 1], [11, 3], [11, 5], [12, 2], [12, 4], [12, 6],
+  ]
+  // Ribs across the dorsal surface: the same distance cue the capitals use, at a scale where the
+  // player can actually see it.
+  let n = p.length
+  for (let i = 1; i <= 4; i += 1) {
+    const t = i / 5
+    const z = 0.3 - t * 1.25
+    const w = 0.55 + 0.15 * t
+    p.push([-w, 0.28, z], [w, 0.28, z])
+    e.push([n, n + 1])
+    n += 2
+  }
+  return wire(p, e)
+}
+
+/**
  * A war hull: a dreadnought or a leviathan.
  *
  * Not the capital mesh scaled up, and the difference matters. A shape only ever seen very large

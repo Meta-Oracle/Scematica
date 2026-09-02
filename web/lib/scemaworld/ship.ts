@@ -23,6 +23,8 @@
 import { SPEED_SHIP, SPEED_SHIP_PER_LEVEL } from './scale.ts'
 import { SHIELD_DELAY_MS } from './classes.ts'
 import { HULLS, type HullId } from './hulls.ts'
+import { HITBOX } from './hitbox.ts'
+import { EXTENT } from './scale.ts'
 
 export type Component =
   | 'engine' | 'hull' | 'sensors' | 'laser' | 'missiles' | 'tanks' | 'shields' | 'drive'
@@ -251,6 +253,17 @@ export function refit(ship: Ship, frame: HullId): Ship {
     shield: shieldMax(next.levels.shields, frame),
     jumpFuel: jumpCapacity(next.levels.drive, frame),
   }
+}
+
+/**
+ * How far ahead of the ship's centre its guns are.
+ *
+ * The hull's own drawn length, so a round leaves the prow of whatever you are flying. Firing from
+ * the centre puts the muzzle flash inside the hull in third person, and firing from the *camera*
+ * — which is where it started — puts it behind you.
+ */
+export function noseOffset(frame: HullId): number {
+  return Math.round(EXTENT * HULLS[frame].size * HITBOX[HULLS[frame].shape].ahead * 1.15)
 }
 
 // ── services ──────────────────────────────────────────────────────────────────

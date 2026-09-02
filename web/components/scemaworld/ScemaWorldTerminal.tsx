@@ -31,6 +31,7 @@ import { HULLS, HULL_IDS, type HullId } from '@/lib/scemaworld/hulls'
 import { SALVAGE_PER_SCEMA, SCEMA_NOTE, toScema } from '@/lib/scemaworld/economy'
 import { DEFAULT_ZOOM } from '@/lib/scemaworld/navmap'
 import { NavMap } from './NavMap'
+import { HULLS as SHIP_HULLS } from '@/lib/scemaworld/hulls'
 import { bearingLabel, fixOn, nearest, rangeLabel } from '@/lib/scemaworld/nav'
 import {
   MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, jumpCapacity, shieldMax, upgradeCost,
@@ -45,6 +46,7 @@ import {
   mul,
   perspective,
   viewRotation,
+  chase,
   rotate,
   translate,
   view,
@@ -102,6 +104,14 @@ export function ScemaWorldTerminal() {
   const [zoom, setZoom] = useState(DEFAULT_ZOOM)
   /** Which half of the market is showing. Components are the common case, so it opens there. */
   const [shop, setShop] = useState<'parts' | 'ships'>('parts')
+  /**
+   * Paused. The tick simply is not called, which is the honest way to pause a pure simulation —
+   * there is no accumulated real time to reconcile on resume and nothing keeps running behind
+   * the menu.
+   */
+  const [paused, setPaused] = useState(false)
+  /** Held in a ref as well, because the frame loop closes over its own copy of state. */
+  const pausedRef = useRef(false)
 
   const [ticket, setTicket] = useState<string | null>(null)
   const [vault, setVault] = useState('')
@@ -219,7 +229,7 @@ export function ScemaWorldTerminal() {
       last = t
 
       const g = game.current
-      if (g) {
+      if (g && !pausedRef.current) {
         // One pure transition. Everything that used to live inline here — flight, fuel,
         // weapons, the enemy — is now testable without a GPU, which is how the missing
         // projectile draw finally became a catchable bug rather than a mystery.
@@ -246,9 +256,15 @@ export function ScemaWorldTerminal() {
         // The far plane covers the whole generated sector. It used to be gated by sensor range,
         // which put a wall of fog around a volume the entire design is about the size of.
         const proj = perspective(1.15, w / Math.max(1, h), NEAR_PLANE, FAR_PLANE)
-        // The star pass needs the *projection* applied too — with the bare view rotation the
-        // field sheared and swam as the camera turned, which is the one thing stars must never do.
-        r.draw(mul(proj, view(live.camera)), mul(proj, viewRotation(live.camera)), w, h)
+        // Third person. `live.camera` is the **ship's** transform — everything in the simulation
+        // reads it as such, from where shots come from to what a raider is leading — and the eye
+        // is a pure function of it. Two separately-animated transforms would give the game two
+        // ideas about where the player is, and every one of those questions would then have to
+        // pick one.
+        const hull = SHIP_HULLS[live.ship.frame]
+        const back = EXTENT * hull.size * 7.5
+        const eye = chase(live.camera, back, EXTENT * hull.size * 2.2)
+        r.draw(mul(proj, view(eye)), mul(proj, viewRotation(eye)), w, h)
       }
 
       raf = requestAnimationFrame(frame)
@@ -303,6 +319,17 @@ export function ScemaWorldTerminal() {
       // Arrows and space scroll the page otherwise, which moves the HUD out from under the
       // canvas mid-flight.
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
+      if (e.code === 'Escape') {
+        setPaused((v) => {
+          pausedRef.current = !v
+          // Every held key is released on pause. Otherwise a throttle held when the menu opened
+          // is still held when it closes, and the ship leaves without you.
+          if (!v) keys.current.clear()
+          return !v
+        })
+        return
+      }
+      if (pausedRef.current) return
       keys.current.add(e.code)
       setGreeted(true)
 
@@ -946,6 +973,94 @@ export function ScemaWorldTerminal() {
                 project's whole argument is about not letting a number imply more than it is.
               */}
               <div className="mt-1 text-omni-stale">{SCEMA_NOTE}</div>
+            </div>
+          )}
+
+{/*
+            The pause menu.
+
+            It is also where the controls live, because a controls card that only ever appears
+            before the first keypress is a card nobody can get back to — and this game has
+            eighteen bindings. `Escape` toggles; the tick simply is not called while it is open,
+            which is the honest way to pause a pure simulation.
+          */}
+          {paused && hud && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/80 font-mono">
+              <div className="w-full max-w-xl rounded border border-omni-border-hi bg-black/95 p-6 text-xs">
+                <div className="mb-4 flex items-baseline gap-3">
+                  <b className="text-lg text-omni-accent">PAUSED</b>
+                  <span className="text-omni-dim">{loaded.name}</span>
+                  <span className="ml-auto text-omni-dim">
+                    {SHIP_HULLS[hud.ship.frame].label} · {hud.ship.salvage} salvage ·{' '}
+                    {hud.ship.scema} SCEMA
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-omni-dim">
+                  {[
+                    ['W / S', 'pitch'],
+                    ['A / D', 'yaw'],
+                    ['Q / E', 'roll'],
+                    ['↑ / ↓', 'throttle level'],
+                    ['X', 'full stop'],
+                    ['← / →', 'lateral thrusters'],
+                    ['SPACE / SHIFT', 'vertical thrusters'],
+                    ['RIGHT CLICK', 'fire'],
+                    ['LEFT CLICK', 'switch weapon'],
+                    ['F / R / V', 'refuel · repair · scavenge'],
+                    ['M', 'market and shipyard'],
+                    ['1 / 2 / 3 / 4', 'course to fuel · repair · market · salvage'],
+                    ['0', 'clear course'],
+                    ['hold J', 'jump to course'],
+                    ['ESC', 'pause'],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex justify-between gap-4">
+                      <span className="text-omni-text">{k}</span>
+                      <span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pausedRef.current = false
+                      setPaused(false)
+                    }}
+                    className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"
+                  >
+                    resume
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pausedRef.current = false
+                      setPaused(false)
+                      setMarket(true)
+                    }}
+                    className="rounded border border-omni-border px-3 py-1 text-omni-dim hover:border-omni-accent hover:text-omni-text"
+                  >
+                    market
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pausedRef.current = false
+                      setPaused(false)
+                      setLoaded(null)
+                    }}
+                    className="ml-auto rounded border border-omni-border px-3 py-1 text-omni-dim hover:border-omni-invalid hover:text-omni-invalid"
+                  >
+                    leave the sector
+                  </button>
+                </div>
+
+                <div className="mt-3 text-omni-dim">
+                  The sector is a pure function of this record — leaving and returning puts you
+                  back at the origin of the same space, not a different one.
+                </div>
+              </div>
             </div>
           )}
 

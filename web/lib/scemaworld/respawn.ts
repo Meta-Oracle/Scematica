@@ -44,19 +44,32 @@ import * as Enemy from './enemy.ts'
 import type { Swarm } from './enemy.ts'
 import { marshalReinforcement, MARSHAL_STRENGTH } from './factions.ts'
 import { raiderWing, RAIDER_FLOOR, WINGS } from './raiders.ts'
+import { ARRIVAL_MS, arrivalPoint, landed, type Arrival } from './arrivals.ts'
 import { AGGRO_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
 
 /**
- * How far from the player a reinforcement is placed.
+ * How far a reinforcement is placed when it does **not** warp in.
  *
- * Beyond sensor range, not merely beyond engagement range. Arriving just outside the aggro radius
- * would still put a ship on the sensor board out of nothing, and the board is the one surface the
- * player is trained to believe.
+ * Still the rule for the opening roster and the fallback when there is no player to warp relative
+ * to. Beyond sensor range: a ship appearing there out of nothing would put a contact on the sensor
+ * board with no cause, and the board is the one surface the player is trained to believe.
+ *
+ * Reinforcements during play use `arrivals.ts` instead, which supplies the cause. See that module
+ * for why a witnessed warp-in dissolves the objection rather than trading against it.
  */
 export const SPAWN_CLEARANCE = Math.round(AGGRO_RANGE * SENSOR_MULTIPLIER * 1.6)
 
 /** Milliseconds between raider wings. Long enough that clearing a region is worth doing. */
 export const RAIDER_INTERVAL_MS = 22_000
+
+/**
+ * How many craft drop out of hyperspace together.
+ *
+ * Fewer than a generated wing carries, because these arrive *near* the player rather than
+ * somewhere in the volume. Four hostiles materialising inside engagement range is an ambush the
+ * player had no way to avoid; three announced by a visible entry is an encounter they can decline.
+ */
+const WARP_WING = 3
 
 /** Milliseconds between marshal replacements. Shorter: they arrive singly, not four at a time. */
 export const MARSHAL_INTERVAL_MS = 13_000
@@ -73,10 +86,41 @@ export interface Waves {
   marshals: number
   nextRaiderMs: number
   nextMarshalMs: number
+  /**
+   * Craft mid-warp: drawn, not yet in the swarm.
+   *
+   * Here rather than on the swarm because an arrival is **not a craft**. It cannot be shot, cannot
+   * shoot, and cannot be collided with — the honest reading of something that has not arrived, and
+   * it removes the unpleasant case of killing a reinforcement before it finishes materialising.
+   */
+  arriving: Arrival[]
 }
 
 export function newWaves(): Waves {
-  return { raiders: WINGS, marshals: 0, nextRaiderMs: -1e9, nextMarshalMs: -1e9 }
+  return { raiders: WINGS, marshals: 0, nextRaiderMs: -1e9, nextMarshalMs: -1e9, arriving: [] }
+}
+
+/**
+ * A deterministic unit vector for a wave, so an entry bearing is a function of the seed and the
+ * wave number rather than of a clock.
+ *
+ * Hand-rolled rather than reusing `Rng`: this needs three components from one integer, and the
+ * generator is a *stream* — taking draws from it here would desynchronise the placement streams
+ * that `raiders.ts` and `factions.ts` seek through by index.
+ */
+function bearing(seed: string, tag: string, n: number): Vec3 {
+  let h = 2166136261 >>> 0
+  for (const t of [seed, tag, String(n)]) {
+    for (let i = 0; i < t.length; i += 1) {
+      h ^= t.charCodeAt(i)
+      h = Math.imul(h, 16777619) >>> 0
+    }
+  }
+  const x = ((h % 17) - 8) / 8
+  const y = (((h >>> 5) % 13) - 6) / 6
+  const z = (((h >>> 10) % 19) - 9) / 9
+  const l = Math.hypot(x, y, z) || 1
+  return { x: x / l, y: y / l, z: z / l }
 }
 
 /** Live craft of a faction, counting only a given class — capitals are excluded from a floor. */
@@ -105,28 +149,93 @@ export function replenish(
   seed: string,
   waves: Waves,
   playerAt: Vec3,
+  playerFacing: Vec3,
   nowMs: number,
 ): Replenished {
   let out = swarm
-  let next = waves
   let notice: string | null = null
+  let arriving = waves.arriving
+  let raiders = waves.raiders
+  let marshals = waves.marshals
+  let nextRaiderMs = waves.nextRaiderMs
+  let nextMarshalMs = waves.nextMarshalMs
+
+  // ── anything that finished warping in becomes a craft ──────────────────────
+  const due = arriving.filter((a) => landed(a, nowMs))
+  if (due.length > 0) {
+    arriving = arriving.filter((a) => !landed(a, nowMs))
+    for (const a of due) {
+      if (a.faction === 'raider') {
+        // One craft, placed exactly where its streak ended. `raiderWing` still supplies the class
+        // roll and the provenance, so an arrival is the same *kind* of thing as a raider that was
+        // there at generation — it only got here differently. A clearance of zero because the
+        // position is already decided.
+        const one = raiderWing(seed, raiders, a.at, 0)
+          .slice(0, 1)
+          .map((c) => ({ ...c, id: a.id, at: a.at }))
+        out = Enemy.reinforce(out, Enemy.swarmOf(one, seed).craft)
+      } else {
+        const civ = marshalReinforcement(space, seed, marshals, a.at, 0)
+        out = Enemy.reinforce(
+          out,
+          Enemy.withTraffic({ craft: [], shots: [] }, [{ ...civ, id: a.id, at: a.at }]).craft,
+        )
+      }
+    }
+  }
+
+  // ── open a new entry when the sector is short ──────────────────────────────
+  // Counted against what is already **on its way** as well as what is flying, or a wing is ordered
+  // several times over while the first of it is still materialising.
+  const pending = (f: 'raider' | 'marshal') => arriving.filter((a) => a.faction === f).length
 
   // Fighters only. A dead capital is not a shortfall — see rule 2.
-  if (nowMs >= waves.nextRaiderMs && countOf(swarm, 'raider', false) < RAIDER_FLOOR) {
-    const wing = raiderWing(seed, next.raiders, playerAt, SPAWN_CLEARANCE)
-    out = Enemy.reinforce(out, Enemy.swarmOf(wing, seed).craft)
-    next = { ...next, raiders: next.raiders + 1, nextRaiderMs: nowMs + RAIDER_INTERVAL_MS }
-    notice = 'raider wing on long-range sensors'
+  if (nowMs >= nextRaiderMs && countOf(swarm, 'raider', false) + pending('raider') < RAIDER_FLOOR) {
+    const dir = bearing(seed, ':raider-entry:', raiders)
+    // A wing arrives as a wing: several entries at once along one bearing, so what the player sees
+    // is a formation dropping out of hyperspace rather than a ship appearing.
+    const wing: Arrival[] = []
+    for (let i = 0; i < WARP_WING; i += 1) {
+      const jitter = bearing(seed, ':raider-spread:', raiders * 8 + i)
+      wing.push({
+        id: `raider:warp:${raiders}:${i}`,
+        faction: 'raider',
+        at: arrivalPoint(playerAt, playerFacing, jitter, 0.75),
+        dir,
+        dueMs: nowMs + ARRIVAL_MS,
+      })
+    }
+    arriving = [...arriving, ...wing]
+    raiders += 1
+    nextRaiderMs = nowMs + RAIDER_INTERVAL_MS
+    notice = 'hyperspace signature — raider wing inbound'
   }
 
-  if (nowMs >= waves.nextMarshalMs && countOf(swarm, 'marshal', false) < MARSHAL_STRENGTH) {
-    const civ = marshalReinforcement(space, seed, next.marshals, playerAt, SPAWN_CLEARANCE)
-    out = Enemy.reinforce(out, Enemy.withTraffic({ craft: [], shots: [] }, [civ]).craft)
-    next = { ...next, marshals: next.marshals + 1, nextMarshalMs: nowMs + MARSHAL_INTERVAL_MS }
-    // The raider line wins the notice if both fired this frame. A wave of four hostiles is the
-    // one the player has to act on, and two notices in one frame means only the last is read.
-    notice = notice ?? 'marshal patrol reinforced'
+  if (
+    nowMs >= nextMarshalMs &&
+    countOf(swarm, 'marshal', false) + pending('marshal') < MARSHAL_STRENGTH
+  ) {
+    const jitter = bearing(seed, ':marshal-spread:', marshals)
+    arriving = [
+      ...arriving,
+      {
+        id: `marshal:warp:${marshals}`,
+        faction: 'marshal',
+        at: arrivalPoint(playerAt, playerFacing, jitter, 0.9),
+        dir: bearing(seed, ':marshal-entry:', marshals),
+        dueMs: nowMs + ARRIVAL_MS,
+      },
+    ]
+    marshals += 1
+    nextMarshalMs = nowMs + MARSHAL_INTERVAL_MS
+    // The raider line wins the notice if both fired this frame. A wing of hostiles is the one the
+    // player has to act on, and two notices in one frame means only the last is read.
+    notice = notice ?? 'hyperspace signature — patrol inbound'
   }
 
-  return { swarm: out, waves: next, notice }
+  return {
+    swarm: out,
+    waves: { raiders, marshals, nextRaiderMs, nextMarshalMs, arriving },
+    notice,
+  }
 }

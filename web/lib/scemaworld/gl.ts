@@ -24,7 +24,7 @@
  */
 
 import type { Mat4 } from './camera.ts'
-import { BOLT_GLOW, BOLT_LENGTH } from './scale.ts'
+import { BOLT_GLOW, BOLT_LENGTH, BOLT_MIN_PX } from './scale.ts'
 import * as Mesh from './meshes.ts'
 import { PALETTE, shapeOf, type Body, type DrawList, type Segment } from './view.ts'
 import type { Shape } from './classes.ts'
@@ -123,6 +123,9 @@ in vec3 aColor;
 in vec3 aFacing;
 in float aGlow;
 uniform mat4 uViewProj;
+// World units per unit of clip-space w that project to one pixel of screen height. The CPU
+// computes it from the projection and the viewport; see uMinScale's note in draw().
+uniform float uMinScale;
 out vec3 vColor;
 out float vGlow;
 out float vAlong;
@@ -132,7 +135,28 @@ void main() {
   vGlow = aGlow;
   // 0 at the tail, 1 at the head, for the falloff below.
   vAlong = -aPos.z;
-  vec3 local = vec3(aPos.xy * aScale, aPos.z * aScale * ${BOLT_LENGTH.toFixed(1)});
+
+  // ## A bolt never shrinks below a few pixels, and that is a correctness fix
+  //
+  // Measured: three minutes of play, and not one round was ever fired within 0.05 EXTENT of the
+  // player — 77% of all fire happened beyond 0.4 EXTENT, where a bolt core projects to 0.82
+  // pixels and its halo to a four-pixel smear at 0.17 alpha. The sector's firefights were on
+  // screen and imperceptible, and making bolts smaller and brighter had improved exactly the
+  // half of that which was not the problem: no amount of brightness rescues a shape that
+  // rasterises to nothing.
+  //
+  // So the projected radius has a floor. This is not a cheat — a tracer is a *light source*, and
+  // a light does not vanish with distance the way a solid does; every renderer that draws distant
+  // stars, running lights or muzzle flashes does this, for the same reason. Only the cross-section
+  // is floored, never the length, so a distant round still reads as a streak pointing where it
+  // came from rather than as a growing ball.
+  //
+  // The centre is projected first because the floor is in *clip w*, which is the view-space depth:
+  // a world size proportional to w survives the perspective divide as a constant screen size.
+  vec4 centre = uViewProj * vec4(aOffset, 1.0);
+  float minR = max(centre.w, 0.0) * uMinScale;
+  float s = max(aScale, minR);
+  vec3 local = vec3(aPos.xy * s, aPos.z * aScale * ${BOLT_LENGTH.toFixed(1)});
   gl_Position = uViewProj * vec4(basisFrom(aFacing) * local + aOffset, 1.0);
 }`
 
@@ -455,10 +479,24 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     lineVertices = list.segments.length * 2
   }
 
+  /**
+   * The screen-space floor for a bolt's cross-section, in world units per unit of clip w.
+   *
+   * `px = P11 * d * height / (2 * w)` for a world offset `d` at clip depth `w`, so the offset
+   * that holds a constant `TARGET_PX` is `d = w * 2 * TARGET_PX / (P11 * height)`. Everything
+   * but `w` is known on the CPU, so the shader multiplies one uniform by the depth it already
+   * has. `P11` is `1 / tan(fovY / 2)`, which is `proj[5]` — read off the matrix rather than
+   * re-derived from a field of view this module does not own.
+   */
+  let minScale = 0
+
   function drawGroup(prog: WebGLProgram, g: Group, viewProj: Mat4) {
     if (g.count === 0) return
     gl.useProgram(prog)
     gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uViewProj'), false, viewProj)
+    // Harmless on the programs that do not declare it: `getUniformLocation` returns null and the
+    // call is a no-op, which is cheaper than branching per program.
+    gl.uniform1f(gl.getUniformLocation(prog, 'uMinScale'), minScale)
     gl.bindVertexArray(g.vao)
     gl.drawArraysInstanced(g.mode, 0, g.verts, g.count)
     gl.bindVertexArray(null)
@@ -466,6 +504,16 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
 
   function draw(viewProj: Mat4, viewProjRot: Mat4, width: number, height: number) {
     gl.viewport(0, 0, width, height)
+    // P11 (= 1 / tan(fovY / 2)) recovered from the matrix rather than re-derived from a field of
+    // view this module does not own — the FOV lives at the call site, and a second copy here is a
+    // number that silently stops matching.
+    //
+    // `viewProjRot` is `P * R` with `R` a pure rotation. `P`'s second row is `[0, P11, 0, 0]`, so
+    // the product's second row is `P11` times a *unit* row of `R`; its length is therefore exactly
+    // P11. Column-major, so that row is indices 1, 5, 9. `viewProj` would not do: it carries a
+    // translation, and the fourth column would contaminate the same reading.
+    const p11 = Math.hypot(viewProjRot[1], viewProjRot[5], viewProjRot[9]) || 1
+    minScale = (2 * BOLT_MIN_PX) / (p11 * Math.max(1, height))
     // Very slightly blue-black rather than pure black: a pure-black ground makes the faintest
     // stars vanish into it, and the faint ones are most of the sky.
     gl.clearColor(0.008, 0.007, 0.016, 1)

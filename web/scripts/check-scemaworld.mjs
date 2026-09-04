@@ -84,6 +84,7 @@ import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR } from '../lib/scemaworld/raiders.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
+import * as Arrivals from '../lib/scemaworld/arrivals.ts'
 import {
   nearest, fixOn, cycle, ahead, bearingLabel, rangeLabel,
 } from '../lib/scemaworld/nav.ts'
@@ -2752,7 +2753,7 @@ check('reinforcement keeps the sector populated, and reads no record field', () 
   }
 })
 
-check('a thinned sector fills back up, from far away, and not with capitals', () => {
+check('a thinned sector fills back up, in view, and not with capitals', () => {
   const s = generate(world, digest)
   let g = newGame(s)
   // Kill every raider fighter outright. Capitals are left alive so the check below is about
@@ -2763,29 +2764,56 @@ check('a thinned sector fills back up, from far away, and not with capitals', ()
       swarm = Enemy.hit(swarm, c.id, c.spec.hull + c.spec.shield + 1, 0).swarm
     }
   }
-  g = { ...g, swarm }
+  g = {
+    ...g,
+    swarm,
+    // This check is about population recovery. Passive-player lethality is asserted above; here
+    // game-over would freeze `tick` before the floor can be observed.
+    ship: { ...g.ship, hull: 1_000_000, shield: 0 },
+  }
   const emptied = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length
   assert(emptied === 0, `${emptied} raider fighters survived the setup`)
 
-  const at = { x: 0, y: 0, z: 0 }
   const capitalsBefore = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
   let raised = 0
+  let sawStreak = false
   for (let f = 0; f < 60 * 400; f += 1) {
     const before = Enemy.of(g.swarm, 'raider').length
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    // A craft is *preceded* by a drawn entry. This is the assertion that the mechanic is visible
+    // at all: reinforcement used to arrive beyond sensor range, so the only evidence the sector
+    // was alive was that it had not gone quiet, which is a mechanic you can detect only by its
+    // absence.
+    if (g.waves.arriving.length > 0) {
+      sawStreak = true
+      const drawn = drawList(s, dynamicOf(g, s)).bodies.filter(
+        (b) => b.role === 'warp-hostile' || b.role === 'warp-ally',
+      )
+      assert(drawn.length === g.waves.arriving.length, 'an entry was in flight and not drawn')
+    }
     const now = Enemy.of(g.swarm, 'raider')
     if (now.length > before) {
       raised += 1
-      // Every new arrival is beyond sensor range. A ship appearing inside it is the clearest
-      // possible statement that nothing on screen is real.
+      // **In view, not out of it.** The old rule was "beyond sensor range", and it was right about
+      // the hazard — a ship materialising in front of you asserts it was always there — and wrong
+      // about the remedy. A hyperspace entry supplies the missing *cause*, which is the actual
+      // objection, so the arrival can now happen where it can be watched. What is still forbidden
+      // is landing on top of somebody.
+      // Measured from where the player **actually is**, not from the origin. They drift: a raider
+      // capital will close on an idle ship over four hundred seconds and shove it clear on
+      // contact, so a fixed origin quietly becomes the wrong reference and the assertion starts
+      // failing on a distance that was correct when it was chosen.
+      const at = { x: g.camera.position[0], y: g.camera.position[1], z: g.camera.position[2] }
       for (const c of now.slice(before)) {
         const d = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
-        assert(d >= Respawn.SPAWN_CLEARANCE, `a wing arrived ${Math.round(d)} out`)
+        assert(d >= Arrivals.MIN_ARRIVAL, `a wing arrived ${Math.round(d)} out — inside the floor`)
+        assert(d <= Arrivals.MAX_ARRIVAL * 1.05, `a wing arrived ${Math.round(d)} out — out of sight`)
       }
     }
     if (Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length >= RAIDER_FLOOR) break
   }
   assert(raised > 1, `only ${raised} wave(s) in four hundred seconds`)
+  assert(sawStreak, 'craft appeared with no hyperspace entry drawn first')
   const fighters = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length
   assert(fighters >= RAIDER_FLOOR, `the sector settled at ${fighters} fighters`)
   // A capital you killed stays killed, on both sides — it is the only lasting mark the player
@@ -2794,6 +2822,104 @@ check('a thinned sector fills back up, from far away, and not with capitals', ()
   // thing in the sector on a timer.
   const capitalsAfter = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
   assert(capitalsAfter === capitalsBefore, 'a capital was respawned')
+})
+
+check('an arrival is drawn but is not yet a ship', () => {
+  // The honest reading of something that has not arrived: it cannot be shot, cannot shoot, and
+  // cannot be collided with. It also removes the unpleasant case of killing a reinforcement
+  // before it finishes materialising.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const at = { x: 0, y: 0, z: 0 }
+  const a = {
+    id: 'raider:warp:test:0', faction: 'raider',
+    at: { x: Arrivals.MIN_ARRIVAL * 2, y: 0, z: 0 },
+    dir: { x: 0, y: 0, z: 1 }, dueMs: 5_000,
+  }
+  g = { ...g, waves: { ...g.waves, arriving: [a] }, nowMs: 4_000 }
+
+  // Drawn.
+  const bodies = drawList(s, dynamicOf(g, s)).bodies
+  assert(bodies.some((b) => b.role === 'warp-hostile'), 'an inbound entry is not drawn')
+  // Not in the swarm, so nothing can interact with it.
+  assert(!g.swarm.craft.some((c) => c.id === a.id), 'an arrival is already a craft')
+
+  // The streak collapses as it resolves: fierce and long at the start, a sliver at the moment of
+  // arrival. That contraction is what makes it read as decelerating *into* the sector rather than
+  // as a flash, and it points the eye at where the ship is about to be.
+  const early = drawList(s, dynamicOf({ ...g, nowMs: 3_650 }, s)).bodies
+    .find((b) => b.role === 'warp-hostile')
+  const late = drawList(s, dynamicOf({ ...g, nowMs: 4_950 }, s)).bodies
+    .find((b) => b.role === 'warp-hostile')
+  assert(early.radius > late.radius * 3, `entry barely collapses: ${early.radius} -> ${late.radius}`)
+  assert(late.radius > 0, 'an entry vanishes before the ship exists')
+
+  // Progress is clamped, so a stale arrival cannot render a negative or runaway size.
+  assert(Arrivals.progress(a, 0) === 0 && Arrivals.progress(a, 9e9) === 1, 'progress is unclamped')
+})
+
+check('arrivals read no record field', () => {
+  // Same rule as `raiders.ts`, `factions.ts` and `respawn.ts`, in the newest place it could be
+  // broken: scale an arrival rate or distance by the record and a world has bought itself a
+  // quieter sector.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'arrivals.ts'))
+  for (const field of ['magnitude', 'blind_spots', 'blindSpots', 'legibility', 'extent', 'nodes']) {
+    assert(!src.includes(field), `arrivals.ts reads \`${field}\``)
+  }
+})
+
+check('an arrival announces the fight before the fighter can start it', () => {
+  // The near-field warp-in exists to be seen, but the first version placed it inside some
+  // fighters' aggro range. That turned an announced entry back into an unavoidable ambush: the
+  // streak supplied a cause, and then the ship resolved already committed to the shot.
+  const fighterAggro = Math.max(
+    ...CLASS_IDS.map((id) => CLASSES[id]).filter((c) => !c.capital).map((c) => c.aggro),
+  )
+  assert(Arrivals.MIN_ARRIVAL > fighterAggro, 'an arrival can resolve inside fighter aggro')
+  assert(
+    Arrivals.MAX_ARRIVAL < SENSOR_BASE * SENSOR_MULTIPLIER * sensorGain(0),
+    'an arrival can resolve outside stock sensors',
+  )
+})
+
+check('a craft commits to a target instead of flip-flopping', () => {
+  // Re-picking the nearest opponent every frame makes a fighter oscillate between two equidistant
+  // enemies and arrive at neither. It is also what made the opponent search quadratic per frame.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const switches = {}
+  let last = {}
+  for (let f = 0; f < 60 * 60; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    for (const c of Enemy.living(g.swarm)) {
+      if (c.target && last[c.id] !== undefined && last[c.id] !== c.target) {
+        switches[c.id] = (switches[c.id] ?? 0) + 1
+      }
+      last[c.id] = c.target
+    }
+  }
+  const worst = Math.max(0, ...Object.values(switches))
+  // A minute of play. A craft that re-picked every frame would show hundreds.
+  assert(worst < 40, `a craft changed target ${worst} times in a minute`)
+})
+
+check('a wing flanks rather than queueing up behind its leader', () => {
+  // Four craft steered at one point arrive in single file: the leader fights and the rest sit
+  // behind it, unable to shoot past. The offsets are deterministic per craft, so the manoeuvre is
+  // reproducible for two players holding one record.
+  const spread = 1000
+  const seen = new Set()
+  for (const id of ['raider:0:0', 'raider:0:1', 'raider:0:2', 'raider:0:3']) {
+    const o = Enemy.flankOffset(id, spread)
+    const l = Math.hypot(o.x, o.y, o.z)
+    assert(Math.abs(l - spread) < 1e-6, `offset length ${l}, wanted ${spread}`)
+    seen.add(`${Math.round(o.x)},${Math.round(o.y)},${Math.round(o.z)}`)
+  }
+  assert(seen.size === 4, `a wing produced ${seen.size} distinct approach vectors, not 4`)
+  // Deterministic: the same craft always flanks from the same side.
+  const a = Enemy.flankOffset('raider:0:1', spread)
+  const b = Enemy.flankOffset('raider:0:1', spread)
+  assert(a.x === b.x && a.y === b.y && a.z === b.z, 'the flank offset is not deterministic')
 })
 
 check('a reinforcement can actually be shot', () => {
@@ -3793,10 +3919,13 @@ check('the laser reach comment is the reach the constants give', () => {
   // test was reading it.
   const reach = SPEED_LASER * LIFE_LASER
   assert(reach > SENSOR_BASE, 'the reach no longer exceeds the aggro range the comment cites')
+  // The **ratio** is the design statement and it did not move. Detection range and laser life were
+  // raised by half again *together*, precisely so this line holds — which is the whole discipline
+  // the check exists to enforce: the numbers may move, the relationship may not move silently.
   const ratio = reach / SENSOR_BASE
   assert(ratio > 1.6 && ratio < 2.1, `reach is ${ratio.toFixed(2)}x aggro; the comment says ~1.8`)
   const asExtent = reach / EXTENT
-  assert(asExtent > 0.12 && asExtent < 0.16, `reach is ${asExtent.toFixed(3)}·EXTENT, not ~0.14`)
+  assert(asExtent > 0.18 && asExtent < 0.23, `reach is ${asExtent.toFixed(3)}·EXTENT, not ~0.20`)
   const crossing = EXTENT / SPEED_LASER
   assert(crossing > 1.8 && crossing < 2.6, `a laser crosses in ${crossing.toFixed(1)}s, not ~2`)
 })

@@ -42,6 +42,8 @@ export type Role =
   | 'photon'
   | 'enemy-shot'
   | 'ally-shot'
+  | 'warp-hostile'
+  | 'warp-ally'
   | 'raider'
   | 'waypoint'
   | 'course'
@@ -94,6 +96,15 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // at. The colour is how that fact reaches the cockpit, and it is why making these visible did
   // not reintroduce the ambiguity that hiding them was avoiding.
   'ally-shot': [1.0, 0.92, 0.45],
+  // A hyperspace entry, in its faction's family but pushed toward white. It is the brightest thing
+  // in either family on purpose: an arrival is the one event in the sector that the player has a
+  // couple of seconds to react to, and the whole reason it is drawn at all is that reinforcement
+  // used to happen out of sight and could only be detected by the sector *not* going quiet.
+  //
+  // Still two colours rather than one, because "something is arriving" and "something hostile is
+  // arriving" are different facts and only one of them means turn around.
+  'warp-hostile': [1.0, 0.75, 0.62],
+  'warp-ally': [1.0, 0.98, 0.72],
   // A raider is not from the record. Orange rather than red keeps that visible from the
   // cockpit: red things are signals somebody reported, orange things are just out here.
   raider: [1.0, 0.55, 0.2],
@@ -153,7 +164,9 @@ export function shapeOf(b: Body): Shape {
     b.role === 'laser' ||
     b.role === 'photon' ||
     b.role === 'enemy-shot' ||
-    b.role === 'ally-shot'
+    b.role === 'ally-shot' ||
+    b.role === 'warp-hostile' ||
+    b.role === 'warp-ally'
   ) {
     return 'bolt'
   }
@@ -367,6 +380,15 @@ export interface Dynamic {
     /** Who it flies for. Drives colour for anything with no contact behind it. */
     faction?: string
   }[]
+  /**
+   * Craft still dropping out of hyperspace: drawn, and nothing else.
+   *
+   * Not in `craft`, because they are not craft yet — they cannot be shot, cannot shoot and cannot
+   * be collided with. `progress` runs 0..1 over the entry and is the only thing on screen driven
+   * by a clock rather than by a position, which is why `game.ts` carries the tick's time on the
+   * state for it.
+   */
+  arrivals?: { at: Vec3; dir: Vec3; faction: string; progress: number }[]
   /** Contact ids destroyed, so they stop being drawn. */
   destroyed: string[]
   /**
@@ -532,6 +554,25 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       solid: true,
       label: ally ? 'patrol fire' : 'incoming',
       facing: s.dir,
+    })
+  }
+
+  // Hyperspace entries. A bright streak along the entry vector that draws down as the craft
+  // resolves — long and fierce at the start, collapsing to a point at the moment of arrival. The
+  // shrinking is what makes it read as something *decelerating into* the sector rather than as a
+  // flash: the eye follows the contraction to the place the ship is about to be, which is the one
+  // piece of information the player actually needs from it.
+  for (const a of dyn.arrivals ?? []) {
+    const t = Math.max(0, Math.min(1, a.progress))
+    bodies.push({
+      at: a.at,
+      role: a.faction === 'raider' ? 'warp-hostile' : 'warp-ally',
+      // Large at t=0 and a bolt-width sliver at t=1. Floored rather than allowed to reach zero, so
+      // the last frame of an entry is still a mark on screen instead of a gap before the hull.
+      radius: Math.round(R_PHOTON * (1 + (1 - t) * 14)),
+      solid: true,
+      label: a.faction === 'raider' ? 'hyperspace entry' : 'patrol arriving',
+      facing: a.dir,
     })
   }
 

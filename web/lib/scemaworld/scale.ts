@@ -104,7 +104,7 @@ export const DOCK_RANGE = Math.round(EXTENT * 0.055)
  * which is most of what makes the sector feel layered. These remain as the fallback and as the
  * scale the class table is written against.
  */
-export const AGGRO_RANGE = Math.round(EXTENT * 0.075)
+export const AGGRO_RANGE = Math.round(EXTENT * 0.112)
 export const ENGAGE_RANGE = Math.round(EXTENT * 0.014)
 
 /**
@@ -159,8 +159,12 @@ export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 30)
 export const SPEED_THRUST = Math.round(EXTENT / 30)
 
 /**
- * A laser crosses the sector in a little over two seconds and lives for three tenths of one, so
- * its reach is about **0.14 of the sector — roughly 1.8 times `AGGRO_RANGE`**.
+ * A laser crosses the sector in a little over two seconds and lives for just under half of one, so
+ * its reach is about **0.20 of the sector — roughly 1.8 times `AGGRO_RANGE`**.
+ *
+ * Both figures were raised by half again when detection range was (see `classes.ts`), *together*,
+ * so the ratio and the design line below are unchanged. That is the whole discipline this comment
+ * exists to enforce: the numbers may move, the relationship may not move silently.
  *
  * ## What that buys, stated as the property it actually is
  *
@@ -186,7 +190,7 @@ export const SPEED_THRUST = Math.round(EXTENT / 30)
  * external audit rather than by this repository, which is the point.
  */
 export const SPEED_LASER = Math.round(EXTENT / 2.2)
-export const LIFE_LASER = 0.3
+export const LIFE_LASER = 0.45
 
 /** A photon missile is slower and lives far longer, so it reaches — and it tracks. */
 export const SPEED_PHOTON = Math.round(EXTENT / 6)
@@ -194,7 +198,13 @@ export const LIFE_PHOTON = 2.0
 
 /** Enemy fire. Faster than any ship, so closing does not make you safe. */
 export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 3.4)
-export const LIFE_ENEMY_SHOT = 0.55
+/**
+ * Raised with `LIFE_LASER` and for the same reason: everything now detects and engages half again
+ * as far, and a round that expired before it covered the new engagement band would mean craft
+ * shooting at each other and never connecting. A tracer that dies short is also the least legible
+ * possible firefight — the streaks stop halfway to their target.
+ */
+export const LIFE_ENEMY_SHOT = 0.8
 
 /**
  * Hostile craft, base and per-tier.
@@ -240,6 +250,24 @@ export const FAR_PLANE = Math.round(EXTENT * 1.9)
  * where the shot came from, which is the most useful thing on screen in a fight.
  */
 export const BOLT_LENGTH = 34
+
+/**
+ * The smallest a bolt's cross-section may appear, in pixels of screen height.
+ *
+ * A floor, enforced in the vertex shader (`gl.ts`), and the fix for the thing that made the
+ * sector's firefights invisible. Measured before it existed: over three minutes, **not one round
+ * was fired within 0.05 EXTENT of the player**, 77% of all fire happened beyond 0.4 EXTENT, and at
+ * that range a bolt core projects to 0.82 pixels. The rounds were on screen and could not be seen,
+ * and "smaller and brighter" had improved only the half of that which was not the problem.
+ *
+ * Three pixels rather than one: a single pixel of an additively-blended tracer moving at half a
+ * sector per second flickers between samples and reads as noise, which is worse than nothing
+ * because the player learns to ignore it.
+ *
+ * Only the cross-section is floored. The *length* stays in world units, so a distant round is a
+ * thin streak pointing back at whoever fired it rather than a ball that grows as it recedes.
+ */
+export const BOLT_MIN_PX = 3
 /**
  * The additive halo, as a multiple of the core radius. Glow, drawn as geometry.
  *

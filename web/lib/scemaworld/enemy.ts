@@ -94,6 +94,19 @@ export interface Craft {
    * only for something that turns slowly.
    */
   lastRange: number
+  /**
+   * The craft this one is fighting, or `null` for the player (or for nothing).
+   *
+   * **Remembered, not recomputed every frame**, and that is two things at once. As AI it is
+   * target *commitment*: a fighter that re-picked the nearest opponent sixty times a second
+   * oscillates between two equidistant enemies and closes on neither, which reads as indecision
+   * and plays as a ship that never arrives. As arithmetic it is what makes a bigger roster
+   * affordable — the opponent search is linear over the swarm, so doing it per craft per frame is
+   * quadratic, and at two hundred craft that is forty thousand distance checks every tick.
+   */
+  target: string | null
+  /** When this craft may look for a better target. Staggered per craft; see `RETARGET_MS`. */
+  retargetMs: number
   alive: boolean
 }
 
@@ -276,6 +289,8 @@ export function swarmOf(contacts: Contact[], seed: string): Swarm {
           burstLeft: 0,
           since: 0,
           lastRange: Infinity,
+          target: null,
+          retargetMs: -1e9,
           alive: true,
         }
       }),
@@ -306,6 +321,8 @@ export function withTraffic(swarm: Swarm, traffic: Civilian[]): Swarm {
         burstLeft: 0,
         since: 0,
         lastRange: Infinity,
+        target: null,
+        retargetMs: -1e9,
         alive: true,
       })),
     ],
@@ -438,6 +455,26 @@ export function nearestOpponent(swarm: Swarm, c: Craft, reach: number): Craft | 
 }
 
 /**
+ * The nearest live craft of the same faction, for a fleeing craft to run toward.
+ *
+ * Deliberately unbounded in range — a craft with nowhere to run gets `null` only when its whole
+ * faction is dead, and at that point running in a straight line is as good an answer as any.
+ */
+function nearestAlly(swarm: Swarm, c: Craft): Craft | null {
+  let best: Craft | null = null
+  let bestD = Infinity
+  for (const other of swarm.craft) {
+    if (!other.alive || other.id === c.id || other.faction !== c.faction) continue
+    const d = len(sub(other.at, c.at))
+    if (d < bestD) {
+      bestD = d
+      best = other
+    }
+  }
+  return best
+}
+
+/**
  * How much further a marshal will reach for a raider than it will engage one.
  *
  * Generous, because hunting is its whole job and a patrol that only notices what flies into it is
@@ -468,28 +505,64 @@ const RAIDER_REACH = 1.2
  * was on screen — the rounds were invisible. One function, consulted once per craft per step, is
  * what makes "who is this ship fighting" a single fact rather than three coincidences.
  */
+/**
+ * How long a craft holds a target before looking for a better one.
+ *
+ * Long enough to be *commitment* rather than a poll. Re-picking the nearest opponent every frame
+ * makes a fighter oscillate between two equidistant enemies and arrive at neither — the classic
+ * nearest-target flip-flop, which reads as indecision and plays as a ship that never closes.
+ *
+ * The retarget clocks are staggered by a hash of the craft's id (`retargetPhase`), so two hundred
+ * craft do not all run their opponent search on the same frame. Without the stagger the amortised
+ * cost is the same and the *worst* frame is the whole quadratic, which is what a frame-time budget
+ * actually cares about.
+ */
+const RETARGET_MS = 900
+
+function retargetPhase(id: string): number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return h % RETARGET_MS
+}
+
+/**
+ * A per-craft offset perpendicular to its approach, so a wing converges from several angles.
+ *
+ * Four craft all steering at the same point arrive in a queue along one line: the first one is in
+ * the fight and the other three are behind it, contributing nothing and unable to shoot without
+ * hitting each other. Offsetting each one's *aim point* by a fixed, deterministic vector spreads
+ * the approach into a pincer without any craft needing to know what the others are doing — the
+ * cheapest possible flocking, and the only kind that stays deterministic.
+ *
+ * Derived from the id, so a given craft always flanks from the same side and the manoeuvre is
+ * reproducible for two players holding one record.
+ */
+export function flankOffset(id: string, spread: number): Vec3 {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  // Three coprime-ish moduli so the components do not repeat together, mapped to [-1, 1].
+  const x = ((h % 13) - 6) / 6
+  const y = (((h >>> 4) % 9) - 4) / 4
+  const z = (((h >>> 8) % 11) - 5) / 5
+  const l = Math.hypot(x, y, z) || 1
+  return { x: (x / l) * spread, y: (y / l) * spread, z: (z / l) * spread }
+}
+
 function focusOf(
   swarm: Swarm,
   c: Craft,
   playerAt: Vec3,
   playerVel: Vec3,
+  nowMs: number,
+  byId: Map<string, Craft>,
   space?: Space,
-): { at: Vec3; vel: Vec3; target: string | null; routeTo: Node | null } {
-  if (c.faction === 'marshal') {
-    const quarry = nearestOpponent(swarm, c, c.spec.aggro * MARSHAL_REACH)
-    // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which would
-    // look exactly like a hostile closing in.
-    if (!quarry) {
-      return {
-        at: add(c.at, scale(c.facing, c.spec.aggro * 4)),
-        vel: { x: 0, y: 0, z: 0 },
-        target: null,
-        routeTo: null,
-      }
-    }
-    return { at: quarry.at, vel: scale(quarry.facing, quarry.speed), target: quarry.id, routeTo: null }
-  }
-
+): { at: Vec3; vel: Vec3; target: string | null; routeTo: Node | null; retargetMs: number } {
   if (civilian(c.faction)) {
     const route = space ? routeNodes(space, c.faction) : []
     const routeTo = route.find((n) => n.id === c.destination) ?? route[0] ?? null
@@ -498,17 +571,64 @@ function focusOf(
       vel: { x: 0, y: 0, z: 0 },
       target: null,
       routeTo,
+      retargetMs: c.retargetMs,
+    }
+  }
+
+  const reach = c.spec.aggro * (c.faction === 'marshal' ? MARSHAL_REACH : RAIDER_REACH)
+
+  // Hold the current quarry while it is alive and still in reach. This is the commitment half of
+  // `RETARGET_MS`: a craft does not drop a target simply because another drifted a little nearer.
+  const held = c.target ? byId.get(c.target) : null
+  const holdable = held?.alive && len(sub(held.at, c.at)) < reach * 1.4
+  const due = nowMs >= c.retargetMs
+
+  let quarry: Craft | null = holdable ? held! : null
+  let retargetMs = c.retargetMs
+  if (!quarry || due) {
+    const found = nearestOpponent(swarm, c, reach)
+    // A held target is only displaced by something meaningfully closer, or the search re-creates
+    // the flip-flop it exists to prevent.
+    if (found && (!quarry || len(sub(found.at, c.at)) < len(sub(quarry.at, c.at)) * 0.7)) {
+      quarry = found
+    }
+    retargetMs = nowMs + RETARGET_MS + retargetPhase(c.id)
+  }
+
+  if (c.faction === 'marshal') {
+    // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which would
+    // look exactly like a hostile closing in.
+    if (!quarry) {
+      return {
+        at: add(c.at, scale(c.facing, c.spec.aggro * 4)),
+        vel: { x: 0, y: 0, z: 0 },
+        target: null,
+        routeTo: null,
+        retargetMs,
+      }
+    }
+    return {
+      at: quarry.at,
+      vel: scale(quarry.facing, quarry.speed),
+      target: quarry.id,
+      routeTo: null,
+      retargetMs,
     }
   }
 
   // A raider. It fights back against a marshal that is genuinely on it, and otherwise it is here
   // for the player. "Genuinely on it" is decided by range: whichever of the two is nearer, with
   // the marshal held to the tighter reach above.
-  const patrol = nearestOpponent(swarm, c, c.spec.aggro * RAIDER_REACH)
-  if (patrol && len(sub(patrol.at, c.at)) < len(sub(playerAt, c.at))) {
-    return { at: patrol.at, vel: scale(patrol.facing, patrol.speed), target: patrol.id, routeTo: null }
+  if (quarry && len(sub(quarry.at, c.at)) < len(sub(playerAt, c.at))) {
+    return {
+      at: quarry.at,
+      vel: scale(quarry.facing, quarry.speed),
+      target: quarry.id,
+      routeTo: null,
+      retargetMs,
+    }
   }
-  return { at: playerAt, vel: playerVel, target: null, routeTo: null }
+  return { at: playerAt, vel: playerVel, target: null, routeTo: null, retargetMs }
 }
 
 export function step(
@@ -525,6 +645,12 @@ export function step(
   const fired: string[] = []
   let damage = 0
 
+  // Built once and shared by every craft's `focusOf`, so holding a remembered target is a map
+  // lookup rather than a scan. Positions are last frame's, which is exactly right: a craft decides
+  // who it is fighting from what it could see at the start of the step, not from where everything
+  // ended up after it.
+  const before = new Map(swarm.craft.map((k) => [k.id, k]))
+
   for (const c of swarm.craft) {
     if (!c.alive) {
       craft.push(c)
@@ -534,7 +660,7 @@ export function step(
     // ── who this craft is interested in ──────────────────────────────────────
     // One answer, used by the steering, the lead and the fire gate alike. See `focusOf` for what
     // went wrong when each of the three decided for itself.
-    const focus = focusOf(swarm, c, playerAt, playerVel, space)
+    const focus = focusOf(swarm, c, playerAt, playerVel, nowMs, before, space)
     const focusAt = focus.at
     const focusVel = focus.vel
     const routeTo = focus.routeTo
@@ -561,7 +687,17 @@ export function step(
         throttle = 0.25
         break
       case 'pursue':
-        want = bearing
+        // Steered at a point *offset* from the target rather than at the target itself, so a wing
+        // converges as a pincer instead of a queue. Four craft aimed at one point arrive in single
+        // file: the leader fights and the other three sit behind it unable to shoot past it. The
+        // offset shrinks as the range closes, so the approach is a spread that collapses into a
+        // firing position rather than a permanent miss.
+        want = norm(
+          sub(
+            add(focusAt, flankOffset(c.id, Math.min(range * 0.35, c.spec.standoff * 2))),
+            c.at,
+          ),
+        )
         // Full burn unless it is pointing the wrong way. A craft at full throttle while facing
         // away flies *away* from what it is chasing for as long as its turn takes, which at
         // these speeds loses the target entirely — but scaling smoothly with alignment was the
@@ -588,7 +724,16 @@ export function step(
         throttle = 1
         break
       case 'evade':
-        want = scale(bearing, -1)
+        // Away from what is shooting at it, and — when there is one — *toward a friend*. A craft
+        // that flees in a straight line is a craft that dies tired; one that runs toward its own
+        // side drags the pursuer into somebody else's guns, which is both better play and the
+        // thing that makes a scattered fight collapse back into a real engagement.
+        {
+          const refuge = nearestAlly(swarm, c)
+          want = refuge
+            ? norm(add(scale(bearing, -1), scale(norm(sub(refuge.at, c.at)), 1.2)))
+            : scale(bearing, -1)
+        }
         throttle = 1
         break
     }
@@ -690,6 +835,8 @@ export function step(
       burstLeft,
       shield,
       lastRange: range,
+      target: focus.target,
+      retargetMs: focus.retargetMs,
     })
   }
 

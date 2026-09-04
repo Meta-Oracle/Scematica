@@ -30,6 +30,7 @@ import { CLASSES } from './classes.ts'
 import { hostileTo } from './factions.ts'
 import * as Economy from './economy.ts'
 import * as Respawn from './respawn.ts'
+import * as Arrivals from './arrivals.ts'
 import { HULLS, type HullId } from './hulls.ts'
 import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
@@ -175,6 +176,16 @@ export interface GameState {
    * sector's losses reinforcing another's. See `respawn.ts` for what determinism survives.
    */
   waves: Respawn.Waves
+  /**
+   * The clock the last tick ran at.
+   *
+   * Carried because `dynamicOf` is a pure projection of the state and has no clock of its own, and
+   * a hyperspace entry is the one thing on screen whose appearance is a function of *time* rather
+   * than of position. Passing a clock into `dynamicOf` instead would give the renderer a second
+   * source of truth about when "now" is, and the two would disagree on any frame the tick was
+   * skipped — which is every frame while the game is paused.
+   */
+  nowMs: number
   /** True once the hull is gone. The sector keeps rendering; you just cannot act. */
   lost: boolean
 }
@@ -212,6 +223,7 @@ export function newGame(space: Space): GameState {
     touching: [],
     notice: null,
     waves: Respawn.newWaves(),
+    nowMs: 0,
     lost: false,
   }
 }
@@ -524,7 +536,15 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // one — a craft that appears and immediately acts has skipped the frame in which the player
   // could have seen it arrive. Both floors are constants and neither reads the record; see
   // `respawn.ts` for why that is a rule rather than a preference.
-  const topUp = Respawn.replenish(swarm, space, space.seed, state.waves, v3(camera.position), nowMs)
+  const topUp = Respawn.replenish(
+    swarm,
+    space,
+    space.seed,
+    state.waves,
+    v3(camera.position),
+    nose,
+    nowMs,
+  )
   swarm = topUp.swarm
   // A reinforcement notice never displaces one the player caused. A kill, an impact or a refusal
   // is about something they just did; "a wing is on sensors" can wait for a quiet frame, and
@@ -540,6 +560,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     combat,
     swarm,
     waves: topUp.waves,
+    nowMs,
     nearby,
     waypoint: state.waypoint,
     drive: jump.drive,
@@ -650,6 +671,14 @@ export function dynamicOf(state: GameState, space?: Space) {
     // units away is indistinguishable from a raider shooting at you — which defeats the entire
     // point of making the exchange visible in the first place.
     incoming: state.swarm.shots.map((s) => ({ at: s.at, dir: s.dir, owner: s.owner })),
+    // Craft still dropping out of hyperspace. Drawn, and nothing else: they are not in the swarm,
+    // so they cannot be shot, cannot shoot and cannot be collided with. See `arrivals.ts`.
+    arrivals: state.waves.arriving.map((a) => ({
+      at: a.at,
+      dir: a.dir,
+      faction: a.faction as string,
+      progress: Arrivals.progress(a, state.nowMs),
+    })),
     craft: Enemy.living(state.swarm).map((c) => ({
       id: c.id,
       at: c.at,

@@ -146,9 +146,16 @@ void main() {
   // Brightest at the head, fading down the tail: a tracer, not a rod. The additive blend does
   // the rest — where the core and its halo overlap the sum clips to white, which is what reads
   // as heat without a bloom pass.
-  float taper = pow(clamp(vAlong, 0.0, 1.0), 0.6);
-  float a = vGlow > 0.5 ? 0.10 * taper : 0.95 * taper;
-  outColor = vec4(vColor * (vGlow > 0.5 ? 0.8 : 1.6), a);
+  //
+  // The core is driven hard past 1.0 on purpose. Bolts are a fraction of the width they were
+  // (R_LASER in scale.ts), and a thin dim line is invisible at the ranges a firefight
+  // between two other ships happens at — which is now something the player is meant to be able
+  // to *see across the sector*, not merely be in. Overdriving an additive core clips to white
+  // at the centre and leaves the hue in the falloff, so a hairline still reads as a hot round
+  // and still reads as whose round it is.
+  float taper = pow(clamp(vAlong, 0.0, 1.0), 0.55);
+  float a = vGlow > 0.5 ? 0.17 * taper : 1.0 * taper;
+  outColor = vec4(vColor * (vGlow > 0.5 ? 1.15 : 3.6), a);
 }`
 
 const VERT_LINE = `#version 300 es

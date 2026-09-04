@@ -175,6 +175,24 @@ export interface Contact {
    */
   facing?: Vec3
   shape?: string
+  /**
+   * A named class, for a hostile the *sector* placed deliberately.
+   *
+   * Set only by `raiders.ts`, and only for the capital garrison — everything else has its class
+   * rolled from the seed by `enemy.ts::classRoll`. It exists because a roll cannot express "every
+   * sector has a leviathan in it somewhere": `classFor` reaches one about once in a hundred and
+   * fifty, so on a roster of seventy-two the war classes turned up by accident or not at all.
+   *
+   * A `string` rather than a `ClassId`, deliberately, and for the same reason `shape` above is
+   * one: `generate.ts` describes what a *record* becomes and must not acquire a dependency on the
+   * combat tables. `swarmOf` validates it against `CLASSES` and ignores anything it does not
+   * recognise, so a stray value is inert rather than a crash.
+   *
+   * **Never set from anything a record reported.** A record that could name its own opposition
+   * would be a record worth writing carefully, which is the failure this whole file is arranged
+   * to prevent.
+   */
+  klass?: string
 }
 
 export interface Space {

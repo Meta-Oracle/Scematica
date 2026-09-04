@@ -21,14 +21,14 @@ import {
 } from '../lib/scemaworld/view.ts'
 import {
   newCombat, selected, switchWeapon, fire, step, durability, threatLabel, lockOn,
-  LASER, PHOTON,
+  reload, photonMagazine, photonDamage, LASER, PHOTON,
 } from '../lib/scemaworld/weapons.ts'
 import { fetchWorld, explain, retryable, matchesRequest } from '../lib/scemaworld/vault.ts'
 // `join` is already taken by `node:path` in this file.
 import { join as joinFleet, placement } from '../lib/scemaworld/fleet.ts'
 import {
   newShip, refuel, repair, scavenge, buy, upgradeCost, fuelCapacity, hullMax, topSpeed,
-  sensorGain, laserCooldown, photonMagazine, shieldMax, jumpCapacity, jumpCharge, burnRate,
+  sensorGain, laserCooldown, shieldMax, jumpCapacity, jumpCharge, burnRate,
   damage, recharge, MAX_LEVEL,
 } from '../lib/scemaworld/ship.ts'
 import * as Enemy from '../lib/scemaworld/enemy.ts'
@@ -46,6 +46,16 @@ import {
   exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SCEMA_NOTE,
 } from '../lib/scemaworld/economy.ts'
 import {
+  entitlement, toBaseUnits, toWholeTokens, looksLikeAddress,
+  DEFAULT_POLICY, NO_RECORD, TREASURY, SCEMA_MINT,
+} from '../lib/scemaworld/claim.ts'
+import { withdrawn } from '../lib/scemaworld/game.ts'
+import { transferPlan } from '../lib/scemaworld/treasury.ts'
+import { PublicKey } from '@solana/web3.js'
+import {
+  getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
+} from '@solana/spl-token'
+import {
   acquire, exchangeAt, command, COMMAND_KEYS, jumpRefusal,
 } from '../lib/scemaworld/game.ts'
 import { course as courseOf } from '../lib/scemaworld/view.ts'
@@ -55,7 +65,8 @@ import {
 } from '../lib/scemaworld/hitbox.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
-  JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
+  JUMP_INHIBIT, BOLT_LENGTH, BOLT_GLOW, R_LASER, R_PHOTON,
+  R_PLAYER, R_STATION, R_NODE_MAX, MIN_NODE_GAP,
   SENSOR_MULTIPLIER, AGGRO_RANGE as SENSOR_BASE, SPEED_LASER, LIFE_LASER, SPEED_PHOTON,
   SPEED_ENEMY_SHOT, SPEED_CRAFT, SPEED_CRAFT_PER_TIER, FAR_PLANE, NEAR_PLANE,
 } from '../lib/scemaworld/scale.ts'
@@ -71,7 +82,8 @@ import { shapeOf, LANE_ALPHA } from '../lib/scemaworld/view.ts'
 import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../lib/scemaworld/game.ts'
 import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
-import { raidersOf } from '../lib/scemaworld/raiders.ts'
+import { raidersOf, raiderWing, RAIDER_FLOOR } from '../lib/scemaworld/raiders.ts'
+import * as Respawn from '../lib/scemaworld/respawn.ts'
 import {
   nearest, fixOn, cycle, ahead, bearingLabel, rangeLabel,
 } from '../lib/scemaworld/nav.ts'
@@ -1388,14 +1400,18 @@ function toLocal(cam, target) {
 
 check('every component the market sells changes something', () => {
   // A market that takes salvage and alters nothing is worse than no market. `laserCooldown` and
-  // `photonMagazine` existed for a while and nothing called them, so two of the six upgrades
-  // were sold and inert.
+  // the photon's own scaling each existed for a while with nothing calling them, so two of the
+  // six upgrades were sold and inert.
   assert(topSpeed(1) > topSpeed(0), 'ENGINE does nothing')
   assert(fuelCapacity(1) > fuelCapacity(0), 'TANKS does nothing')
   assert(hullMax(1) > hullMax(0), 'HULL does nothing')
   assert(sensorGain(1) > sensorGain(0), 'SENSORS does nothing')
   assert(laserCooldown(1) < laserCooldown(0), 'LASER does nothing')
-  assert(photonMagazine(1) > photonMagazine(0), 'PHOTON does nothing')
+  // PHOTON buys **yield**, not magazine — the magazine is the hull's tube count and nothing
+  // scales it. This is the assertion that had to move when what the component buys changed;
+  // left pointed at the magazine it would have kept passing against a hull lookup by accident
+  // of argument type, which is the quietest way for a test to stop testing anything.
+  assert(photonDamage(1) > photonDamage(0), 'PHOTON does nothing')
 })
 
 check('a laser upgrade raises the rate of fire in play', () => {
@@ -1416,20 +1432,70 @@ check('a laser upgrade raises the rate of fire in play', () => {
   assert(shotsAt(4) > shotsAt(0), 'a fully upgraded laser fires no faster than a stock one')
 })
 
-check('a photon upgrade hands over the rounds it just sold you', () => {
+check('the photon magazine is the hull, and the component is the warhead', () => {
+  // The user-visible shape of the buff: six rounds on the largest hull, four, two, then one.
+  // Asserted as literal numbers rather than as an ordering, because the numbers themselves are
+  // the design — a pilot has to be able to answer "how many missiles do I have" without
+  // arithmetic, and an ordering test would pass just as happily against a formula.
+  assert(photonMagazine('marauder') === 6, `marauder carries ${photonMagazine('marauder')}`)
+  assert(photonMagazine('lancer') === 4, `lancer carries ${photonMagazine('lancer')}`)
+  assert(photonMagazine('corvette') === 2, `corvette carries ${photonMagazine('corvette')}`)
+  assert(photonMagazine('skiff') === 1, `skiff carries ${photonMagazine('skiff')}`)
+  assert(photonMagazine('scout') === 1, `scout carries ${photonMagazine('scout')}`)
+
+  // And **no component moves any of those**. That is the whole reason the numbers above can be
+  // stated flatly wherever the player reads them.
   const s = generate(world, digest)
-  const dockNode = s.nodes.find((n) => servicesOf(n.kind).includes('trade'))
+  const market = s.nodes.find((n) => servicesOf(n.kind).includes('trade'))
   let g = newGame(s)
-  g = {
-    ...g,
-    nearby: dockNode,
-    ship: { ...g.ship, salvage: 5_000 },
-  }
+  g = { ...g, nearby: market, ship: { ...g.ship, salvage: 50_000 } }
   const before = g.combat.photonsLeft
-  const after = purchase(g, 'missiles')
-  assert(after.ship.levels.missiles === 1, after.notice)
-  assert(after.combat.photonsLeft > before, 'the magazine grew but the tubes stayed empty')
-  assert(after.combat.photonsLeft === photonMagazine(1))
+  for (let i = 0; i < MAX_LEVEL; i += 1) g = purchase(g, 'missiles')
+  assert(g.ship.levels.missiles === MAX_LEVEL, g.notice)
+  assert(g.combat.photonsLeft === before, 'a component changed the magazine')
+  // What it did buy: a heavier warhead on the rounds already in the tubes.
+  assert(photonDamage(MAX_LEVEL) > photonDamage(0) * 2, 'a maxed warhead is barely better')
+})
+
+check('a photon is an event, and a laser is a drip', () => {
+  // The buff, stated as the property it is for. One missile has to settle a fighter outright, or
+  // a magazine of one is a worse laser with extra steps.
+  assert(PHOTON.damage > LASER.damage * 20, `${PHOTON.damage} vs ${LASER.damage}`)
+  assert(PHOTON.damage > CLASSES.gunship.hull + CLASSES.gunship.shield, 'a gunship survives a hit')
+  // And it must **not** settle a war class. A magazine that deletes a leviathan turns the
+  // largest thing in the sector into a keypress.
+  const salvo = PHOTON.damage * photonMagazine('marauder')
+  assert(
+    salvo < CLASSES.leviathan.hull + CLASSES.leviathan.shield,
+    'a full magazine kills a leviathan outright',
+  )
+})
+
+check('a dock reloads the tubes, because a magazine of one has to come back', () => {
+  const s = generate(world, digest)
+  const dock = s.nodes.find((n) => n.kind === 'dock')
+  assert(dock, 'this sector has no dock')
+  let g = newGame(s)
+  // Empty the tubes the honest way: fire them.
+  let t = 0
+  let combat = switchWeapon(g.combat)
+  for (let i = 0; i < 8; i += 1) {
+    t += PHOTON.cooldownMs + 1
+    combat = fire(combat, ZERO, { x: 0, y: 0, z: 1 }, t, [])
+  }
+  g = { ...g, combat }
+  assert(g.combat.photonsLeft === 0, `tubes still hold ${g.combat.photonsLeft}`)
+  const docked = useService({ ...g, nearby: dock }, 'refuel')
+  assert(docked.combat.photonsLeft === photonMagazine(g.ship.frame), 'a dock did not rearm')
+  assert(/photon/i.test(docked.notice ?? ''), `rearm went unreported: ${docked.notice}`)
+
+  // A depot does fuel and nothing else. Where you can rearm has to stay a constraint on a route,
+  // and the sector carries six times as many depots as docks.
+  const depot = s.nodes.find((n) => n.kind === 'depot')
+  if (depot) {
+    const atDepot = useService({ ...g, nearby: depot }, 'refuel')
+    assert(atDepot.combat.photonsLeft === 0, 'a depot rearmed')
+  }
 })
 
 // ── the jump drive ───────────────────────────────────────────────────────────
@@ -1768,7 +1834,36 @@ check('a sector carries capitals, and war classes stay rare', () => {
   const specs = swarmOf(s.raiders, s.seed).craft.map((c) => c.spec)
   assert(specs.some((x) => x.capital), 'no capital anywhere in the sector')
   const war = specs.filter((x) => x.id === 'dreadnought' || x.id === 'leviathan').length
-  assert(war <= 4, `${war} war-class ships — a sector with several is one you cannot cross`)
+  // Bounded, not absent. Every sector carries a deliberate capital garrison
+  // (`raiders.ts::GARRISON`) on top of whatever the roll produces, because a roll that reaches a
+  // leviathan about once in a hundred and fifty meant most sectors had none — the war classes
+  // existed and turned up by accident. The bound is what keeps "a sector with several is one you
+  // cannot cross" true.
+  assert(war >= 3, `only ${war} war-class ships — the garrison is not being placed`)
+  assert(war <= 8, `${war} war-class ships — a sector with several is one you cannot cross`)
+  assert(specs.filter((x) => x.id === 'titan').length >= 1, 'a sector has no titan')
+})
+
+check('the garrison is named rather than rolled, and only the sector may name it', () => {
+  const s = generate(world, digest)
+  const garrison = s.raiders.filter((r) => r.klass)
+  assert(garrison.length > 0, 'no named capital anywhere')
+  assert(garrison.every((r) => r.unlogged), 'a named class reached a contact the record reported')
+  const crafts = swarmOf(s.raiders, s.seed).craft
+  for (const want of ['dreadnought', 'leviathan', 'titan']) {
+    assert(crafts.some((c) => c.spec.id === want), `no ${want} in the sector`)
+  }
+
+  // And a record cannot name its own opposition. `swarmOf` honours `klass` only on an unlogged
+  // contact, so a producer that learned the field exists gains nothing by setting it.
+  const forged = s.contacts
+    .filter((c) => c.hostility === 'hostile')
+    .map((c) => ({ ...c, klass: 'titan' }))
+  assert(forged.length > 0, 'this fixture reports no hostile signal')
+  assert(
+    swarmOf(forged, s.seed).craft.every((c) => c.spec.id !== 'titan'),
+    'a record talked its way into choosing what it fights',
+  )
 })
 
 check('the war classes are colossal against everything else', () => {
@@ -2571,6 +2666,183 @@ check('marshals fight raiders whether or not anyone is watching', () => {
   assert(g.combat.destroyed.length === 0, 'the player was credited with kills it did not make')
 })
 
+// ── the patrol's war classes, visible firefights, and reinforcement ──────────
+
+check('the patrol fields war classes of its own', () => {
+  // A police force of eighteen interceptors against a roster that tops out at a titan is a
+  // gesture, and it made every large silhouette in the sector mean exactly one thing.
+  const s = generate(world, digest)
+  const traffic = trafficOf(s, s.seed)
+  for (const want of ['warden', 'bastion']) {
+    assert(traffic.some((c) => c.spec.id === want), `no ${want} in the sector`)
+  }
+  // They mirror the hostile war classes rather than exceeding them. A patrol that outguns
+  // everything makes the sector safe, which is not the point of having one.
+  assert(CLASSES.warden.hull === CLASSES.dreadnought.hull, 'the warden is not a dreadnought')
+  assert(CLASSES.bastion.hull === CLASSES.titan.hull, 'the bastion is not a titan')
+  // And killing one pays nothing. The reward rule is about where salvage may come from at all,
+  // and a bounty on the good guys would be the game paying for the sector to be less policed.
+  assert(CLASSES.warden.bounty === 0 && CLASSES.bastion.bounty === 0, 'the patrol carries a bounty')
+  // Never rollable. `classFor` picks hostiles; a warden turning up in a raider wing would be
+  // both a gameplay bug and a lie about who is out there.
+  assert(!CLASS_IDS.includes('warden') && !CLASS_IDS.includes('bastion'), 'a patrol class is rollable')
+})
+
+check('a friendly capital is yellow, not the hostile bronze', () => {
+  // The single worst thing this palette can get wrong. `capital` used to be applied to anything
+  // with `capital: true`, which was harmless while every capital was hostile — and would now put
+  // the sector's largest friendly ship into the hostile colour family, at the exact range where
+  // colour is the only thing legible.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: 16 })
+  const bodies = drawList(s, dynamicOf(g, s)).bodies
+  const wardens = bodies.filter((b) => (b.label ?? '').startsWith('WARDEN'))
+  assert(wardens.length > 0, 'no warden drawn at all')
+  assert(wardens.every((b) => b.role === 'marshal'), 'a warden drew in the hostile capital colour')
+  // The silhouette still carries the weight, which is why dropping the colour costs nothing.
+  assert(wardens.every((b) => b.shape === 'dreadnought'), 'a warden is not a dreadnought on screen')
+})
+
+check('a marshal round is drawn, and cannot touch the player', () => {
+  // Ambient violence used to be invisible: a marshal's damage was applied straight to its
+  // quarry, so the raider count fell over time and nothing was ever on screen to explain it.
+  // Carrying a target on the round is what let the exchange be drawn without reintroducing the
+  // ambiguity that hiding it was avoiding.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  let sawFriendlyRound = false
+  let hullAtStart = g.ship.hull
+  for (let f = 0; f < 60 * 90 && !sawFriendlyRound; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    sawFriendlyRound = g.swarm.shots.some((x) => x.owner === 'marshal')
+  }
+  assert(sawFriendlyRound, 'no marshal ever fired a round that existed')
+
+  const friendly = g.swarm.shots.filter((x) => x.owner === 'marshal')
+  // Aimed at a craft, never at the player. This is the mechanism, not a coincidence of geometry.
+  assert(friendly.every((x) => x.target !== null), 'a marshal fired at the player')
+  // And it reaches the window as its own colour, or a distant exchange is two dots near each
+  // other.
+  const drawn = drawList(s, dynamicOf(g, s)).bodies.filter((b) => b.role === 'ally-shot')
+  assert(drawn.length === friendly.length, `${drawn.length} of ${friendly.length} patrol rounds drawn`)
+  assert(PALETTE['ally-shot'] !== PALETTE['enemy-shot'], 'friendly and hostile fire share a colour')
+})
+
+check('raiders shoot back at the patrol, so a firefight has two sides', () => {
+  // Raiders used to aim at the player unconditionally, which meant a marshal engagement was one
+  // side firing into a target that never answered — the arithmetic of a fight with the picture
+  // of an execution.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  let answered = false
+  for (let f = 0; f < 60 * 120 && !answered; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    answered = g.swarm.shots.some((x) => x.owner === 'raider' && x.target !== null)
+  }
+  assert(answered, 'no raider ever returned fire on the patrol')
+})
+
+check('reinforcement keeps the sector populated, and reads no record field', () => {
+  // Same rule as `raiders.ts` and `factions.ts`, in the place it would be easiest to break: tie
+  // a floor or an interval to the record and a producer has bought itself a quieter sector.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'respawn.ts'))
+  for (const field of ['magnitude', 'blind_spots', 'blindSpots', 'legibility', 'extent', 'nodes']) {
+    assert(!src.includes(field), `respawn.ts reads \`${field}\``)
+  }
+})
+
+check('a thinned sector fills back up, from far away, and not with capitals', () => {
+  const s = generate(world, digest)
+  let g = newGame(s)
+  // Kill every raider fighter outright. Capitals are left alive so the check below is about
+  // whether they are *replaced*, not about whether they were removed.
+  let swarm = g.swarm
+  for (const c of swarm.craft) {
+    if (c.faction === 'raider' && !c.spec.capital) {
+      swarm = Enemy.hit(swarm, c.id, c.spec.hull + c.spec.shield + 1, 0).swarm
+    }
+  }
+  g = { ...g, swarm }
+  const emptied = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length
+  assert(emptied === 0, `${emptied} raider fighters survived the setup`)
+
+  const at = { x: 0, y: 0, z: 0 }
+  const capitalsBefore = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
+  let raised = 0
+  for (let f = 0; f < 60 * 400; f += 1) {
+    const before = Enemy.of(g.swarm, 'raider').length
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    const now = Enemy.of(g.swarm, 'raider')
+    if (now.length > before) {
+      raised += 1
+      // Every new arrival is beyond sensor range. A ship appearing inside it is the clearest
+      // possible statement that nothing on screen is real.
+      for (const c of now.slice(before)) {
+        const d = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
+        assert(d >= Respawn.SPAWN_CLEARANCE, `a wing arrived ${Math.round(d)} out`)
+      }
+    }
+    if (Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length >= RAIDER_FLOOR) break
+  }
+  assert(raised > 1, `only ${raised} wave(s) in four hundred seconds`)
+  const fighters = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length
+  assert(fighters >= RAIDER_FLOOR, `the sector settled at ${fighters} fighters`)
+  // A capital you killed stays killed, on both sides — it is the only lasting mark the player
+  // can leave on the sector. This holds because a capital is *placed* and a fighter is *rolled*
+  // (`enemy.ts::swarmOf`); while a wing could roll one, reinforcement handed back the heaviest
+  // thing in the sector on a timer.
+  const capitalsAfter = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
+  assert(capitalsAfter === capitalsBefore, 'a capital was respawned')
+})
+
+check('a reinforcement can actually be shot', () => {
+  // The bug this catches was invisible from every angle: the target list was filtered out of the
+  // record's contact lists, and a reinforcement is in neither, so a respawned raider was drawn,
+  // would shoot at you, was counted on the sensor board — and was immune to every weapon.
+  const s = generate(world, digest)
+  const wing = raiderWing(s.seed, 99, { x: 0, y: 0, z: 0 })
+  let g = newGame(s)
+  g = { ...g, swarm: Enemy.reinforce(g.swarm, swarmOf(wing, s.seed).craft) }
+  const victim = wing[0]
+  const ids = wing.map((c) => c.id)
+  // Park the ship just astern of it and hold the trigger. On **+Z**, because a fresh camera
+  // looks along −Z: sitting at −Z of the target would be staring away from it, which is the
+  // same trap `newGame` documents about the spawn point.
+  g = {
+    ...g,
+    camera: {
+      position: [victim.at.x, victim.at.y, victim.at.z + CLASSES.skiff.radius * 8],
+      orientation: [0, 0, 0, 1],
+    },
+  }
+  // Any member of the wing counts. Which one the rounds find is a matter of where four craft
+  // scattered around an anchor happen to be, and pinning it to one of them would make the test
+  // about the geometry rather than about whether a reinforcement is a valid target at all.
+  let landed = false
+  for (let f = 0; f < 600 && !landed; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    landed = ids.some((id) => (g.combat.hits[id] ?? 0) > 0 || g.combat.destroyed.includes(id))
+  }
+  assert(landed, 'a reinforcement absorbed ten seconds of point-blank fire')
+})
+
+check('a bolt is small and bright rather than large and dim', () => {
+  // The trade is one decision in two files, and stating it as a relationship is the only way it
+  // survives either half being tuned. A fat bolt at this scale is a blob: at any range where you
+  // can see two other ships trading fire, the rounds are wider than the ships.
+  assert(R_LASER < Math.round(EXTENT * 0.0004), `a laser bolt is ${R_LASER}, which is a blob`)
+  assert(R_PHOTON > R_LASER * 2, 'a photon does not read as heavier than a laser')
+  // The halo is what carries it at distance, so a smaller core needs a wider one — and the lit
+  // area still ends up far under what the old fat bolt covered.
+  assert(BOLT_GLOW > 4, 'the halo is too tight to carry a hairline core')
+  assert(R_LASER * BOLT_GLOW < Math.round(EXTENT * 0.0016), 'the glow undid the shrink')
+  // And the core is overdriven past 1.0, which is what makes a hairline read as hot.
+  const frag = codeOf(join(here, '..', 'lib', 'scemaworld', 'gl.ts'))
+  const drive = frag.match(/vGlow > 0\.5 \? [\d.]+ : ([\d.]+)\)/)
+  assert(drive && Number(drive[1]) > 2, 'the bolt core is not overdriven')
+})
+
 check('civilians route between real service nodes', () => {
   // A *use* of the record's contents rather than a reward derived from them: a sector with more
   // depots has freighters flying between more places, not more freighters.
@@ -2809,14 +3081,210 @@ check('a new ship arrives whole and keeps every component', () => {
 
 // ── the economy, and what it is not ──────────────────────────────────────────
 
-check('SCEMA is stated on screen to be a placeholder', () => {
-  // A player told a currency is a placeholder has been told; one who infers it later from a
-  // changelog has been misled, and this project's whole argument is about not letting a number
-  // imply more than it is.
-  assert(SCEMA_NOTE.includes('placeholder'), SCEMA_NOTE)
-  assert(SCEMA_NOTE.includes('not') && SCEMA_NOTE.includes('token'), SCEMA_NOTE)
+check('what SCEMA is, and how it is bounded, are both on screen', () => {
+  // This check used to assert the note said "placeholder", and that assertion was correct right
+  // up until the token wiring landed — at which point the sentence it was pinning became false.
+  // A player told a currency is a placeholder has been told; one still reading that line after
+  // the treasury went live would have been misled by us specifically.
+  //
+  // So it pins the *two* things a player must be told, not the wording: that the balance is
+  // redeemable, and that withdrawals are capped. Telling somebody a currency is real without
+  // telling them how it is bounded is telling them half of something.
+  assert(!SCEMA_NOTE.includes('placeholder'), `the note still calls SCEMA a placeholder: ${SCEMA_NOTE}`)
+  assert(/redeem/i.test(SCEMA_NOTE), SCEMA_NOTE)
+  assert(/\$SCEMA/.test(SCEMA_NOTE), SCEMA_NOTE)
+  assert(/cap/i.test(SCEMA_NOTE), `the note does not mention the caps: ${SCEMA_NOTE}`)
   const src = codeOf(join(here, '..', 'components', 'scemaworld', 'ScemaWorldTerminal.tsx'))
-  assert(src.includes('SCEMA_NOTE'), 'the placeholder warning is not rendered anywhere')
+  assert(src.includes('SCEMA_NOTE'), 'the note is not rendered anywhere')
+  // One definition. Two copies of a sentence about money eventually disagree, and the stale one
+  // is the one still on screen.
+  const econ = codeOf(join(here, '..', 'lib', 'scemaworld', 'economy.ts'))
+  assert(econ.includes("export { SCEMA_NOTE } from './claim.ts'"), 'the note has been forked')
+})
+
+// ── withdrawing SCEMA as $SCEMA ──────────────────────────────────────────────
+
+check('the withdrawal policy reads no record field', () => {
+  // The rule `economy.ts` warned would stop being a design preference the moment a real token was
+  // behind SCEMA, checked in the file that decides what a withdrawal is worth. A rate or a cap
+  // derived from a record's contents is a financial reason to misreport a world.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'claim.ts'))
+  for (const field of ['magnitude', 'blind_spots', 'blindSpots', 'legibility', 'extent']) {
+    assert(!src.includes(field), `claim.ts prices a withdrawal from \`${field}\``)
+  }
+})
+
+check('every world pays exactly the same, which is what stops a record being forged', () => {
+  // The property the whole thing rests on, asserted directly rather than inferred from the source
+  // scan above: two different worlds, one balance, one answer.
+  const a = entitlement({
+    scema: 400, wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0,
+  })
+  const b = entitlement({
+    scema: 400, wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0,
+  })
+  assert(a.tokens === b.tokens && a.tokens > 0, 'a withdrawal is not a pure function of a balance')
+})
+
+check('a withdrawal is bounded four ways, and says which one bound it', () => {
+  const P = DEFAULT_POLICY
+  const base = { wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0 }
+
+  // Per claim.
+  const big = entitlement({ ...base, scema: 10_000 })
+  assert(big.tokens === P.perClaim, `paid ${big.tokens} against a per-claim cap of ${P.perClaim}`)
+  assert(/per withdrawal/.test(big.message), big.message)
+
+  // Per wallet, lifetime.
+  const nearly = entitlement({
+    ...base, scema: 10_000, record: { paid: P.perWallet - 40, lastMs: -1, claims: 3 },
+  })
+  assert(nearly.tokens === 40, `paid ${nearly.tokens} with 40 of a lifetime cap left`)
+
+  // Per deployment.
+  const drained = entitlement({ ...base, scema: 10_000, dispensed: P.budget - 30 })
+  assert(drained.tokens === 30, `paid ${drained.tokens} with 30 of a budget left`)
+
+  // And by what the treasury actually holds. A cap can be edited; a balance cannot.
+  const poor = entitlement({ ...base, scema: 10_000, treasury: 17 })
+  assert(poor.tokens === 17, `paid ${poor.tokens} out of a treasury of 17`)
+
+  // Each refusal names its own cause, because "capped at 250", "this wallet is done" and "this
+  // build cannot pay" are three different instructions and only one means try again later.
+  const spent = entitlement({ ...base, scema: 100, record: { paid: P.perWallet, lastMs: -1, claims: 9 } })
+  assert(spent.refusal === 'wallet_limit', spent.refusal ?? 'no refusal at all')
+  const cooling = entitlement({ ...base, scema: 100, record: { paid: 10, lastMs: 5 }, nowMs: 6 })
+  assert(cooling.refusal === 'cooling_down' && cooling.waitMs > 0, cooling.message)
+  const gone = entitlement({ ...base, scema: 100, dispensed: P.budget })
+  assert(gone.refusal === 'budget_exhausted', gone.message)
+  const junk = entitlement({ ...base, scema: 100, wallet: 'not-an-address' })
+  assert(junk.refusal === 'bad_wallet', junk.message)
+  // Every refusal carries a sentence. One that does not is a dead button.
+  for (const r of [spent, cooling, gone, junk]) assert(r.message.length > 0, 'a silent refusal')
+  // And a refusal never pays.
+  for (const r of [spent, cooling, gone, junk]) assert(r.tokens === 0 && r.spend === 0, r.message)
+})
+
+check('a capped withdrawal spends only what it converted', () => {
+  // The same bug `economy.ts::exchange` documents, in a place where the thing taken has a market
+  // price: a claim capped at 250 must not consume the 10,000 SCEMA that was offered.
+  const e = entitlement({
+    scema: 10_000, wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0,
+  })
+  assert(e.spend === Math.ceil(e.tokens / DEFAULT_POLICY.rate), `spent ${e.spend} for ${e.tokens}`)
+  assert(e.spend < 10_000, 'a capped claim burned the whole balance')
+})
+
+check('a withdrawal debits the server figure, never the request', () => {
+  const s = generate(world, digest)
+  let g = newGame(s)
+  g = { ...g, ship: { ...g.ship, scema: 4_000 } }
+  // What the route would return for a claim capped at 250: spend 250, pay 250.
+  const after = withdrawn(g, 250, 250)
+  assert(after.ship.scema === 3_750, `balance went to ${after.ship.scema}`)
+  assert(/\$SCEMA/.test(after.notice ?? ''), after.notice)
+  // And it refuses to go negative rather than clamping, because a balance that has drifted below
+  // what was paid out is a bug upstream and a clamp is how it stops being visible.
+  const over = withdrawn(g, 9_999, 9_999)
+  assert(over.ship.scema === 4_000, 'a withdrawal larger than the balance went through')
+  assert(/exceeds/.test(over.notice ?? ''), over.notice)
+})
+
+check('a payout is built for the token program the mint actually uses', () => {
+  // The riskiest arithmetic in the whole feature, and the part that cannot otherwise be tested:
+  // settling for real needs a funded treasury key, so without `transferPlan` this would only ever
+  // be exercised by moving money. Everything wrong here is wrong *silently* — the wrong token
+  // program derives a valid associated address nobody controls, and the tokens land there.
+  //
+  // The facts are the real ones, read off mainnet: $SCEMA is Token-2022 with six decimals. That
+  // was verified against the chain rather than against this repository's own notes, which
+  // disagree with themselves about it — which is exactly why the program is decoded from the
+  // mint account's owner at run time and never assumed.
+  const reading = {
+    mint: SCEMA_MINT,
+    account: '8fUoz2yJ7EYY3idg2MTt6kFe5AcakMMGqKoNEHJtbSCQ',
+    owner: TREASURY,
+    program: 'token-2022',
+    decimals: 6,
+  }
+  const holder = new PublicKey(TREASURY)
+  const plan = transferPlan({ reading, holder, tokens: 250 })
+
+  assert(plan.programId.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58(), 'built for legacy SPL')
+  // Six decimals: 250 tokens is 250,000,000 base units. A `decimals` off by one moves ten times
+  // the intended amount, and this is the number `transferChecked` makes the chain agree with.
+  assert(plan.amount === 250_000_000n, `amount was ${plan.amount}`)
+  assert(plan.decimals === 6, 'decimals did not come off the mint')
+
+  // The treasury's own account, derived independently, must match the address the chain actually
+  // holds the balance in. This is the assertion that catches a legacy-SPL derivation: the wrong
+  // program yields a different, perfectly valid address.
+  const treasuryAta = getAssociatedTokenAddressSync(
+    new PublicKey(SCEMA_MINT), new PublicKey(TREASURY), true, TOKEN_2022_PROGRAM_ID,
+  )
+  assert(treasuryAta.toBase58() === reading.account, `derived ${treasuryAta.toBase58()}`)
+  const wrong = getAssociatedTokenAddressSync(
+    new PublicKey(SCEMA_MINT), new PublicKey(TREASURY), true, TOKEN_PROGRAM_ID,
+  )
+  assert(wrong.toBase58() !== reading.account, 'the two token programs derive the same address')
+
+  // And the destination is derived with the same program as the source, or a mixed pair sends to
+  // an address the claimant does not own.
+  assert(plan.destination.toBase58() === treasuryAta.toBase58(), 'destination derivation drifted')
+})
+
+check('a payout is confirmed over HTTP, never over a WebSocket', () => {
+  // Paid for on mainnet, and the failure was the worst pair of facts this feature can produce:
+  // `sendAndConfirmTransaction` waits on a WebSocket `signatureSubscribe`, and the `ws` package's
+  // bufferutil binding does not survive Next's bundler — it throws `t.mask is not a function`, the
+  // promise never settles, and the route hangs forever. Meanwhile the transaction had been
+  // broadcast and *finalized* perfectly normally. So a successful payout presented as a dead
+  // faucet, and a retry would have paid twice.
+  //
+  // A source scan rather than a behavioural test, for the same reason `generate.ts` is scanned for
+  // `Date.now`: the bug is invisible everywhere except at run time against a real chain through a
+  // real bundle. Nothing in a check suite reproduces it, and it would come straight back the next
+  // time somebody reached for the convenient helper.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'treasury.ts'))
+  assert(!src.includes('sendAndConfirmTransaction'), 'the payout waits on a WebSocket again')
+  assert(src.includes('sendRawTransaction'), 'the payout no longer sends a raw transaction')
+  assert(src.includes('getSignatureStatuses'), 'confirmation is not polled over HTTP')
+  // A subscription would also leak a socket per claim, which is wrong in a request handler
+  // regardless of whose bundler is at fault.
+  assert(!src.includes('onSignature'), 'the payout subscribes to a signature')
+})
+
+check('a sent-but-unobserved payout is neither success nor failure', () => {
+  // The third arm, and it is not hypothetical — see the check above. Collapsing it either way
+  // causes a specific expensive wrong action: called a failure, the reservation is released and
+  // the next request pays a second time; called a success, the player is told about a settlement
+  // nobody watched.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'treasury.ts'))
+  assert(src.includes("reason: 'unconfirmed'"), 'there is no unconfirmed outcome')
+  // The reservation must survive it. `settle` releases the ledger on a definite failure and on a
+  // throw, and must not on a timeout.
+  const settle = src.slice(src.indexOf('export async function settle'))
+  const unconfirmed = settle.indexOf('landed === null')
+  const definite = settle.indexOf('landed === false')
+  assert(unconfirmed > 0 && definite > unconfirmed, 'the two outcomes are not both handled')
+  const branch = settle.slice(unconfirmed, definite)
+  assert(!branch.includes('writeLedger(ledger)'), 'an unconfirmed payout released its reservation')
+
+  // And the route answers 202, not an error code. A 5xx tells a client the transfer failed, which
+  // is a claim nobody is in a position to make.
+  const route = codeOf(join(here, '..', 'app', 'api', 'scemaworld', 'claim', 'route.ts'))
+  assert(/unconfirmed:\s*202/.test(route), 'an unconfirmed payout is reported as an error')
+})
+
+check('base units are exact, and whole tokens are floored', () => {
+  // A u64 reaches ~1.8e19 against Number.MAX_SAFE_INTEGER's 9e15, so a token amount that passes
+  // through a JS number loses precision in a quantity of money. Same rule as `/escrow`.
+  assert(toBaseUnits(1, 6) === 1_000_000n, 'six decimals')
+  assert(toBaseUnits(90_000, 9) === 90_000_000_000_000n, 'nine decimals')
+  assert(toBaseUnits(0, 6) === 0n, 'zero')
+  // Floored in both directions: a treasury of 90,000.9 must never buy a claim it cannot settle,
+  // and a player must never be shown a balance the treasury does not hold.
+  assert(toWholeTokens(90_000_900_000n, 6) === 90_000, 'a fractional balance rounded up')
 })
 
 check('the exchange takes a spread, and never takes salvage for nothing', () => {

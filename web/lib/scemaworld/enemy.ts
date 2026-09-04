@@ -97,11 +97,37 @@ export interface Craft {
   alive: boolean
 }
 
+/**
+ * A round in flight that the player did not fire.
+ *
+ * ## Every shot names who fired it and what it is aimed at, and that is what made firefights visible
+ *
+ * A marshal's rounds used to never exist. Its damage was applied directly to its quarry, and the
+ * stated reason was a real one: a stray friendly round hitting the player would make an ally
+ * indistinguishable from an enemy at the only moment it counts. But the cost was that the sector's
+ * ambient violence was **invisible** — raider counts fell over time and nothing was ever on screen
+ * to explain it, so the one thing that makes the place feel inhabited rather than staged happened
+ * entirely in the arithmetic.
+ *
+ * Carrying a `target` solves the original problem exactly, and better than hiding the round did: a
+ * shot is resolved against the one craft it was aimed at, or against the player when `target` is
+ * null. A marshal's round *cannot* hit the player because it is not aimed at them, not because it
+ * was never drawn. And `owner` lets the renderer colour it, so a distant exchange reads as
+ * yellow-into-orange rather than as two dots near each other.
+ *
+ * The honest limitation, stated because it is a real one: a shot passes through anything that is
+ * not its target. That is the same rule the player's own fire follows — nothing is cover, for
+ * either side — so it is at least symmetric, which is the property that matters most here.
+ */
 export interface EnemyShot {
   at: Vec3
   dir: Vec3
   life: number
   damage: number
+  /** Who fired it. Drives colour only; it has no effect on what the round can hit. */
+  owner: Faction
+  /** The craft it was aimed at, or `null` for one aimed at the player. */
+  target: string | null
 }
 
 export interface Swarm {
@@ -209,7 +235,26 @@ export function swarmOf(contacts: Contact[], seed: string): Swarm {
         // furniture; letting a reported signal become a destroyer would put the record's
         // contents back in charge of how hard its own sector is.
         let spec = classFor(roll)
-        if (!c.unlogged && spec.capital) spec = CLASSES.gunship
+        // A named class, for the sector's own capital garrison. Honoured **only** for an
+        // unlogged contact — everything the record reported keeps its rolled class, so this
+        // cannot become a way for a producer to name its own opposition. An unrecognised name
+        // falls through to the roll rather than throwing: the field is typed `string` on purpose
+        // (see `generate.ts`), and a bad value must be inert.
+        const named = Boolean(c.unlogged && c.klass && c.klass in CLASSES)
+        if (named) spec = CLASSES[c.klass as keyof typeof CLASSES]
+        // ## Only a *named* class may be a capital
+        //
+        // This used to read "a signal the record reported is never a capital", which left rolled
+        // raiders able to become one — so a wing of four could contain a destroyer, and the
+        // sector's war classes arrived partly by garrison and partly by lottery. Two consequences,
+        // both bad: reinforcement could quietly hand back a capital the player had spent minutes
+        // killing, and "how many capitals does a sector have" had no answer.
+        //
+        // The rule is now flat: **a capital is placed, a fighter is rolled.** The garrison
+        // (`raiders.ts::GARRISON`) is the whole of the sector's heavy hostile presence, it is the
+        // same in every world, and nothing replaces it. The original protection is strictly
+        // contained in this — a record's own signal is never named, so it is never a capital.
+        if (spec.capital && !named) spec = CLASSES.gunship
         return {
           id: c.id,
           spec,
@@ -265,6 +310,22 @@ export function withTraffic(swarm: Swarm, traffic: Civilian[]): Swarm {
       })),
     ],
   }
+}
+
+/**
+ * Fold new craft into a live swarm. How reinforcement arrives.
+ *
+ * Ids already present are dropped rather than duplicated. That is not defensive tidiness: the
+ * respawn caller counts what is *alive* and raises the difference, so a wave arriving on the same
+ * frame a craft is recorded dead is an ordinary race rather than a bug, and two craft sharing an
+ * id would be a genuine one — every id-keyed structure in the game (hit resolution, hit flashes,
+ * the sensor board, a projectile's target) would then be describing the wrong ship half the time.
+ */
+export function reinforce(swarm: Swarm, added: Craft[]): Swarm {
+  const known = new Set(swarm.craft.map((c) => c.id))
+  const fresh = added.filter((c) => !known.has(c.id))
+  if (fresh.length === 0) return swarm
+  return { ...swarm, craft: [...swarm.craft, ...fresh] }
 }
 
 export interface StepResult {
@@ -345,20 +406,28 @@ export function decide(c: Craft, range: number, closing: number, nowMs: number):
  * which at these speeds means everything misses — a silent way to make the game trivial.
  */
 /**
- * The nearest live craft of an opposing faction, for a marshal picking a fight.
+ * Whether two factions will shoot at each other. The only place that question is answered.
+ *
+ * Marshals and raiders, and nothing else. Couriers and freighters are unarmed and a marshal has
+ * no quarrel with them; two raiders do not fight, or a sector's hostiles would consume themselves
+ * before anybody arrived.
+ */
+export function opposes(a: Faction, b: Faction): boolean {
+  return (a === 'marshal' && b === 'raider') || (a === 'raider' && b === 'marshal')
+}
+
+/**
+ * The nearest live craft of an opposing faction, within `reach`.
  *
  * Linear over the swarm, which is a couple of hundred entries. A spatial index here would be a
  * structure to keep correct in exchange for a fraction of a millisecond.
  */
-function nearestEnemyOf(swarm: Swarm, c: Craft): Craft | null {
+export function nearestOpponent(swarm: Swarm, c: Craft, reach: number): Craft | null {
   let best: Craft | null = null
-  let bestD = c.spec.aggro * 2.5
+  let bestD = reach
   for (const other of swarm.craft) {
     if (!other.alive || other.id === c.id) continue
-    // Marshals hunt raiders. Raiders do not go looking for marshals — they are here for the
-    // player and fight back only when engaged, which is what keeps a sector's ambient violence
-    // from consuming itself before anybody arrives.
-    if (!(c.faction === 'marshal' && other.faction === 'raider')) continue
+    if (!opposes(c.faction, other.faction)) continue
     const d = len(sub(other.at, c.at))
     if (d < bestD) {
       bestD = d
@@ -366,6 +435,80 @@ function nearestEnemyOf(swarm: Swarm, c: Craft): Craft | null {
     }
   }
   return best
+}
+
+/**
+ * How much further a marshal will reach for a raider than it will engage one.
+ *
+ * Generous, because hunting is its whole job and a patrol that only notices what flies into it is
+ * indistinguishable from one that is not looking.
+ */
+const MARSHAL_REACH = 2.5
+
+/**
+ * How far a raider will look for a marshal to fight back against.
+ *
+ * Deliberately tighter than the marshal's reach. A raider is here for the player and turns on the
+ * patrol only when the patrol is genuinely on it — the asymmetry is what stops the sector's
+ * ambient violence from becoming the whole of the sector, and it is what leaves the player as the
+ * thing raiders are for.
+ */
+const RAIDER_REACH = 1.2
+
+/**
+ * What a craft is currently interested in: where it is, how fast, and which craft it is — or
+ * `null` for the player.
+ *
+ * ## Why this exists as its own function
+ *
+ * The steering, the shot lead and the fire gate each independently decided who the subject was,
+ * and two of the three answered "the player" unconditionally. So a marshal was hunting a raider
+ * with `nearestEnemyOf` while *flying at the player* and computing a firing solution on the
+ * player, and only the damage went to the raider. Nothing looked wrong on screen because nothing
+ * was on screen — the rounds were invisible. One function, consulted once per craft per step, is
+ * what makes "who is this ship fighting" a single fact rather than three coincidences.
+ */
+function focusOf(
+  swarm: Swarm,
+  c: Craft,
+  playerAt: Vec3,
+  playerVel: Vec3,
+  space?: Space,
+): { at: Vec3; vel: Vec3; target: string | null; routeTo: Node | null } {
+  if (c.faction === 'marshal') {
+    const quarry = nearestOpponent(swarm, c, c.spec.aggro * MARSHAL_REACH)
+    // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which would
+    // look exactly like a hostile closing in.
+    if (!quarry) {
+      return {
+        at: add(c.at, scale(c.facing, c.spec.aggro * 4)),
+        vel: { x: 0, y: 0, z: 0 },
+        target: null,
+        routeTo: null,
+      }
+    }
+    return { at: quarry.at, vel: scale(quarry.facing, quarry.speed), target: quarry.id, routeTo: null }
+  }
+
+  if (civilian(c.faction)) {
+    const route = space ? routeNodes(space, c.faction) : []
+    const routeTo = route.find((n) => n.id === c.destination) ?? route[0] ?? null
+    return {
+      at: routeTo ? routeTo.at : add(c.at, scale(c.facing, c.spec.aggro * 4)),
+      vel: { x: 0, y: 0, z: 0 },
+      target: null,
+      routeTo,
+    }
+  }
+
+  // A raider. It fights back against a marshal that is genuinely on it, and otherwise it is here
+  // for the player. "Genuinely on it" is decided by range: whichever of the two is nearer, with
+  // the marshal held to the tighter reach above.
+  const patrol = nearestOpponent(swarm, c, c.spec.aggro * RAIDER_REACH)
+  if (patrol && len(sub(patrol.at, c.at)) < len(sub(playerAt, c.at))) {
+    return { at: patrol.at, vel: scale(patrol.facing, patrol.speed), target: patrol.id, routeTo: null }
+  }
+  return { at: playerAt, vel: playerVel, target: null, routeTo: null }
 }
 
 export function step(
@@ -380,7 +523,6 @@ export function step(
   const craft: Craft[] = []
   const shots: EnemyShot[] = []
   const fired: string[] = []
-  const civilianHits: { id: string; damage: number }[] = []
   let damage = 0
 
   for (const c of swarm.craft) {
@@ -390,30 +532,12 @@ export function step(
     }
 
     // ── who this craft is interested in ──────────────────────────────────────
-    // A raider wants the player. A marshal wants the nearest raider and is indifferent to the
-    // player entirely. A courier or a freighter wants to be somewhere else and will run from
-    // whatever is shooting near it.
-    let focusAt = playerAt
-    let focusVel = playerVel
-    let routeTo: Node | null = null
-
-    if (c.faction === 'marshal') {
-      const quarry = nearestEnemyOf(swarm, c)
-      if (quarry) {
-        focusAt = quarry.at
-        focusVel = scale(quarry.facing, quarry.speed)
-      } else {
-        // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which
-        // would look exactly like a hostile closing in.
-        focusAt = add(c.at, scale(c.facing, c.spec.aggro * 4))
-        focusVel = { x: 0, y: 0, z: 0 }
-      }
-    } else if (civilian(c.faction) && space) {
-      const route = routeNodes(space, c.faction)
-      routeTo = route.find((n) => n.id === c.destination) ?? route[0] ?? null
-      focusAt = routeTo ? routeTo.at : add(c.at, scale(c.facing, c.spec.aggro * 4))
-      focusVel = { x: 0, y: 0, z: 0 }
-    }
+    // One answer, used by the steering, the lead and the fire gate alike. See `focusOf` for what
+    // went wrong when each of the three decided for itself.
+    const focus = focusOf(swarm, c, playerAt, playerVel, space)
+    const focusAt = focus.at
+    const focusVel = focus.vel
+    const routeTo = focus.routeTo
 
     const toFocus = sub(focusAt, c.at)
     const range = len(toFocus)
@@ -446,7 +570,10 @@ export function step(
         throttle = closing > 0.1 ? 1 : 0.25
         break
       case 'attack':
-        want = norm(sub(leadPoint(c.at, playerAt, playerVel, ENEMY_SHOT_SPEED), c.at))
+        // Led onto **the focus**, not onto the player. It used to be the player unconditionally,
+        // which meant a marshal hunting a raider flew at the player the whole time it was doing
+        // it — a friendly patrol that reads, from the cockpit, as something closing on you.
+        want = norm(sub(leadPoint(c.at, focusAt, focusVel, ENEMY_SHOT_SPEED), c.at))
         // Eased off as it arrives, which is what lets it hold a firing position instead of
         // sailing past. It is also the only thing that makes the position reachable at all:
         // turn radius is `speed / turn`, so a third of the throttle is a third of the radius.
@@ -513,7 +640,9 @@ export function step(
     // ── firing ────────────────────────────────────────────────────────────────
     let lastFire = c.lastFire
     let burstLeft = c.burstLeft
-    const aim = norm(sub(leadPoint(at, playerAt, playerVel, ENEMY_SHOT_SPEED), at))
+    // Aimed at the focus, for the same reason the steering is. A craft that steers at one thing
+    // and shoots at another is not a pilot, it is two bugs agreeing.
+    const aim = norm(sub(leadPoint(at, focusAt, focusVel, ENEMY_SHOT_SPEED), at))
     // It only fires while actually pointing at the solution. A craft that can shoot sideways
     // makes manoeuvre pointless, which is the entire game here.
     const onTarget = dot(facing, aim) > 0.985
@@ -526,17 +655,18 @@ export function step(
     const gap = burstLeft > 0 ? 90 : c.spec.cooldownMs
     if (canFire && nowMs - lastFire > gap) {
       if (burstLeft <= 0) burstLeft = c.spec.burst
-      // A marshal's rounds are resolved directly against its quarry rather than becoming a
-      // projectile. Two reasons: a shot fired at another *craft* would otherwise have to be
-      // tested against every craft every frame, and — the one that matters — a marshal's stray
-      // round hitting the player would make an ally indistinguishable from an enemy at the only
-      // moment it counts.
-      if (c.faction === 'marshal') {
-        const quarry = nearestEnemyOf(swarm, c)
-        if (quarry) civilianHits.push({ id: quarry.id, damage: c.spec.damage })
-      } else {
-        shots.push({ at, dir: aim, life: LIFE_ENEMY_SHOT, damage: c.spec.damage })
-      }
+      // Every round is a projectile now, including a marshal's. It carries the id of the one
+      // craft it can hit (`null` meaning the player), so a friendly round is incapable of
+      // hurting you *and* is visible while it fails to — which is the entire reason a firefight
+      // between two other parties is something you can see happening. See `EnemyShot`.
+      shots.push({
+        at,
+        dir: aim,
+        life: LIFE_ENEMY_SHOT,
+        damage: c.spec.damage,
+        owner: c.faction,
+        target: focus.target,
+      })
       fired.push(c.id)
       lastFire = nowMs
       burstLeft -= 1
@@ -576,25 +706,40 @@ export function step(
     })
   }
 
-  // Advance existing shots and resolve those that reach the player.
+  // Advance existing shots and resolve each against the one thing it was aimed at.
+  //
+  // Resolved after every craft has moved, so a round cannot kill something this loop has not
+  // finished stepping — and so a shot is tested against where its target *is* this frame rather
+  // than where it was.
+  const byId = new Map(craft.map((c) => [c.id, c]))
+  const craftHits: { id: string; damage: number }[] = []
   for (const s of swarm.shots) {
     const at = add(s.at, scale(s.dir, ENEMY_SHOT_SPEED * dt))
     const life = s.life - dt
-    // Swept, for the same reason player shots are: at this speed an endpoint test misses.
-    if (nearSegment(playerAt, s.at, at) <= R_PLAYER) {
-      damage += s.damage
-      continue
+    if (s.target === null) {
+      // Swept, for the same reason player shots are: at this speed an endpoint test misses.
+      if (nearSegment(playerAt, s.at, at) <= R_PLAYER) {
+        damage += s.damage
+        continue
+      }
+    } else {
+      const t = byId.get(s.target)
+      // A round whose target died keeps flying and expires. Deleting it would be tidier and
+      // would make a kill silently swallow the rounds already in the air toward it, which is
+      // the sort of small dishonesty that adds up into a fight not matching what you saw.
+      if (t && t.alive && nearSegment(t.at, s.at, at) <= t.spec.radius) {
+        craftHits.push({ id: s.target, damage: s.damage })
+        continue
+      }
     }
-    // Nothing blocks enemy fire, because nothing blocks yours. A wireframe frame is not cover,
-    // and what matters is that the rule is *symmetric*: a player who learns that hiding works
-    // only for the other side has learned something worse than either consistent answer.
-    if (life > 0) shots.push({ at, dir: s.dir, life, damage: s.damage })
+    // Nothing blocks fire, for anyone. A wireframe frame is not cover, and what matters is that
+    // the rule is *symmetric*: a player who learns that hiding works only for the other side has
+    // learned something worse than either consistent answer.
+    if (life > 0) shots.push({ ...s, at, life })
   }
 
-  // Marshal fire, applied after every craft has moved. Done here rather than inline so a
-  // marshal cannot kill something that the same loop has not finished stepping.
   let out: Swarm = { craft, shots }
-  for (const h of civilianHits) {
+  for (const h of craftHits) {
     out = hit(out, h.id, h.damage, nowMs).swarm
   }
 

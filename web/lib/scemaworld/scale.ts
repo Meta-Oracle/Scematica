@@ -63,8 +63,23 @@ export const R_CONTACT = Math.round(EXTENT * 0.0024)
 /** How much a full-magnitude signal adds to that. Size, never damage — see `weapons.ts`. */
 export const R_CONTACT_SPAN = Math.round(EXTENT * 0.004)
 
-export const R_LASER = Math.round(EXTENT * 0.0008)
-export const R_PHOTON = Math.round(EXTENT * 0.0016)
+/**
+ * Bolt radii. **Small and bright, not big and dim.**
+ *
+ * These were three and a half times larger, and the cost only became visible once the sector
+ * had firefights in it that the player is not part of. A fat bolt at this scale is a *blob*: at
+ * any distance where you can see two craft trading fire, the rounds are wider than the ships
+ * and the engagement reads as two smudges overlapping. Shrinking the core and pushing the
+ * brightness up (`BOLT_GLOW` below, and the core multiplier in `gl.ts`) gives the opposite —
+ * a hairline tracer that is legible from across the sector because it is *bright*, not because
+ * it is large. Additive blending is what makes that trade available at all: brightness sums
+ * where a shot overlaps its own halo, so a thin line still clips to white.
+ *
+ * A photon stays visibly fatter than a laser. It is one round out of at most six and it needs
+ * to look like the event it is.
+ */
+export const R_LASER = Math.round(EXTENT * 0.00022)
+export const R_PHOTON = Math.round(EXTENT * 0.0009)
 
 /** The player's own hull, for taking hits. */
 export const R_PLAYER = Math.round(EXTENT * 0.0035)
@@ -224,9 +239,17 @@ export const FAR_PLANE = Math.round(EXTENT * 1.9)
  * rather than as a flicker: the eye gets a streak to follow, and the streak points back at
  * where the shot came from, which is the most useful thing on screen in a fight.
  */
-export const BOLT_LENGTH = 16
-/** The additive halo, as a multiple of the core radius. Glow, drawn as geometry. */
-export const BOLT_GLOW = 3.6
+export const BOLT_LENGTH = 34
+/**
+ * The additive halo, as a multiple of the core radius. Glow, drawn as geometry.
+ *
+ * Raised alongside the shrunken `R_LASER`, and the two are one decision. The halo is what
+ * carries a bolt at distance — the core is a hairline and would vanish on its own — so a
+ * smaller core needs a proportionally wider halo to stay visible, while the *lit area* still
+ * ends up far smaller than the old fat bolt's. That is the whole trick: legible because it is
+ * bright, not because it is big.
+ */
+export const BOLT_GLOW = 5.2
 
 // ── the course line ─────────────────────────────────────────────────────────
 

@@ -756,9 +756,43 @@ and since blind spots become rift nodes and reported extent drives the fractal's
 record claiming less of both grew a smaller node list and bought itself a quieter sector.
 `raiders.ts` now reads the seed and nothing else — a fixed number of wings, scattered through
 the volume — so every world is exactly as dangerous as every other. `check:scemaworld` asserts the reward
-path reads no record field, on `ship.ts` **and** on `raiders.ts`.
+path reads no record field, on `ship.ts`, `raiders.ts`, `factions.ts`, `respawn.ts` **and**
+`claim.ts`.
 
-Three more rules the 104 checks carry, each paid for:
+**SCEMA is a real token now, and that rule is what makes it survivable.** `web/lib/scemaworld/
+claim.ts` (pure policy) and `treasury.ts` (server-only, chain) let a player withdraw in-game SCEMA
+as $SCEMA from a fixed treasury — mint `HcsHqEJ9…pump`, **Token-2022, 6 decimals**, treasury
+`FCm6Yn1X…TJ1C`, whose ATA `8fUoz2yJ…bSCQ` held 900,000 tokens when this was built. Every fact
+there is read off the chain and none is assumed: the token program comes from the mint account's
+owner (deriving an ATA with the wrong program yields a **valid address nobody controls**), and
+`decimals` comes off the mint and is re-asserted by `transferChecked`. The balance is read by
+decoding the account rather than `getTokenAccountBalance`, which several providers gate — a panel
+that only works on a paid endpoint is one most people meet as an error.
+`economy.ts` used to open with a warning about exactly this moment and it named the two rules that
+would stop being preferences; both were re-verified rather than inherited, and `SCEMA_NOTE` — the
+sentence on screen — was rewritten, because it said "placeholder … not connected to any token" and
+every clause of that became false.
+**The rule that could not be preserved is stated instead**: a balance lives in a browser tab and is
+trivially forgeable, so withdrawals are a *capped faucet* — per claim, per wallet, per deployment,
+behind a cooldown, ledgered before the transfer is attempted and released if it fails. The caps buy
+bounded loss, not secrecy, and they are on screen because a cap the player cannot see reads as a
+broken button. **No signer configured is a first-class state**: the route quotes exactly and
+answers 501, never a fabricated success. `transferPlan` is split out of `settle` precisely so the
+riskiest arithmetic is testable without moving money.
+
+Two things the first mainnet transaction taught, both pinned by source scans because neither is
+reproducible in a check suite. **Never `sendAndConfirmTransaction`** — it waits on a WebSocket
+`signatureSubscribe`, and `ws`'s bufferutil binding does not survive Next's bundler
+(`TypeError: t.mask is not a function`), so the promise never settles and the route hangs *on a
+transaction that already finalized*. A successful payout presenting as a dead faucet is the worst
+pair of facts this feature can produce, and the obvious retry pays twice. Send raw and poll
+`getSignatureStatuses` over HTTP; a subscription would leak a socket per claim anyway. And
+**sent-but-unobserved is a third outcome**, the `Outcome::Unknown` split from `scema-effect`: the
+ledger reservation *stays* (releasing it is how a paid claim gets paid again), the route answers
+**202** rather than a 5xx, the signature is returned so somebody can go and look, and the client
+does not debit. A throw from the send is different and does release — we know nothing happened.
+
+Rules the 130 checks carry, each paid for:
 
 - **The tick is a pure function** (`lib/scemaworld/game.ts`). It was inline in the frame loop,
   and the draw list was uploaded *once* outside it while `view.ts` had no projectile handling at
@@ -776,6 +810,48 @@ Three more rules the 104 checks carry, each paid for:
   never become indistinguishable from a signal somebody counted. Its threat reads a real number,
   unlike a ghost's — the em dash marks a quantity the *record* left unmeasured, and the record
   makes no statement about a raider at all.
+- **A capital is placed; a fighter is rolled** (`raiders.ts::GARRISON`, `enemy.ts::swarmOf`). The
+  roll reaches a leviathan about once in a hundred and fifty, so on a roster of seventy-two the
+  war classes turned up by accident and most sectors had none. Every sector now carries the same
+  named garrison, and only a *named* class may be a capital — which strictly contains the older
+  "a signal the record reported is never a capital", since a record's signal is never named.
+- **The sector is replenished, and reinforcement reads no record field** (`respawn.ts`). A fixed
+  population depletes, and the marshals made it worse: they hunt raiders whether or not anyone is
+  watching, so left alone the patrol *wins* and the ambient violence stops. Waves arrive beyond
+  sensor range and on a timer; **capitals are never replaced**, on either side, because a
+  leviathan you spent four minutes killing is the only lasting mark you can leave. The target list
+  is built from the **swarm**, not from `space.contacts`/`space.raiders` — a reinforcement is in
+  neither, so it was drawn, shot at you, appeared on the sensor board, and was immune to every
+  weapon.
+- **The patrol has war classes of its own** (`classes.ts::warden`, `::bastion`). Eighteen
+  interceptors against a roster topping out at a titan is a gesture, and it made every large
+  silhouette mean one thing. They mirror the hostile capitals rather than exceeding them, and
+  their bounty is **zero** — a payout for killing the good guys would be the game paying for the
+  sector to be less policed. The hostile-capital bronze is now applied only to hostiles: faction
+  wins and the silhouette carries the weight, or the largest friendly ship in the sector draws in
+  the colour that answers "is that coming for me".
+- **Every round is a projectile, and each names what it may hit** (`enemy.ts::EnemyShot`). A
+  marshal's damage used to be applied straight to its quarry, so the raider count fell over time
+  and nothing was ever on screen to explain it — the one mechanic that makes the sector feel
+  inhabited happened entirely in the arithmetic. The stated reason was real: a stray friendly
+  round hitting the player would make an ally indistinguishable from an enemy. Carrying a `target`
+  solves that *better* than hiding it did — a friendly round cannot hit you because it is not
+  aimed at you — and `owner` colours it, so a distant exchange reads as yellow into orange.
+  Raiders return fire on the patrol, and `focusOf` is the single answer to "who is this ship
+  fighting": the steering, the shot lead and the fire gate each used to decide separately and two
+  of the three said "the player", so a marshal hunted a raider while flying at the player.
+- **Bolts are small and bright, not large and dim** (`scale.ts`, `gl.ts`). A fat bolt at this
+  scale is a blob: at any range where you can see two other ships trading fire, the rounds are
+  wider than the ships. The core shrank by three and a half times, the halo widened, and the
+  additive core is overdriven past 1.0 so a hairline still clips to white. One decision across two
+  files, pinned as a relationship so tuning either half cannot quietly undo it.
+- **The photon magazine is the hull, and the component is the warhead** (`hulls.ts::tubes`,
+  `weapons.ts`). Six rounds on a marauder, four on a lancer, two on a corvette, one on a skiff or
+  a scout — flat counts a pilot can hold in their head, because that count *is* the decision. A
+  round now carries 240 damage (a gunship dies to one; a full marauder magazine does not kill a
+  leviathan) and its yield is **stamped at the muzzle**, so a purchase made mid-flight cannot
+  retroactively improve a missile. Docks rearm; depots do not, so where you can resupply stays a
+  constraint on a route.
 - **A dogfight is a contest of turn rate against speed, not of hit points** (`classes.ts`,
   `enemy.ts`). Craft have a finite `turn`, fly where they point and cannot strafe; the five
   behaviours (`patrol`/`pursue`/`attack`/`overshoot`/`evade`) and the shot lead all follow from

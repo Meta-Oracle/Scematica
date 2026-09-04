@@ -69,6 +69,8 @@ export type ClassId =
   | 'courier'
   | 'freighter'
   | 'marshal'
+  | 'warden'
+  | 'bastion'
 
 export interface ClassSpec {
   id: ClassId
@@ -223,6 +225,41 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     speed: S(1 / 14), turn: 2.2, aggro: S(0.11), standoff: S(0.012),
     damage: 8, cooldownMs: 700, burst: 2, bounty: 0, capital: false,
   },
+
+  // ── the patrol's own war classes ───────────────────────────────────────────
+  //
+  // The sector's capitals used to be exclusively hostile, which made a marshal patrol a
+  // gesture: eighteen interceptors against a roster that includes a leviathan is not a police
+  // force, it is a rounding error, and every large silhouette on the horizon meant exactly one
+  // thing. Giving the yellow faction a dreadnought and a titan of its own changes what a distant
+  // capital *is* — a question rather than an answer — and it is what makes a firefight between
+  // two other parties worth flying toward and watching.
+  //
+  // They mirror the hostile war classes rather than exceeding them. A patrol that outguns
+  // everything it meets makes the sector safe, which is not the point of having one; the
+  // interesting outcome is a leviathan and a warden grinding each other down over minutes while
+  // the player decides whether to intervene, and on which side.
+  //
+  // **Bounty is zero, and that is a rule rather than a balance choice.** These are the good guys.
+  // A payout for killing one would put a price on the faction that exists to make the sector feel
+  // policed, and the reward rule (`ship.ts`) is about where salvage may come from at all.
+
+  // The marshal dreadnought. What answers a raider capital.
+  warden: {
+    id: 'warden', label: 'WARDEN', shape: 'dreadnought',
+    radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
+    speed: S(1 / 260), turn: 0.05, aggro: S(0.26), standoff: S(0.16),
+    damage: 15, cooldownMs: 900, burst: 8, bounty: 0, capital: true,
+  },
+  // The marshal titan. One per sector, and the only thing out here that a hostile titan has to
+  // take seriously. Finding the two of them already engaged is the sight this whole faction
+  // exists to produce.
+  bastion: {
+    id: 'bastion', label: 'BASTION', shape: 'dreadnought',
+    radius: S(0.4), hull: 14000, shield: 9000, shieldRegen: 70,
+    speed: S(1 / 700), turn: 0.014, aggro: S(0.45), standoff: S(0.4),
+    damage: 18, cooldownMs: 500, burst: 14, bounty: 0, capital: true,
+  },
 }
 
 /**
@@ -238,7 +275,17 @@ export const CLASS_IDS: ClassId[] = [
 ]
 
 /** Every class, hostile and otherwise. */
-export const ALL_CLASS_IDS: ClassId[] = [...CLASS_IDS, 'courier', 'freighter', 'marshal']
+export const ALL_CLASS_IDS: ClassId[] = [
+  ...CLASS_IDS, 'courier', 'freighter', 'marshal', 'warden', 'bastion',
+]
+
+/**
+ * The patrol's war classes, placed as a garrison rather than rolled.
+ *
+ * Same treatment as the hostile capitals: a fixed roster the sector carries, so a record can
+ * neither buy itself a quieter sector nor a better-defended one.
+ */
+export const MARSHAL_CAPITAL_IDS: ClassId[] = ['warden', 'bastion']
 
 /** Milliseconds without taking a hit before shields begin to come back. */
 export const SHIELD_DELAY_MS = 4_200

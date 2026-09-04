@@ -130,3 +130,11 @@ pools/
 
 # Rendered NFT output — regenerate with `scema nft`, never a source of truth.
 nft-out/
+
+# Scema-World $SCEMA claim ledger. Machine-local, and the one file in the repo whose
+# contents are load-bearing for money: it holds every wallet's lifetime withdrawal total
+# and the deployment's cumulative payout, so committing one deployment's ledger would
+# hand another deployment somebody else's caps. `SCEMAWORLD_LEDGER` moves it somewhere
+# with its own backups, which is what a production deployment should do.
+.scemaworld-claims.json
+.scemaworld-claims.json.tmp

@@ -29,6 +29,7 @@ import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
 import { hostileTo } from './factions.ts'
 import * as Economy from './economy.ts'
+import * as Respawn from './respawn.ts'
 import { HULLS, type HullId } from './hulls.ts'
 import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
@@ -166,6 +167,14 @@ export interface GameState {
    * than none — it is the interface asserting something that is no longer true.
    */
   noticeAt: number
+  /**
+   * How many reinforcement waves have been raised, and when the next may be.
+   *
+   * On the state rather than in a module-level counter, because two records can be open in one
+   * session — the fleet view loads several — and a counter outside the state would have one
+   * sector's losses reinforcing another's. See `respawn.ts` for what determinism survives.
+   */
+  waves: Respawn.Waves
   /** True once the hull is gone. The sector keeps rendering; you just cannot act. */
   lost: boolean
 }
@@ -202,6 +211,7 @@ export function newGame(space: Space): GameState {
     shake: 0,
     touching: [],
     notice: null,
+    waves: Respawn.newWaves(),
     lost: false,
   }
 }
@@ -343,26 +353,48 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
 
   // ── the player's weapons ───────────────────────────────────────────────────
   let combat = state.combat
-  const alive = Enemy.living(state.swarm)
-  // Only live hostiles. Weapons no longer adjudicates death — it reports damage and the swarm
-  // decides — so an inert salvage contact in this list would produce hits that nothing consumes.
-  const targets = [...space.contacts, ...space.raiders].filter(
-    (c) => c.hostility === 'hostile' && alive.some((k) => k.id === c.id),
-  )
-  // Hostiles have moved, so aim at where they are rather than where the record put them.
-  const moved = targets.map((c) => {
-    const k = alive.find((x) => x.id === c.id)
-    // The craft's *class* radius travels with it, so the hit test matches the silhouette on
-    // screen. Without it a leviathan drawn seven hundred million units across had a ten-million
-    // hitbox inherited from the magnitude formula, and sustained fire at something filling the
-    // window connected almost never.
-    // Facing and silhouette travel with it, so the hit test is the *hull* rather than a sphere
-    // around it. A sphere misses the prow and the stern of anything long, and the bigger the
-    // ship the worse it gets.
-    return k
-      ? { ...c, at: k.at, radius: k.spec.radius, facing: k.facing, shape: k.spec.shape }
-      : c
-  })
+  // ## The target list is built from the **swarm**, not from the record's contact lists
+  //
+  // It used to be the other way round — filter `space.contacts` and `space.raiders` down to those
+  // still alive — and that quietly made reinforcement impossible: a wing raised by `respawn.ts`
+  // is not in either list, because `Space` is a pure function of the record and must not be
+  // mutated to hold ships the record never described. Such a raider was drawn, would shoot at you,
+  // was counted on the sensor board, and could not be hit by anything. The swarm is the authority
+  // on what exists; the record is looked up only for what a *signal* claimed about it.
+  //
+  // Only hostiles. Weapons no longer adjudicates death — it reports damage and the swarm decides —
+  // so an inert salvage contact in this list would produce hits that nothing consumes, and traffic
+  // in it would let a stray round start a war with the patrol.
+  const contactById = new Map([...space.contacts, ...space.raiders].map((c) => [c.id, c]))
+  const moved = Enemy.living(state.swarm)
+    .filter((k) => hostileTo(k.faction))
+    .map((k) => {
+      const c = contactById.get(k.id)
+      return {
+        id: k.id,
+        at: k.at,
+        hostility: 'hostile' as const,
+        // Provenance comes from the contact when there is one. A reinforcement has none, and is
+        // solid: the sector knows it is there, exactly as `raiders.ts` says of a placed raider.
+        // Defaulting it to `false` would invent a ghost — a craft claiming somebody estimated it,
+        // when nobody reported it at all.
+        solid: c ? c.solid : true,
+        // Only ever read as a fallback size, and `radius` below always supersedes it here. A
+        // reinforcement has no magnitude because nobody counted anything about it — which is a
+        // different statement from a signal measured at zero, and the reason nothing on screen
+        // is allowed to render this number for an unlogged craft.
+        magnitude: c ? c.magnitude : 0,
+        label: c ? c.label : 'RAIDER',
+        unlogged: c ? c.unlogged : true,
+        // The craft's *class* radius, facing and silhouette travel with it, so the hit test is the
+        // hull the renderer draws rather than a sphere around it. A sphere misses the prow and the
+        // stern of anything long, and the bigger the ship the worse it gets — a leviathan once had
+        // a ten-million-unit hitbox inside a seven-hundred-million-unit silhouette.
+        radius: k.spec.radius,
+        facing: k.facing,
+        shape: k.spec.shape,
+      }
+    })
 
   // Fired from the ship's **nose**, not from the camera. In third person the camera sits behind
   // and above, so a shot spawned at the lens starts inside your own hull and appears to come out
@@ -487,6 +519,18 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
 
   ship = Ship.recharge(ship, dt, nowMs)
 
+  // ── keeping the sector populated ───────────────────────────────────────────
+  // Last, so a wave raised this frame is not stepped, shot at or collided with until the next
+  // one — a craft that appears and immediately acts has skipped the frame in which the player
+  // could have seen it arrive. Both floors are constants and neither reads the record; see
+  // `respawn.ts` for why that is a rule rather than a preference.
+  const topUp = Respawn.replenish(swarm, space, space.seed, state.waves, v3(camera.position), nowMs)
+  swarm = topUp.swarm
+  // A reinforcement notice never displaces one the player caused. A kill, an impact or a refusal
+  // is about something they just did; "a wing is on sensors" can wait for a quiet frame, and
+  // overwriting the former with the latter is how feedback stops being trusted.
+  if (!notice) notice = topUp.notice
+
   const nearby = nearestService(space, v3(camera.position))
 
   return {
@@ -495,6 +539,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     ship,
     combat,
     swarm,
+    waves: topUp.waves,
     nearby,
     waypoint: state.waypoint,
     drive: jump.drive,
@@ -525,17 +570,36 @@ export function useService(
           : `${node.label} does not offer ${service}`,
     }
   }
+  const atDock = node.kind === 'dock'
   const res =
     service === 'refuel'
       ? // A dock charges the jump drive too; a depot does thrust fuel only. Six times as many
         // depots as docks is what makes a jump charge worth planning around.
-        Ship.refuel(state.ship, node.kind === 'dock')
+        Ship.refuel(state.ship, atDock)
       : service === 'repair'
         ? Ship.repair(state.ship)
         : service === 'scavenge'
           ? Ship.scavenge(state.ship, node.id)
           : { ship: state.ship, message: 'trading', ok: true }
-  return { ...state, ship: res.ship, notice: res.message, noticeAt: PENDING }
+
+  // ## A dock rearms the photon tubes, and that is a consequence of the buff rather than a perk
+  //
+  // A magazine of one to six (`hulls.ts::tubes`) is only a decision if it can be refilled. Left
+  // unreplenishable it is a weapon you fire once per session and then forget the game has, which
+  // is exactly the fate the old twelve-round pea-shooter had for the opposite reason. Docks
+  // rather than depots, and folded into refuel rather than given a key of its own: a dock is
+  // already where the scarce things are topped up, and the sector has six times as many depots,
+  // so *where you can rearm* stays a real constraint on a route.
+  //
+  // Reported separately from the refuel verdict, because "tanks already full" and "tubes loaded"
+  // are two facts and a player who is told only the first will conclude nothing happened.
+  const rearmed =
+    service === 'refuel' &&
+    atDock &&
+    state.combat.photonsLeft < Weapons.photonMagazine(state.ship.frame)
+  const combat = rearmed ? Weapons.reload(state.combat, state.ship.frame) : state.combat
+  const message = rearmed ? `${res.message} — photon tubes loaded` : res.message
+  return { ...state, ship: res.ship, combat, notice: message, noticeAt: PENDING }
 }
 
 /** Buy an upgrade at a node that trades. */
@@ -545,13 +609,12 @@ export function purchase(state: GameState, c: Ship.Component | string): GameStat
     return { ...state, noticeAt: PENDING, notice: 'no market in range' }
   }
   const res = Ship.buy(state.ship, c as Ship.Component)
-  // A magazine upgrade that did not also load the rounds would look like it did nothing until
-  // the next resupply, which is indistinguishable from a market that took your salvage.
-  const combat =
-    res.ok && c === 'missiles'
-      ? { ...state.combat, photonsLeft: Ship.photonMagazine(res.ship.levels.missiles) }
-      : state.combat
-  return { ...state, ship: res.ship, combat, notice: res.message, noticeAt: PENDING }
+  // The MISSILES component used to raise the magazine, so buying it had to hand over the rounds
+  // or it looked like the market had simply taken your salvage. It buys **yield** now
+  // (`weapons.ts::photonDamage`) and the magazine is the hull's tube count, which nothing scales —
+  // so there are no rounds to hand over, and the rounds you already carry got better where they
+  // sit. `Combat` is untouched here on purpose.
+  return { ...state, ship: res.ship, notice: res.message, noticeAt: PENDING }
 }
 
 /**
@@ -582,7 +645,11 @@ export function dynamicOf(state: GameState, space?: Space) {
       : null
   return {
     shots: state.combat.projectiles.map((p) => ({ at: p.at, kind: p.kind, dir: p.dir })),
-    incoming: state.swarm.shots.map((s) => ({ at: s.at, dir: s.dir })),
+    // `owner` rides along so the renderer can colour a round by who fired it. Without it every
+    // shot in the sector is the same red, and a marshal shooting a raider three hundred million
+    // units away is indistinguishable from a raider shooting at you — which defeats the entire
+    // point of making the exchange visible in the first place.
+    incoming: state.swarm.shots.map((s) => ({ at: s.at, dir: s.dir, owner: s.owner })),
     craft: Enemy.living(state.swarm).map((c) => ({
       id: c.id,
       at: c.at,
@@ -695,7 +762,44 @@ export function acquire(state: GameState, frame: HullId): GameState {
   )
   if (!r.ok) return { ...state, noticeAt: PENDING, notice: r.message }
   const refitted = Ship.refit({ ...state.ship, scema: r.wallet.scema }, frame)
-  return { ...state, ship: refitted, noticeAt: PENDING, notice: r.message }
+  // Tubes are a property of the hull, so a new ship arrives with *its own* magazine loaded —
+  // six on a marauder however few the skiff had left. Carrying the old count across would mean
+  // the largest purchase in the game silently delivered an empty weapon, and a player who bought
+  // a marauder for its six tubes would find one round in them.
+  return {
+    ...state,
+    ship: refitted,
+    combat: Weapons.reload(state.combat, frame),
+    noticeAt: PENDING,
+    notice: r.message,
+  }
+}
+
+/**
+ * Debit SCEMA that has been withdrawn as $SCEMA tokens.
+ *
+ * Called **only** after `POST /api/scemaworld/claim` has returned a confirmed signature, and it
+ * debits the `spend` the server reported rather than the amount that was offered — a capped claim
+ * pays less than was asked for, and a client that debited its own request would burn the
+ * difference. Same rule as `economy.ts::exchange`: only what actually converted is spent.
+ *
+ * It refuses to go negative and says so rather than clamping silently. A balance that has drifted
+ * below what was paid out is a bug somewhere upstream, and a clamp is how it stops being visible.
+ */
+export function withdrawn(state: GameState, spend: number, tokens: number): GameState {
+  if (spend > state.ship.scema) {
+    return {
+      ...state,
+      noticeAt: PENDING,
+      notice: `withdrawal of ${spend} exceeds the ${state.ship.scema} SCEMA on this ship`,
+    }
+  }
+  return {
+    ...state,
+    ship: { ...state.ship, scema: state.ship.scema - spend },
+    noticeAt: PENDING,
+    notice: `${tokens} $SCEMA sent`,
+  }
 }
 
 /**

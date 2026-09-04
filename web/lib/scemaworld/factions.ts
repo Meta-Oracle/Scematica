@@ -38,7 +38,7 @@ import type { Node, Space, Vec3 } from './generate.ts'
 import { servicesOf } from './generate.ts'
 import { Rng } from '../omni/fractal.ts'
 import { EXTENT } from './scale.ts'
-import { CLASSES, type ClassSpec } from './classes.ts'
+import { CLASSES, type ClassId, type ClassSpec } from './classes.ts'
 
 export type Faction = 'raider' | 'courier' | 'freighter' | 'marshal'
 
@@ -53,16 +53,39 @@ export function civilian(f: Faction): boolean {
 }
 
 /**
- * How many of each. Constants, not rates — see the module note.
+ * The sector's standing roster of everything that is not a raider and not the player.
  *
- * Couriers outnumber everything because they are the cheapest way to make the sector look busy:
- * small, fast, and usually crossing your path rather than sitting in it.
+ * Counts are constants, not rates — see the module note. Couriers outnumber everything because
+ * they are the cheapest way to make the sector look busy: small, fast, and usually crossing your
+ * path rather than sitting in it.
+ *
+ * **A faction may field more than one class**, which is why this is a list rather than a map of
+ * faction to count. The marshals now bring war classes of their own (`classes.ts::warden`,
+ * `::bastion`) — a patrol of eighteen interceptors against a hostile roster that tops out at a
+ * titan was a gesture, and it made every large silhouette in the sector mean the same thing. With
+ * a warden and a bastion out there, a capital on the horizon is a question.
  */
-const COUNTS: Record<Exclude<Faction, 'raider'>, number> = {
-  courier: 34,
-  freighter: 14,
-  marshal: 18,
-}
+const ROSTER: { faction: Exclude<Faction, 'raider'>; klass: ClassId; count: number }[] = [
+  { faction: 'courier', klass: 'courier', count: 34 },
+  { faction: 'freighter', klass: 'freighter', count: 14 },
+  { faction: 'marshal', klass: 'marshal', count: 18 },
+  { faction: 'marshal', klass: 'warden', count: 3 },
+  { faction: 'marshal', klass: 'bastion', count: 1 },
+]
+
+/**
+ * How many marshal interceptors the sector tries to keep flying.
+ *
+ * The patrol is *meant* to take losses — that is the whole of what makes an ambient firefight
+ * legible — but a sector that runs out of marshals half an hour in stops having one, and the
+ * faction quietly disappears from a game that never says it has. Reinforcement is what keeps the
+ * ambient violence ambient rather than a one-off event early in a session.
+ *
+ * The capitals are deliberately **not** replaced. A warden is a thing that was there and is now
+ * gone, and respawning one would make killing it meaningless in the one place the sector has
+ * something at stake.
+ */
+export const MARSHAL_STRENGTH = 18
 
 /** A ship the sector placed, with somewhere it is going. */
 export interface Civilian {
@@ -98,15 +121,13 @@ export function trafficOf(space: Space, seed: string): Civilian[] {
   const rng = new Rng(seed.slice(16, 24) || seed.slice(8, 16) || seed)
   const out: Civilian[] = []
 
-  const specOf: Record<Exclude<Faction, 'raider'>, ClassSpec> = {
-    courier: CLASSES.courier,
-    freighter: CLASSES.freighter,
-    marshal: CLASSES.marshal,
-  }
-
-  for (const faction of ['courier', 'freighter', 'marshal'] as const) {
-    const route = routeNodes(space, faction)
-    for (let i = 0; i < COUNTS[faction]; i += 1) {
+  for (const entry of ROSTER) {
+    const faction = entry.faction
+    const spec = CLASSES[entry.klass]
+    // A capital does not fly a delivery route. Freezing `route` to empty for one keeps the
+    // placement path below identical for every roster line rather than branching it.
+    const route = spec.capital ? [] : routeNodes(space, faction)
+    for (let i = 0; i < entry.count; i += 1) {
       // Civilians start *on* their route, which is both the cheaper placement and the more
       // legible one: traffic that begins at a station and heads for another reads as traffic,
       // where traffic scattered at random reads as debris that happens to be moving.
@@ -125,15 +146,78 @@ export function trafficOf(space: Space, seed: string): Civilian[] {
           }
 
       out.push({
-        id: `${faction}:${i}`,
+        // The class is in the id because a faction fields more than one now. Without it a
+        // marshal interceptor and a warden would both be `marshal:0`, and every id-keyed
+        // structure in the game — flashes, hit resolution, the sensor board — would treat two
+        // different ships as one.
+        id: `${faction}:${spec.id}:${i}`,
         faction,
-        spec: specOf[faction],
+        spec,
         at,
         destination: route.length > 1 ? route[rng.below(route.length)].id : null,
       })
     }
   }
   return out
+}
+
+/**
+ * One replacement marshal, deterministic in the seed and in how many have been raised before it.
+ *
+ * ## What is and is not deterministic here, stated because the distinction is load-bearing
+ *
+ * The sector's *initial* population is a pure function of the record, and that property is the
+ * one the whole game rests on. Reinforcements cannot be: whether a marshal died at all depends on
+ * how the player flew, so two players holding the same record diverge the moment either of them
+ * touches anything. What is preserved is the *sequence* — reinforcement number `n` for a given
+ * record always has the same class, the same route and the same offset — so the divergence is
+ * confined to when a wave arrives rather than leaking into what the sector is made of.
+ *
+ * They arrive well away from the player. A ship materialising inside sensor range is the single
+ * clearest way to tell a player that nothing they are looking at is real.
+ */
+export function marshalReinforcement(
+  space: Space,
+  seed: string,
+  index: number,
+  awayFrom: Vec3,
+  clearance: number,
+): Civilian {
+  // Its own stream, keyed by the wave number, so a reinforcement never draws from the stream the
+  // initial placement used — reusing it would make the first replacement land exactly where a
+  // dead one started.
+  const rng = new Rng(seed.slice(24, 32) || seed.slice(16, 24) || seed)
+  const route = routeNodes(space, 'marshal')
+  // Advance the stream deterministically to this wave's slot, so wave 7 is wave 7 whether it is
+  // raised at four minutes or forty.
+  for (let i = 0; i < index * 3; i += 1) rng.below(1024)
+
+  const span = EXTENT * 2
+  let at = {
+    x: rng.below(span) - EXTENT,
+    y: Math.trunc((rng.below(span) - EXTENT) * 0.7),
+    z: rng.below(span) - EXTENT,
+  }
+  // Pushed outward until it clears the player rather than re-rolled, so the loop terminates on
+  // the first pass instead of possibly never — the same shape as `raidersOf`'s spawn guard.
+  let guard = 0
+  while (
+    Math.hypot(at.x - awayFrom.x, at.y - awayFrom.y, at.z - awayFrom.z) < clearance &&
+    guard < 24
+  ) {
+    at = { x: at.x * 2 - awayFrom.x, y: at.y * 2 - awayFrom.y, z: at.z * 2 - awayFrom.z + clearance }
+    guard += 1
+  }
+
+  return {
+    // `+` rather than `:` before the wave number, so a reinforcement id can never collide with a
+    // roster id however many of either there are.
+    id: `marshal:marshal+${index}`,
+    faction: 'marshal',
+    spec: CLASSES.marshal,
+    at,
+    destination: route.length > 0 ? route[index % route.length].id : null,
+  }
 }
 
 /**

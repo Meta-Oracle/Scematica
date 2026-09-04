@@ -26,7 +26,8 @@ import {
   route, sensors, tick, useService, type GameState,
 } from '@/lib/scemaworld/game'
 import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
-import { acquire, exchangeAt } from '@/lib/scemaworld/game'
+import { acquire, exchangeAt, withdrawn } from '@/lib/scemaworld/game'
+import { Withdraw } from './Withdraw'
 import { HULLS, HULL_IDS, type HullId } from '@/lib/scemaworld/hulls'
 import { SALVAGE_PER_SCEMA, SCEMA_NOTE, toScema } from '@/lib/scemaworld/economy'
 import { DEFAULT_ZOOM } from '@/lib/scemaworld/navmap'
@@ -103,7 +104,7 @@ export function ScemaWorldTerminal() {
   const [market, setMarket] = useState(false)
   const [zoom, setZoom] = useState(DEFAULT_ZOOM)
   /** Which half of the market is showing. Components are the common case, so it opens there. */
-  const [shop, setShop] = useState<'parts' | 'ships'>('parts')
+  const [shop, setShop] = useState<'parts' | 'ships' | 'treasury'>('parts')
   /**
    * Paused. The tick simply is not called, which is the honest way to pause a pure simulation —
    * there is no accumulated real time to reconcile on resume and nothing keeps running behind
@@ -445,7 +446,7 @@ export function ScemaWorldTerminal() {
                 </button>
               </div>
               {vaultMsg && (
-                <p className={`mt-2 ${vaultRetryable ? 'text-omni-stale' : 'text-omni-invalid'}`}>
+                <p className={`mt-2 ${vaultRetryable ? 'text-omni-warn' : 'text-omni-invalid'}`}>
                   {vaultMsg}
                 </p>
               )}
@@ -848,7 +849,7 @@ export function ScemaWorldTerminal() {
                 >
                   exchange → {toScema(hud.ship.salvage)} SCEMA
                 </button>
-                {(['parts', 'ships'] as const).map((tab) => (
+                {(['parts', 'ships', 'treasury'] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
@@ -923,9 +924,14 @@ export function ScemaWorldTerminal() {
                   })}
                 </div>
               )}
+              {/*
+                Hidden for every tab that is not `parts`. It used to hide only on `ships`, which
+                worked while there were two tabs and silently drew the whole component grid under
+                the treasury panel the moment there were three.
+              */}
               <div
                 className={`grid grid-cols-2 gap-1 sm:grid-cols-3 ${
-                  shop === 'ships' ? 'hidden' : ''
+                  shop === 'parts' ? '' : 'hidden'
                 }`}
               >
                 {(Object.keys(UPGRADES) as Component[]).map((c) => {
@@ -974,17 +980,38 @@ export function ScemaWorldTerminal() {
                   )
                 })}
               </div>
+              {shop === 'treasury' && (
+                <Withdraw
+                  scema={hud.ship.scema}
+                  /* The world commitment, which IS `space.seed` (`generate.ts` seeds the space
+                     with the record's digest). Recorded with the claim so the ledger is auditable
+                     per record — and it does not move the amount by a single token, because every
+                     world pays identically and that is what stops a forged record being worth
+                     writing. */
+                  world={loaded?.space.seed ?? null}
+                  onWithdrawn={(spend, tokens) => {
+                    const g = game.current
+                    if (!g) return
+                    // Debited from the *server's* figure, after a confirmed signature. Nothing
+                    // here estimates, and nothing here debits optimistically.
+                    game.current = withdrawn(g, spend, tokens)
+                    setHud(game.current)
+                  }}
+                />
+              )}
               <div className="mt-2 text-omni-dim">
                 Salvage comes from destroying hostiles and stripping derelicts — never from
                 anything the record reports. A world with more blind spots is not worth more;
-                it is worth the same and is harder to survive.
+                it is worth the same and is harder to survive. That rule was a design preference
+                while SCEMA was a placeholder; with a real token behind it, it is the thing
+                standing between a producer and a financial reason to misreport a world.
               </div>
               {/*
                 Said on screen, not only in a comment. A player told a currency is a placeholder
                 has been told; one who infers it later from a changelog has been misled, and this
                 project's whole argument is about not letting a number imply more than it is.
               */}
-              <div className="mt-1 text-omni-stale">{SCEMA_NOTE}</div>
+              <div className="mt-1 text-omni-muted">{SCEMA_NOTE}</div>
             </div>
           )}
 

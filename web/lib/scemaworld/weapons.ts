@@ -27,7 +27,7 @@
 
 import type { Contact, Vec3 } from './generate.ts'
 import { laserCooldown } from './ship.ts'
-import type { HullId } from './hulls.ts'
+import { HULLS, type HullId } from './hulls.ts'
 import { capsuleOf, strikes } from './hitbox.ts'
 import type { Shape } from './classes.ts'
 import {
@@ -46,7 +46,14 @@ export interface Weapon {
   speed: number
   /** Photon missiles steer toward a lock; lasers do not. */
   tracking: boolean
-  /** `null` for unlimited. Lasers are; missiles are not. */
+  /**
+   * `null` for unlimited. Lasers are; missiles are not.
+   *
+   * For the photon this is the **fallback only** — the real magazine is the hull's tube count
+   * (`HULLS[frame].tubes`, and `photonMagazine` below). A weapon table cannot know what ship it
+   * is bolted to, and `check:scemaworld` fires shots with no ship anywhere in scope, so the
+   * constant stays as the answer for a caller that has not named a hull.
+   */
   magazine: number | null
   /** World-unit radius counted as a hit. */
   calibre: number
@@ -72,19 +79,67 @@ export const LASER: Weapon = {
   damage: 5,
 }
 
+/**
+ * The photon missile, after the buff — and the buff is a *change of role*, not a bigger number.
+ *
+ * It used to be twelve rounds of forty-two: enough to be a slightly better laser and never
+ * enough to be an event, so the sane play was to hold the trigger and ignore the other weapon
+ * entirely. It is now **one to six rounds of two hundred and forty**, and how many you carry is
+ * a property of the hull you bought rather than of a component you levelled (`hulls.ts::tubes`,
+ * `photonMagazine` below). A skiff carries one. A marauder carries six.
+ *
+ * That combination is what makes it a decision rather than a resource: firing it is a claim that
+ * *this* target is worth the round, and there is no version of "spam it" available at a magazine
+ * of one. A gunship dies to a single hit. A war class does not, and is not meant to — six rounds
+ * is a serious opening against a leviathan and nowhere near a titan, which stays a fight you have
+ * to actually fly.
+ *
+ * The wide calibre is part of the buff and part of the fairness: a tracking round with a magazine
+ * of one that can still *miss* a manoeuvring interceptor would be a coin toss, so the round is
+ * forgiving about where it connects while remaining dodgeable by breaking the lock's steering
+ * (`step` turns at a finite rate, exactly like a craft).
+ */
 export const PHOTON: Weapon = {
   kind: 'photon',
   name: 'PHOTON MISSILE',
   automatic: false,
-  cooldownMs: 900,
+  cooldownMs: 700,
   speed: SPEED_PHOTON,
   tracking: true,
-  magazine: 12,
-  calibre: Math.round(R_CONTACT * 4),
-  damage: 42,
+  magazine: 1,
+  calibre: Math.round(R_CONTACT * 7),
+  damage: 240,
 }
 
 export const WEAPONS: Weapon[] = [LASER, PHOTON]
+
+/**
+ * How many photons a hull carries. **The magazine is the hull, and nothing else touches it.**
+ *
+ * Six on a marauder, four on a lancer, two on a corvette, one on a skiff or a scout. Flat counts
+ * a pilot can hold in their head, because that count *is* the decision every time the tube is
+ * loaded — a magazine that came out of a formula over a component level would be a number you
+ * have to look up, which is the opposite of what a scarce weapon needs.
+ *
+ * The MISSILES component buys **yield** instead (`photonDamage`). That split is what keeps the
+ * counts above literally true at every level of progression, and it is why levelling missiles
+ * no longer needs to hand back rounds: nothing it does changes how many there are.
+ */
+export function photonMagazine(frame: HullId = 'skiff'): number {
+  return HULLS[frame].tubes
+}
+
+/**
+ * Warhead yield at a given MISSILES level — what the component actually buys now.
+ *
+ * Per-level rather than per-round, so a fully upgraded marauder's six tubes hit for a great deal
+ * and a stock skiff's single tube still hurts. Kept here rather than in `ship.ts` because
+ * `ship.ts` must not import this module: `weapons.ts` already reads `laserCooldown` from it, and
+ * the pair would be a cycle.
+ */
+export function photonDamage(missiles: number): number {
+  return Math.round(PHOTON.damage * (1 + missiles * 0.3))
+}
 
 export interface Projectile {
   id: number
@@ -96,6 +151,16 @@ export interface Projectile {
   life: number
   /** Contact id a photon is steering toward, if it had a lock. */
   lock: string | null
+  /**
+   * What this round carries, decided **at the muzzle**.
+   *
+   * Stamped when the shot is fired rather than looked up when it lands, because the MISSILES
+   * component now buys yield: a round already in flight was paid for at the level the ship had
+   * when it left the tube. Reading the level at impact would let a purchase made mid-flight
+   * retroactively improve a missile — a small thing that would be indistinguishable, in a log,
+   * from the damage table being wrong.
+   */
+  damage: number
 }
 
 export interface Combat {
@@ -112,16 +177,28 @@ export interface Combat {
   hits: Record<string, number>
 }
 
-export function newCombat(): Combat {
+export function newCombat(frame: HullId = 'skiff'): Combat {
   return {
     selected: 0,
     projectiles: [],
     lastFire: { laser: -1e9, photon: -1e9 },
-    photonsLeft: PHOTON.magazine ?? 0,
+    photonsLeft: photonMagazine(frame),
     nextId: 1,
     destroyed: [],
     hits: {},
   }
+}
+
+/**
+ * Fill the tubes. Used by a dock's ordnance service and by taking delivery of a new hull.
+ *
+ * Missiles became *scarce* with this buff, which makes replenishing them a mechanic rather than
+ * a detail — a magazine of one that never comes back is a weapon you fire once per session and
+ * then forget the game has. It refills to the hull's own count, so changing ship changes the
+ * answer immediately rather than at the next resupply.
+ */
+export function reload(c: Combat, frame: HullId): Combat {
+  return { ...c, photonsLeft: photonMagazine(frame) }
 }
 
 export function selected(c: Combat): Weapon {
@@ -249,6 +326,9 @@ export function fire(
     speed: w.speed,
     life: w.kind === 'photon' ? LIFE_PHOTON : LIFE_LASER,
     lock: w.tracking ? lockOn(from, norm(dir), contacts, c.destroyed) : null,
+    // Yield is stamped at the muzzle — see `Projectile.damage`. Only the photon scales; a laser
+    // upgrade buys rate of fire, which is already spent above in `cooldown`.
+    damage: w.kind === 'photon' ? photonDamage(levels.missiles) : w.damage,
   }
   return {
     ...c,
@@ -351,7 +431,9 @@ export function step(
         // over one fact, which is how a craft ends up dead on one side and firing on the other.
         // A hit is a report; the swarm decides what it costs.
         hitCount[contact.id] = (hitCount[contact.id] ?? 0) + 1
-        hits.push({ contact: contact.id, damage: w.damage })
+        // The round's own stamped yield, not the table's. A photon fired before a MISSILES
+        // upgrade must land for what it was loaded with.
+        hits.push({ contact: contact.id, damage: p.damage })
         consumed = true
         break
       }

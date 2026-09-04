@@ -1,30 +1,38 @@
 /**
- * The sector's economy, and a placeholder for $SCEMA.
+ * The sector's economy. **SCEMA is a real token now.**
  *
- * ## Read this before wiring anything real to it
+ * ## What this module still is, and what moved
  *
- * The `SCEMA` here is **a name and an exchange rate, and nothing else**. It is not a token, it
- * touches no chain, it has no price feed, and a balance in it is a number in a browser tab that
- * ends when the tab does. Every function below is arithmetic on that number.
+ * Everything below is arithmetic on an in-browser balance: salvage in, SCEMA out, at a spread, and
+ * hulls priced in the result. That has not changed. What changed is what the balance *is* — it is
+ * redeemable for the $SCEMA token from a fixed treasury, through `claim.ts` (the policy) and
+ * `treasury.ts` (the chain). Spending SCEMA on a hull is still a purely local transaction; only a
+ * withdrawal touches a chain, and only at a market.
  *
- * That is deliberate and it is worth being blunt about, because the moment this is connected to
- * an actual token the game acquires a property it does not currently have: **the things you do in
- * it become worth money outside it.** Two rules this project already holds would then need
- * re-verifying rather than assumed:
+ * ## The warning this file used to carry, and what happened to it
  *
- * 1. *No quantity in the record may translate into a reward.* Still true today — salvage comes
- *    from acts (a kill, a derelict stripped), never from record content, and `check:scemaworld`
- *    asserts it on `ship.ts`, `raiders.ts` and `factions.ts`. With a real token behind SCEMA, that
- *    assertion stops being a design preference and becomes the thing standing between a producer
- *    and a financial incentive to misreport a world. It would need to hold under adversarial
- *    reading, not merely under test.
- * 2. *Sealed records are the map.* A record that pays better than another record is a record
- *    worth forging. Today forging one gains nothing, because every world is worth the same and
- *    `raiders.ts` and `factions.ts` read only the seed. That property is load-bearing and would
- *    have to be re-argued, not inherited.
+ * It said: the moment this is connected to an actual token the game acquires a property it does
+ * not currently have — **the things you do in it become worth money outside it** — and named two
+ * rules that would stop being design preferences and become load-bearing. Both were re-verified
+ * rather than inherited when the wiring was built, and both hold:
  *
- * Neither is a reason not to build it. Both are reasons the wiring is not something to do quietly
- * as a follow-up.
+ * 1. *No quantity in the record may translate into a reward.* Salvage comes from acts (a kill, a
+ *    derelict stripped), never from record content; raider and traffic density are constants; so
+ *    are the reinforcement floors in `respawn.ts`; and the withdrawal rate reads nothing but a
+ *    balance. `check:scemaworld` asserts the reward path, `raiders.ts`, `factions.ts`,
+ *    `respawn.ts` and `claim.ts` all read no record field. **A world with more blind spots is
+ *    worth exactly the same as one with fewer**, which is what stops a forged record paying.
+ * 2. *Sealed records are the map.* Every world pays identically, so forging one gains nothing.
+ *
+ * ## The rule that could NOT be preserved, and is stated instead
+ *
+ * A balance lives in a browser tab and is trivially forgeable. Nothing here can tell a balance
+ * that was earned from one that was typed, and making it unforgeable would mean running the
+ * simulation server-side — a different product. So withdrawals are a **capped faucet**: per claim,
+ * per wallet, per deployment, behind a cooldown, ledgered before they are attempted. The caps buy
+ * bounded loss, not secrecy. `claim.ts` says this at length and `SCEMA_NOTE` says the short form
+ * on screen, because a player who is told a currency is real and not told how it is bounded has
+ * been told half of something.
  *
  * ## Why two currencies
  *
@@ -39,8 +47,11 @@ import { HULLS, type HullId } from './hulls.ts'
 /**
  * Salvage per SCEMA.
  *
- * A placeholder, and flagged as one everywhere it is shown. Twelve to one, so a scout is a few
- * dozen kills and a marauder is a campaign.
+ * Twelve to one, so a scout is a few dozen kills and a marauder is a campaign. It was described
+ * here as a placeholder while SCEMA was one; it is now the **entry price of the redeemable
+ * currency**, which makes it the number that decides how much play a token is worth. It has not
+ * been changed for that — the caps in `claim.ts` are where the conservatism lives, and moving both
+ * would be the same caution applied twice and legible in neither.
  */
 export const SALVAGE_PER_SCEMA = 12
 
@@ -111,12 +122,14 @@ export function buyHull(w: Wallet, current: HullId, want: HullId): Trade {
 }
 
 /**
- * The line the shipyard prints about what SCEMA currently is.
+ * The line the shipyard prints about what SCEMA is.
  *
- * On screen, not only in a comment. A player who is told a currency is a placeholder has been
- * told; one who infers it later from a changelog has been misled, and this project's whole
- * argument is about not letting a number imply more than it is.
+ * On screen, not only in a comment — and re-exported from `claim.ts` rather than restated, because
+ * this sentence is now a claim about money and two copies of it would eventually disagree.
+ *
+ * It used to read "a placeholder unit — local to this session, worth nothing outside it, and not
+ * connected to any token." Every clause of that is false now. A player who is told a currency is a
+ * placeholder has been told; one still reading that line after the wiring landed would have been
+ * misled by us specifically, which is the failure this project's whole argument is about.
  */
-export const SCEMA_NOTE =
-  'SCEMA is a placeholder unit — local to this session, worth nothing outside it, and not ' +
-  'connected to any token.'
+export { SCEMA_NOTE } from './claim.ts'

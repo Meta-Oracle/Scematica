@@ -41,6 +41,7 @@ export type Role =
   | 'laser'
   | 'photon'
   | 'enemy-shot'
+  | 'ally-shot'
   | 'raider'
   | 'waypoint'
   | 'course'
@@ -84,6 +85,15 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   photon: [0.7, 0.85, 1.0],
   // Enemy fire is the same red as a hostile, so incoming reads as *theirs* at a glance.
   'enemy-shot': [1.0, 0.42, 0.42],
+  // A marshal's fire, in the marshal's own yellow. It exists because the sector's firefights are
+  // drawn now rather than resolved in the arithmetic (`enemy.ts::EnemyShot`), and a distant
+  // exchange is only legible if the two sides of it are different colours — otherwise a patrol
+  // killing a raider a third of a sector away looks exactly like something shooting at you.
+  //
+  // A friendly round **cannot** hit the player: it carries the id of the one craft it was aimed
+  // at. The colour is how that fact reaches the cockpit, and it is why making these visible did
+  // not reintroduce the ambiguity that hiding them was avoiding.
+  'ally-shot': [1.0, 0.92, 0.45],
   // A raider is not from the record. Orange rather than red keeps that visible from the
   // cockpit: red things are signals somebody reported, orange things are just out here.
   raider: [1.0, 0.55, 0.2],
@@ -139,7 +149,14 @@ export function isGhost(role: Role): boolean {
  */
 export function shapeOf(b: Body): Shape {
   if (b.shape) return b.shape
-  if (b.role === 'laser' || b.role === 'photon' || b.role === 'enemy-shot') return 'bolt'
+  if (
+    b.role === 'laser' ||
+    b.role === 'photon' ||
+    b.role === 'enemy-shot' ||
+    b.role === 'ally-shot'
+  ) {
+    return 'bolt'
+  }
   // The course rides the bolt pass to get its glow: additive, depth-writes off, so it brightens
   // where it overlaps and is occluded by whatever it passes behind.
   if (b.role === 'course') return 'bolt'
@@ -330,8 +347,14 @@ export function nodeRadius(role: Role): number {
 export interface Dynamic {
   /** Player projectiles in flight, with the direction they are travelling. */
   shots: { at: Vec3; kind: 'laser' | 'photon'; dir: Vec3 }[]
-  /** Enemy fire in flight. */
-  incoming: { at: Vec3; dir: Vec3 }[]
+  /**
+   * Fire in flight that the player did not send. `owner` is who sent it.
+   *
+   * Optional, and defaulting to a hostile round, because that is what every caller meant before
+   * the sector had visible firefights in it — and because defaulting the *other* way would paint
+   * an unlabelled round friendly, which is the one mistake here that could get somebody killed.
+   */
+  incoming: { at: Vec3; dir: Vec3; owner?: string }[]
   /** Live enemy craft, by contact id, with everything the renderer needs to draw a hull. */
   craft: {
     id: string
@@ -420,7 +443,17 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     label: string,
   ): Body => ({
     at: live.at,
-    role: live.spec.capital ? 'capital' : role,
+    // ## The capital bronze is a *hostile* weight, not a size class
+    //
+    // It used to apply to anything with `capital: true`, which was harmless while every capital
+    // in the sector was hostile. The patrol has war classes of its own now (`classes.ts::warden`,
+    // `::bastion`), and painting one bronze would put the sector's largest friendly ship in the
+    // hostile family — the single worst thing this palette can get wrong, because the question
+    // colour is here to answer is "is that coming for me".
+    //
+    // Faction wins, and the silhouette carries the weight instead: a warden is a marshal-yellow
+    // *dreadnought*, which is legible without the colour and is the rule everywhere else here.
+    role: live.spec.capital && (role === 'raider' || role === 'hostile') ? 'capital' : role,
     radius: live.spec.radius,
     solid: !isGhost(role),
     label: `${live.spec.label} ${label}`,
@@ -488,12 +521,16 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     })
   }
   for (const s of dyn.incoming) {
+    // A marshal's round is yellow and cannot touch you; anything else is red and can. Anything
+    // unlabelled is treated as hostile — see the note on `Dynamic.incoming` for why the default
+    // falls that way rather than the other.
+    const ally = s.owner === 'marshal'
     bodies.push({
       at: s.at,
-      role: 'enemy-shot',
+      role: ally ? 'ally-shot' : 'enemy-shot',
       radius: R_LASER,
       solid: true,
-      label: 'incoming',
+      label: ally ? 'patrol fire' : 'incoming',
       facing: s.dir,
     })
   }

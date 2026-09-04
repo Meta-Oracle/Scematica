@@ -77,7 +77,11 @@ export const UPGRADES: Record<Component, { label: string; effect: string; base: 
   shields: { label: 'SHIELDS', effect: 'buffer and recharge', base: 150 },
   sensors: { label: 'SENSORS', effect: 'contact range and lock cone', base: 110 },
   laser: { label: 'LASER', effect: 'rate of fire', base: 160 },
-  missiles: { label: 'PHOTON', effect: 'magazine', base: 180 },
+  // **Yield, not magazine.** The magazine is the hull's tube count and nothing scales it — see
+  // `hulls.ts::tubes` and `weapons.ts::photonMagazine`. Levelling this makes each of the rounds
+  // you already carry hit harder, which is the only way "six rounds on a marauder, one on a
+  // scout" can stay literally true at every level of progression.
+  missiles: { label: 'PHOTON', effect: 'warhead yield', base: 180 },
   drive: { label: 'JUMP DRIVE', effect: 'jump charges and spin-up', base: 200 },
 }
 
@@ -155,9 +159,14 @@ export function laserCooldown(laser: number, frame: HullId = 'skiff'): number {
   return Math.max(26, Math.round((110 - laser * 18) / HULLS[frame].guns))
 }
 
-export function photonMagazine(missiles: number): number {
-  return 12 + missiles * 6
-}
+// `photonMagazine` used to live here and took a component level. It takes a *hull* now and lives
+// in `weapons.ts`, beside the weapon it describes.
+//
+// It is deliberately **not** re-exported from here. `weapons.ts` already imports `laserCooldown`
+// from this module, so a re-export would close a cycle between the two — which happens to work
+// for hoisted function declarations and stops working the first time either file grows a
+// module-level constant that the other reads during evaluation. A cycle that only breaks later,
+// under an edit that looks unrelated, is worse than making two call sites name the right module.
 
 /**
  * Fuel burned per second at a given throttle.

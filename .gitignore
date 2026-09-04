@@ -51,6 +51,7 @@ scematica-*.lock
 
 # ── IDE / tool directories ────────────────────────────────────────────────────
 .kiro/
+.grok/
 .vscode/
 .idea/
 *.iml

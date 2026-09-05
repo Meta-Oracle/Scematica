@@ -134,7 +134,7 @@ pub fn pay(
     commit: bool,
 ) -> Result<ExitCode> {
     let policy = load_policy(policy_path)?;
-    let ledger: Ledger = match ledger_path {
+    let mut ledger: Ledger = match ledger_path {
         Some(p) if p.exists() => read_json(p)?,
         _ => Ledger::default(),
     };
@@ -149,6 +149,17 @@ pub fn pay(
     let verdict = authorise(&policy, &ledger, &request);
     println!("SPEND  {} {} to {payee} for {capability}", units, asset);
     println!("  {}", verdict.headline());
+    if ledger.committed() > ledger.spent {
+        // What is promised but unresolved, stated wherever a budget figure is. A remaining
+        // that silently nets off outstanding authorisations is the figure that was wrong
+        // before; showing it is how an operator sees a spend nobody ever reconciled.
+        println!(
+            "  budget  {} settled + {} outstanding of {}",
+            ledger.spent,
+            ledger.committed() - ledger.spent,
+            policy.total,
+        );
+    }
 
     // A refusal is still recorded when committing. The pattern of what an agent *wanted* to
     // buy is exactly what a spend policy is for, and it is invisible if refusals vanish.
@@ -185,6 +196,37 @@ pub fn pay(
     println!();
     println!("  sealed {}", path.display());
     println!("  {}", settlement.headline());
+
+    // ── the reservation ──────────────────────────────────────────────────────
+    //
+    // An authorised spend occupies budget from this moment, not from whenever a receipt turns
+    // up. Writing it only at reconciliation is what let two authorisations share one allowance:
+    // each read a `remaining` the other had already claimed and neither was wrong to. The write
+    // happens after sealing because the record id *is* the reservation key — there is nothing to
+    // reserve against until the record exists.
+    if verdict.permits() {
+        if let Some(lp) = ledger_path {
+            if ledger.reserve(&record.id, request.amount.units, record.at) {
+                std::fs::write(lp, format!("{}\n", serde_json::to_string_pretty(&ledger)?))
+                    .with_context(|| format!("writing {}", lp.display()))?;
+                println!(
+                    "  reserved {} {} against the budget; {} left",
+                    request.amount.units,
+                    request.amount.asset,
+                    ledger.remaining(&policy),
+                );
+            } else {
+                // The id is a digest of the sealed body, so this means the identical record was
+                // authorised before. Refusing is the point: under reservations a replay would
+                // take a second hold on the same budget.
+                println!("  NOT reserved — this record was already authorised");
+            }
+        } else {
+            // Said plainly, because the cap is inert without it and the command otherwise looks
+            // like it enforced one.
+            println!("  budget  NOT reserved — no --ledger was given, so nothing accumulates");
+        }
+    }
 
     if verdict.permits() {
         println!();
@@ -344,6 +386,19 @@ pub fn reconcile(
     println!("  receipt from {}", if receipt.settler.is_empty() { "(unnamed settler)" }
              else { &receipt.settler });
     println!("  {}", settlement.headline());
+
+    // An observed failure gives the budget back. This is the ONLY thing that releases a
+    // reservation: an unobserved outcome keeps it, because the money may already have moved and
+    // a released hold is what lets the retry pay twice.
+    if matches!(receipt.outcome, ReceiptOutcome::Failed { .. }) {
+        if let Some(p) = ledger_path {
+            if ledger.release(&spend.id) {
+                std::fs::write(p, format!("{}\n", serde_json::to_string_pretty(&ledger)?))
+                    .with_context(|| format!("writing {}", p.display()))?;
+                println!("  budget  reservation released; {} outstanding", ledger.reserved.len());
+            }
+        }
+    }
 
     let mut charged = false;
     if settlement.consumed_budget() {

@@ -1155,11 +1155,24 @@ Unknown` exits 3 and does **not** consume budget: charging for a spend that may 
 happened lets a flaky counterparty drain an allowance, and calling it `Failed` invites a
 retry that pays twice. A committed `pay` that is refused is still sealed — the pattern of
 what an agent *wanted* to buy is exactly what a spend policy is for.
-`scema reconcile <receipt>` closes the loop and is the **only** place the ledger is written.
-Its absence was a defect, not a gap: `pay` read the ledger and nothing wrote it, so the
-cumulative `total` cap was inert across invocations and every spend saw `spent: 0`. The fix
-is not writing it in `pay` — only a settled spend may consume budget and `pay` cannot observe
-settlement. `Ledger.settled_ids` makes double-charging **structurally impossible** rather
+**The ledger tracks `committed = spent + reserved`, and `pay` writes a reservation.** An
+earlier version wrote the ledger only at reconciliation, on the reasoning that only a settled
+spend may consume budget — true, and it left the cumulative cap defeated anyway, because a
+spend occupies its allowance from the moment it is authorised and not from whenever a receipt
+turns up. With a total of ten, two spends of six were both authorised: the second measured
+itself against a `remaining` the first had not yet had the chance to change. Nothing about
+that is a race and no window has to be won, which is why the discipline that made it safe —
+reconcile before authorising again — was not an invariant. `authorise` now measures against
+`Ledger::committed()`; `pay --commit` seals first (the record id *is* the reservation key) and
+then reserves. **Only an observed failure releases a reservation**: an unobserved outcome
+keeps it, because the money may already have moved and a released hold is exactly what lets
+the retry pay twice. `Ledger::settle` discharges the reservation as it charges, or one payment
+is committed twice and the symptom is an allowance shrinking on its own. A duplicate id is
+refused whether it is outstanding or already settled (`has_seen`, not `has_settled`), so a
+replayed authorisation cannot take a second hold. The cost of never releasing on a guess is
+that an unresolved spend holds budget forever — `Ledger::stale` is how an operator finds one,
+and `pay` prints outstanding beside settled so the figure is never a bare "remaining".
+`Ledger.settled_ids` makes double-charging **structurally impossible** rather
 than guarded by a caller: reconciliation is exactly the operation somebody runs twice, and
 the second run is a no-op. The spend record is **never edited** — reconciliation appends its
 own sealed record, because the original saying UNKNOWN is the evidence that the gap existed.

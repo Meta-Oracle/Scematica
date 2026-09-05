@@ -142,13 +142,35 @@ impl SpendPolicy {
     }
 }
 
-/// What has already been spent under a policy.
+/// An authorised spend that has not yet resolved. Holds budget without having consumed it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Reservation {
+    /// The sealed record's id.
+    pub id: String,
+    #[serde(with = "u128_str")]
+    pub units: u128,
+    /// When it was taken, so an operator can find one that has been outstanding for a month.
+    pub at: i64,
+}
+
+/// What has been spent under a policy, and what is currently committed against it.
 ///
-/// Only a **settled** spend appears here. An authorised spend that failed, or one whose
-/// settlement could not be observed, does not consume budget — otherwise a flaky counterparty
-/// exhausts an allowance without ever delivering.
+/// **`spent` is not the budget's occupancy.** A spend is authorised long before anybody knows
+/// whether it settled, and between those two moments the money is promised: not spent, and
+/// certainly not available. A ledger tracking only settlements answered "how much is left" with
+/// a figure every outstanding authorisation had already claimed — so with a total of ten and two
+/// spends of six, both were authorised and twelve was committed. Nothing about that is a race
+/// and no window had to be won: the second `pay` simply read a number the first had not yet had
+/// the chance to change. The discipline that made it safe — reconcile before authorising again —
+/// was real, and nothing enforced it.
+///
+/// So every limit is checked against [`Ledger::committed`], which is `spent + reserved`. A spend
+/// observed to have failed releases its reservation; one whose outcome nobody could observe
+/// **keeps** it, because releasing budget for a payment that may already have gone out is
+/// precisely how the retry pays twice.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Ledger {
+    /// Settled, and therefore final.
     #[serde(with = "u128_str")]
     pub spent: u128,
     pub count: usize,
@@ -160,10 +182,41 @@ pub struct Ledger {
     /// and a budget that can be charged twice for one payment is worse than no budget.
     #[serde(default)]
     pub settled_ids: Vec<String>,
+    /// Authorised and unresolved. Occupies budget; is not yet spent.
+    ///
+    /// `#[serde(default)]` so a ledger written before reservations existed still loads, reading
+    /// as "nothing outstanding" — the true statement about a file no reserving writer has ever
+    /// touched.
+    #[serde(default)]
+    pub reserved: Vec<Reservation>,
 }
 
 impl Ledger {
-    /// Count a settled spend against the budget.
+    /// Take a reservation for an authorised spend.
+    ///
+    /// Returns `false` and changes nothing if this id has been seen in **any** capacity —
+    /// outstanding or already settled. That is what makes re-authorising one record impossible
+    /// rather than merely discouraged, and it is why the test is `has_seen` and not
+    /// `has_settled`.
+    pub fn reserve(&mut self, record_id: &str, units: u128, at: i64) -> bool {
+        if self.has_seen(record_id) {
+            return false;
+        }
+        self.reserved.push(Reservation { id: record_id.to_string(), units, at });
+        true
+    }
+
+    /// Give back a reservation for a spend that definitely did not happen.
+    ///
+    /// **Only ever on an observed failure.** An unobserved outcome must keep its reservation:
+    /// the money may have moved, and a released reservation invites the retry that pays twice.
+    pub fn release(&mut self, record_id: &str) -> bool {
+        let before = self.reserved.len();
+        self.reserved.retain(|r| r.id != record_id);
+        before != self.reserved.len()
+    }
+
+    /// Count a settled spend against the budget, discharging its reservation.
     ///
     /// Returns `false` and changes nothing if this record was already counted. The caller
     /// should report that as "already reconciled" rather than as an error: running it twice
@@ -172,6 +225,10 @@ impl Ledger {
         if self.settled_ids.iter().any(|x| x == record_id) {
             return false;
         }
+        // Discharge the reservation first. Leaving it would count this spend twice against the
+        // budget — once as promised and once as paid — and the symptom would be an allowance
+        // that shrinks on its own.
+        self.reserved.retain(|r| r.id != record_id);
         self.spent = self.spent.saturating_add(amount);
         self.count += 1;
         self.settled_ids.push(record_id.to_string());
@@ -182,8 +239,28 @@ impl Ledger {
         self.settled_ids.iter().any(|x| x == record_id)
     }
 
+    /// Whether this id has been authorised before, however it ended up.
+    pub fn has_seen(&self, record_id: &str) -> bool {
+        self.has_settled(record_id) || self.reserved.iter().any(|r| r.id == record_id)
+    }
+
+    /// Budget currently occupied: settled plus outstanding.
+    pub fn committed(&self) -> u128 {
+        self.reserved
+            .iter()
+            .fold(self.spent, |acc, r| acc.saturating_add(r.units))
+    }
+
+    /// What a new spend may still draw. Measured against `committed`, never against `spent`.
     pub fn remaining(&self, policy: &SpendPolicy) -> u128 {
-        policy.total.saturating_sub(self.spent)
+        policy.total.saturating_sub(self.committed())
+    }
+
+    /// Outstanding reservations older than `age_secs`. What an operator has to go and chase:
+    /// an unresolved spend holds budget forever, and that is the cost of never releasing one
+    /// on a guess.
+    pub fn stale(&self, now: i64, age_secs: i64) -> Vec<&Reservation> {
+        self.reserved.iter().filter(|r| now - r.at > age_secs).collect()
     }
 }
 
@@ -310,6 +387,198 @@ pub fn authorise(policy: &SpendPolicy, ledger: &Ledger, req: &SpendRequest) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── the cumulative cap, across authorisation and settlement ──────────────
+
+    fn ten() -> SpendPolicy {
+        SpendPolicy {
+            asset: "lamports".into(),
+            per_transaction: 10,
+            total: 10,
+            capabilities: vec!["inference.rank".into()],
+            payees: vec!["agent-b".into()],
+        }
+    }
+
+    fn six() -> SpendRequest {
+        SpendRequest {
+            capability: "inference.rank".into(),
+            payee: "agent-b".into(),
+            amount: Amount::new(6, "lamports"),
+            intent: None,
+        }
+    }
+
+    #[test]
+    fn the_audit_counterexample_is_refused() {
+        // A total of ten and two spends of six. Both were authorised, because the second
+        // measured itself against a budget the first had not yet settled — twelve committed
+        // against ten, with nothing concurrent about it and no window to win.
+        let policy = ten();
+        let mut ledger = Ledger::default();
+
+        assert!(authorise(&policy, &ledger, &six()).permits(), "the first six was refused");
+        assert!(ledger.reserve("spend-1", 6, 0), "the first reservation was not taken");
+
+        let verdict = authorise(&policy, &ledger, &six());
+        assert!(!verdict.permits(), "twelve was authorised against a total of ten");
+        match verdict {
+            Verdict::Refused { refusal: Refusal::OverBudget { remaining, requested } } => {
+                // The refusal has to name the two figures that were actually compared, or an
+                // operator cannot tell an exhausted budget from a misconfigured one.
+                assert_eq!(remaining, 4, "reported {remaining} available, not four");
+                assert_eq!(requested, 6);
+            }
+            other => panic!("refused as {other:?}, not OverBudget"),
+        }
+    }
+
+    #[test]
+    fn a_reservation_occupies_budget_before_anything_settles() {
+        let policy = ten();
+        let mut ledger = Ledger::default();
+        ledger.reserve("spend-1", 6, 0);
+        assert_eq!(ledger.spent, 0, "an unsettled spend was counted as spent");
+        assert_eq!(ledger.committed(), 6, "an authorised spend occupies nothing");
+        assert_eq!(ledger.remaining(&policy), 4);
+    }
+
+    #[test]
+    fn an_unobserved_outcome_holds_its_reservation() {
+        // The whole reason `release` is not called on anything but an observed failure. The
+        // money may already have moved; giving the budget back invites the retry that pays
+        // twice.
+        let policy = ten();
+        let mut ledger = Ledger::default();
+        ledger.reserve("spend-1", 6, 0);
+        // Nothing is called here: an unknown settlement is the absence of a decision.
+        assert_eq!(ledger.remaining(&policy), 4, "an unobserved spend released its budget");
+        assert!(!authorise(&policy, &ledger, &six()).permits());
+    }
+
+    #[test]
+    fn only_an_observed_failure_gives_the_budget_back() {
+        let policy = ten();
+        let mut ledger = Ledger::default();
+        ledger.reserve("spend-1", 6, 0);
+        assert!(ledger.release("spend-1"));
+        assert_eq!(ledger.remaining(&policy), 10, "a released spend still held budget");
+        assert_eq!(ledger.spent, 0, "a failed spend was charged");
+        assert!(authorise(&policy, &ledger, &six()).permits());
+    }
+
+    #[test]
+    fn settling_discharges_the_reservation_rather_than_adding_to_it() {
+        // The trap: counting a settlement while leaving its reservation charges one payment
+        // twice, and the symptom is an allowance that shrinks on its own.
+        let policy = ten();
+        let mut ledger = Ledger::default();
+        ledger.reserve("spend-1", 6, 0);
+        assert!(ledger.settle("spend-1", 6));
+        assert_eq!(ledger.spent, 6);
+        assert!(ledger.reserved.is_empty(), "the reservation outlived its settlement");
+        assert_eq!(ledger.committed(), 6, "one payment was committed twice");
+        assert_eq!(ledger.remaining(&policy), 4);
+    }
+
+    #[test]
+    fn reconciling_twice_charges_once() {
+        let mut ledger = Ledger::default();
+        ledger.reserve("spend-1", 6, 0);
+        assert!(ledger.settle("spend-1", 6));
+        assert!(!ledger.settle("spend-1", 6), "the second reconciliation charged again");
+        assert_eq!(ledger.spent, 6);
+        assert_eq!(ledger.count, 1);
+    }
+
+    #[test]
+    fn one_record_cannot_be_authorised_twice() {
+        // Under reservations a replayed authorisation takes a second hold on the same budget,
+        // so the id is refused whether it is outstanding or already settled.
+        let mut ledger = Ledger::default();
+        assert!(ledger.reserve("spend-1", 6, 0));
+        assert!(!ledger.reserve("spend-1", 6, 0), "the same record reserved twice");
+        assert_eq!(ledger.committed(), 6);
+
+        assert!(ledger.settle("spend-1", 6));
+        assert!(!ledger.reserve("spend-1", 6, 0), "a settled record was reserved again");
+        assert_eq!(ledger.committed(), 6);
+    }
+
+    #[test]
+    fn no_interleaving_of_authorise_and_settle_exceeds_the_total() {
+        // The property, rather than the one counterexample: ids repeated, receipts late, out of
+        // order, or never arriving at all. `committed` must never pass `total`.
+        let policy = ten();
+        let mut ledger = Ledger::default();
+        let mut taken: Vec<String> = Vec::new();
+
+        for round in 0..40u32 {
+            let id = format!("spend-{}", round % 7);
+            let req = SpendRequest {
+                capability: "inference.rank".into(),
+                payee: "agent-b".into(),
+                amount: Amount::new(u128::from(round % 4 + 1), "lamports"),
+                intent: None,
+            };
+            if authorise(&policy, &ledger, &req).permits()
+                && ledger.reserve(&id, req.amount.units, i64::from(round))
+            {
+                taken.push(id.clone());
+            }
+            // Receipts arrive whenever they like, and some never do.
+            match round % 5 {
+                0 => {
+                    if let Some(t) = taken.first().cloned() {
+                        let units = ledger
+                            .reserved
+                            .iter()
+                            .find(|r| r.id == t)
+                            .map(|r| r.units)
+                            .unwrap_or(0);
+                        ledger.settle(&t, units);
+                        taken.retain(|x| *x != t);
+                    }
+                }
+                1 => {
+                    if let Some(t) = taken.last().cloned() {
+                        ledger.release(&t);
+                        taken.retain(|x| *x != t);
+                    }
+                }
+                _ => {}
+            }
+            assert!(
+                ledger.committed() <= policy.total,
+                "committed {} against a total of {} at round {round}",
+                ledger.committed(),
+                policy.total,
+            );
+        }
+    }
+
+    #[test]
+    fn an_outstanding_reservation_is_findable() {
+        // Never releasing on a guess means an unresolved spend holds budget forever. That is the
+        // right trade and it has a cost, so the cost has to be visible.
+        let mut ledger = Ledger::default();
+        ledger.reserve("old", 6, 0);
+        ledger.reserve("new", 1, 1_000);
+        let stale = ledger.stale(1_000, 500);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].id, "old");
+    }
+
+    #[test]
+    fn a_ledger_written_before_reservations_still_loads() {
+        // Reading as "nothing outstanding", which is the true statement about a file no
+        // reserving writer has ever touched.
+        let json = r#"{"spent":"4","count":1,"settled_ids":["a"]}"#;
+        let ledger: Ledger = serde_json::from_str(json).expect("an old ledger failed to load");
+        assert_eq!(ledger.spent, 4);
+        assert!(ledger.reserved.is_empty());
+        assert_eq!(ledger.committed(), 4);
+    }
 
     fn policy() -> SpendPolicy {
         SpendPolicy {

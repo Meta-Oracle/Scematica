@@ -50,7 +50,11 @@ import {
   DEFAULT_POLICY, NO_RECORD, TREASURY, SCEMA_MINT,
 } from '../lib/scemaworld/claim.ts'
 import { withdrawn } from '../lib/scemaworld/game.ts'
-import { transferPlan } from '../lib/scemaworld/treasury.ts'
+import {
+  transferPlan, reserve, readLedger, LedgerConflict,
+} from '../lib/scemaworld/treasury.ts'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { PublicKey } from '@solana/web3.js'
 import {
   getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
@@ -3965,6 +3969,237 @@ check('every figure the scale table quotes about itself is true', () => {
   }
   // And the one the file makes about craft never outrunning you, which `classes.ts` relies on.
   assert(SPEED_CRAFT + 4 * SPEED_CRAFT_PER_TIER < topSpeed(0), 'a craft can outrun a stock ship')
+})
+
+// ── the claim ledger under concurrency ───────────────────────────────────────
+//
+// A security audit's N-1: the deployment budget, the per-wallet lifetime cap and the cooldown were
+// each checked against a snapshot and enforced by a write that happened later, so two claims
+// arriving together both measured themselves against money the other had already taken. Both were
+// paid and the ledger recorded one, which is the part that makes it expensive — nothing downstream
+// ever sees a figure that looks wrong.
+//
+// These drive the real `reserve`, concurrently, against a temporary ledger. That is the only way
+// the property can be tested at all: settling for real needs a funded treasury key.
+
+/**
+ * Run `fn` against a private ledger file and policy, then put the environment back.
+ *
+ * Serialised against the other ledger tests, because `check` starts an async body the moment it is
+ * called and these all reach for the same `process.env`. Run concurrently they overwrite each
+ * other's `SCEMAWORLD_LEDGER` and every one of them silently tests the default path instead — the
+ * seeded balances vanish and the assertions fail for a reason that has nothing to do with the
+ * code. Which is, pleasingly, the same shape of bug as the one being tested.
+ */
+let ledgerTests = Promise.resolve()
+function withTempLedger(seed, env, fn) {
+  const run = () => withTempLedgerNow(seed, env, fn)
+  const result = ledgerTests.then(run, run)
+  ledgerTests = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+async function withTempLedgerNow(seed, env, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'scemaworld-ledger-'))
+  const path = join(dir, 'claims.json')
+  writeFileSync(path, JSON.stringify(seed), 'utf8')
+  const saved = { ...process.env }
+  process.env.SCEMAWORLD_LEDGER = path
+  for (const [k, v] of Object.entries(env)) process.env[k] = String(v)
+  try {
+    return await fn(path)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const WALLET_A = TREASURY
+const WALLET_B = SCEMA_MINT // a second well-shaped address; `looksLikeAddress` is a shape test
+
+check('two claims arriving together cannot exceed the deployment budget', async () => {
+  // The audit's witness, exactly: a budget of 9,000 with 8,900 already paid, and two claims of
+  // 250 arriving at once. Unserialised, each decides against the same 100 remaining and each
+  // reserves it — 200 leaves against a 100 allowance, and the ledger afterwards reads 9,000.
+  await withTempLedger(
+    { version: 1, dispensed: 8_900, wallets: {}, claims: [] },
+    { SCEMAWORLD_TREASURY_BUDGET: 9_000, SCEMAWORLD_CLAIM_MAX: 250 },
+    async () => {
+      const [a, b] = await Promise.all([
+        reserve({ scema: 250, wallet: WALLET_A, nowMs: 1_000, treasury: 90_000 }),
+        reserve({ scema: 250, wallet: WALLET_B, nowMs: 1_000, treasury: 90_000 }),
+      ])
+      const paid = (a.ok ? a.ent.tokens : 0) + (b.ok ? b.ent.tokens : 0)
+      assert(paid === 100, `paid ${paid} out of a remaining allowance of 100`)
+
+      // And the ledger has to agree with what was handed out, or an operator auditing it later
+      // reads a number that was never true.
+      const after = await readLedger()
+      assert(after.dispensed === 9_000, `ledger says ${after.dispensed}, expected 9,000`)
+      assert(
+        after.dispensed - 8_900 === paid,
+        `ledger recorded ${after.dispensed - 8_900} against ${paid} actually reserved`,
+      )
+    },
+  )
+})
+
+check('two claims arriving together cannot exceed one wallet lifetime cap', async () => {
+  await withTempLedger(
+    {
+      version: 1,
+      dispensed: 900,
+      wallets: { [WALLET_A]: { paid: 900, lastMs: -1, claims: 4 } },
+      claims: [],
+    },
+    // The cooldown is switched off so that it is the *wallet cap* being tested and not the
+    // cooldown incidentally covering for it.
+    { SCEMAWORLD_WALLET_MAX: 1_000, SCEMAWORLD_CLAIM_COOLDOWN_MS: 0 },
+    async () => {
+      const [a, b] = await Promise.all([
+        reserve({ scema: 250, wallet: WALLET_A, nowMs: 5_000, treasury: 90_000 }),
+        reserve({ scema: 250, wallet: WALLET_A, nowMs: 5_000, treasury: 90_000 }),
+      ])
+      const paid = (a.ok ? a.ent.tokens : 0) + (b.ok ? b.ent.tokens : 0)
+      assert(paid === 100, `paid ${paid} to a wallet with 100 left of its lifetime cap`)
+      const after = await readLedger()
+      assert(after.wallets[WALLET_A].paid === 1_000, `wallet reached ${after.wallets[WALLET_A].paid}`)
+    },
+  )
+})
+
+check('two claims arriving together cannot bypass the cooldown', async () => {
+  await withTempLedger(
+    { version: 1, dispensed: 0, wallets: {}, claims: [] },
+    { SCEMAWORLD_CLAIM_COOLDOWN_MS: 6 * 60 * 60 * 1_000 },
+    async () => {
+      const [a, b] = await Promise.all([
+        reserve({ scema: 250, wallet: WALLET_A, nowMs: 10_000, treasury: 90_000 }),
+        reserve({ scema: 250, wallet: WALLET_A, nowMs: 10_000, treasury: 90_000 }),
+      ])
+      const granted = [a, b].filter((r) => r.ok).length
+      assert(granted === 1, `${granted} claims granted in the same instant against a 6h cooldown`)
+      const refused = [a, b].find((r) => !r.ok)
+      assert(refused.reason === 'cooling_down', `refused as ${refused.reason}, not cooling_down`)
+    },
+  )
+})
+
+check('many claims at once still stop at the budget', async () => {
+  // The pairwise case is the one the audit exhibited; the property is not about pairs. Twenty at
+  // once against a budget that covers three.
+  await withTempLedger(
+    { version: 1, dispensed: 0, wallets: {}, claims: [] },
+    { SCEMAWORLD_TREASURY_BUDGET: 750, SCEMAWORLD_CLAIM_MAX: 250, SCEMAWORLD_CLAIM_COOLDOWN_MS: 0 },
+    async () => {
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          reserve({ scema: 250, wallet: WALLET_A, nowMs: 1_000, treasury: 90_000 }),
+        ),
+      )
+      const paid = results.reduce((n, r) => n + (r.ok ? r.ent.tokens : 0), 0)
+      assert(paid === 750, `paid ${paid} against a budget of 750`)
+      const after = await readLedger()
+      assert(after.dispensed === paid, `ledger says ${after.dispensed}, ${paid} was reserved`)
+    },
+  )
+})
+
+check('every reservation is recorded, and the version moves once per write', async () => {
+  // The version is what turns a lost write into a refused claim. If two writes ever share a
+  // version the detector is not doing anything.
+  await withTempLedger(
+    { version: 7, dispensed: 0, wallets: {}, claims: [] },
+    { SCEMAWORLD_TREASURY_BUDGET: 10_000, SCEMAWORLD_CLAIM_COOLDOWN_MS: 0 },
+    async () => {
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          reserve({ scema: 100, wallet: WALLET_A, nowMs: 1_000, treasury: 90_000 }),
+        ),
+      )
+      const granted = results.filter((r) => r.ok).length
+      const after = await readLedger()
+      assert(after.version === 7 + granted, `version ${after.version} after ${granted} writes`)
+    },
+  )
+})
+
+check('a claim decided against a ledger that has moved is refused, not paid', async () => {
+  // The backstop, exercised directly: a reservation carrying a stale version must not land. It is
+  // refused *before* anything is sent, so refusing costs a retry and never a double payment.
+  assert(typeof LedgerConflict === 'function', 'LedgerConflict is not exported')
+  await withTempLedger(
+    { version: 3, dispensed: 0, wallets: {}, claims: [] },
+    { SCEMAWORLD_CLAIM_COOLDOWN_MS: 0 },
+    async (path) => {
+      const first = await reserve({ scema: 100, wallet: WALLET_A, nowMs: 1, treasury: 90_000 })
+      assert(first.ok, 'the uncontested claim was refused')
+      // Somebody else writes. The next reservation must read *this*, not the snapshot above.
+      writeFileSync(path, JSON.stringify({ version: 99, dispensed: 8_000, wallets: {}, claims: [] }), 'utf8')
+      const second = await reserve({ scema: 250, wallet: WALLET_B, nowMs: 2, treasury: 90_000 })
+      const after = await readLedger()
+      assert(after.dispensed >= 8_000, `the foreign write was clobbered: dispensed ${after.dispensed}`)
+      if (second.ok) {
+        assert(
+          after.dispensed === 8_000 + second.ent.tokens,
+          `paid ${second.ent.tokens} but the ledger moved to ${after.dispensed}`,
+        )
+      }
+    },
+  )
+})
+
+check('the reservation and the decision are the same step, in the shipped code', () => {
+  // The behavioural checks above prove `reserve` serialises. This is what pins `settle` to using
+  // it — a future edit that reads the ledger and decides outside `withLedger` reintroduces N-1
+  // without failing anything else here.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'treasury.ts'))
+  const writes = [...src.matchAll(/writeLedger\(/g)].length
+  const sections = [...src.matchAll(/withLedger\(/g)].length
+  assert(sections >= 3, `only ${sections} critical sections; every ledger write needs one`)
+  assert(writes >= sections, 'a withLedger with no write in it')
+
+  // No write may pass back a snapshot the claim was decided against. Restoring one is how
+  // releasing a reservation erases somebody else's — the old release path did exactly that.
+  assert(
+    !/writeLedger\(\s*ledger\s*[,)]/.test(src),
+    'a ledger write passes the pre-claim snapshot back wholesale',
+  )
+
+  // And nothing may reach the network while the lock is held: an RPC round trip under the lock
+  // turns a faucet into a queue behind a fifteen-second timeout. Scoped to the one function that
+  // holds it — `quote` and `confirm` are downstream of here and are *supposed* to do RPC.
+  const from = src.indexOf('export async function reserve')
+  // Anchored on code, not on a banner comment: `codeOf` strips comments out.
+  const to = src.indexOf('export interface TransferPlan')
+  assert(from > 0 && to > from, 'reserve moved; this check needs rewriting')
+  const critical = src.slice(from, to)
+  assert(critical.includes('withLedger('), 'reserve no longer takes the lock')
+  assert(
+    !/await conn\.|readTreasury\(|getAccountInfo|getLatestBlockhash|sendRawTransaction/.test(critical),
+    'an RPC call sits inside the ledger lock',
+  )
+  // The treasury balance has to arrive as an argument, for exactly that reason.
+  assert(/treasury:\s*number/.test(critical), 'reserve no longer takes the balance as a parameter')
+})
+
+check('the preview refuses exactly where the payer refuses', () => {
+  // The audit's N-2. `quote` caught the unreadable-ledger throw and quoted against an empty one,
+  // so the preview promised a payout computed with every cap reset to full while `settle` refused
+  // the identical request. An unreadable ledger is the case `readLedger` throws *for*.
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'treasury.ts'))
+  const q = src.slice(src.indexOf('export async function quote'), src.indexOf('export async function settle'))
+  assert(!/readLedger\(\)\s*\.catch/.test(q), 'quote still swallows an unreadable ledger')
+  assert(q.includes("reason: 'ledger_unreadable'"), 'quote does not report ledger_unreadable')
+
+  // And the route has to carry it, or the refusal stops at the function boundary.
+  const route = codeOf(join(here, '..', 'app', 'api', 'scemaworld', 'claim', 'route.ts'))
+  assert(/if\s*\(!q\.ok\)/.test(route), 'the quote branch does not check the refusal')
+  assert(route.includes('ledger_busy'), 'ledger_busy has no status mapping')
 })
 
 await Promise.all(pending)

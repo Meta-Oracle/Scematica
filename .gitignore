@@ -139,4 +139,5 @@ nft-out/
 # with its own backups, which is what a production deployment should do.
 .scemaworld-claims.json
 .scemaworld-claims.json.tmp
+.scemaworld-claims.json.lock
 .aider*

@@ -792,6 +792,34 @@ ledger reservation *stays* (releasing it is how a paid claim gets paid again), t
 **202** rather than a 5xx, the signature is returned so somebody can go and look, and the client
 does not debit. A throw from the send is different and does release — we know nothing happened.
 
+**Deciding a claim and reserving it are ONE step, and every later ledger write is a delta.** A
+security audit's N-1, and the sharpest lesson on this path: a cap checked against a snapshot and
+enforced by a write that happens after an `await` is not a cap. `readLedger` yields the event
+loop, so two claims arriving together each measured themselves against money the other had already
+taken — 9,100 leaves a 9,000 budget and the ledger afterwards reads exactly 9,000, so nothing
+downstream ever sees a figure that looks wrong. The budget, the per-wallet lifetime cap and the
+cooldown all fall to it at once. `reserve()` in `treasury.ts` is the whole critical section and
+`withLedger` is the only way in: an in-process promise chain (which is what actually closes it —
+Node is single-threaded and the race is purely interleaved awaits), an `open(…, 'wx')` lock file so
+the guarantee survives two processes on one filesystem, and a `version` on the ledger as the
+backstop that turns a lost write into a *refused* claim. Refusing is safe because it happens before
+the transfer; that is why `ledger_busy` is a 503 and not one of the codes meaning "state unknown".
+**No RPC may happen inside the lock** — the treasury balance is passed in — or a faucet becomes a
+queue behind a 15-second timeout. And the writes *after* the transfer must re-read and apply a
+change, never write back the snapshot the claim was decided against: the release path used to
+restore the whole pre-claim ledger, so one claim failing on chain erased every reservation taken
+while it was in flight, and those had already been paid. `reserve` is split out of `settle` for the
+same reason `transferPlan` is — settling for real needs a funded key, so otherwise the arithmetic
+bounding every payout would only ever be exercised by moving money. What none of this buys:
+instances that do not share a filesystem do not share a ledger either, so the budget is multiplied
+by the instance count. That is a property of keeping the ledger in a file.
+
+**The preview refuses exactly where the payer refuses** (N-2). `quote` caught `readLedger`'s throw
+and priced the claim against an empty ledger — every cap reset to full — while `settle` refused the
+identical request. An unreadable ledger is the precise case `readLedger` throws *for*, and
+swallowing it on the one path that tells a player what they are owed reintroduced the failure it
+exists to prevent.
+
 Rules the 130 checks carry, each paid for:
 
 - **The tick is a pure function** (`lib/scemaworld/game.ts`). It was inline in the frame loop,

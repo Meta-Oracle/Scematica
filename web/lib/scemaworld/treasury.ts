@@ -19,7 +19,7 @@
 // `SCEMAWORLD_TREASURY_SECRET` is the decision to run a capped public faucet, and it should be
 // made deliberately, with a key that holds only what the operator is willing to distribute.
 
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, open, unlink, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
@@ -284,6 +284,15 @@ export async function readTreasury(): Promise<TreasuryResult> {
 // ── the ledger ───────────────────────────────────────────────────────────────
 
 export interface Ledger {
+  /**
+   * Bumped on every write. The stale-write detector.
+   *
+   * A reservation is decided against a snapshot and written a moment later. If anything at all
+   * has written in between, the decision was made against figures that no longer hold and the
+   * write must not land — see `writeLedger`. Absent in ledgers written before this existed, which
+   * read as 0 and start counting from there.
+   */
+  version: number
   /** Whole tokens paid out by this deployment, all wallets. */
   dispensed: number
   wallets: Record<string, WalletRecord>
@@ -307,7 +316,7 @@ export interface Ledger {
   }[]
 }
 
-const EMPTY: Ledger = { dispensed: 0, wallets: {}, claims: [] }
+const EMPTY: Ledger = { version: 0, dispensed: 0, wallets: {}, claims: [] }
 
 function ledgerPath(): string {
   return process.env.SCEMAWORLD_LEDGER?.trim() || join(process.cwd(), '.scemaworld-claims.json')
@@ -333,7 +342,15 @@ export async function readLedger(): Promise<Ledger> {
   if (typeof parsed?.dispensed !== 'number' || typeof parsed?.wallets !== 'object') {
     throw new Error('the claim ledger is present but not in the expected shape')
   }
-  return { dispensed: parsed.dispensed, wallets: parsed.wallets ?? {}, claims: parsed.claims ?? [] }
+  return {
+    // A ledger written before versioning reads as 0 rather than being rejected. Refusing it would
+    // strand a live deployment's history on an upgrade, and 0 is a true statement about a file
+    // that has never been written by a versioned writer.
+    version: typeof parsed.version === 'number' ? parsed.version : 0,
+    dispensed: parsed.dispensed,
+    wallets: parsed.wallets ?? {},
+    claims: parsed.claims ?? [],
+  }
 }
 
 /**
@@ -344,12 +361,204 @@ export async function readLedger(): Promise<Ledger> {
  * the half-written one would be a ledger with a truncated wallet table, which is a set of caps
  * that have silently reset.
  */
-async function writeLedger(next: Ledger): Promise<void> {
+async function writeLedger(next: Ledger, expectedVersion: number): Promise<void> {
+  // Re-read and compare before writing. Inside `withLedger` this can only fail if the mutex and
+  // the lock have both been defeated, so it is an assertion rather than the mechanism — but it is
+  // the assertion that turns a silently lost reservation into a refused claim, and a reservation
+  // is the only thing standing between a forged balance and the treasury.
+  let current = 0
+  try {
+    current = (await readLedger()).version
+  } catch {
+    // Unreadable here means unreadable *now*, after we read it successfully a moment ago. Writing
+    // over it would destroy a ledger somebody may still be able to repair.
+    throw new LedgerConflict('the claim ledger became unreadable between the read and the write')
+  }
+  if (current !== expectedVersion) {
+    throw new LedgerConflict(
+      `the claim ledger changed underneath this claim (expected version ${expectedVersion}, found ${current})`,
+    )
+  }
   const path = ledgerPath()
   await mkdir(dirname(path), { recursive: true }).catch(() => {})
   const tmp = `${path}.tmp`
-  await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8')
+  await writeFile(tmp, JSON.stringify({ ...next, version: expectedVersion + 1 }, null, 2), 'utf8')
   await rename(tmp, path)
+}
+
+/** A write that was refused because the ledger moved. Never a reason to retry automatically. */
+export class LedgerConflict extends Error {}
+
+// ── serialising read-decide-write ────────────────────────────────────────────
+//
+// **The finding this closes.** A cap is checked against a snapshot and enforced by a write that
+// happens later. Between the two there is at least one `await` — the read itself yields the event
+// loop — so two claims arriving together each decided against the same untouched figures and the
+// later write overwrote the earlier. Both were paid; the ledger recorded one. Every limit in the
+// policy falls to this at once: the deployment budget, the per-wallet lifetime cap and the
+// cooldown are all a comparison against a number a second request has already invalidated.
+//
+// It is not a narrow window and it does not need luck to win. It is the entire span from reading
+// the file to renaming the new one over it, and a faucet is exactly the sort of endpoint people
+// point concurrency at.
+//
+// Three layers, because they close different things and the cheapest one is not the strongest:
+//
+// 1. **An in-process mutex.** Node is single-threaded, so the shipped race is entirely between
+//    interleaved awaits in one process. A promise chain closes it completely, and for the
+//    deployment this ledger is designed for — one server, one local file — it is sufficient on
+//    its own.
+// 2. **An exclusive lock file.** `open(..., 'wx')` fails if the file exists, and that check and
+//    create are atomic in the operating system. This is what makes the guarantee hold across two
+//    processes on one filesystem rather than only within one.
+// 3. **The version check in `writeLedger`.** A backstop for the case where both of the above have
+//    somehow failed. It cannot double-pay, because a refused write happens *before* the transfer
+//    is sent — the claim is simply refused.
+//
+// What none of them buys: a deployment whose instances do not share a filesystem. There the
+// ledger file is not shared either, so each instance has its own caps and the budget is multiplied
+// by the instance count. That is a property of keeping the ledger in a file and cannot be fixed
+// here; `SCEMAWORLD_LEDGER` pointing at shared storage, or a real database, is the answer.
+
+const LOCK_STALE_MS = 60_000
+const LOCK_POLL_MS = 25
+const LOCK_TIMEOUT_MS = 15_000
+
+/** Serialises within this process. The fast path, and the one that matters in practice. */
+let chain: Promise<unknown> = Promise.resolve()
+
+async function acquireFileLock(): Promise<() => Promise<void>> {
+  const path = `${ledgerPath()}.lock`
+  await mkdir(dirname(path), { recursive: true }).catch(() => {})
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+
+  for (;;) {
+    try {
+      const handle = await open(path, 'wx')
+      await handle.writeFile(`${process.pid} ${new Date().toISOString()}
+`, 'utf8').catch(() => {})
+      await handle.close().catch(() => {})
+      return async () => {
+        await unlink(path).catch(() => {})
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    }
+
+    // Break a lock left by a process that died holding it. Bounded by age, because the alternative
+    // is a faucet that stays down until somebody notices a file — and a stale lock is far more
+    // likely than the two-process contention this layer exists for.
+    const age = await stat(path).then((st) => Date.now() - st.mtimeMs).catch(() => 0)
+    if (age > LOCK_STALE_MS) {
+      await unlink(path).catch(() => {})
+      continue
+    }
+    if (Date.now() > deadline) {
+      throw new LedgerConflict('the claim ledger is locked by another writer')
+    }
+    await new Promise((r) => setTimeout(r, LOCK_POLL_MS))
+  }
+}
+
+/**
+ * Run `fn` with exclusive access to the ledger, handing it a freshly read copy.
+ *
+ * Everything that reads the ledger and then writes a decision based on it must be inside this, and
+ * **no RPC may happen within it** — a network round trip under a lock turns a faucet into a queue
+ * with a fifteen-second timeout. The transfer therefore sits between two separate critical
+ * sections: one that reserves, one that records the outcome.
+ */
+async function withLedger<T>(fn: (ledger: Ledger) => Promise<T> | T): Promise<T> {
+  const run = async (): Promise<T> => {
+    const release = await acquireFileLock()
+    try {
+      return await fn(await readLedger())
+    } finally {
+      await release()
+    }
+  }
+  // Queue behind whatever is already running, and keep the chain alive if this one throws.
+  const result = chain.then(run, run)
+  chain = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+export type Reservation =
+  | { ok: true; ent: Entitlement; prev: WalletRecord }
+  | { ok: false; reason: string; detail: string; entitlement?: Entitlement }
+
+/**
+ * Decide a claim and reserve it against the ledger, **as one indivisible step**.
+ *
+ * Split out of `settle` for exactly the reason `transferPlan` is: it is the part with no safe
+ * failure mode, and settling for real needs a funded treasury key — so without this the arithmetic
+ * that bounds every payout this deployment can make would only ever be exercised by moving money.
+ * `check:scemaworld` drives it concurrently against a temporary ledger, which is the only way the
+ * property below can be tested at all.
+ *
+ * **The property**: for any number of claims arriving in any interleaving, the sum paid never
+ * exceeds the deployment budget, no wallet exceeds its lifetime cap, and no wallet's cooldown is
+ * bypassed. Deciding and reserving used to be separated by the write that enforced them, so two
+ * claims arriving together each measured themselves against a figure the other had already spent.
+ *
+ * `treasury` is passed in rather than read here, deliberately: an RPC call inside the lock would
+ * hold every other claim behind a network round trip. It is therefore a moment stale, which is
+ * bounded by the budget — a cap that *is* serialised and is an order of magnitude below the
+ * balance.
+ */
+export async function reserve(args: {
+  scema: number
+  wallet: string
+  nowMs: number
+  /** The treasury's balance in whole tokens, read before the lock. */
+  treasury: number
+}): Promise<Reservation> {
+  try {
+    return await withLedger(async (ledger): Promise<Reservation> => {
+      const record = ledger.wallets[args.wallet] ?? NO_RECORD
+      const ent = entitlement(
+        {
+          scema: args.scema,
+          wallet: args.wallet,
+          record,
+          dispensed: ledger.dispensed,
+          treasury: args.treasury,
+          nowMs: args.nowMs,
+        },
+        policy(),
+      )
+      if (ent.refusal) {
+        return { ok: false, reason: ent.refusal, detail: ent.message, entitlement: ent }
+      }
+      await writeLedger(
+        {
+          ...ledger,
+          dispensed: ledger.dispensed + ent.tokens,
+          wallets: {
+            ...ledger.wallets,
+            [args.wallet]: {
+              paid: record.paid + ent.tokens,
+              lastMs: args.nowMs,
+              claims: record.claims + 1,
+            },
+          },
+        },
+        ledger.version,
+      )
+      return { ok: true, ent, prev: record }
+    })
+  } catch (e) {
+    if (e instanceof LedgerConflict) {
+      // Refused, and nothing was sent. Safe to retry precisely because the refusal happened
+      // before the transfer rather than after it.
+      return { ok: false, reason: 'ledger_busy', detail: String(e) }
+    }
+    // An unreadable ledger must never be treated as an empty one — see `readLedger`.
+    return { ok: false, reason: 'ledger_unreadable', detail: String(e) }
+  }
 }
 
 // ── settling a claim ─────────────────────────────────────────────────────────
@@ -468,13 +677,31 @@ async function confirm(conn: Connection, signature: string, deadline: number): P
  * shows is computed by the code that will pay it rather than by a second implementation that
  * drifts. A preview that disagrees with the payer is worse than no preview.
  */
-export async function quote(
-  scema: number,
-  wallet: string,
-  nowMs: number,
-): Promise<{ entitlement: Entitlement; treasury: TreasuryResult; dispensed: number }> {
+export type QuoteResult =
+  | { ok: true; entitlement: Entitlement; treasury: TreasuryResult; dispensed: number }
+  /**
+   * The ledger could not be read, so there is no honest quote to give.
+   *
+   * The same refusal `settle` returns for the same condition, and that is the whole point. This
+   * used to be `readLedger().catch(() => EMPTY)`: an unreadable ledger was quoted against as
+   * though nothing had ever been paid — every cap reset to full — while the payer refused the
+   * identical request. The preview promised 250 and the button returned a 500.
+   *
+   * Swallowing it was worse than a disagreement. A ledger read as empty is a ledger whose budget,
+   * lifetime caps and cooldowns have all silently reset, which is exactly the failure `readLedger`
+   * throws to prevent; catching the throw here reintroduced it on the one path that tells a player
+   * what they are owed.
+   */
+  | { ok: false; reason: 'ledger_unreadable'; detail: string }
+
+export async function quote(scema: number, wallet: string, nowMs: number): Promise<QuoteResult> {
   const treasury = await readTreasury()
-  const ledger = await readLedger().catch(() => ({ ...EMPTY }))
+  let ledger: Ledger
+  try {
+    ledger = await readLedger()
+  } catch (e) {
+    return { ok: false, reason: 'ledger_unreadable', detail: String(e) }
+  }
   const ent = entitlement(
     {
       scema,
@@ -486,7 +713,7 @@ export async function quote(
     },
     policy(),
   )
-  return { entitlement: ent, treasury, dispensed: ledger.dispensed }
+  return { ok: true, entitlement: ent, treasury, dispensed: ledger.dispensed }
 }
 
 /**
@@ -539,30 +766,6 @@ export async function settle(args: {
     }
   }
 
-  let ledger: Ledger
-  try {
-    ledger = await readLedger()
-  } catch (e) {
-    // An unreadable ledger must never be treated as an empty one — see `readLedger`.
-    return { ok: false, reason: 'ledger_unreadable', detail: String(e) }
-  }
-
-  const record = ledger.wallets[args.wallet] ?? NO_RECORD
-  const ent = entitlement(
-    {
-      scema: args.scema,
-      wallet: args.wallet,
-      record,
-      dispensed: ledger.dispensed,
-      treasury: treasury.reading.balance,
-      nowMs: args.nowMs,
-    },
-    policy(),
-  )
-  if (ent.refusal) {
-    return { ok: false, reason: ent.refusal, detail: ent.message, entitlement: ent }
-  }
-
   const { conn } = connection()
   let holder: PublicKey
   try {
@@ -570,22 +773,69 @@ export async function settle(args: {
   } catch (e) {
     return { ok: false, reason: 'bad_wallet', detail: String(e) }
   }
+
+  const reservation = await reserve({
+    scema: args.scema,
+    wallet: args.wallet,
+    nowMs: args.nowMs,
+    treasury: treasury.reading.balance,
+  })
+  if (!reservation.ok) {
+    return {
+      ok: false,
+      reason: reservation.reason,
+      detail: reservation.detail,
+      entitlement: reservation.entitlement,
+    }
+  }
+  const { ent, prev } = reservation
   const plan = transferPlan({ reading: treasury.reading, holder, tokens: ent.tokens })
 
-  // Reserve before sending. See the note above on which way this error is allowed to fall.
-  const reserved: Ledger = {
-    dispensed: ledger.dispensed + ent.tokens,
-    wallets: {
-      ...ledger.wallets,
-      [args.wallet]: {
-        paid: record.paid + ent.tokens,
-        lastMs: args.nowMs,
-        claims: record.claims + 1,
-      },
-    },
-    claims: ledger.claims,
+  // ── critical section 2: record the outcome, as a delta ─────────────────────
+  //
+  // Both of these re-read under the lock and apply a *change*, rather than writing back the
+  // snapshot this claim was decided against. Writing that snapshot back is how releasing one
+  // reservation silently cancels somebody else's: the old code restored the whole pre-claim
+  // ledger, so a claim that failed on chain erased every reservation taken while it was in flight
+  // — and those claims had already been paid.
+
+  const appendClaim = async (signature: string, status: 'confirmed' | 'unconfirmed') => {
+    await withLedger(async (cur) => {
+      await writeLedger(
+        {
+          ...cur,
+          claims: [
+            ...cur.claims,
+            { wallet: args.wallet, tokens: ent.tokens, world: args.world, at: args.nowMs, signature, status },
+          ],
+        },
+        cur.version,
+      )
+    }).catch(() => {})
   }
-  await writeLedger(reserved)
+
+  const releaseReservation = async () => {
+    await withLedger(async (cur) => {
+      const now = cur.wallets[args.wallet] ?? NO_RECORD
+      await writeLedger(
+        {
+          ...cur,
+          dispensed: cur.dispensed - ent.tokens,
+          wallets: {
+            ...cur.wallets,
+            [args.wallet]: {
+              paid: now.paid - ent.tokens,
+              // Back to whatever it was before this claim, so a refused attempt does not leave a
+              // player serving a six-hour cooldown for a withdrawal they never received.
+              lastMs: prev.lastMs,
+              claims: Math.max(0, now.claims - 1),
+            },
+          },
+        },
+        cur.version,
+      )
+    }).catch(() => {})
+  }
 
   try {
     const tx = new Transaction()
@@ -639,16 +889,7 @@ export async function settle(args: {
     if (landed === null) {
       // Sent, unobserved. The reservation **stays**, because the transfer may well have gone
       // through — releasing it here is how a paid claim gets paid a second time.
-      await writeLedger({
-        ...reserved,
-        claims: [
-          ...reserved.claims,
-          {
-            wallet: args.wallet, tokens: ent.tokens, world: args.world, at: args.nowMs,
-            signature, status: 'unconfirmed',
-          },
-        ],
-      }).catch(() => {})
+      await appendClaim(signature, 'unconfirmed')
       return {
         ok: false,
         reason: 'unconfirmed',
@@ -661,24 +902,11 @@ export async function settle(args: {
     }
     if (landed === false) {
       // Observed, and it failed on chain. A definite outcome, so the reservation is released.
-      await writeLedger(ledger).catch(() => {})
+      await releaseReservation()
       return { ok: false, reason: 'transfer_failed', detail: `the transaction failed on chain: ${signature}`, signature }
     }
 
-    await writeLedger({
-      ...reserved,
-      claims: [
-        ...reserved.claims,
-        {
-          wallet: args.wallet,
-          tokens: ent.tokens,
-          world: args.world,
-          at: args.nowMs,
-          signature,
-          status: 'confirmed',
-        },
-      ],
-    })
+    await appendClaim(signature, 'confirmed')
     return { ok: true, tokens: ent.tokens, spend: ent.spend, signature, created }
   } catch (e) {
     // Release the reservation. Reaching here means the send itself threw — preflight rejected it,
@@ -688,7 +916,7 @@ export async function settle(args: {
     //
     // Note the asymmetry with `unconfirmed` above, which is the whole point of separating them: a
     // throw means we know nothing happened, a timeout means we do not know.
-    await writeLedger(ledger).catch(() => {})
+    await releaseReservation()
     return { ok: false, reason: 'transfer_failed', detail: String(e) }
   }
 }

@@ -37,6 +37,9 @@ const STATUS: Record<string, number> = {
   not_configured: 501,
   signer_mismatch: 500,
   ledger_unreadable: 500,
+  // Another writer held the ledger, so this claim was refused *before* anything was sent. A retry
+  // is safe, which is why this is a 503 and not one of the 5xx codes that mean "state unknown".
+  ledger_busy: 503,
   transfer_failed: 502,
   // Accepted, outcome unobserved. **202, not an error code.** The request was taken and a
   // transaction was broadcast; what is missing is knowledge of whether it landed. Answering 502
@@ -81,6 +84,15 @@ export async function POST(req: Request) {
 
   if (new URL(req.url).searchParams.get('quote') === '1') {
     const q = await quote(scema, wallet, nowMs)
+    if (!q.ok) {
+      // The same refusal the settle path gives for the same condition. A preview that quotes an
+      // amount the payer will not pay is worse than no preview — and quoting against an
+      // unreadable ledger means quoting against caps that have silently reset to full.
+      return NextResponse.json(
+        { ok: false, reason: q.reason, detail: q.detail },
+        { status: STATUS[q.reason] ?? 500 },
+      )
+    }
     return NextResponse.json({
       ok: true,
       quote: q.entitlement,

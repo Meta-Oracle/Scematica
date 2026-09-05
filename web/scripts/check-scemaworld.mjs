@@ -2848,18 +2848,103 @@ check('an arrival is drawn but is not yet a ship', () => {
   // Not in the swarm, so nothing can interact with it.
   assert(!g.swarm.craft.some((c) => c.id === a.id), 'an arrival is already a craft')
 
-  // The streak collapses as it resolves: fierce and long at the start, a sliver at the moment of
-  // arrival. That contraction is what makes it read as decelerating *into* the sector rather than
-  // as a flash, and it points the eye at where the ship is about to be.
-  const early = drawList(s, dynamicOf({ ...g, nowMs: 3_650 }, s)).bodies
-    .find((b) => b.role === 'warp-hostile')
-  const late = drawList(s, dynamicOf({ ...g, nowMs: 4_950 }, s)).bodies
-    .find((b) => b.role === 'warp-hostile')
-  assert(early.radius > late.radius * 3, `entry barely collapses: ${early.radius} -> ${late.radius}`)
-  assert(late.radius > 0, 'an entry vanishes before the ship exists')
+  // The entry is drawn as LINES, and they are what collapses. A shrinking sphere was the previous
+  // effect and at any real distance it is a dot that dims — it carries no bearing, so an arrival
+  // announced that something was happening and nothing about where it came from.
+  const strandsAt = (ms) =>
+    drawList(s, dynamicOf({ ...g, nowMs: ms }, s)).segments.filter((x) => x.role === 'warp-hostile')
+  const early = strandsAt(3_650)
+  const late = strandsAt(4_950)
+  assert(early.length === Arrivals.STREAK_STRANDS, `${early.length} strands, not a bundle`)
+
+  const spanOf = (list) =>
+    Math.max(...list.map((x) => Math.hypot(x.to.x - x.from.x, x.to.y - x.from.y, x.to.z - x.from.z)))
+  assert(spanOf(early) > spanOf(late) * 3, `entry barely collapses: ${spanOf(early)} -> ${spanOf(late)}`)
+
+  // And they converge on the point the craft will occupy, longitudinally and laterally. The eye
+  // follows a contraction, so the collapse IS the statement of where the ship is about to be.
+  const reach = (list) =>
+    Math.max(...list.map((x) => Math.hypot(x.from.x - a.at.x, x.from.y - a.at.y, x.from.z - a.at.z)))
+  assert(reach(early) > reach(late) * 3, `the bundle does not close on the arrival point`)
+
+  // Brightening, not fading. Fading out and *then* producing a hull reads as two unrelated events.
+  assert(late[0].alpha > early[0].alpha, 'an entry dims as it lands')
+
+  // The core body grows into the arrival rather than shrinking out of it, so both halves of the
+  // effect agree about where the thing is going to be.
+  const coreAt = (ms) =>
+    drawList(s, dynamicOf({ ...g, nowMs: ms }, s)).bodies.find((b) => b.role === 'warp-hostile')
+  assert(coreAt(4_950).radius > coreAt(3_650).radius, 'the entry core shrinks away from its own arrival')
+
+  // At the moment of arrival everything has collapsed to the point, so there is no gap between
+  // the last frame of the entry and the first frame of the hull.
+  const landedStrands = Arrivals.streak(a.at, a.dir, 1)
+  for (const x of landedStrands) {
+    assert(
+      x.from.x === a.at.x && x.from.y === a.at.y && x.from.z === a.at.z,
+      'a strand outlives the arrival it belongs to',
+    )
+  }
 
   // Progress is clamped, so a stale arrival cannot render a negative or runaway size.
   assert(Arrivals.progress(a, 0) === 0 && Arrivals.progress(a, 9e9) === 1, 'progress is unclamped')
+})
+
+check('a wing arrives as a wing, not as three ships on one frame', () => {
+  // One shared `dueMs` put three hulls on screen in the same frame, which reads as the sector
+  // gaining three ships rather than as a formation dropping out of hyperspace. The entry needs a
+  // duration for the eye to follow.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const at = { x: 0, y: 0, z: 0 }
+  const facing = { x: 0, y: 0, z: -1 }
+  // A sector the patrol has already cleared, so reinforcement is actually due.
+  const thin = { ...g.swarm, craft: g.swarm.craft.filter((c) => c.faction !== 'raider') }
+  let w = Respawn.newWaves()
+  // Push time forward until a raider wing is due, then read what it queued.
+  let out = null
+  for (let t = 0; t < 400000 && !out; t += 1000) {
+    const r = Respawn.replenish(thin, s, s.seed, w, at, facing, t)
+    w = r.waves
+    const wing = (r.waves.arriving ?? []).filter((a) => a.faction === 'raider')
+    if (wing.length > 1) out = wing
+  }
+  assert(out, 'no raider wing ever arrived')
+  const dues = [...new Set(out.map((a) => a.dueMs))]
+  assert(dues.length === out.length, `${out.length} ships share ${dues.length} arrival times`)
+
+  // One wing, though: they come in on one bearing and land within a beat of each other.
+  const spread = Math.max(...dues) - Math.min(...dues)
+  assert(spread > 0 && spread < 1000, `a wing spread over ${spread}ms is not a wing`)
+  const bearings = new Set(out.map((a) => `${a.dir.x},${a.dir.y},${a.dir.z}`))
+  assert(bearings.size === 1, 'a wing arrived from several directions')
+})
+
+check('an entry bundle is stable whichever way it comes in', () => {
+  // `perpBasis` crosses `dir` with an axis, and crossing with one the vector is nearly parallel to
+  // gives a near-zero result whose direction is whatever the floating-point noise happened to be.
+  // The bundle would then flip orientation between frames — but only for entries that arrived
+  // along an axis, which is exactly the case nobody would think to look at.
+  const axes = [
+    { x: 1, y: 0, z: 0 }, { x: -1, y: 0, z: 0 },
+    { x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 },
+    { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 },
+    { x: 0.577, y: 0.577, z: 0.577 },
+  ]
+  for (const dir of axes) {
+    const [u, v] = Arrivals.perpBasis(dir)
+    const lu = Math.hypot(u.x, u.y, u.z)
+    const lv = Math.hypot(v.x, v.y, v.z)
+    assert(lu > 0.9 && lv > 0.9, `degenerate basis along ${JSON.stringify(dir)}`)
+    // Perpendicular to the entry vector and to each other, or the bundle is not a ring.
+    assert(Math.abs(u.x * dir.x + u.y * dir.y + u.z * dir.z) < 1e-6, 'u is not perpendicular to dir')
+    assert(Math.abs(u.x * v.x + u.y * v.y + u.z * v.z) < 1e-6, 'the basis is not orthogonal')
+
+    // And the strands actually spread around it rather than stacking on one line.
+    const st = Arrivals.streak({ x: 0, y: 0, z: 0 }, dir, 0)
+    const distinct = new Set(st.map((x) => `${x.to.x},${x.to.y},${x.to.z}`))
+    assert(distinct.size === Arrivals.STREAK_STRANDS, `strands collapsed onto each other along ${JSON.stringify(dir)}`)
+  }
 })
 
 check('arrivals read no record field', () => {
@@ -4200,6 +4285,130 @@ check('the preview refuses exactly where the payer refuses', () => {
   const route = codeOf(join(here, '..', 'app', 'api', 'scemaworld', 'claim', 'route.ts'))
   assert(/if\s*\(!q\.ok\)/.test(route), 'the quote branch does not check the refusal')
   assert(route.includes('ledger_busy'), 'ledger_busy has no status mapping')
+})
+
+// ── flight: the ship has mass ────────────────────────────────────────────────
+//
+// Attitude used to be `rotate(camera, key * 1.4 * dt, …)` on all three axes and position used to
+// be `translate(camera, [0, 0, -speed * dt])`. Both are the same mistake in two places: the ship
+// was wherever it was pointing, instantly, and it pointed wherever the keys said, instantly. So
+// there was nothing to roll *for* — yaw turned you just as fast and kept the horizon level — and
+// no such thing as carrying speed through a turn.
+
+const flyFor = (s, keys, n, dt = 1 / 60, from = null) => {
+  let g = from ?? newGame(s)
+  for (let i = 0; i < n; i += 1) {
+    g = tick(g, s, { keys: new Set(keys), firing: false, dt, nowMs: 1000 + i * dt * 1000 })
+  }
+  return g
+}
+
+const angleBetween = (a, b) =>
+  Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])))
+
+check('roll is the fastest axis and yaw the slowest, which is what makes rolling worth doing', () => {
+  // The reported bug. With one shared rate there is no reason to ever touch the roll keys: yawing
+  // brings the nose round just as quickly and leaves the horizon where you can read it. Rolling is
+  // only a manoeuvre if it is *how* you turn — roll to put the target above you, then pull.
+  const s = generate(world, digest)
+  const base = newGame(s)
+  const f0 = forward(base.camera)
+
+  const rolled = flyFor(s, ['KeyQ'], 60)
+  const yawed = flyFor(s, ['KeyD'], 60)
+  const pitched = flyFor(s, ['KeyW'], 60)
+
+  const rollAmt = angleBetween(up(base.camera), up(rolled.camera))
+  const yawAmt = angleBetween(f0, forward(yawed.camera))
+  const pitchAmt = angleBetween(f0, forward(pitched.camera))
+
+  assert(rollAmt > pitchAmt * 1.5, `roll ${rollAmt.toFixed(2)} is not decisively faster than pitch ${pitchAmt.toFixed(2)}`)
+  assert(pitchAmt > yawAmt * 1.4, `pitch ${pitchAmt.toFixed(2)} is not faster than yaw ${yawAmt.toFixed(2)}`)
+
+  // And a roll is about the ship's own nose: it must turn the ship without turning where it points.
+  assert(
+    angleBetween(f0, forward(rolled.camera)) < 0.02,
+    'rolling moved the nose, so it is not a roll',
+  )
+})
+
+check('attitude has momentum: a released control bleeds off rather than stopping dead', () => {
+  const s = generate(world, digest)
+  const spun = flyFor(s, ['KeyQ'], 60)
+  assert(Math.abs(spun.spin.z) > 1, `roll never spun up: ${spun.spin.z}`)
+
+  // Still rotating a tick after release — that lag is the entire difference between flying
+  // something with mass and dragging a camera around.
+  const justAfter = flyFor(s, [], 6, 1 / 60, spun)
+  assert(Math.abs(justAfter.spin.z) > 0.2, 'rotation stopped dead the frame the key came up')
+  assert(Math.abs(justAfter.spin.z) < Math.abs(spun.spin.z), 'a released control did not bleed off')
+
+  // And it does settle. A ship that keeps a residual tumble forever is a broken ship, not a
+  // realistic one.
+  const settled = flyFor(s, [], 120, 1 / 60, spun)
+  assert(Math.abs(settled.spin.z) < 1e-6, `still spinning at ${settled.spin.z}`)
+})
+
+check('a long frame cannot overshoot the commanded rate into a spin', () => {
+  // An alt-tabbed tab hands back a half-second frame. `spin += accel * dt` sails past the
+  // commanded rate and the ship snaps into a rotation nobody asked for — the class of bug that
+  // only ever reproduces on somebody else's machine.
+  const s = generate(world, digest)
+  const g = flyFor(s, ['KeyQ'], 1, 0.75)
+  assert(
+    Math.abs(g.spin.z) <= SCALE.RATE_ROLL + 1e-9,
+    `one long frame reached ${g.spin.z} against a peak of ${SCALE.RATE_ROLL}`,
+  )
+})
+
+check('the ship carries its momentum through a turn', () => {
+  // True 3D flight: the nose and the course are two different things. Turning used to rotate the
+  // velocity with the hull, so a reversal was free and there was no such thing as drifting wide.
+  const s = generate(world, digest)
+  let g = flyFor(s, [], 180, 1 / 60, { ...newGame(s), throttle: 1 })
+  const cruise = Math.hypot(g.velocity.x, g.velocity.y, g.velocity.z)
+  assert(cruise > topSpeed(0) * 0.9, `never reached cruise: ${cruise}`)
+
+  const pulled = flyFor(s, ['KeyW'], 45, 1 / 60, g)
+  const n = forward(pulled.camera)
+  const v = pulled.velocity
+  const vl = Math.hypot(v.x, v.y, v.z) || 1
+  const drift = Math.acos(Math.max(-1, Math.min(1, (n[0] * v.x + n[1] * v.y + n[2] * v.z) / vl)))
+  assert(drift > 0.15, `the course followed the nose exactly: ${drift} rad of drift`)
+
+  // But the assist brings it back, or the game is a different and much worse one — you would
+  // spend every fight fighting your own momentum instead of the enemy.
+  const recovered = flyFor(s, [], 180, 1 / 60, pulled)
+  const rn = forward(recovered.camera)
+  const rv = recovered.velocity
+  const rl = Math.hypot(rv.x, rv.y, rv.z) || 1
+  const left = Math.acos(Math.max(-1, Math.min(1, (rn[0] * rv.x + rn[1] * rv.y + rn[2] * rv.z) / rl)))
+  assert(left < 0.05, `the assist never recovered the course: ${left} rad still off`)
+})
+
+check('a dry ship keeps every bit of its momentum', () => {
+  // The assist is the only thing that can slow the ship, and it runs on the drive. Damping a dry
+  // ship would let a stranded player brake to a stop for free — which is both wrong and the least
+  // interesting reading of running out of fuel.
+  const s = generate(world, digest)
+  let g = flyFor(s, [], 180, 1 / 60, { ...newGame(s), throttle: 1 })
+  const moving = Math.hypot(g.velocity.x, g.velocity.y, g.velocity.z)
+  assert(moving > 0, 'never got going')
+
+  g = { ...g, ship: { ...g.ship, fuel: 0 } }
+  const coasted = flyFor(s, [], 300, 1 / 60, g)
+  const after = Math.hypot(coasted.velocity.x, coasted.velocity.y, coasted.velocity.z)
+  assert(Math.abs(after - moving) < moving * 1e-6, `a dry ship braked from ${moving} to ${after}`)
+  assert((coasted.notice ?? '').length >= 0)
+})
+
+check('speed is capped on the magnitude, not per axis', () => {
+  // A per-axis cap is higher on a diagonal than along an axis, so the fastest route anywhere
+  // becomes a corner of the box — and nothing looks wrong while it happens.
+  const s = generate(world, digest)
+  const g = flyFor(s, ['ArrowRight', 'Space'], 600, 1 / 60, { ...newGame(s), throttle: 1 })
+  const sp = Math.hypot(g.velocity.x, g.velocity.y, g.velocity.z)
+  assert(sp <= topSpeed(g.ship.levels?.engine ?? 0) + 1e-6, `reached ${sp} on a diagonal`)
 })
 
 await Promise.all(pending)

@@ -71,6 +71,19 @@ export const RAIDER_INTERVAL_MS = 22_000
  */
 const WARP_WING = 3
 
+/**
+ * How far apart, in milliseconds, the ships of one wing finish their entry.
+ *
+ * A wing used to share a single `dueMs`, so three hulls appeared on the same frame — which does
+ * not read as a formation arriving, it reads as the sector gaining three ships at once. Staggering
+ * it makes the entry an *event with a duration*: the streaks resolve one after another and the eye
+ * gets to follow them.
+ *
+ * Small enough that the wing is unmistakably one wing. A longer stagger and it becomes three
+ * separate arrivals that happen to share a bearing, which is a different and less useful reading.
+ */
+const WARP_STAGGER_MS = 220
+
 /** Milliseconds between marshal replacements. Shorter: they arrive singly, not four at a time. */
 export const MARSHAL_INTERVAL_MS = 13_000
 
@@ -202,7 +215,7 @@ export function replenish(
         faction: 'raider',
         at: arrivalPoint(playerAt, playerFacing, jitter, 0.75),
         dir,
-        dueMs: nowMs + ARRIVAL_MS,
+        dueMs: nowMs + ARRIVAL_MS + i * WARP_STAGGER_MS,
       })
     }
     arriving = [...arriving, ...wing]

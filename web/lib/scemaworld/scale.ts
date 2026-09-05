@@ -158,6 +158,60 @@ export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 30)
  */
 export const SPEED_THRUST = Math.round(EXTENT / 30)
 
+// ── attitude: the ship turns like a ship, not like a turret ──────────────────
+//
+// Three axes with **three different rates**, and the ordering is the handling model rather than
+// flavour. Roll is much the fastest and yaw much the slowest, so the way to bring your nose onto
+// something is to roll until it is above you and pull — not to yaw flat at it like a boat. A ship
+// whose axes share one rate has no reason to ever roll, which is exactly what it felt like: the
+// roll keys moved the horizon and changed nothing about how the ship flew.
+//
+// Radians per second, at peak.
+
+/** Roll. The fastest axis by a wide margin — it is how you point the ship. */
+export const RATE_ROLL = 2.7
+/** Pitch. The axis you actually turn with, once rolled. */
+export const RATE_PITCH = 1.3
+/** Yaw. Deliberately the slowest: cheap flat turning is what makes roll pointless. */
+export const RATE_YAW = 0.72
+
+/**
+ * How hard the control surfaces bite, in radians per second squared.
+ *
+ * `SPIN_ACCEL` is the spin-up toward the commanded rate and `SPIN_DAMP` the bleed-off once the
+ * key is released. Damping is lower than acceleration, so the ship **carries its rotation** for a
+ * moment after you let go — that lag is the whole difference between flying something with mass
+ * and dragging a camera around. It is not so low that a tap leaves the ship tumbling.
+ */
+export const SPIN_ACCEL = 9.5
+export const SPIN_DAMP = 5.0
+
+// ── linear: momentum, with the assist that makes it flyable ──────────────────
+
+/**
+ * Main drive acceleration, world units per second squared.
+ *
+ * Roughly two and a half seconds from rest to cruise on a stock hull, which is short enough that
+ * the throttle still reads as a throttle and long enough that the ship has obvious mass.
+ */
+export const ACCEL_MAIN = Math.round(EXTENT / 26)
+
+/**
+ * Flight assist: how fast velocity is dragged onto the nose, per second.
+ *
+ * The ship is Newtonian — thrust changes velocity and velocity carries you — but *pure* Newtonian
+ * flight in a dogfight is a different and much worse game: you point at a target, drift past it
+ * sideways, and spend every fight fighting your own momentum instead of the enemy. The assist
+ * bleeds the part of your velocity that is not along the nose, so a turn is followed by the ship
+ * rather than merely watched by it.
+ *
+ * What survives is the part worth having: hard turns wash off speed, a fast reversal drifts wide,
+ * and cutting the drive leaves you coasting rather than stopping. Assist runs **only with fuel** —
+ * a dry ship keeps every bit of its momentum and cannot arrest it, which is what being stranded
+ * ought to feel like.
+ */
+export const ASSIST = 1.5
+
 /**
  * A laser crosses the sector in a little over two seconds and lives for just under half of one, so
  * its reach is about **0.20 of the sector — roughly 1.8 times `AGGRO_RANGE`**.

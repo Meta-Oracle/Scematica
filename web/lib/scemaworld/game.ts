@@ -19,11 +19,11 @@ import * as Weapons from './weapons.ts'
 import type { Combat } from './weapons.ts'
 import * as Ship from './ship.ts'
 import type { Ship as ShipState } from './ship.ts'
-import { forward, rotate, translate, type Camera } from './camera.ts'
+import { forward, right, rotate, translate, up, type Camera } from './camera.ts'
 
 import {
-  AGGRO_RANGE, DOCK_RANGE, EXTENT, JUMP_INHIBIT, R_ORIGIN, R_PLAYER, SENSOR_MULTIPLIER,
-  SPEED_THRUST,
+  ACCEL_MAIN, AGGRO_RANGE, ASSIST, DOCK_RANGE, EXTENT, JUMP_INHIBIT, R_ORIGIN, R_PLAYER,
+  RATE_PITCH, RATE_ROLL, RATE_YAW, SENSOR_MULTIPLIER, SPIN_ACCEL, SPIN_DAMP, SPEED_THRUST,
 } from './scale.ts'
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
@@ -145,6 +145,18 @@ export interface GameState {
    * enemy shot aim at where the player *was*, which is a silent way to make the game trivial.
    */
   velocity: Vec3
+  /**
+   * Angular velocity in the ship's **own** frame: pitch about its right, yaw about its up, roll
+   * about its nose. Radians per second.
+   *
+   * State rather than a per-frame rate, which is the whole fix. Attitude used to be
+   * `rotate(camera, key * 1.4 * dt, …)` on all three axes: the ship snapped to a fixed rate while
+   * a key was down and stopped dead the instant it came up, and every axis shared one number. So
+   * there was no reason to ever roll — yaw turned you just as fast and kept the horizon — and
+   * nothing about the ship had any mass. Rates are per-axis now (`RATE_ROLL` ≫ `RATE_PITCH` ≫
+   * `RATE_YAW`) and reaching or leaving one takes time.
+   */
+  spin: Vec3
   /** Hit flash per craft id, 0..1, decayed each tick. The game's whole "you hit it" feedback. */
   flashes: Record<string, number>
   /** Raised when the player takes damage, so the HUD can shake and redden. */
@@ -218,6 +230,7 @@ export function newGame(space: Space): GameState {
     waypoint: null,
     drive: Hyper.IDLE,
     velocity: { x: 0, y: 0, z: 0 },
+    spin: { x: 0, y: 0, z: 0 },
     flashes: {},
     shake: 0,
     touching: [],
@@ -270,18 +283,49 @@ export interface TickInput {
  * let the enemy act. Moving before burning would let a dry ship travel one free frame; letting
  * the enemy act first would let it shoot a player who has already died this tick.
  */
+/**
+ * Move an angular velocity toward a commanded one, one axis at a time.
+ *
+ * Two rates, not one, and that asymmetry is the feel of the ship. Pushing *toward* a commanded
+ * rate uses `SPIN_ACCEL`; coasting back to rest with the stick centred uses the gentler
+ * `SPIN_DAMP`, so a released control bleeds off over a moment instead of stopping the ship dead.
+ *
+ * Clamped so a step can never overshoot its target — at a large `dt` (an alt-tabbed tab handing
+ * back a half-second frame) a plain `v += a * dt` sails past the commanded rate and the ship
+ * snaps into a spin the player never asked for.
+ */
+function approach(cur: Vec3, cmd: Vec3, dt: number): Vec3 {
+  const step = (c: number, want: number): number => {
+    const rate = want === 0 ? SPIN_DAMP : SPIN_ACCEL
+    const d = want - c
+    const max = rate * dt
+    if (Math.abs(d) <= max) return want
+    return c + Math.sign(d) * max
+  }
+  return { x: step(cur.x, cmd.x), y: step(cur.y, cmd.y), z: step(cur.z, cmd.z) }
+}
+
 export function tick(state: GameState, space: Space, input: TickInput): GameState {
   const { keys, firing, dt, nowMs } = input
   if (state.lost) return state
   const was = state.camera.position
 
   // ── attitude ───────────────────────────────────────────────────────────────
-  const rate = 1.4 * dt
+  //
+  // A commanded *rate* per axis, approached over time rather than snapped to. Holding a key spins
+  // the ship up toward that axis's peak; releasing it lets the rotation bleed off. `SPIN_DAMP` is
+  // lower than `SPIN_ACCEL`, so the ship carries its turn for a moment after the stick is
+  // centred — which is the difference between flying something and pointing a camera.
   let camera = state.camera
-  const pitch = (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)
-  const yaw = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0)
-  const roll = (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0)
-  if (pitch || yaw || roll) camera = rotate(camera, pitch * rate, yaw * rate, roll * rate)
+  const cmd = {
+    x: ((keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)) * RATE_PITCH,
+    y: ((keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0)) * RATE_YAW,
+    z: ((keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0)) * RATE_ROLL,
+  }
+  const spin = approach(state.spin, cmd, dt)
+  if (spin.x || spin.y || spin.z) {
+    camera = rotate(camera, spin.x * dt, spin.y * dt, spin.z * dt)
+  }
 
   // ── throttle as a level ────────────────────────────────────────────────────
   const trim = (keys.has('ArrowUp') ? 1 : 0) - (keys.has('ArrowDown') ? 1 : 0)
@@ -298,16 +342,72 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   if (wantsThrust && !dry) ship = Ship.burn(ship, dt, throttle)
   if (wantsThrust && dry) notice = 'tanks dry — find a depot'
 
+  // ── momentum ───────────────────────────────────────────────────────────────
+  //
+  // Velocity is state. Thrust changes it, it carries the ship, and the ship's nose and its course
+  // are two different things. Position used to be `translate(camera, [0, 0, -speed * dt])` — the
+  // ship was wherever it was pointing, instantly, so turning did not cost anything and there was
+  // no such thing as drifting wide off a hard reversal.
+  //
+  // `ASSIST` is what keeps that flyable: it drags velocity onto the nose so a turn is *followed*
+  // rather than merely watched. See `scale.ts` for why full Newtonian flight is a worse game.
+  const noseV = forward(camera)
+  const rightV = right(camera)
+  const upV = up(camera)
+  const top = Ship.limits(ship).speed
+  let vel = state.velocity
+
   if (effective > 0) {
-    camera = translate(camera, [0, 0, -Ship.limits(ship).speed * effective * dt])
+    vel = {
+      x: vel.x + noseV[0] * ACCEL_MAIN * effective * dt,
+      y: vel.y + noseV[1] * ACCEL_MAIN * effective * dt,
+      z: vel.z + noseV[2] * ACCEL_MAIN * effective * dt,
+    }
   }
   // Lateral thrusters are free of the main drive and cost nothing: they are for docking, and
   // a player unable to line up on a depot because they ran dry is stuck forever.
   const strafe = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)
   const lift = (keys.has('Space') ? 1 : 0) - (keys.has('ShiftLeft') ? 1 : 0)
   if (strafe || lift) {
-    const t = SPEED_THRUST * dt
-    camera = translate(camera, [strafe * t, lift * t, 0])
+    const a = SPEED_THRUST * dt * 2
+    vel = {
+      x: vel.x + (rightV[0] * strafe + upV[0] * lift) * a,
+      y: vel.y + (rightV[1] * strafe + upV[1] * lift) * a,
+      z: vel.z + (rightV[2] * strafe + upV[2] * lift) * a,
+    }
+  }
+  // The assist, and the one condition on it: **a dry ship keeps its momentum.** Damping without
+  // fuel would let a stranded player brake to a stop for free, which is both wrong and the least
+  // interesting reading of running out of fuel.
+  if (!dry) {
+    const want = {
+      x: noseV[0] * top * effective,
+      y: noseV[1] * top * effective,
+      z: noseV[2] * top * effective,
+    }
+    const k = Math.min(1, ASSIST * dt)
+    vel = {
+      x: vel.x + (want.x - vel.x) * k,
+      y: vel.y + (want.y - vel.y) * k,
+      z: vel.z + (want.z - vel.z) * k,
+    }
+  }
+  // Speed ceiling. Applied to the magnitude rather than per axis, or the cap would be higher on a
+  // diagonal than along an axis and the fastest way anywhere would be a corner of the box.
+  const sp = Math.hypot(vel.x, vel.y, vel.z)
+  if (sp > top) {
+    const f = top / sp
+    vel = { x: vel.x * f, y: vel.y * f, z: vel.z * f }
+  }
+  if (vel.x || vel.y || vel.z) {
+    camera = {
+      ...camera,
+      position: [
+        camera.position[0] + vel.x * dt,
+        camera.position[1] + vel.y * dt,
+        camera.position[2] + vel.z * dt,
+      ],
+    }
   }
 
   // ── flying through the furniture ───────────────────────────────────────────
@@ -354,14 +454,13 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
 
   const at = v3(camera.position)
   const nose = v3(forward(camera))
-  // What the ship actually did this tick, including a jump. Enemies lead off this.
-  const velocity: Vec3 = jump.arriveAt
-    ? { x: 0, y: 0, z: 0 }
-    : {
-        x: (camera.position[0] - was[0]) / Math.max(dt, 1e-6),
-        y: (camera.position[1] - was[1]) / Math.max(dt, 1e-6),
-        z: (camera.position[2] - was[2]) / Math.max(dt, 1e-6),
-      }
+  // The ship's real velocity, which enemies lead off. It is integrated state now rather than a
+  // position delta — the delta also picked up collision push-outs and jump translations, so a
+  // ram used to hand every gunner in the sector a lead solution built from a teleport.
+  //
+  // A jump ends with the ship stationary: arriving at a hundredth of a sector per second and
+  // ploughing on through the destination is not an arrival.
+  let velocity: Vec3 = jump.arriveAt ? { x: 0, y: 0, z: 0 } : vel
 
   // ── the player's weapons ───────────────────────────────────────────────────
   let combat = state.combat
@@ -521,6 +620,18 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
       ...camera,
       position: [c.at.x + dir.x * out, c.at.y + dir.y * out, c.at.z + dir.z * out],
     }
+    // Kill the part of the velocity that was carrying the ship *into* the thing it just hit.
+    // Nudging the position clear while leaving the momentum pointed inward flies straight back in
+    // on the next tick — and since a second entry is not charged while `touching`, the result is a
+    // ship pinned inside a hull it is being told it has already left.
+    const into = velocity.x * dir.x + velocity.y * dir.y + velocity.z * dir.z
+    if (into < 0) {
+      velocity = {
+        x: velocity.x - dir.x * into,
+        y: velocity.y - dir.y * into,
+        z: velocity.z - dir.z * into,
+      }
+    }
     // The drive is cut for a fighter-sized impact only. Cutting it inside a capital would strand
     // the ship in the one place it most needs to be able to leave.
     if (!c.spec.capital) throttle = 0
@@ -565,6 +676,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     waypoint: state.waypoint,
     drive: jump.drive,
     velocity,
+    // A jump ends the tumble too: arriving mid-roll from a drive that is supposed to have set the
+    // ship down somewhere is disorienting for no reason anybody chose.
+    spin: jump.arriveAt ? { x: 0, y: 0, z: 0 } : spin,
     flashes,
     shake,
     touching,

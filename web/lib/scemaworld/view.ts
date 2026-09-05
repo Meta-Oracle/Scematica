@@ -13,6 +13,7 @@
 
 import { EXTENT, type Contact, type Node, type Space, type Vec3 } from './generate.ts'
 import { COURSE_CLEAR, COURSE_DASHES, FAR_PLANE } from './scale.ts'
+import { streak } from './arrivals.ts'
 import {
   R_CONTACT, R_CONTACT_SPAN, R_DEPOT, R_DERELICT, R_DOCK, R_LASER, R_MARKER, R_MARKET,
   R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
@@ -557,19 +558,28 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     })
   }
 
-  // Hyperspace entries. A bright streak along the entry vector that draws down as the craft
-  // resolves — long and fierce at the start, collapsing to a point at the moment of arrival. The
-  // shrinking is what makes it read as something *decelerating into* the sector rather than as a
-  // flash: the eye follows the contraction to the place the ship is about to be, which is the one
-  // piece of information the player actually needs from it.
+  const warp: Segment[] = []
+  // Hyperspace entries — see `arrivals.ts::streak`. Drawn as **lines** running back along the
+  // entry vector and converging on the point the craft will occupy, brightening as they close.
+  //
+  // This was one shrinking sphere, and a shrinking sphere at any real distance is a dot that dims:
+  // it carried no bearing, so an arrival told the player something was happening and nothing about
+  // where it had come from or how far away it was. The streaks carry both, because a line has a
+  // direction and a length and a dot has neither.
+  //
+  // The entry point itself still gets a body, but it is now a small core that **grows** into the
+  // arrival rather than a large one that shrinks out of it. The two halves then agree: everything
+  // about the effect converges on one place at the moment the hull appears there.
   for (const a of dyn.arrivals ?? []) {
     const t = Math.max(0, Math.min(1, a.progress))
+    const role: Role = a.faction === 'raider' ? 'warp-hostile' : 'warp-ally'
+    for (const strand of streak(a.at, a.dir, t)) {
+      warp.push({ from: strand.from, to: strand.to, role, alpha: strand.alpha })
+    }
     bodies.push({
       at: a.at,
-      role: a.faction === 'raider' ? 'warp-hostile' : 'warp-ally',
-      // Large at t=0 and a bolt-width sliver at t=1. Floored rather than allowed to reach zero, so
-      // the last frame of an entry is still a mark on screen instead of a gap before the hull.
-      radius: Math.round(R_PHOTON * (1 + (1 - t) * 14)),
+      role,
+      radius: Math.round(R_PHOTON * (0.35 + t * t * 2.4)),
       solid: true,
       label: a.faction === 'raider' ? 'hyperspace entry' : 'patrol arriving',
       facing: a.dir,
@@ -591,7 +601,7 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
     if (dyn.from) bodies.push(...course(dyn.from, dyn.waypoint))
   }
 
-  const segments: Segment[] = []
+  const segments: Segment[] = [...warp]
   for (const l of space.lanes) {
     const a = byId.get(l.from)
     const b = byId.get(l.to)

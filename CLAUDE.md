@@ -880,6 +880,42 @@ Rules the 130 checks carry, each paid for:
   leviathan) and its yield is **stamped at the muzzle**, so a purchase made mid-flight cannot
   retroactively improve a missile. Docks rearm; depots do not, so where you can resupply stays a
   constraint on a route.
+- **The player's ship has mass, on both axes of the word** (`game.ts::tick`, `scale.ts`).
+  Attitude was `rotate(camera, key * 1.4 * dt, …)` on all three axes and position was
+  `translate(camera, [0, 0, -speed * dt])` — the same mistake twice. The ship pointed wherever the
+  keys said instantly and was wherever it pointed instantly, so there was **no reason to ever
+  roll** (yaw turned you just as fast and kept the horizon readable) and no such thing as carrying
+  speed through a turn. Now: angular velocity is state (`GameState.spin`, in the ship's own frame),
+  each axis has its own peak — `RATE_ROLL` ≫ `RATE_PITCH` ≫ `RATE_YAW`, which *is* the handling
+  model, because cheap flat yawing is what makes roll pointless — and reaching or leaving a rate
+  takes time, with `SPIN_DAMP` below `SPIN_ACCEL` so a released control bleeds off. `approach`
+  clamps per step, or a half-second frame from an alt-tabbed tab overshoots the commanded rate and
+  snaps the ship into a spin nobody asked for. Linear velocity is state too: thrust accelerates
+  along the nose, and the nose and the course are two different things. `ASSIST` drags velocity
+  onto the nose so a turn is *followed* rather than merely watched — full Newtonian flight is a
+  different and much worse game where you spend every fight fighting your own momentum — but it
+  runs **only with fuel**, so a dry ship keeps every bit of its momentum and cannot arrest it. The
+  speed cap is on the magnitude, never per axis, or the fastest route anywhere is a diagonal.
+  Velocity is also what enemies lead off, and it is integrated state rather than a position delta
+  now: the delta picked up collision push-outs, so a ram handed every gunner in the sector a lead
+  solution built from a teleport. A ram kills the inward component or the ship flies straight back
+  into the hull it was just nudged out of.
+- **A hyperspace entry is lines, not a shrinking ball** (`arrivals.ts::streak`). It was one sphere
+  that got smaller, and at any real distance a shrinking sphere is a dot that dims: it carried no
+  bearing, so an arrival announced that *something* was happening and nothing about where it came
+  from. An entry is now a bundle of streaks running back along the entry vector and converging on
+  the point the craft will occupy, **brightening** as they close — fading out and then producing a
+  hull reads as two unrelated events. At `t = 1` every strand has collapsed to the arrival point,
+  so there is no gap between the last frame of the entry and the first frame of the ship, and the
+  core body **grows** into the arrival rather than shrinking out of it so both halves agree about
+  where the thing is going to be. `perpBasis` seeds its cross product against `dir`'s *smallest*
+  component: crossing with an axis the vector is nearly parallel to gives a near-zero result whose
+  direction is floating-point noise, so the bundle would flip orientation between frames — but only
+  for entries arriving along an axis, which is exactly the case nobody thinks to look at. A wing's
+  ships are staggered by `WARP_STAGGER_MS`; one shared `dueMs` put three hulls on screen in the
+  same frame, which reads as the sector gaining three ships rather than as a formation dropping
+  out of hyperspace. Nothing here reads the record — an entry looks the same whatever was
+  perceived.
 - **A dogfight is a contest of turn rate against speed, not of hit points** (`classes.ts`,
   `enemy.ts`). Craft have a finite `turn`, fly where they point and cannot strafe; the five
   behaviours (`patrol`/`pursue`/`attack`/`overshoot`/`evade`) and the shot lead all follow from

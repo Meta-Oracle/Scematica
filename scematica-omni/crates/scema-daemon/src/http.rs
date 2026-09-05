@@ -250,7 +250,17 @@ fn read_request(stream: &mut BufReader<&TcpStream>) -> Result<Option<Request>, R
     }))
 }
 
-fn write_response(stream: &mut TcpStream, r: &Response) -> std::io::Result<()> {
+/// Write a response, dropping the body if the request was a `HEAD`.
+///
+/// Stripped **here**, in the one place every response passes through, rather than by each
+/// branch deciding for itself whether its answer carries a body. A branch-by-branch rule is one
+/// a new route silently opts out of, and the whole point of a `HEAD` is that it is the request
+/// somebody sends when they are not supposed to receive the content.
+///
+/// `Content-Length` still reports what a `GET` would return — that is what the header means on
+/// a `HEAD`, and zeroing it would make the response a lie about the resource rather than an
+/// accurate description of a body that is deliberately absent.
+fn write_response(stream: &mut TcpStream, r: &Response, is_head: bool) -> std::io::Result<()> {
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         r.status,
@@ -268,7 +278,9 @@ fn write_response(stream: &mut TcpStream, r: &Response) -> std::io::Result<()> {
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
-    stream.write_all(&r.body)?;
+    if !is_head {
+        stream.write_all(&r.body)?;
+    }
     stream.flush()
 }
 
@@ -303,9 +315,13 @@ where
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
 
         if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+            // The request was never read, so the method is unknown. Sending the body is the
+            // safe side of that: this response describes the server's own load and discloses
+            // nothing about any resource.
             let _ = write_response(
                 &mut stream,
                 &Response::error(503, "busy", "too many concurrent connections"),
+                false,
             );
             continue;
         }
@@ -325,18 +341,24 @@ fn handle_connection<H>(stream: &mut TcpStream, handler: &H)
 where
     H: Fn(Request) -> Response,
 {
+    let mut is_head = false;
     let response = {
         let mut reader = BufReader::new(&*stream);
         match read_request(&mut reader) {
             Ok(None) => return,
-            Ok(Some(req)) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(req)))
-                .unwrap_or_else(|_| {
-                    Response::error(500, "handler_panicked", "the request handler panicked")
-                }),
+            Ok(Some(req)) => {
+                // Captured before the handler runs, so a route that does not know about `HEAD`
+                // — which is all of them, deliberately — still cannot answer one with a body.
+                is_head = req.method == "HEAD";
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(req)))
+                    .unwrap_or_else(|_| {
+                        Response::error(500, "handler_panicked", "the request handler panicked")
+                    })
+            }
             Err(e) => e,
         }
     };
-    let _ = write_response(stream, &response);
+    let _ = write_response(stream, &response, is_head);
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -411,6 +433,48 @@ mod tests {
             !buf.to_lowercase().contains("access-control-allow"),
             "a CORS allow header would let any web page read this: {buf}"
         );
+    }
+
+    #[test]
+    fn head_never_returns_a_body() {
+        // On every route, without exception, because the stripping is in `write_response` and
+        // not in any handler. A handler that answers a HEAD with content is the normal case —
+        // none of them know the method — so the guarantee has to sit below all of them.
+        let listener = TcpListener::bind(loopback(0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            serve(listener, |_req| {
+                Response::json(200, r#"{"secret":"this must not be written"}"#)
+            })
+            .unwrap();
+        });
+        let mut s = TcpStream::connect(loopback(port)).unwrap();
+        s.write_all(b"HEAD /world/abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+        let mut buf = String::new();
+        s.read_to_string(&mut buf).unwrap();
+
+        assert!(buf.starts_with("HTTP/1.1 200"), "{buf}");
+        assert!(!buf.contains("this must not be written"), "a HEAD returned a body: {buf}");
+        // Headers still describe what a GET would return — that is what Content-Length means
+        // on a HEAD, and zeroing it would misdescribe the resource rather than the body.
+        assert!(buf.contains("Content-Length: 37"), "the length stopped describing the resource: {buf}");
+        assert!(buf.ends_with("\r\n\r\n"), "something followed the headers: {buf:?}");
+    }
+
+    #[test]
+    fn the_same_route_still_returns_a_body_to_a_get() {
+        // The other half: a stripping rule that also strips GETs is not a fix, and nothing
+        // above would notice, because every assertion in the HEAD test would still pass.
+        let listener = TcpListener::bind(loopback(0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            serve(listener, |_req| Response::json(200, r#"{"ok":true}"#)).unwrap();
+        });
+        let mut s = TcpStream::connect(loopback(port)).unwrap();
+        s.write_all(b"GET /world/abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+        let mut buf = String::new();
+        s.read_to_string(&mut buf).unwrap();
+        assert!(buf.contains(r#"{"ok":true}"#), "a GET lost its body: {buf}");
     }
 
     #[test]

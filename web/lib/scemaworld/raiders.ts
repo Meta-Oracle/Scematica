@@ -228,3 +228,22 @@ export function raidersOf(seed: string): Contact[] {
  * thing you can do in the sector becomes a chore with a respawn timer.
  */
 export const RAIDER_FLOOR = Math.round(WINGS * PER_WING * 0.6)
+
+/**
+ * How many raider fighters the sector tries to get back to.
+ *
+ * **The floor is a trigger, not a target**, and conflating the two is what made the sector
+ * permanently emptier after every fight. Reinforcement fired only below `RAIDER_FLOOR` and
+ * stopped the moment it was reached, so a player who cleared thirty raiders got twenty-nine of
+ * them back and the sector settled at 43 of the 72 it opened with — for the rest of the session,
+ * with nothing anywhere saying so. Measured: a purged sector recovered to exactly 43 and sat
+ * there.
+ *
+ * So the target is the full complement and the floor keeps a different job: below it the sector
+ * is contested and reinforcement **surges** (see `RAIDER_SURGE_MS`). Clearing a region is still
+ * worth doing, because what it buys is time rather than a permanent dent — the deficit comes back
+ * over minutes, which is a pace, where a dent is just less game.
+ *
+ * The capital garrison is still never replaced, which is why this counts fighters only.
+ */
+export const RAIDER_STRENGTH = WINGS * PER_WING

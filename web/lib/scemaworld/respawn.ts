@@ -42,8 +42,11 @@
 import type { Space, Vec3 } from './generate.ts'
 import * as Enemy from './enemy.ts'
 import type { Swarm } from './enemy.ts'
-import { marshalReinforcement, MARSHAL_STRENGTH } from './factions.ts'
-import { raiderWing, RAIDER_FLOOR, WINGS } from './raiders.ts'
+import {
+  civilianReinforcement, marshalReinforcement, strengthOf,
+  MARSHAL_STRENGTH, TRAFFIC,
+} from './factions.ts'
+import { raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH, WINGS } from './raiders.ts'
 import { ARRIVAL_MS, arrivalPoint, landed, type Arrival } from './arrivals.ts'
 import { AGGRO_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
 
@@ -84,8 +87,28 @@ const WARP_WING = 3
  */
 const WARP_STAGGER_MS = 220
 
+/**
+ * Milliseconds between raider wings when the sector is **contested** — below `RAIDER_FLOOR`.
+ *
+ * A gutted sector coming back at the cruising rate takes a quarter of an hour, which nobody
+ * waits through: the measured recovery from a full purge reached the old target in nine minutes
+ * and would have needed fifteen to reach a full complement. Surging below the floor makes the
+ * deficit close at a pace somebody actually sees, while the ordinary trickle above it keeps a
+ * cleared region cleared for long enough to be worth having cleared.
+ */
+export const RAIDER_SURGE_MS = 8_000
+
 /** Milliseconds between marshal replacements. Shorter: they arrive singly, not four at a time. */
 export const MARSHAL_INTERVAL_MS = 13_000
+
+/**
+ * Milliseconds between civilian replacements.
+ *
+ * Traffic is the largest population in the sector and the one with no defence, so it needs the
+ * shortest interval of the three or it never keeps up with what the raiders take. It arrives
+ * singly: a wing of couriers is not a thing.
+ */
+export const TRAFFIC_INTERVAL_MS = 7_000
 
 /**
  * How many waves of each have been raised, and when the next may be.
@@ -97,8 +120,16 @@ export const MARSHAL_INTERVAL_MS = 13_000
 export interface Waves {
   raiders: number
   marshals: number
+  /**
+   * Civilian waves raised, per `faction:class`.
+   *
+   * A record rather than a field per faction, because the roster is data and a shape that has to
+   * grow a field every time somebody adds a class is a shape that stops being updated.
+   */
+  civilians: Record<string, number>
   nextRaiderMs: number
   nextMarshalMs: number
+  nextTrafficMs: number
   /**
    * Craft mid-warp: drawn, not yet in the swarm.
    *
@@ -110,7 +141,15 @@ export interface Waves {
 }
 
 export function newWaves(): Waves {
-  return { raiders: WINGS, marshals: 0, nextRaiderMs: -1e9, nextMarshalMs: -1e9, arriving: [] }
+  return {
+    raiders: WINGS,
+    marshals: 0,
+    civilians: {},
+    nextRaiderMs: -1e9,
+    nextMarshalMs: -1e9,
+    nextTrafficMs: -1e9,
+    arriving: [],
+  }
 }
 
 /**
@@ -134,6 +173,16 @@ function bearing(seed: string, tag: string, n: number): Vec3 {
   const z = (((h >>> 10) % 19) - 9) / 9
   const l = Math.hypot(x, y, z) || 1
   return { x: x / l, y: y / l, z: z / l }
+}
+
+/** The wave-counter key for one roster line. */
+function keyOf(faction: string, klass: string): string {
+  return `${faction}:${klass}`
+}
+
+/** Which class a civilian faction flies, or null if it is not one the sector tops up. */
+function classOfTraffic(faction: string): (typeof TRAFFIC)[number]['klass'] | null {
+  return TRAFFIC.find((t) => t.faction === faction)?.klass ?? null
 }
 
 /** Live craft of a faction, counting only a given class — capitals are excluded from a floor. */
@@ -172,6 +221,8 @@ export function replenish(
   let marshals = waves.marshals
   let nextRaiderMs = waves.nextRaiderMs
   let nextMarshalMs = waves.nextMarshalMs
+  let nextTrafficMs = waves.nextTrafficMs ?? -1e9
+  let civilians = waves.civilians ?? {}
 
   // ── anything that finished warping in becomes a craft ──────────────────────
   const due = arriving.filter((a) => landed(a, nowMs))
@@ -187,12 +238,26 @@ export function replenish(
           .slice(0, 1)
           .map((c) => ({ ...c, id: a.id, at: a.at }))
         out = Enemy.reinforce(out, Enemy.swarmOf(one, seed).craft)
-      } else {
+      } else if (a.faction === 'marshal') {
         const civ = marshalReinforcement(space, seed, marshals, a.at, 0)
         out = Enemy.reinforce(
           out,
           Enemy.withTraffic({ craft: [], shots: [] }, [{ ...civ, id: a.id, at: a.at }]).craft,
         )
+      } else {
+        // Traffic. It arrives with a destination, so a courier that drops out of hyperspace next
+        // to you immediately sets off for somewhere — which is the difference between the sector
+        // gaining a ship and the sector gaining a delivery.
+        const klass = classOfTraffic(a.faction)
+        if (klass) {
+          const civ = civilianReinforcement(
+            space, seed, a.faction, klass, civilians[keyOf(a.faction, klass)] ?? 0, a.at, 0,
+          )
+          out = Enemy.reinforce(
+            out,
+            Enemy.withTraffic({ craft: [], shots: [] }, [{ ...civ, id: a.id, at: a.at }]).craft,
+          )
+        }
       }
     }
   }
@@ -200,10 +265,16 @@ export function replenish(
   // ── open a new entry when the sector is short ──────────────────────────────
   // Counted against what is already **on its way** as well as what is flying, or a wing is ordered
   // several times over while the first of it is still materialising.
-  const pending = (f: 'raider' | 'marshal') => arriving.filter((a) => a.faction === f).length
+  const pending = (f: string) => arriving.filter((a) => a.faction === f).length
 
   // Fighters only. A dead capital is not a shortfall — see rule 2.
-  if (nowMs >= nextRaiderMs && countOf(swarm, 'raider', false) + pending('raider') < RAIDER_FLOOR) {
+  //
+  // Against `RAIDER_STRENGTH`, the **full** complement, not `RAIDER_FLOOR`. The floor used to be
+  // both the trigger and the target, so a cleared sector came back to 60% of what it started with
+  // and stayed there: measured at 43 of 72, permanently, with nothing saying so. The floor now
+  // decides the *pace* instead — below it the sector is contested and reinforcement surges.
+  const shortRaiders = countOf(swarm, 'raider', false) + pending('raider')
+  if (nowMs >= nextRaiderMs && shortRaiders < RAIDER_STRENGTH) {
     const dir = bearing(seed, ':raider-entry:', raiders)
     // A wing arrives as a wing: several entries at once along one bearing, so what the player sees
     // is a formation dropping out of hyperspace rather than a ship appearing.
@@ -220,7 +291,7 @@ export function replenish(
     }
     arriving = [...arriving, ...wing]
     raiders += 1
-    nextRaiderMs = nowMs + RAIDER_INTERVAL_MS
+    nextRaiderMs = nowMs + (shortRaiders < RAIDER_FLOOR ? RAIDER_SURGE_MS : RAIDER_INTERVAL_MS)
     notice = 'hyperspace signature — raider wing inbound'
   }
 
@@ -246,9 +317,62 @@ export function replenish(
     notice = notice ?? 'hyperspace signature — patrol inbound'
   }
 
+  // ── traffic ────────────────────────────────────────────────────────────────
+  //
+  // The population that had no replenishment path at all. Raiders hunt couriers and freighters,
+  // so a sector left running lost all of both — 34 and 14 down to zero, permanently — and the two
+  // factions that make the place look inhabited quietly stopped existing. Nothing anywhere said
+  // so, because nothing was measuring it: the sector still had ships in it, they were just all
+  // shooting at each other.
+  //
+  // **The faction furthest below its roster strength goes first**, rather than a fixed order.
+  // Round-robin would spend a slot on a faction that is one short while another is wiped out, and
+  // the wiped-out one is the one you can see is missing.
+  if (nowMs >= nextTrafficMs) {
+    let worst: { faction: string; klass: string; deficit: number } | null = null
+    for (const t of TRAFFIC) {
+      const want = strengthOf(t.faction, t.klass)
+      const have = swarm.craft.filter(
+        (c) => c.alive && c.faction === t.faction && !c.spec.capital,
+      ).length
+      const deficit = want - (have + pending(t.faction))
+      if (deficit > 0 && (!worst || deficit > worst.deficit)) {
+        worst = { faction: t.faction, klass: t.klass, deficit }
+      }
+    }
+    if (worst) {
+      const k = keyOf(worst.faction, worst.klass)
+      const n = civilians[k] ?? 0
+      arriving = [
+        ...arriving,
+        {
+          id: `${worst.faction}:warp:${n}`,
+          faction: worst.faction as Arrival['faction'],
+          at: arrivalPoint(playerAt, playerFacing, bearing(seed, `:${k}-spread:`, n), 0.95),
+          dir: bearing(seed, `:${k}-entry:`, n),
+          dueMs: nowMs + ARRIVAL_MS,
+        },
+      ]
+      civilians = { ...civilians, [k]: n + 1 }
+      nextTrafficMs = nowMs + TRAFFIC_INTERVAL_MS
+      // Never the headline. A hostile wing and a patrol are both things the player has to decide
+      // about; a courier arriving is the sector working, and a notice for it would push the two
+      // that matter off the screen.
+      notice = notice ?? null
+    }
+  }
+
   return {
     swarm: out,
-    waves: { raiders, marshals, nextRaiderMs, nextMarshalMs, arriving },
+    waves: {
+      raiders,
+      marshals,
+      civilians,
+      nextRaiderMs,
+      nextMarshalMs,
+      nextTrafficMs,
+      arriving,
+    },
     notice,
   }
 }

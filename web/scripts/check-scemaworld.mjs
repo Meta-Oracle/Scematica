@@ -38,6 +38,7 @@ import {
 } from '../lib/scemaworld/collide.ts'
 import { gridFor, NOTICE_MS, sensors } from '../lib/scemaworld/game.ts'
 import { hostileTo, routeNodes, trafficOf } from '../lib/scemaworld/factions.ts'
+import * as Factions from '../lib/scemaworld/factions.ts'
 import {
   build as navBuild, pick as navPick, ZOOMS as NAV_ZOOMS, DEFAULT_ZOOM as NAV_DEFAULT_ZOOM,
 } from '../lib/scemaworld/navmap.ts'
@@ -86,7 +87,7 @@ import { shapeOf, LANE_ALPHA } from '../lib/scemaworld/view.ts'
 import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../lib/scemaworld/game.ts'
 import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
-import { raidersOf, raiderWing, RAIDER_FLOOR } from '../lib/scemaworld/raiders.ts'
+import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
 import * as Arrivals from '../lib/scemaworld/arrivals.ts'
 import {
@@ -4409,6 +4410,136 @@ check('speed is capped on the magnitude, not per axis', () => {
   const g = flyFor(s, ['ArrowRight', 'Space'], 600, 1 / 60, { ...newGame(s), throttle: 1 })
   const sp = Math.hypot(g.velocity.x, g.velocity.y, g.velocity.z)
   assert(sp <= topSpeed(g.ship.levels?.engine ?? 0) + 1e-6, `reached ${sp} on a diagonal`)
+})
+
+// ── the sector repopulates, all of it ────────────────────────────────────────
+
+/** Live non-capital craft per faction, which is what every floor and strength counts. */
+function censusOf(g) {
+  const out = {}
+  for (const c of g.swarm.craft) {
+    if (!c.alive || c.spec.capital) continue
+    out[c.faction] = (out[c.faction] ?? 0) + 1
+  }
+  return out
+}
+
+/**
+ * Run the sector forward with an observer who cannot die.
+ *
+ * `tick` returns immediately once `lost` is set, so a probe pilot who gets shot freezes the whole
+ * simulation — every counter stops and the sector looks like it has stopped repopulating when in
+ * fact nothing is running at all. That cost a diagnosis once already.
+ */
+function observe(s, seconds, from = null) {
+  let g = from ?? newGame(s)
+  const dt = 1 / 20
+  for (let i = 1; i <= Math.round(seconds / dt); i += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt, nowMs: i * dt * 1000 })
+    g = { ...g, lost: false, ship: { ...g.ship, hull: 9e9, shield: 9e9 } }
+  }
+  return g
+}
+
+const purge = (g) => ({
+  ...g,
+  swarm: { ...g.swarm, craft: g.swarm.craft.map((c) => (c.spec.capital ? c : { ...c, alive: false })) },
+})
+
+check('a purged sector comes back to full strength, not to the floor', () => {
+  // The floor was the trigger AND the target, so clearing thirty raiders returned twenty-nine of
+  // them and the sector settled at 43 of the 72 it opened with — permanently, for the rest of the
+  // session, with nothing saying so. Measured before the fix: recovery stopped dead on 43.
+  const s = generate(world, digest)
+  const g = observe(s, 720, purge(newGame(s)))
+  const c = censusOf(g)
+  assert(
+    c.raider >= RAIDER_STRENGTH * 0.95,
+    `raiders recovered to ${c.raider} of ${RAIDER_STRENGTH}`,
+  )
+  assert(c.raider > RAIDER_FLOOR, 'recovery stopped at the floor, which is a trigger and not a target')
+})
+
+check('traffic comes back too, which it never used to at all', () => {
+  // Couriers and freighters had no replenishment path of any kind. Raiders hunt them, so a sector
+  // left running lost every one — 34 and 14 down to zero, permanently — and the two factions that
+  // make the place look inhabited quietly stopped existing. Nothing said so, because the sector
+  // still had plenty of ships in it; they were all just shooting at each other.
+  const s = generate(world, digest)
+  const g = observe(s, 720, purge(newGame(s)))
+  const c = censusOf(g)
+  for (const t of Factions.TRAFFIC) {
+    const want = Factions.strengthOf(t.faction, t.klass)
+    assert(want > 0, `${t.faction} has no roster strength`)
+    assert(c[t.faction] >= want * 0.9, `${t.faction} recovered to ${c[t.faction] ?? 0} of ${want}`)
+  }
+})
+
+check('the patrol comes back, and the capitals on both sides do not', () => {
+  // The one thing that must NOT repopulate. A leviathan you spent four minutes killing is the
+  // only lasting mark you can leave on the sector, and a respawn timer turns it into a chore.
+  const s = generate(world, digest)
+  const start = newGame(s)
+  const capsAt = (g) => g.swarm.craft.filter((c) => c.alive && c.spec.capital).length
+  const before = capsAt(start)
+  assert(before > 0, 'no capitals to begin with')
+
+  const killed = {
+    ...start,
+    swarm: { ...start.swarm, craft: start.swarm.craft.map((c) => (c.spec.capital ? { ...c, alive: false } : c)) },
+  }
+  const after = observe(s, 600, killed)
+  assert(capsAt(after) === 0, `${capsAt(after)} capitals came back`)
+  // While the fighters around them did.
+  assert(censusOf(after).marshal >= Factions.MARSHAL_STRENGTH * 0.9, 'the patrol did not recover')
+})
+
+check('a full sector is left alone', () => {
+  // Reinforcement targets a strength rather than pouring ships in forever. An unbounded top-up
+  // would turn a quiet sector into a traffic jam over a long session, and the symptom would be
+  // the framerate rather than anything legible.
+  const s = generate(world, digest)
+  const g = observe(s, 300)
+  const c = censusOf(g)
+  assert(c.raider <= RAIDER_STRENGTH + 8, `raiders overshot to ${c.raider}`)
+  for (const t of Factions.TRAFFIC) {
+    const want = Factions.strengthOf(t.faction, t.klass)
+    assert((c[t.faction] ?? 0) <= want + 2, `${t.faction} overshot to ${c[t.faction]} of ${want}`)
+  }
+})
+
+check('a contested sector is reinforced faster than a quiet one', () => {
+  // The floor keeps a job: below it the sector is in trouble and reinforcement surges. Without it
+  // a gutted sector takes a quarter of an hour to come back, which nobody waits through.
+  assert(
+    Respawn.RAIDER_SURGE_MS < Respawn.RAIDER_INTERVAL_MS,
+    'the surge interval is not shorter than the cruise interval',
+  )
+  const s = generate(world, digest)
+  const gutted = observe(s, 120, purge(newGame(s)))
+  const light = observe(s, 120, {
+    ...newGame(s),
+    // Two short of full: above the floor, so the trickle rate applies.
+    swarm: {
+      ...newGame(s).swarm,
+      craft: newGame(s).swarm.craft.map((c, i) => (c.faction === 'raider' && !c.spec.capital && i % 37 === 0 ? { ...c, alive: false } : c)),
+    },
+  })
+  const gained = censusOf(gutted).raider
+  assert(gained > 20, `a gutted sector only recovered ${gained} in two minutes`)
+  assert(censusOf(light).raider <= RAIDER_STRENGTH + 8, 'a nearly-full sector was flooded')
+})
+
+check('the strength table is the roster, not a second copy of it', () => {
+  // `MARSHAL_STRENGTH` was a literal 18 sitting beside a roster line that also said 18: two places
+  // to change, and one of them silently wins.
+  assert(
+    Factions.MARSHAL_STRENGTH === Factions.strengthOf('marshal', 'marshal'),
+    'the marshal strength has drifted from the roster',
+  )
+  for (const t of Factions.TRAFFIC) {
+    assert(Factions.strengthOf(t.faction, t.klass) > 0, `${t.faction} is topped up toward zero`)
+  }
 })
 
 await Promise.all(pending)

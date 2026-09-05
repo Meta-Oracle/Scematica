@@ -85,7 +85,36 @@ const ROSTER: { faction: Exclude<Faction, 'raider'>; klass: ClassId; count: numb
  * gone, and respawning one would make killing it meaningless in the one place the sector has
  * something at stake.
  */
-export const MARSHAL_STRENGTH = 18
+export const MARSHAL_STRENGTH = strengthOf('marshal', 'marshal')
+
+/**
+ * How many of one class of one faction the sector tries to keep flying, read off `ROSTER`.
+ *
+ * Derived rather than restated. `MARSHAL_STRENGTH` used to be a separate `18` sitting next to a
+ * roster line that also said 18, which is two places to change and one of them silently wins.
+ * Capitals are excluded by the callers, not here — the roster is the count that was placed, and
+ * whether a thing is replaced is a different decision from how many there were.
+ */
+export function strengthOf(faction: Faction, klass: ClassId): number {
+  return ROSTER.find((e) => e.faction === faction && e.klass === klass)?.count ?? 0
+}
+
+/**
+ * The civilian classes the sector tops back up, and how many of each.
+ *
+ * **Traffic was never replenished at all.** Couriers and freighters were placed once at
+ * generation and that was the whole of it: raiders hunt them, so a sector left running long
+ * enough simply ran out of civilians — measured at 34 couriers and 14 freighters down to zero,
+ * permanently, with no path back. The two factions the game uses to make the sector feel
+ * inhabited quietly stopped existing, and nothing said so.
+ *
+ * Marshals are not in this list because they have their own timer: a patrol replacement is a
+ * response to violence and arrives on its own cadence, where traffic is just traffic.
+ */
+export const TRAFFIC: { faction: Faction; klass: ClassId }[] = [
+  { faction: 'courier', klass: 'courier' },
+  { faction: 'freighter', klass: 'freighter' },
+]
 
 /** A ship the sector placed, with somewhere it is going. */
 export interface Civilian {
@@ -183,14 +212,36 @@ export function marshalReinforcement(
   awayFrom: Vec3,
   clearance: number,
 ): Civilian {
+  return civilianReinforcement(space, seed, 'marshal', 'marshal', index, awayFrom, clearance)
+}
+
+/**
+ * A replacement civilian of any class, placed and given somewhere to go.
+ *
+ * Generalised from the marshal-only version so traffic can be topped up the same way. The stream
+ * is keyed by faction *and* class as well as by the wave number: sharing one stream across
+ * factions would make a courier's replacement position a function of how many freighters had
+ * died, which is both wrong and untraceable when it goes wrong.
+ */
+export function civilianReinforcement(
+  space: Space,
+  seed: string,
+  faction: Faction,
+  klass: ClassId,
+  index: number,
+  awayFrom: Vec3,
+  clearance: number,
+): Civilian {
   // Its own stream, keyed by the wave number, so a reinforcement never draws from the stream the
   // initial placement used — reusing it would make the first replacement land exactly where a
   // dead one started.
   const rng = new Rng(seed.slice(24, 32) || seed.slice(16, 24) || seed)
-  const route = routeNodes(space, 'marshal')
+  const route = routeNodes(space, faction)
   // Advance the stream deterministically to this wave's slot, so wave 7 is wave 7 whether it is
-  // raised at four minutes or forty.
-  for (let i = 0; i < index * 3; i += 1) rng.below(1024)
+  // raised at four minutes or forty. The faction and class are folded in so two factions
+  // replacing their seventh loss do not both land in the same place.
+  const offset = [...`${faction}:${klass}`].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 997, 7)
+  for (let i = 0; i < offset + index * 3; i += 1) rng.below(1024)
 
   const span = EXTENT * 2
   let at = {
@@ -212,9 +263,9 @@ export function marshalReinforcement(
   return {
     // `+` rather than `:` before the wave number, so a reinforcement id can never collide with a
     // roster id however many of either there are.
-    id: `marshal:marshal+${index}`,
-    faction: 'marshal',
-    spec: CLASSES.marshal,
+    id: `${faction}:${klass}+${index}`,
+    faction,
+    spec: CLASSES[klass],
     at,
     destination: route.length > 0 ? route[index % route.length].id : null,
   }

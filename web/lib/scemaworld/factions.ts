@@ -38,6 +38,7 @@ import type { Node, Space, Vec3 } from './generate.ts'
 import { servicesOf } from './generate.ts'
 import { Rng } from '../omni/fractal.ts'
 import { EXTENT, SECTOR_REACH } from './scale.ts'
+import { SCATTER_PULL, SPAWN_STANDOFF, scatter } from './raiders.ts'
 import { CLASSES, type ClassId, type ClassSpec } from './classes.ts'
 
 export type Faction = 'raider' | 'courier' | 'freighter' | 'marshal'
@@ -168,18 +169,11 @@ export function trafficOf(space: Space, seed: string): Civilian[] {
             y: start.at.y + rng.below(EXTENT / 40) - EXTENT / 80,
             z: start.at.z + rng.below(EXTENT / 40) - EXTENT / 80,
           }
-        : {
-            // The no-route case, which is every marshal and every capital: scattered across the
-            // sector rather than across one `EXTENT`. The box used to be ±1 extent, and once the
-            // sector grew to ±6 that quietly became "the middle of the map" — the patrol was
-            // placed in a small central cube while the raiders it exists to hunt were spread over
-            // fifty times the volume, so the two populations barely overlapped and the ambient war
-            // stopped. Three checks caught it at once, all of them about the same thing: marshals
-            // killing raiders with nobody watching.
-            x: rng.below(SECTOR_REACH * 2) - SECTOR_REACH,
-            y: Math.trunc((rng.below(SECTOR_REACH * 2) - SECTOR_REACH) * 0.7),
-            z: rng.below(SECTOR_REACH * 2) - SECTOR_REACH,
-          }
+        // The no-route case, which is every marshal and every capital. It must use the same
+        // reach and the same pull as `raidersOf`, or the patrol sits where the raiders are not
+        // and the ambient war stops — which is exactly what a mismatched box did, and it cost
+        // three checks all saying the same thing: marshals killing raiders with nobody watching.
+        : scatter(rng, SECTOR_REACH, SCATTER_PULL, SPAWN_STANDOFF)
 
       out.push({
         // The class is in the id because a faction fields more than one now. Without it a
@@ -250,13 +244,8 @@ export function civilianReinforcement(
   const offset = [...`${faction}:${klass}`].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 997, 7)
   for (let i = 0; i < offset + index * 3; i += 1) rng.below(1024)
 
-  // Sized by the sector, not by one extent — same reason as the roster placement above.
-  const span = SECTOR_REACH * 2
-  let at = {
-    x: rng.below(span) - SECTOR_REACH,
-    y: Math.trunc((rng.below(span) - SECTOR_REACH) * 0.7),
-    z: rng.below(span) - SECTOR_REACH,
-  }
+  // Same reach and pull as the roster placement above, for the same reason.
+  let at = scatter(rng, SECTOR_REACH, SCATTER_PULL, SPAWN_STANDOFF)
   // Pushed outward until it clears the player rather than re-rolled, so the loop terminates on
   // the first pass instead of possibly never — the same shape as `raidersOf`'s spawn guard.
   let guard = 0

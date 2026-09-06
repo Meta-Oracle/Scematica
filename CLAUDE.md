@@ -1004,6 +1004,33 @@ Rules the 298 checks carry, each paid for:
   rather than from the nodes a record happened to generate, because a record reporting a larger
   extent grows a larger tree, so scattering across the *measured* volume would sell a producer a
   thinner, safer sector for claiming a bigger world — the `raiders.ts` defect again, inverted.
+- **`Rng.below(n)` is `next() % n` on a 32-bit xorshift, so any `n` past 2³² does nothing.**
+  The draw is then just `next()` — uniform over a range with no relationship to the one asked
+  for. `EXTENT` is 3.2e9, so the ceiling is 1.34 extents and *every* scatter in the game was over
+  it. It shipped twice and produced plausible coordinates both times, which is why nothing failed:
+  at ±1 extent it returned [-1.00, +0.34] (skewed, but near the origin, so the sector looked
+  populated), and at ±5.89 it returned [-5.89, -4.55] — a thin shell with all three axes negative,
+  the whole roster exiled to one corner with nothing inside sensor range of the spawn. Even
+  "marshals fight raiders whether or not anyone is watching" still passed, because both
+  populations were exiled to the *same* corner. **Draw small and scale up** (`fleet.ts::placement`
+  is the pattern; `raiders.ts::scatter` is the shared helper). `Rng` itself must not be widened —
+  `lib/omni/fractal.ts` shares it with the plate renderer, pinned byte-for-byte against Rust by
+  `check:omni`, so a wider `below` changes every minted plate.
+- **A correct uniform scatter still leaves the middle empty, and the middle is where the player
+  starts.** A cube's volume grows as `r²`, so spreading a fixed roster evenly through ±5.89
+  extents puts almost all of it far away. `raiders.ts::scatter` takes a `pull` exponent on the
+  radius and a `floor`, and the raiders and the patrol must use the **same** reach, pull and
+  floor — they are placed by different functions in different modules, which is exactly how they
+  drifted apart before. The tuning is fitted to the old placement *replayed*, rather than to
+  taste: nearest 0.46 extents against its 0.49, median 1.03 against 0.95, and nothing on the
+  sensor board on the first frame, which is a property worth keeping — loading straight into a
+  resolved contact reads as being ambushed by the loading screen.
+- **A radius that scales an un-normalised cube point is not a distance, so a floor on it floors
+  nothing.** A raw cube vector has length 0 to ~1.58, so a draw whose three components all land
+  near zero lands near the origin however large the floor is — measured, a nearest raider at
+  0.241 against a floor of 0.448, with eight inside sensor range at load-in. Normalise the
+  direction by its **largest component** (the cube surface), not by its length (the sphere), or
+  the corner-filling property that motivated a cube in the first place is lost.
 - **A hunter's reach is a fraction of the sector, not a multiple of its own guns.** `MARSHAL_REACH`
   and `CAPITAL_REACH` were multiples of `aggro`, a weapons figure, which happened to cover the
   sector at one size and stopped the moment it changed. Floored at `SECTOR_REACH` now. A raider's

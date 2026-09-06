@@ -89,6 +89,8 @@ import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
 import * as Wallet from '../lib/scemaworld/wallet.ts'
+import * as Raiders from '../lib/scemaworld/raiders.ts'
+import { Rng } from '../lib/omni/fractal.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
 import * as Arrivals from '../lib/scemaworld/arrivals.ts'
 import {
@@ -2783,7 +2785,9 @@ check('a thinned sector fills back up, in view, and not with capitals', () => {
   const emptied = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital).length
   assert(emptied === 0, `${emptied} raider fighters survived the setup`)
 
-  const capitalsBefore = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
+  const capitalsBefore = new Set(
+    Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).map((c) => c.id),
+  )
   let raised = 0
   let sawStreak = false
   for (let f = 0; f < 60 * 400; f += 1) {
@@ -2829,8 +2833,19 @@ check('a thinned sector fills back up, in view, and not with capitals', () => {
   // can leave on the sector. This holds because a capital is *placed* and a fighter is *rolled*
   // (`enemy.ts::swarmOf`); while a wing could roll one, reinforcement handed back the heaviest
   // thing in the sector on a timer.
-  const capitalsAfter = Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).length
-  assert(capitalsAfter === capitalsBefore, 'a capital was respawned')
+  //
+  // Compared **by id, not by count**. Counting also forbids a capital *dying*, which is a
+  // different thing entirely and is now something that happens: once the patrol and the raiders
+  // were scattered over the same volume again, the marshals' own war classes started reaching the
+  // raider garrison, and a leviathan died to them in four hundred seconds of an idle player. That
+  // is the ambient war working — it is what "dreadnoughts firing at each other" asked for — and a
+  // count-equality assertion reported it as `a capital was respawned`, which is the opposite of
+  // what had happened. Measured at the time: one capital died, none appeared.
+  const capitalsAfter = new Set(
+    Enemy.of(g.swarm, 'raider').filter((c) => c.spec.capital).map((c) => c.id),
+  )
+  const reborn = [...capitalsAfter].filter((id) => !capitalsBefore.has(id))
+  assert(reborn.length === 0, `a capital was respawned: ${reborn.join(', ')}`)
 })
 
 check('an arrival is drawn but is not yet a ship', () => {
@@ -4638,6 +4653,93 @@ function fakeStore() {
     set: (k, v) => { map.set(k, v) },
   }
 }
+
+// ── the roster is where the player is, and where the sector is ───────────────
+//
+// The bug these exist for shipped twice and neither time did anything fail. `Rng` is a 32-bit
+// xorshift, so `below(n)` is `next() % n` and for any `n` past 2^32 the modulo does nothing — the
+// draw is just `next()`, uniform over a range unrelated to the one asked for. `EXTENT` is 3.2e9,
+// so the ceiling sits at 1.34 extents and every scatter in the game was over it.
+//
+// It produced plausible coordinates both times, which is why nothing caught it. At ±1 extent it
+// returned [-1.00, +0.34]: skewed, but near the origin, so the sector looked populated. At
+// ±5.89 it returned [-5.89, -4.55] — a thin shell with all three axes negative, the entire roster
+// exiled to one corner, nothing at all within sensor range of the spawn. The suite still passed,
+// including "marshals fight raiders whether or not anyone is watching", because both populations
+// were exiled to the *same* corner.
+
+check('the roster is not exiled to one corner of the sector', () => {
+  // The direct signature of the modulo bug: a scatter that cannot produce a positive coordinate.
+  // Asserted per axis and per sign, because the failure was exactly a sign confinement and a
+  // bounding box alone would have looked fine.
+  const s = generate(world, digest)
+  const pts = [...s.raiders.map((c) => c.at), ...Factions.trafficOf(s, s.seed).map((c) => c.at)]
+  for (const axis of ['x', 'y', 'z']) {
+    assert(
+      pts.some((p) => p[axis] > 0) && pts.some((p) => p[axis] < 0),
+      `every scattered ${axis} has the same sign — the draw range exceeded the RNG's 32 bits`,
+    )
+  }
+})
+
+check('scatter spans the reach it is given, in both directions', () => {
+  // Straight at the helper, at a reach far past the 32-bit ceiling, so a future caller that
+  // reintroduces a bare `below(huge)` is caught here rather than by somebody noticing the sector
+  // is empty. `pull` of 1 is the uniform case, which is what makes the span assertable.
+  const rng = new Rng('deadbeef')
+  const reach = SCALE.SECTOR_REACH
+  let lo = Infinity
+  let hi = -Infinity
+  for (let i = 0; i < 4000; i += 1) {
+    const p = Raiders.scatter(rng, reach, 1, 0)
+    lo = Math.min(lo, p.x)
+    hi = Math.max(hi, p.x)
+  }
+  assert(hi > reach * 0.9, `scatter never reached past ${(hi / reach).toFixed(2)} of its reach`)
+  assert(lo < -reach * 0.9, `scatter never reached below ${(lo / reach).toFixed(2)} of its reach`)
+})
+
+check('there is something to meet at the spawn point', () => {
+  // What the enlarged sector actually cost a player, and the thing a bounding-box check misses:
+  // a roster spread correctly but *uniformly* through a cube still leaves the middle empty,
+  // because a cube's volume grows as r^2 and the middle is where the player starts. Measured at
+  // the regression: zero hostiles within sensor range and zero within a whole extent.
+  const s = generate(world, digest)
+  const d = (p) => Math.hypot(p.x, p.y, p.z)
+
+  // Reachable: a good share of the roster within a single extent of the spawn, so the first
+  // encounter is a short flight rather than a commute. The regression had *zero* here.
+  const withinOne = s.raiders.filter((c) => d(c.at) < EXTENT).length
+  assert(withinOne > 8, `only ${withinOne} hostiles within an extent of the spawn`)
+
+  // And not *on* the player. The two pull against each other and this pair is the whole of the
+  // tuning: the board is clear on the first frame — the property the original placement had, and
+  // worth keeping, because loading straight into a resolved contact reads as being ambushed by
+  // the loading screen — and the nearest wing is a short flight beyond it.
+  const sensor = SCALE.AGGRO_RANGE * SCALE.SENSOR_MULTIPLIER
+  const closest = Math.min(...s.raiders.map((c) => d(c.at)))
+  assert(
+    closest >= sensor,
+    `a hostile is resolved on the sensor board at load-in, ${(closest / EXTENT).toFixed(3)} extents out`,
+  )
+})
+
+check('the patrol is scattered where the raiders are', () => {
+  // The two populations have to overlap or the ambient war stops. They are placed by different
+  // functions in different modules, which is precisely how they drifted apart before.
+  const s = generate(world, digest)
+  const d = (p) => Math.hypot(p.x, p.y, p.z)
+  const med = (xs) => xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+  const raiders = med(s.raiders.map((c) => d(c.at)))
+  const patrol = med(
+    Factions.trafficOf(s, s.seed).filter((c) => c.faction === 'marshal').map((c) => d(c.at)),
+  )
+  const ratio = patrol / raiders
+  assert(
+    ratio > 0.3 && ratio < 3,
+    `the patrol sits ${ratio.toFixed(1)}x as far out as the raiders it hunts`,
+  )
+})
 
 // ── the account survives the tab ─────────────────────────────────────────────
 //

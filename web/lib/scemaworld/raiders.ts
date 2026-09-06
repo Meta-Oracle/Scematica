@@ -50,6 +50,126 @@ import { AGGRO_RANGE, SECTOR_REACH } from './scale.ts'
 const ORIGIN: Vec3 = { x: 0, y: 0, z: 0 }
 
 /**
+ * The resolution a scattered coordinate is drawn at. See `scatter`.
+ *
+ * Small enough that `Rng.below` is nowhere near its ceiling, and fine enough that a millionth of
+ * the sector is far below anything a player could perceive as a grid.
+ */
+const FRACTION = 1_000_000
+
+/** A seed-derived fraction in [0, 1). One draw, so callers can count their draws. */
+const frac = (rng: Rng): number => rng.below(FRACTION) / FRACTION
+
+/**
+ * A seed-derived point in the sector, pulled toward the middle.
+ *
+ * ## The bug this exists to fix, which shipped twice
+ *
+ * `Rng` is a **32-bit** xorshift: `next()` cannot exceed 4,294,967,295, and `below(n)` is
+ * `next() % n`. So for any `n` above 2^32 the modulo does nothing at all and the draw is simply
+ * `next()` — uniform over a range that has no relationship to the one the caller asked for.
+ *
+ * `EXTENT` is 3.2e9, so this ceiling sits at about 1.34 extents and *every* scatter here was over
+ * it. The failure was invisible both times because it produces plausible coordinates:
+ *
+ *   * `below(EXTENT * 2) - EXTENT` asked for ±1 extent and returned [-1.00, +0.34] — skewed, but
+ *     close to the origin, so the sector looked populated and nobody had reason to look.
+ *   * `below(SECTOR_REACH * 2) - SECTOR_REACH` asked for ±5.89 and returned [-5.89, -4.55]: a thin
+ *     shell in one corner, all three axes negative. Measured, the nearest raider sat 1.9 extents
+ *     from the spawn and the median 8.5, with nothing whatsoever inside sensor range. The whole
+ *     roster had been exiled to a corner of the map.
+ *
+ * No check caught either, because the suite asserts counts, clearance from the spawn, and that
+ * marshals eventually find raiders — and the last of those still passed, since both populations
+ * were exiled to the *same* corner.
+ *
+ * `Rng` itself is deliberately not touched: `lib/omni/fractal.ts` shares it with the plate
+ * renderer, whose output is pinned byte-for-byte against Rust by `check:omni`. Widening `below`
+ * would change every drawn plate. So the composition happens here, in the caller.
+ *
+ * ## Why the point is pulled inward rather than spread evenly
+ *
+ * Uniform scatter through a cube puts most of its volume *far away* — the shells grow as `r^2`,
+ * so a correct uniform draw over ±5.89 extents still leaves a player at the origin with nothing
+ * nearby to meet. `pull` is the exponent on the radius: 1 is uniform-in-cube, higher values
+ * concentrate the roster near the middle where the player starts, while keeping a tail that
+ * reaches the corners so the outer sector is not bare.
+ *
+ * The shape stays a **cube**, not a sphere, for the reason it always was: the fractal fills a
+ * boxy volume, and a sphere leaves the corners — where the longest branches end — unpopulated.
+ *
+ * Costs **four draws**, one per axis plus one for the radius. Callers that seek deterministically
+ * into this stream by index must count them.
+ */
+export function scatter(rng: Rng, reach: number, pull: number, floor: number): Vec3 {
+  let x = frac(rng) * 2 - 1
+  let y = (frac(rng) * 2 - 1) * 0.7
+  let z = frac(rng) * 2 - 1
+
+  // ## The direction is normalised onto the cube's surface first
+  //
+  // Without this, `floor` is not a floor on anything. A raw cube point has a length between 0 and
+  // ~1.58, so scaling it by a radius makes the radius a *scale factor* rather than a distance,
+  // and a draw whose three components all happen to land near zero lands near the origin however
+  // large the floor is. Measured with the floor already in place: a nearest raider at 0.241
+  // extents against a floor of 0.448, and eight of them inside sensor range at load-in.
+  //
+  // Dividing by the largest component (rather than by the length) puts the direction on the
+  // surface of the **cube**, not the sphere — which is the corner-filling property this wanted in
+  // the first place. Distance is then between `radius` and about 1.58 of it, so the floor holds.
+  const longest = Math.max(Math.abs(x), Math.abs(y), Math.abs(z))
+  if (longest < 1e-9) return { x: Math.trunc(floor), y: 0, z: 0 }
+  x /= longest
+  y /= longest
+  z /= longest
+
+  // The radius runs from `floor` to `reach`, biased by `pull`.
+  const radius = floor + Math.pow(frac(rng), pull) * Math.max(0, reach - floor)
+  return {
+    x: Math.trunc(x * radius),
+    y: Math.trunc(y * radius),
+    z: Math.trunc(z * radius),
+  }
+}
+
+/**
+ * How hard the opening roster is pulled toward the player's starting position.
+ *
+ * Shared by the raiders here and the patrol in `factions.ts` — **the two must match**, or one
+ * population sits where the other is not and the ambient war between them stops happening. That
+ * is not hypothetical: it is what a mismatched scatter volume did, and it cost three checks.
+ *
+ * The value is not a taste call. The placement it replaced was measured by replaying it, 32-bit
+ * truncation and all, and this was fitted to it:
+ *
+ * |  | nearest | p25 | median | on sensors at load-in | max |
+ * |---|---|---|---|---|---|
+ * | the original | 0.49 | 0.70 | 0.95 | 0 | 1.44 |
+ * | this | 0.46 | 0.54 | 1.03 | 0 | 8.00 |
+ *
+ * So the half a player meets is the half they had before — a clear board on the first frame and
+ * the first wing a short flight out — while the tail now runs to the edge of the sector instead
+ * of stopping at 1.44, which is what the corrected sampling buys and what keeps the outer map
+ * from being bare.
+ */
+export const SCATTER_PULL = 4.6
+
+/**
+ * How close to the spawn point the opening roster may be placed.
+ *
+ * Just outside sensor range (`AGGRO_RANGE * SENSOR_MULTIPLIER` is 3.4 of these), which is the
+ * property the original placement had and which reads as deliberate: **you load in with a clear
+ * board and find the sector, rather than loading into a contact.** A first frame with hostiles
+ * already resolved on the sensor panel is indistinguishable from being ambushed by the loading
+ * screen.
+ *
+ * This is a floor on the *placement*, distinct from the `clearance` push-out below, which is a
+ * floor on the result after a wing has been spread around its anchor and which also applies to
+ * respawns, where "the player" is wherever they have flown to.
+ */
+export const SPAWN_STANDOFF = Math.round(AGGRO_RANGE * 4)
+
+/**
  * How many raiders a sector carries, and how they are arranged.
  *
  * A constant, not a rate — see the module note.
@@ -128,24 +248,15 @@ export function raiderWing(
   // `Rng` reads only the first eight hex characters, so appending a suffix would hand the
   // raiders the fractal's own stream. A different slice of the digest gives an independent one.
   const rng = new Rng(seed.slice(8, 16) || seed)
-  // Deterministic seek to this wing's slot. Three draws for the anchor plus four per craft.
-  for (let i = 0; i < wing * (3 + PER_WING * 4); i += 1) rng.below(1024)
+  // Deterministic seek to this wing's slot. Four draws for the anchor (`scatter` costs one per
+  // axis plus one for the radius) plus four per craft.
+  for (let i = 0; i < wing * (4 + PER_WING * 4); i += 1) rng.below(1024)
 
   const out: Contact[] = []
-  // A cube rather than a sphere: the fractal fills a boxy volume, so a sphere would leave the
-  // corners — where the longest branches end — unpopulated.
-  //
-  // Sized by `SECTOR_REACH`, not by `EXTENT`. The box used to be one extent either side, which
-  // covered the sector when the fractal reached 1.55 of them and stopped covering it the moment
-  // the trunk grew: the nodes sprawled to six extents and the entire opening roster stayed
-  // hunched in the middle, leaving nine tenths of the map with nothing in it. `SECTOR_REACH` is
-  // still a constant — see its note on why this may not be measured off the generated tree.
-  const span = SECTOR_REACH * 2
-  let anchor = {
-    x: rng.below(span) - SECTOR_REACH,
-    y: Math.trunc((rng.below(span) - SECTOR_REACH) * 0.7),
-    z: rng.below(span) - SECTOR_REACH,
-  }
+  // Reaches the whole sector and is pulled toward the middle, so a player at the spawn point has
+  // something to meet without the corners being empty. `SECTOR_REACH` is a constant rather than a
+  // measurement of the generated tree — see its note on why that may not be measured off a record.
+  let anchor = scatter(rng, SECTOR_REACH, SCATTER_PULL, SPAWN_STANDOFF)
   // Never within sensor range of the player. At generation that is the spawn point — opening the
   // game already inside an engagement reads as the game being broken before you have touched a
   // control — and on a respawn it is wherever they actually are, because a wing materialising in
@@ -208,13 +319,8 @@ export function raidersOf(seed: string): Contact[] {
 
   // The garrison, on its own stream so adding or removing a capital cannot shuffle the wings.
   const rng = new Rng(seed.slice(4, 12) || seed.slice(8, 16) || seed)
-  const span = SECTOR_REACH * 2
   GARRISON.forEach((klass, i) => {
-    let at = {
-      x: rng.below(span) - SECTOR_REACH,
-      y: Math.trunc((rng.below(span) - SECTOR_REACH) * 0.7),
-      z: rng.below(span) - SECTOR_REACH,
-    }
+    let at = scatter(rng, SECTOR_REACH, SCATTER_PULL, SPAWN_STANDOFF)
     let guard = 0
     // A capital's own aggro range reaches a third of the sector, so it is held much further from
     // the spawn than a fighter wing is. A titan on top of a new player is not a difficulty

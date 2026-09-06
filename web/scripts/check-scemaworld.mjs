@@ -90,6 +90,8 @@ import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
 import * as Wallet from '../lib/scemaworld/wallet.ts'
 import * as Roles from '../lib/scemaworld/roles.ts'
+import * as CLASSES_MOD from '../lib/scemaworld/classes.ts'
+import { ALL_CLASS_IDS } from '../lib/scemaworld/classes.ts'
 import * as Quests from '../lib/scemaworld/quests.ts'
 import { CITADELS } from '../lib/scemaworld/generate.ts'
 import { rearm, PHOTON_PRICE } from '../lib/scemaworld/game.ts'
@@ -1121,7 +1123,13 @@ check('every class trades turn against speed, and none can outrun you', () => {
   const fast = CLASSES.interceptor
   const heavy = CLASSES.destroyer
   assert(fast.turn > heavy.turn * 8, 'the fast one does not turn better than the capital')
-  assert(heavy.hull > fast.hull * 10, 'the capital is not meaningfully tougher')
+  // Against the **ladder**, not a raw hull ratio. Durability is a photon count now (see
+  // `PHOTONS_TO_KILL`), and the old 10x hull ratio was a proxy for "much tougher" that stopped
+  // being meaningful the moment the capitals came down from 96 warheads to 8.
+  assert(
+    CLASSES_MOD.PHOTONS_TO_KILL[heavy.id] >= CLASSES_MOD.PHOTONS_TO_KILL[fast.id] * 4,
+    'the capital is not meaningfully tougher',
+  )
 })
 
 check('a capital holds station instead of chasing', () => {
@@ -1496,14 +1504,21 @@ check('a photon is an event, and a laser is a drip', () => {
   // The buff, stated as the property it is for. One missile has to settle a fighter outright, or
   // a magazine of one is a worse laser with extra steps.
   assert(PHOTON.damage > LASER.damage * 20, `${PHOTON.damage} vs ${LASER.damage}`)
-  assert(PHOTON.damage > CLASSES.gunship.hull + CLASSES.gunship.shield, 'a gunship survives a hit')
-  // And it must **not** settle a war class. A magazine that deletes a leviathan turns the
-  // largest thing in the sector into a keypress.
-  const salvo = PHOTON.damage * photonMagazine('marauder')
-  assert(
-    salvo < CLASSES.leviathan.hull + CLASSES.leviathan.shield,
-    'a full magazine kills a leviathan outright',
-  )
+  // A warhead settles a **fighter** outright. A gunship is a heavy fighter and now takes two, on
+  // purpose — that is the second rung of the ladder, and the reason the tier exists at all.
+  const fighter = CLASSES.lancer
+  assert(PHOTON.damage >= fighter.hull + fighter.shield, 'a fighter survives a hit')
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.gunship === 2, 'a heavy fighter is not two warheads')
+  // And it must not settle a war class **in one keypress**. The old form of this compared a whole
+  // marauder magazine against a leviathan and required the magazine to lose — which was the same
+  // arithmetic that made a titan take 96 warheads, i.e. the thing being fixed. A keypress is one
+  // warhead, so that is what the rule is about: no single round deletes a capital, and killing one
+  // means landing the count the ladder states.
+  for (const id of ['dreadnought', 'leviathan', 'titan']) {
+    const c = CLASSES[id]
+    assert(PHOTON.damage < c.hull + c.shield, `one warhead deletes a ${id}`)
+    assert(CLASSES_MOD.PHOTONS_TO_KILL[id] >= 6, `a ${id} is not a sustained engagement`)
+  }
 })
 
 check('a dock reloads the tubes, because a magazine of one has to come back', () => {
@@ -1908,7 +1923,13 @@ check('the war classes are colossal against everything else', () => {
   assert(CLASSES.destroyer.radius > station * 4, 'a destroyer is not obviously bigger than a station')
   assert(CLASSES.dreadnought.radius > CLASSES.destroyer.radius * 1.6, 'a dreadnought is a big destroyer')
   assert(CLASSES.leviathan.radius > station * 15, 'the largest ship is not colossal')
-  assert(CLASSES.leviathan.hull > CLASSES.interceptor.hull * 200, 'it dies like a fighter')
+  // Size is still a ratio; durability is the ladder. A leviathan is seven warheads against a
+  // fighter's one — colossal to look at and finishable in a single sortie, which is the whole
+  // point of the rebalance.
+  assert(
+    CLASSES_MOD.PHOTONS_TO_KILL.leviathan >= CLASSES_MOD.PHOTONS_TO_KILL.interceptor * 7,
+    'it dies like a fighter',
+  )
 })
 
 check('the class roll covers its whole range', () => {
@@ -2695,12 +2716,20 @@ check('marshals fight raiders whether or not anyone is watching', () => {
   // progress, and the outcome differs depending on whether you were there.
   const s = generate(world, digest)
   let g = newGame(s)
-  const before = Enemy.of(g.swarm, 'raider').length
+  // ## Measured as kills, not as a net headcount
+  //
+  // This compared the raider population before and after, which worked only while reinforcement
+  // was slower than the patrol. At a nine-second interval the sector refills as fast as the
+  // marshals empty it, so a perfectly healthy ambient war reads as `78 -> 78` — a steady state
+  // reported as an absence. Tracking which of the *original* hulls are gone measures what the
+  // patrol actually did, and is immune to whatever the respawn cadence is set to.
+  const originals = new Set(Enemy.of(g.swarm, 'raider').map((c) => c.id))
   for (let f = 0; f < 60 * 150; f += 1) {
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
   }
-  const after = Enemy.of(g.swarm, 'raider').length
-  assert(after < before, `raiders went ${before} -> ${after} with nobody hunting them`)
+  const alive = new Set(Enemy.of(g.swarm, 'raider').map((c) => c.id))
+  const destroyed = [...originals].filter((id) => !alive.has(id)).length
+  assert(destroyed > 0, `not one of ${originals.size} raiders died with nobody hunting them`)
   assert(g.combat.destroyed.length === 0, 'the player was credited with kills it did not make')
 })
 
@@ -3703,7 +3732,13 @@ check('the titan exists, can be rolled, and dwarfs everything', () => {
   for (let i = 0; i < 40_000; i += 1) seen.add(classFor(i).id)
   assert(seen.has('titan'), 'the titan can never be rolled')
   assert(CLASSES.titan.radius > CLASSES.leviathan.radius * 1.5, 'a titan is a large leviathan')
-  assert(CLASSES.titan.hull > CLASSES.leviathan.hull * 3, 'a titan dies like a leviathan')
+  // A titan is a rung above a leviathan rather than three times its hull — the ladder is what
+  // separates them now, and it is a difference a player can feel because it is a difference in
+  // how many rounds they have to land.
+  assert(
+    CLASSES_MOD.PHOTONS_TO_KILL.titan > CLASSES_MOD.PHOTONS_TO_KILL.leviathan,
+    'a titan dies like a leviathan',
+  )
 })
 
 check('a titan threatens by volume of fire, not by a one-shot', () => {
@@ -3772,14 +3807,19 @@ check('yellow fights orange while blue goes about its business', () => {
   // keep flying their routes through it rather than joining in.
   const s = generate(world, digest)
   let g = newGame(s)
-  const raiders0 = Enemy.of(g.swarm, 'raider').length
+  const raiderIds0 = new Set(Enemy.of(g.swarm, 'raider').map((c) => c.id))
   const civ0 = Enemy.of(g.swarm, 'courier').length + Enemy.of(g.swarm, 'freighter').length
   const moved = new Map()
   for (const c of Enemy.of(g.swarm, 'courier')) moved.set(c.id, { ...c.at })
   for (let f = 0; f < 60 * 150; f += 1) {
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
   }
-  assert(Enemy.of(g.swarm, 'raider').length < raiders0, 'nothing fought anything')
+  // Kills, not net population — see the note on the marshal check above. Reinforcement now tops
+  // the sector back up faster than the patrol empties it, which is the sector working rather than
+  // the patrol failing.
+  const stillAlive = new Set(Enemy.of(g.swarm, 'raider').map((c) => c.id))
+  const fell = [...raiderIds0].filter((id) => !stillAlive.has(id)).length
+  assert(fell > 0, 'nothing fought anything')
   // Civilians are unarmed, so they must not be the ones dying in droves either.
   const civ1 = Enemy.of(g.swarm, 'courier').length + Enemy.of(g.swarm, 'freighter').length
   assert(civ1 > civ0 * 0.5, `traffic was wiped out: ${civ0} -> ${civ1}`)
@@ -4795,6 +4835,99 @@ check('the patrol is scattered where the raiders are', () => {
 })
 
 // ── roles and contracts ──────────────────────────────────────────────────────
+
+check('every class dies to the number of photons the ladder states', () => {
+  // Durability used to be raw hull and shield numbers, and they had drifted into a game nobody
+  // could finish: a titan carried 23,000 effective points against a 240-point warhead, so killing
+  // one took **96 photons** — twelve full magazines off the largest hull in the game. A leviathan
+  // took 29 and a dreadnought 10.
+  //
+  // The ladder is the definition now and the statline is derived from it, so this is the check
+  // that keeps the two from separating again. Editing a hull without editing `PHOTONS_TO_KILL`
+  // fails here rather than quietly moving what a magazine is worth.
+  for (const id of ALL_CLASS_IDS) {
+    const c = CLASSES[id]
+    const want = CLASSES_MOD.PHOTONS_TO_KILL[id]
+    assert(want !== undefined, `${id} is missing from PHOTONS_TO_KILL`)
+    const got = Math.ceil((c.hull + c.shield) / PHOTON.damage)
+    assert(got === want, `${id} takes ${got} photons, the ladder says ${want}`)
+  }
+  // The ladder's own shape: strictly increasing by tier, and topping out at the starting magazine
+  // so the largest thing in the sector is beatable by a pilot who has spent nothing.
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.titan === photonMagazine('skiff'), 'a titan is not a full magazine')
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.dreadnought === 6, 'a dreadnought is not six')
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.warfighter === 4, 'a warfighter is not four')
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.gunship === 2, 'a heavy fighter is not two')
+  assert(CLASSES_MOD.PHOTONS_TO_KILL.skiff === 1, 'a fighter is not one')
+})
+
+check('a capital can actually be killed with what a ship carries', () => {
+  // The end-to-end form, because the arithmetic above can be right while the *fight* is still
+  // unwinnable — shields regenerate, and a magazine fired slowly enough loses to the regen. The
+  // photon cooldown is 700ms and shields need a 4.2s lull, so sustained fire never lets them come
+  // back; this asserts that relationship rather than assuming it.
+  const rounds = photonMagazine('skiff')
+  const span = rounds * PHOTON.cooldownMs
+  assert(
+    PHOTON.cooldownMs < SHIELD_DELAY_MS,
+    'a magazine fired at full rate lets shields regenerate between rounds',
+  )
+  for (const id of ['dreadnought', 'leviathan', 'titan']) {
+    const c = CLASSES[id]
+    assert(
+      rounds * PHOTON.damage >= c.hull + c.shield,
+      `a full magazine (${rounds * PHOTON.damage}) cannot kill a ${id} (${c.hull + c.shield})`,
+    )
+  }
+  void span
+})
+
+check('a reinforcement arrives in front of the player, where it can be seen', () => {
+  // The entry effect exists to *announce* an arrival, and it was frequently drawn where the
+  // player could not see it: the cone weighted the nose at 1 and the jitter at 0.75, so a bearing
+  // pointing back along the nose left 0.25 forward against 0.75 lateral — 72 degrees off the nose,
+  // against a 66-degree field of view. Most of the cone was off-screen.
+  const facing = { x: 0, y: 0, z: -1 }
+  const at = { x: 0, y: 0, z: 0 }
+  let worst = 0
+  for (let i = 0; i < 2000; i += 1) {
+    // Every direction, including ones pointing straight back along the nose — the case the old
+    // spread handled worst.
+    const t = (i / 2000) * Math.PI * 2
+    const u = (i / 2000) * Math.PI
+    const jitter = {
+      x: Math.cos(t) * Math.sin(u),
+      y: Math.cos(u),
+      z: Math.sin(t) * Math.sin(u),
+    }
+    const p = Arrivals.arrivalPoint(at, facing, jitter, Arrivals.ARRIVAL_SPREAD)
+    const d = Math.hypot(p.x, p.y, p.z) || 1
+    // Angle off the nose.
+    const cos = (p.x * facing.x + p.y * facing.y + p.z * facing.z) / d
+    worst = Math.max(worst, Math.acos(Math.max(-1, Math.min(1, cos))))
+    assert(cos > 0, `an arrival was placed behind the player (cos ${cos.toFixed(3)})`)
+  }
+  // Inside the camera's half angle, so the entry is on screen rather than merely in front.
+  const halfFov = 1.15 / 2
+  assert(worst < halfFov, `worst arrival is ${(worst * 57.3).toFixed(0)}deg off, outside the view`)
+})
+
+check('the sector sends enough wings to be busy', () => {
+  // "Not enough enemies are spawning in" — measured rather than tuned by feel. At the sector's
+  // current size a crossing takes about half a minute, and the interval was 22 seconds, so a
+  // player could fly a long way to meet nothing.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  let raised = 0
+  let last = Enemy.of(g.swarm, 'raider').length
+  for (let f = 0; f < 60 * 120; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    const now = Enemy.of(g.swarm, 'raider').length
+    if (now > last) raised += 1
+    last = now
+  }
+  assert(raised >= 4, `only ${raised} wings arrived in two minutes`)
+})
 
 check('a role decides who shoots at you, and there is one implementation of it', () => {
   // `hostileTo` was `f === 'raider'` read in six places — the enemy AI, the jump inhibitor, the

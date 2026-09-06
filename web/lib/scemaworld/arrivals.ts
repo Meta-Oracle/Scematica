@@ -52,6 +52,23 @@ export const ARRIVAL_MS = 1_400
  * comfortably outside knife range, so it announces a fight rather than starting one.
  * In practice that means beyond every rolled fighter's aggro, while still inside stock sensors.
  */
+/**
+ * The smallest forward component an arrival may have, in units of the facing vector.
+ *
+ * A backstop, not a tuning knob: with `ARRIVAL_SPREAD` below the geometry already keeps every
+ * arrival well inside the frustum, and this is what makes "never behind the player" a property of
+ * the function rather than of the numbers passed to it.
+ */
+export const FORWARD_FLOOR = 0.6
+
+/**
+ * How far off the nose an arrival may be placed, as a weight against the facing.
+ *
+ * 0.30 puts the worst case about 23 degrees off the nose, comfortably inside the 33-degree half
+ * angle of the camera. It was 0.75 — 72 degrees, and therefore mostly off-screen.
+ */
+export const ARRIVAL_SPREAD = 0.3
+
 export const MIN_ARRIVAL = Math.round(AGGRO_RANGE * 1.8)
 export const MAX_ARRIVAL = Math.round(AGGRO_RANGE * (SENSOR_MULTIPLIER - 0.35))
 
@@ -108,11 +125,33 @@ export function arrivalPoint(
   jitter: Vec3,
   spread: number,
 ): Vec3 {
-  // Ahead, plus a lateral spread. Weighting the nose at 1 and the jitter at `spread` keeps the
-  // arrival inside a cone rather than anywhere on a sphere.
-  const dx = playerFacing.x + jitter.x * spread
-  const dy = playerFacing.y + jitter.y * spread
-  const dz = playerFacing.z + jitter.z * spread
+  // ## Ahead, and *visibly* ahead
+  //
+  // Weighting the nose at 1 and the jitter at `spread` keeps the arrival in a cone rather than
+  // anywhere on a sphere — but the cone was far wider than it reads. The jitter is a unit bearing,
+  // so at a spread of 0.75 a bearing pointing back along the nose leaves 0.25 forward against 0.75
+  // lateral: **72 degrees off the nose**, against a field of view of 66 degrees *total*. Most of
+  // that cone is off-screen, so the entry effect — the whole point of which is to announce the
+  // arrival — was frequently drawn where the player could not see it, and a wing simply appeared
+  // on the sensor board instead.
+  //
+  // The spread is now narrow enough that the worst case is inside the frustum, and the forward
+  // component is clamped positive as a backstop so no arithmetic here can ever put an arrival
+  // behind the player.
+  const fwd = Math.max(FORWARD_FLOOR, 1)
+  let dx = playerFacing.x * fwd + jitter.x * spread
+  let dy = playerFacing.y * fwd + jitter.y * spread
+  let dz = playerFacing.z * fwd + jitter.z * spread
+  // Project out any component that would put the point behind the nose. A dot product at or below
+  // zero means the jitter overwhelmed the facing, which the spread above should already prevent —
+  // this is the guarantee rather than the tuning.
+  const along = dx * playerFacing.x + dy * playerFacing.y + dz * playerFacing.z
+  if (along < FORWARD_FLOOR) {
+    const need = FORWARD_FLOOR - along
+    dx += playerFacing.x * need
+    dy += playerFacing.y * need
+    dz += playerFacing.z * need
+  }
   const l = Math.hypot(dx, dy, dz) || 1
   const range = MIN_ARRIVAL + Math.abs(jitter.x + jitter.y + jitter.z) * (MAX_ARRIVAL - MIN_ARRIVAL)
   // Integer coordinates can shorten the radial distance by less than a unit when each component

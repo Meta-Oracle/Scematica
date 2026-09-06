@@ -84,6 +84,7 @@ export type ClassId =
   | 'gunship'
   | 'frigate'
   | 'destroyer'
+  | 'warfighter'
   | 'dreadnought'
   | 'leviathan'
   | 'titan'
@@ -206,7 +207,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // teaches the wrong lesson about every later one.
   skiff: {
     id: 'skiff', label: 'SKIFF', shape: 'interceptor',
-    radius: S(0.0022), hull: 8, shield: 0, shieldRegen: 0,
+    radius: S(0.0022), hull: 14, shield: 0, shieldRegen: 0,
     speed: S(1 / 20), turn: 1.5, aggro: S(0.075), standoff: S(0.012),
     damage: 4, cooldownMs: 1400, burst: 1, bounty: 15, capital: false,
   },
@@ -214,14 +215,14 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // away and come back on your terms, not to out-turn it.
   interceptor: {
     id: 'interceptor', label: 'INTERCEPTOR', shape: 'interceptor',
-    radius: S(0.0028), hull: 14, shield: 8, shieldRegen: 3,
+    radius: S(0.0028), hull: 22, shield: 12, shieldRegen: 4,
     speed: S(1 / 15), turn: 2.4, aggro: S(0.112), standoff: S(0.009),
     damage: 6, cooldownMs: 620, burst: 2, bounty: 30, capital: false,
   },
   // Fast and fragile, fights at a distance. Punishes sitting still.
   lancer: {
     id: 'lancer', label: 'LANCER', shape: 'interceptor',
-    radius: S(0.0032), hull: 12, shield: 14, shieldRegen: 5,
+    radius: S(0.0032), hull: 20, shield: 22, shieldRegen: 6,
     speed: S(1 / 14), turn: 1.8, aggro: S(0.15), standoff: S(0.028),
     damage: 11, cooldownMs: 1500, burst: 1, bounty: 45, capital: false,
   },
@@ -229,24 +230,49 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // first time the turn/speed trade is the whole answer.
   gunship: {
     id: 'gunship', label: 'GUNSHIP', shape: 'gunship',
-    radius: S(0.0055), hull: 34, shield: 26, shieldRegen: 4,
+    radius: S(0.0055), hull: 160, shield: 100, shieldRegen: 8,
     speed: S(1 / 26), turn: 0.85, aggro: S(0.135), standoff: S(0.016),
     damage: 9, cooldownMs: 900, burst: 3, bounty: 90, capital: false,
   },
   // The smallest capital. It does not chase and it does not need to.
   frigate: {
     id: 'frigate', label: 'FRIGATE', shape: 'capital',
-    radius: S(0.028), hull: 140, shield: 90, shieldRegen: 8,
+    radius: S(0.028), hull: 280, shield: 180, shieldRegen: 12,
     speed: S(1 / 90), turn: 0.22, aggro: S(0.225), standoff: S(0.055),
     damage: 16, cooldownMs: 1100, burst: 4, bounty: 350, capital: true,
   },
   // Star-destroyer class: four times a station across, and visible from most of the sector.
   destroyer: {
     id: 'destroyer', label: 'DESTROYER', shape: 'capital',
-    radius: S(0.075), hull: 460, shield: 300, shieldRegen: 14,
+    radius: S(0.075), hull: 460, shield: 300, shieldRegen: 20,
     speed: S(1 / 150), turn: 0.09, aggro: S(0.30), standoff: S(0.1),
     damage: 24, cooldownMs: 800, burst: 6, bounty: 1200, capital: true,
   },
+  /**
+   * The warfighter: the medium tier, and the rung the ladder was missing.
+   *
+   * Between a destroyer and a dreadnought there was nothing — a fivefold jump in effective hit
+   * points and a threefold one in radius, so a sector went from "a thing four fighters can
+   * handle" straight to "a capital". Four warheads is the middle of the ladder and this is the
+   * hull that sits there.
+   *
+   * **Not a capital**, which is the load-bearing part: it can be *rolled* into a raider wing
+   * (`classFor`), where the capitals cannot. So a wing can now arrive with something genuinely
+   * dangerous at its centre without the sector having to hand out one of its six placed capitals,
+   * and "a capital is placed, a fighter is rolled" survives untouched.
+   */
+  warfighter: {
+    id: 'warfighter', label: 'WARFIGHTER', shape: 'capital',
+    radius: S(0.045), hull: 580, shield: 380, shieldRegen: 18,
+    // Aggro sits **below** a laser's reach (0.20 extents) and below `MIN_ARRIVAL`, which are the
+    // two lines every non-capital has to stay under: a fighter you cannot engage from outside its
+    // awareness breaks "a laser outranges every fighter and no capital", and one whose awareness
+    // exceeds the arrival distance means a reinforcement can resolve already hunting you. At 0.24
+    // it broke both, and neither is visible from the statline alone.
+    speed: S(1 / 90), turn: 0.16, aggro: S(0.17), standoff: S(0.07),
+    damage: 20, cooldownMs: 820, burst: 5, bounty: 700, capital: false,
+  },
+
   // War-class. Fifteen stations end to end.
   //
   // The broadside used to one-shot a fully upgraded ship — ten rounds of sixty-two is six
@@ -257,7 +283,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // is now low enough that being caught once is a mistake rather than the end.
   dreadnought: {
     id: 'dreadnought', label: 'DREADNOUGHT', shape: 'dreadnought',
-    radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
+    radius: S(0.135), hull: 860, shield: 580, shieldRegen: 22,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
     damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
@@ -269,7 +295,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // intent: perseverance and a manoeuvre, not a bigger number.
   leviathan: {
     id: 'leviathan', label: 'LEVIATHAN', shape: 'dreadnought',
-    radius: S(0.24), hull: 4200, shield: 2600, shieldRegen: 44,
+    radius: S(0.24), hull: 1010, shield: 670, shieldRegen: 26,
     speed: S(1 / 420), turn: 0.028, aggro: S(0.51), standoff: S(0.26),
     damage: 21, cooldownMs: 800, burst: 10, bounty: 14000, capital: true,
   },
@@ -286,7 +312,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // not difficulty, it is a coin toss with extra steps.
   titan: {
     id: 'titan', label: 'TITAN', shape: 'dreadnought',
-    radius: S(0.4), hull: 14000, shield: 9000, shieldRegen: 70,
+    radius: S(0.4), hull: 1150, shield: 770, shieldRegen: 30,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
   },
@@ -300,7 +326,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // the markets look like they are for something.
   courier: {
     id: 'courier', label: 'COURIER', shape: 'interceptor',
-    radius: S(0.0024), hull: 10, shield: 6, shieldRegen: 3,
+    radius: S(0.0024), hull: 14, shield: 8, shieldRegen: 3,
     speed: S(1 / 13), turn: 2.0, aggro: S(0.09), standoff: S(0.01),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
   },
@@ -309,7 +335,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // the wrong reason.
   freighter: {
     id: 'freighter', label: 'FREIGHTER', shape: 'gunship',
-    radius: S(0.009), hull: 60, shield: 30, shieldRegen: 4,
+    radius: S(0.009), hull: 150, shield: 100, shieldRegen: 6,
     speed: S(1 / 42), turn: 0.6, aggro: S(0.09), standoff: S(0.014),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
   },
@@ -318,7 +344,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // patrol that always wins makes the sector safe, which is not the point of having one.
   marshal: {
     id: 'marshal', label: 'MARSHAL', shape: 'interceptor',
-    radius: S(0.0032), hull: 22, shield: 18, shieldRegen: 5,
+    radius: S(0.0032), hull: 26, shield: 20, shieldRegen: 6,
     speed: S(1 / 14), turn: 2.2, aggro: S(0.165), standoff: S(0.012),
     damage: 8, cooldownMs: 700, burst: 2, bounty: 0, capital: false,
   },
@@ -344,7 +370,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // The marshal dreadnought. What answers a raider capital.
   warden: {
     id: 'warden', label: 'WARDEN', shape: 'dreadnought',
-    radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
+    radius: S(0.135), hull: 860, shield: 580, shieldRegen: 22,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
     damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
@@ -353,7 +379,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // exists to produce.
   bastion: {
     id: 'bastion', label: 'BASTION', shape: 'dreadnought',
-    radius: S(0.4), hull: 14000, shield: 9000, shieldRegen: 70,
+    radius: S(0.4), hull: 1150, shield: 770, shieldRegen: 30,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
   },
@@ -367,8 +393,8 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
  * wing, which would be both a gameplay bug and a lie about who is out there.
  */
 export const CLASS_IDS: ClassId[] = [
-  'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer', 'dreadnought', 'leviathan',
-  'titan',
+  'skiff', 'interceptor', 'lancer', 'gunship', 'frigate', 'destroyer', 'warfighter',
+  'dreadnought', 'leviathan', 'titan',
 ]
 
 /** Every class, hostile and otherwise. */
@@ -383,6 +409,53 @@ export const ALL_CLASS_IDS: ClassId[] = [
  * neither buy itself a quieter sector nor a better-defended one.
  */
 export const MARSHAL_CAPITAL_IDS: ClassId[] = ['warden', 'bastion']
+
+/**
+ * How many photon warheads it takes to destroy each class.
+ *
+ * ## Why durability is written as a photon count
+ *
+ * It was written as raw hull and shield numbers, and the numbers had drifted into a game nobody
+ * could finish: a titan carried 23,000 effective points against a 240-point warhead, so killing
+ * one took **96 photons** — twelve full magazines off the largest hull in the game, with a trip
+ * back to a station between each. A leviathan took 29 and a dreadnought 10. The comments described
+ * this as "perseverance and a manoeuvre"; in play it is a wall, and the difference between the two
+ * is exactly the number in this table.
+ *
+ * So the ladder is the definition and the statline is derived from it. A player can hold "eight
+ * for a titan, six for a dreadnought, four for a warfighter, two for a heavy fighter, one for a
+ * fighter" in their head, which makes a magazine a *plan* — and a plan is the thing a capital
+ * fight was missing. `check:scemaworld` asserts `ceil(ehp / PHOTON.damage)` equals this for every
+ * class, so a statline edited without the table fails rather than quietly moving the ladder.
+ *
+ * The starting magazine is eight, which is the titan's number on purpose: the largest thing in the
+ * sector is beatable by a pilot who has spent nothing, provided every round lands. Nothing else
+ * about a titan changed — it still turns like a continent and fires like one.
+ */
+export const PHOTONS_TO_KILL: Record<ClassId, number> = {
+  // Fighters. One warhead, and mostly they should die to the laser before it is worth spending.
+  skiff: 1,
+  interceptor: 1,
+  lancer: 1,
+  courier: 1,
+  marshal: 1,
+  // Heavy fighters. Two — the one rung that genuinely had to move, since a gunship used to die to
+  // a single warhead like everything below it.
+  gunship: 2,
+  frigate: 2,
+  // Traffic. A freighter is a big soft target; a courier is paper.
+  freighter: 2,
+  // Warfighters. Four. `destroyer` was already sitting at this weight; `warfighter` is the new
+  // class the tier is named for.
+  destroyer: 4,
+  warfighter: 4,
+  // Capitals.
+  dreadnought: 6,
+  warden: 6,
+  leviathan: 7,
+  titan: 8,
+  bastion: 8,
+}
 
 /** Milliseconds without taking a hit before shields begin to come back. */
 export const SHIELD_DELAY_MS = 4_200
@@ -404,9 +477,10 @@ export function classFor(roll: number): ClassSpec {
   if (r < 240) return CLASSES.skiff
   if (r < 540) return CLASSES.interceptor
   if (r < 730) return CLASSES.lancer
-  if (r < 880) return CLASSES.gunship
-  if (r < 950) return CLASSES.frigate
-  if (r < 980) return CLASSES.destroyer
+  if (r < 865) return CLASSES.gunship
+  if (r < 930) return CLASSES.frigate
+  if (r < 962) return CLASSES.destroyer
+  if (r < 988) return CLASSES.warfighter
   if (r < 994) return CLASSES.dreadnought
   if (r < 999) return CLASSES.leviathan
   return CLASSES.titan

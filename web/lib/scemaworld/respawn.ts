@@ -47,7 +47,7 @@ import {
   MARSHAL_STRENGTH, TRAFFIC,
 } from './factions.ts'
 import { raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH, WINGS } from './raiders.ts'
-import { ARRIVAL_MS, arrivalPoint, landed, type Arrival } from './arrivals.ts'
+import { ARRIVAL_MS, ARRIVAL_SPREAD, arrivalPoint, landed, type Arrival } from './arrivals.ts'
 import { AGGRO_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
 
 /**
@@ -62,17 +62,30 @@ import { AGGRO_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
  */
 export const SPAWN_CLEARANCE = Math.round(AGGRO_RANGE * SENSOR_MULTIPLIER * 1.6)
 
-/** Milliseconds between raider wings. Long enough that clearing a region is worth doing. */
-export const RAIDER_INTERVAL_MS = 22_000
+/**
+ * Milliseconds between raider wings.
+ *
+ * Was 22 seconds, which reads as an empty sector: at the sector's current size a player spends
+ * most of a minute crossing it, so three quarters of a minute between encounters meant flying a
+ * long way to meet nothing. Nine seconds keeps the sector busy without the arrivals overlapping
+ * each other's entry effects.
+ */
+export const RAIDER_INTERVAL_MS = 9_000
 
 /**
  * How many craft drop out of hyperspace together.
  *
  * Fewer than a generated wing carries, because these arrive *near* the player rather than
  * somewhere in the volume. Four hostiles materialising inside engagement range is an ambush the
- * player had no way to avoid; three announced by a visible entry is an encounter they can decline.
+ * player had no way to avoid; a wing announced by a visible entry is an encounter they can
+ * decline.
+ *
+ * Four now rather than three, and the reason the number could move at all is that the arrivals are
+ * genuinely *visible*: the cone was 72 degrees wide against a 66-degree field of view, so a wing
+ * that was supposed to announce itself often materialised off-screen. With the entries where the
+ * player is looking, a larger wing reads as a formation rather than as an ambush.
  */
-const WARP_WING = 3
+const WARP_WING = 4
 
 /**
  * How far apart, in milliseconds, the ships of one wing finish their entry.
@@ -96,7 +109,7 @@ const WARP_STAGGER_MS = 220
  * deficit close at a pace somebody actually sees, while the ordinary trickle above it keeps a
  * cleared region cleared for long enough to be worth having cleared.
  */
-export const RAIDER_SURGE_MS = 8_000
+export const RAIDER_SURGE_MS = 3_500
 
 /** Milliseconds between marshal replacements. Shorter: they arrive singly, not four at a time. */
 export const MARSHAL_INTERVAL_MS = 13_000
@@ -284,7 +297,7 @@ export function replenish(
       wing.push({
         id: `raider:warp:${raiders}:${i}`,
         faction: 'raider',
-        at: arrivalPoint(playerAt, playerFacing, jitter, 0.75),
+        at: arrivalPoint(playerAt, playerFacing, jitter, ARRIVAL_SPREAD),
         dir,
         dueMs: nowMs + ARRIVAL_MS + i * WARP_STAGGER_MS,
       })
@@ -305,7 +318,7 @@ export function replenish(
       {
         id: `marshal:warp:${marshals}`,
         faction: 'marshal',
-        at: arrivalPoint(playerAt, playerFacing, jitter, 0.9),
+        at: arrivalPoint(playerAt, playerFacing, jitter, ARRIVAL_SPREAD),
         dir: bearing(seed, ':marshal-entry:', marshals),
         dueMs: nowMs + ARRIVAL_MS,
       },
@@ -348,7 +361,7 @@ export function replenish(
         {
           id: `${worst.faction}:warp:${n}`,
           faction: worst.faction as Arrival['faction'],
-          at: arrivalPoint(playerAt, playerFacing, bearing(seed, `:${k}-spread:`, n), 0.95),
+          at: arrivalPoint(playerAt, playerFacing, bearing(seed, `:${k}-spread:`, n), ARRIVAL_SPREAD),
           dir: bearing(seed, `:${k}-entry:`, n),
           dueMs: nowMs + ARRIVAL_MS,
         },

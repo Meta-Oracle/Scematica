@@ -43,12 +43,47 @@ pub mod scemadex_escrow {
         min_out_raw: u64,
         deadline_unix: i64,
         dispute_window_secs: i64,
+        resolve_grace_secs: i64,
         routing: SlashRouting,
         authority: Pubkey,
         caller: Pubkey,
+        insurance: Pubkey,
+        lineage: Pubkey,
     ) -> Result<()> {
         require!(routing.is_valid(), EscrowError::InvalidRouting);
         require!(bond_amount > 0, EscrowError::ZeroBond);
+
+        // **Every slice that can be paid must name the party it is paid to.**
+        //
+        // `settle` binds each destination token account to the owner recorded here (see
+        // `struct Settle`). A slice with a non-zero share and no recorded owner would be
+        // the one destination left bound by mint alone, which is exactly the hole that
+        // binding closes — so it is refused at the only point where it can still be
+        // refused cheaply. A zero share may leave its party unset: nothing flows there,
+        // and requiring an address for a slice worth nothing would make the common
+        // two-way split unconstructible.
+        require!(caller != Pubkey::default(), EscrowError::UnnamedDestination);
+
+        // **Every state must have a way out that does not require a particular person.**
+        //
+        // A bond nobody can settle is indistinguishable from a bond that was taken. Two
+        // sentinels used to produce exactly that. `deadline_unix == 0` was accepted as
+        // "no deadline", which left an `Escrowed` bond finalizable only by the authority
+        // calling `mark_provisional` — so an authority that stops answering locks the
+        // bond, the stake and the vault rent forever. And a `Disputed` bond could only
+        // ever leave through `resolve`, which is authority-only, with no timeout at all.
+        //
+        // Both now need a positive bound, set here where it is still free to insist on.
+        require!(deadline_unix > 0, EscrowError::UnboundedDeadline);
+        require!(resolve_grace_secs > 0, EscrowError::UnboundedDeadline);
+        require!(
+            routing.to_insurance_bps == 0 || insurance != Pubkey::default(),
+            EscrowError::UnnamedDestination
+        );
+        require!(
+            routing.to_lineage_bps == 0 || lineage != Pubkey::default(),
+            EscrowError::UnnamedDestination
+        );
 
         // Move the bond from the agent into the program vault.
         token::transfer(ctx.accounts.deposit_ctx(), bond_amount)?;
@@ -63,6 +98,7 @@ pub mod scemadex_escrow {
         e.min_out_raw = min_out_raw;
         e.deadline_unix = deadline_unix;
         e.dispute_window_secs = dispute_window_secs;
+        e.resolve_grace_secs = resolve_grace_secs;
         e.window_closes_unix = 0;
         e.routing = routing;
         e.state = BondState::Escrowed as u8;
@@ -71,6 +107,8 @@ pub mod scemadex_escrow {
         e.challenger = Pubkey::default();
         e.challenger_stake = 0;
         e.authority = authority;
+        e.insurance = insurance;
+        e.lineage = lineage;
         e.bump = ctx.bumps.escrow;
 
         msg!(
@@ -141,7 +179,21 @@ pub mod scemadex_escrow {
         match e.state {
             s if s == BondState::Provisional as u8 => {
                 require!(now >= e.window_closes_unix, EscrowError::WindowOpen);
-                e.final_slashed = false; // optimistic honor
+                // **The unchallenged provisional outcome is what becomes final.**
+                //
+                // This used to write `false` unconditionally — an optimistic honor that
+                // never read `provisional_honored`. The authority could mark a fill
+                // dishonored and the bond still finalized honored once the window
+                // elapsed, and nobody could intervene: `file_challenge` refuses a
+                // provisional dishonor (`NothingToChallenge`) because there is nothing to
+                // dispute. The result was an inversion of the incentive the bond exists
+                // to create — an agent that delivered a bad fill kept its bond, while one
+                // that delivered nothing was slashed by the deadline arm below. Doing
+                // something bad was strictly better than doing nothing.
+                //
+                // The off-chain twin already had it right: `SettlementMachine::finalize`
+                // carries the provisional `outcome` into `Finalized`.
+                e.final_slashed = !e.provisional_honored;
             }
             s if s == BondState::Escrowed as u8 => {
                 require!(
@@ -149,6 +201,23 @@ pub mod scemadex_escrow {
                     EscrowError::DeadlineNotPassed
                 );
                 e.final_slashed = true; // failure to deliver
+            }
+            s if s == BondState::Disputed as u8 => {
+                // **An unanswered dispute resolves against the agent.**
+                //
+                // `resolve` is authority-only and there was no other exit, so a vanished
+                // authority stranded the bond permanently — a liveness failure rather
+                // than theft, but the money is just as unreachable either way.
+                //
+                // Slashing is the conservative default, and the choice matters: the
+                // alternative is that an agent whose fill was challenged gets paid by the
+                // authority going quiet, which makes silence something worth arranging.
+                // A challenger who was wrong still recovers its stake at `settle`.
+                require!(
+                    now >= e.window_closes_unix.saturating_add(e.resolve_grace_secs),
+                    EscrowError::WindowOpen
+                );
+                e.final_slashed = true;
             }
             _ => return err!(EscrowError::BadState),
         }
@@ -171,7 +240,7 @@ pub mod scemadex_escrow {
         let stake = e.challenger_stake;
         let slashed = e.final_slashed;
         let routing = e.routing;
-        let seeds: &[&[u8]] = &[b"escrow", e.digest.as_ref(), &[e.bump]];
+        let seeds: &[&[u8]] = &[b"escrow", e.digest.as_ref(), e.agent.as_ref(), &[e.bump]];
 
         if !slashed {
             // Honored: return the bond to the agent; a losing challenger's stake is
@@ -284,12 +353,21 @@ pub struct BondEscrow {
     pub vault: Pubkey,
     pub authority: Pubkey,
     pub challenger: Pubkey,
+    /// Destination owner for the insurance slice of a slash. `Pubkey::default()` only
+    /// when `routing.to_insurance_bps == 0` — enforced at `escrow`.
+    pub insurance: Pubkey,
+    /// Destination owner for the lineage slice of a slash. Same rule as `insurance`.
+    pub lineage: Pubkey,
     pub digest: [u8; 32],
     pub bond_amount: u64,
     pub challenger_stake: u64,
     pub min_out_raw: u64,
     pub deadline_unix: i64,
     pub dispute_window_secs: i64,
+    /// How long after the dispute window closes the recorded `authority` has to
+    /// `resolve` before anyone may finalize the dispute by timeout. See
+    /// `finalize_timeout`'s `Disputed` arm.
+    pub resolve_grace_secs: i64,
     pub window_closes_unix: i64,
     pub routing: SlashRouting,
     pub state: u8,
@@ -299,8 +377,22 @@ pub struct BondEscrow {
 }
 
 impl BondEscrow {
-    // discriminator + 6 pubkeys + digest + 3 u64 + 3 i64 + routing(4*u16) + 3 u8 + 2 bool
-    pub const LEN: usize = 8 + (32 * 6) + 32 + (8 * 3) + (8 * 3) + 8 + 3 + 2;
+    /// Account size.
+    ///
+    /// Written a term per field group so it can be checked against the struct by reading
+    /// down it. The previous version said "3 u8 + 2 bool" and allocated five bytes for
+    /// what is four single-byte fields (`state`, two `bool`s, `bump`) — harmless in
+    /// itself, since over-allocation only costs rent, but the next person to add a field
+    /// would have trusted the comment.
+    pub const LEN: usize = 8                 // discriminator
+        + (32 * 8)                           // agent, caller, mint, vault, authority,
+                                             //   challenger, insurance, lineage
+        + 32                                 // digest
+        + (8 * 3)                            // bond_amount, challenger_stake, min_out_raw
+        + (8 * 4)                            // deadline, dispute_window, resolve_grace,
+                                             //   window_closes
+        + (2 * 4)                            // routing: four u16
+        + 4; // state, provisional_honored, final_slashed, bump
 }
 
 /// CPI helper: move `amount` out of the vault, signed by the escrow PDA.
@@ -344,7 +436,19 @@ pub struct EscrowBond<'info> {
         init,
         payer = agent,
         space = BondEscrow::LEN,
-        seeds = [b"escrow", digest.as_ref()],
+        // ## The agent is part of the address
+        //
+        // Seeded by the digest alone, the record was squattable: anyone who learned an
+        // intent digest before the agent submitted could open the escrow first with a
+        // one-unit bond and an `authority` they controlled. The real agent's `init` then
+        // failed on an address already in use, and any party reading "there is an escrow
+        // for this digest" without also reading `agent`, `authority`, `bond_amount` and
+        // `routing` was looking at the squatter's record.
+        //
+        // Including the agent means records cannot collide across agents at all, so the
+        // race disappears rather than being won. It does not remove the obligation on a
+        // consumer to validate the record's fields rather than its existence.
+        seeds = [b"escrow", digest.as_ref(), agent.key().as_ref()],
         bump,
     )]
     pub escrow: Account<'info, BondEscrow>,
@@ -353,7 +457,7 @@ pub struct EscrowBond<'info> {
     #[account(
         init,
         payer = agent,
-        seeds = [b"vault", digest.as_ref()],
+        seeds = [b"vault", digest.as_ref(), agent.key().as_ref()],
         bump,
         token::mint = mint,
         token::authority = escrow,
@@ -433,7 +537,7 @@ pub struct Settle<'info> {
         has_one = vault @ EscrowError::VaultMismatch,
         has_one = agent @ EscrowError::Unauthorized,
         close = agent,
-        seeds = [b"escrow", escrow.digest.as_ref()],
+        seeds = [b"escrow", escrow.digest.as_ref(), agent.key().as_ref()],
         bump = escrow.bump,
     )]
     pub escrow: Account<'info, BondEscrow>,
@@ -445,15 +549,59 @@ pub struct Settle<'info> {
     #[account(mut)]
     pub agent: AccountInfo<'info>,
 
-    #[account(mut, constraint = agent_token.mint == escrow.mint @ EscrowError::MintMismatch)]
+    // ## Every destination is bound to the party the record names
+    //
+    // `settle` is permissionless, and that is deliberate: finalization is a public fact
+    // and disbursing against it should not need a privileged caller. What made that
+    // dangerous was the account validation — each destination carried a mint constraint
+    // and nothing else, so any observer could call `settle` on a finalized bond, pass a
+    // token account they owned of the right mint, and receive the payout. On the honored
+    // branch that is `bond + challenger_stake`: the entire escrow.
+    //
+    // `has_one = agent` does **not** cover this. It constrains the `AccountInfo` that
+    // receives the closed account's rent, not the token account that receives the money.
+    //
+    // The sibling program already had the right shape — `scematica-vault`'s `Withdraw`
+    // constrains `depositor_token.owner == depositor.key()` — so this is that constraint,
+    // applied to all five slices.
+    #[account(
+        mut,
+        constraint = agent_token.mint == escrow.mint @ EscrowError::MintMismatch,
+        constraint = agent_token.owner == escrow.agent @ EscrowError::DestinationMismatch,
+    )]
     pub agent_token: Account<'info, TokenAccount>,
-    #[account(mut, constraint = caller_token.mint == escrow.mint @ EscrowError::MintMismatch)]
+    #[account(
+        mut,
+        constraint = caller_token.mint == escrow.mint @ EscrowError::MintMismatch,
+        constraint = caller_token.owner == escrow.caller @ EscrowError::DestinationMismatch,
+    )]
     pub caller_token: Account<'info, TokenAccount>,
-    #[account(mut, constraint = challenger_token.mint == escrow.mint @ EscrowError::MintMismatch)]
+    /// The challenger's account. Bound only when there **is** a challenger: with none
+    /// recorded, `settle` rolls the challenger slice to the caller and pays nothing here,
+    /// and requiring an account owned by `Pubkey::default()` would make the uncontested
+    /// slash unsettleable. The binding therefore holds exactly where money can move.
+    #[account(
+        mut,
+        constraint = challenger_token.mint == escrow.mint @ EscrowError::MintMismatch,
+        constraint = escrow.challenger == Pubkey::default()
+            || challenger_token.owner == escrow.challenger @ EscrowError::DestinationMismatch,
+    )]
     pub challenger_token: Account<'info, TokenAccount>,
-    #[account(mut, constraint = insurance_token.mint == escrow.mint @ EscrowError::MintMismatch)]
+    /// Same rule as the challenger: unset is permitted only because `escrow` refuses to
+    /// record an unset party against a non-zero share.
+    #[account(
+        mut,
+        constraint = insurance_token.mint == escrow.mint @ EscrowError::MintMismatch,
+        constraint = escrow.insurance == Pubkey::default()
+            || insurance_token.owner == escrow.insurance @ EscrowError::DestinationMismatch,
+    )]
     pub insurance_token: Account<'info, TokenAccount>,
-    #[account(mut, constraint = lineage_token.mint == escrow.mint @ EscrowError::MintMismatch)]
+    #[account(
+        mut,
+        constraint = lineage_token.mint == escrow.mint @ EscrowError::MintMismatch,
+        constraint = escrow.lineage == Pubkey::default()
+            || lineage_token.owner == escrow.lineage @ EscrowError::DestinationMismatch,
+    )]
     pub lineage_token: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
@@ -483,4 +631,10 @@ pub enum EscrowError {
     VaultMismatch,
     #[msg("Token account mint does not match the bond mint")]
     MintMismatch,
+    #[msg("Payout destination is not owned by the party recorded in the escrow")]
+    DestinationMismatch,
+    #[msg("A slice with a non-zero share must name the party it pays")]
+    UnnamedDestination,
+    #[msg("Deadline and dispute-resolution grace must both be positive")]
+    UnboundedDeadline,
 }

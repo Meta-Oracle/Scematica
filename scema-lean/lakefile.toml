@@ -1,6 +1,6 @@
 name = "scema"
 version = "1.0.0"
-defaultTargets = ["Scema", "formalize"]
+defaultTargets = ["Scema", "Audit", "formalize"]
 
 # No Mathlib, deliberately.
 #
@@ -16,6 +16,14 @@ defaultTargets = ["Scema", "formalize"]
 
 [[lean_lib]]
 name = "Scema"
+
+# The security-audit model: `Audit.lean` plus `Audit/`.
+#
+# A second library rather than a second package, so there is one toolchain, one `lake
+# build`, and the no-Mathlib rule above covers it too — which it can, because every
+# module in `Audit/` imports nothing at all.
+[[lean_lib]]
+name = "Audit"
 
 [[lean_exe]]
 name = "formalize"

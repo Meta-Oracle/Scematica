@@ -33,6 +33,7 @@ pub mod scematica_swap {
         swap_state.expected_output = min_final_balance;
         swap_state.authority = ctx.accounts.authority.key();
         swap_state.src_mint = ctx.accounts.src.mint;
+        swap_state.src = ctx.accounts.src.key();
 
         msg!(
             "StartSwap: mint={} input={} min_output={} from {}",
@@ -61,7 +62,16 @@ pub mod scematica_swap {
             min_output
         );
 
-        // Security: ensure we are checking the same mint as StartSwap
+        // Security: the balance must be read from the account the baseline was measured
+        // on, not merely from an account of the same mint.
+        require_keys_eq!(
+            ctx.accounts.src.key(),
+            swap_state.src,
+            ScematicaError::InvalidTokenAccount
+        );
+        // Kept as well as, not instead of: the mint is what the reported profit is
+        // denominated in, and an account cannot change mint, so this is now redundant
+        // and costs one comparison to stay obvious.
         require_keys_eq!(
             ctx.accounts.src.mint,
             swap_state.src_mint,
@@ -95,6 +105,17 @@ pub struct SwapState {
     pub authority: Pubkey,
     /// The mint of the token being swapped
     pub src_mint: Pubkey,
+    /// The token **account** the baseline was measured on.
+    ///
+    /// The state used to record only the mint, so `profit_or_revert` could not tell two
+    /// accounts of the same mint apart: it re-read `amount` from whatever account it was
+    /// handed. A bundle assembled with the wrong `src` got a green light from an account
+    /// that never took part in the trade, while the account that did could be down on the
+    /// day. Not exploitable by a third party — only the recorded `authority` can invoke
+    /// the check, and a failure reverts that authority's own transaction — but the guard
+    /// was proving less than "this arbitrage was profitable", which is the only thing it
+    /// is there to prove.
+    pub src: Pubkey,
     /// Input amount at the start of the swap
     pub swap_input: u64,
     /// Expected minimum output (set by client, verified by profit_or_revert)
@@ -104,7 +125,8 @@ pub struct SwapState {
 }
 
 impl SwapState {
-    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 1; // discriminator + fields
+    // discriminator + authority + src_mint + src + swap_input + expected_output + bump
+    pub const LEN: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1;
 }
 
 /// Accounts for start_swap
@@ -138,8 +160,18 @@ pub struct ProfitOrRevert<'info> {
     /// The source token account — checked for final balance
     pub src: Account<'info, TokenAccount>,
 
-    /// Swap state PDA — read to get initial input
+    /// Swap state PDA — read to get the baseline, and **closed here**.
+    ///
+    /// The state was opened with `init_if_needed` and never closed, so a baseline
+    /// survived the transaction that set it: `profit_or_revert` did not require that
+    /// `start_swap` had run alongside it, and a stale, lower baseline keeps being
+    /// satisfied by any later balance. Whether the check meant anything was a property of
+    /// how the client ordered its instructions rather than of the program. Closing the
+    /// state as it is consumed makes a baseline usable exactly once, so `init_if_needed`
+    /// now finds nothing to reuse on the next round trip.
     #[account(
+        mut,
+        close = authority,
         seeds = [b"swap_state", authority.key().as_ref()],
         bump,
         has_one = authority,
@@ -147,6 +179,7 @@ pub struct ProfitOrRevert<'info> {
     pub swap_state: Account<'info, SwapState>,
 
     /// The wallet that initiated the swap
+    #[account(mut)]
     pub authority: Signer<'info>,
 }
 

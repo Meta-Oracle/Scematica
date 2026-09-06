@@ -190,10 +190,7 @@ fn build_gate(cli: &Cli) -> Result<Option<PaymentGate>> {
         max_timeout_seconds: 120,
         extra: serde_json::json!({ "purpose": "scemadex-signal" }),
     }];
-    Ok(Some(PaymentGate {
-        facilitator,
-        requirements,
-    }))
+    Ok(Some(PaymentGate::new(facilitator, requirements)))
 }
 
 // ── Mesh endpoints ──────────────────────────────────────────────────────────

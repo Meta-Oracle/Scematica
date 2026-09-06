@@ -173,8 +173,17 @@ impl Default for SlashRouting {
 }
 
 impl SlashRouting {
-    fn total_bps(&self) -> u32 {
-        self.to_caller_bps + self.to_challengers_bps + self.to_insurance_bps + self.to_lineage_bps
+    /// The four shares summed.
+    ///
+    /// Widened to `u64`. Summing four `u32`s in a `u32` overflows a little past a quarter
+    /// of the space — panicking in debug, wrapping in release — and a wrapped total is
+    /// worse than a large one, because `is_valid` can then answer `true` for a routing
+    /// that pays out several times the bond.
+    fn total_bps(&self) -> u64 {
+        self.to_caller_bps as u64
+            + self.to_challengers_bps as u64
+            + self.to_insurance_bps as u64
+            + self.to_lineage_bps as u64
     }
 
     /// True when the four shares sum to a full `10_000` bps.
@@ -182,17 +191,40 @@ impl SlashRouting {
         self.total_bps() == 10_000
     }
 
-    /// Split a slashed bond into its four destinations. Conserves value exactly —
-    /// the caller share absorbs integer-division dust so the full bond is paid out.
+    /// Split a slashed bond into its four destinations.
+    ///
+    /// **Conserves value for every routing, valid or not.** The three named slices are
+    /// taken in order against a running remainder and the caller receives what is left,
+    /// so the four always sum to exactly the bond.
+    ///
+    /// Under a valid routing this is the arithmetic it has always been — the three shares
+    /// of a routing summing to 10 000 bps cannot exceed the bond, so nothing is ever
+    /// capped and the caller's remainder is the rounding dust, as documented. The
+    /// difference is only in what an *invalid* routing does. It used to compute
+    /// `amount - challengers - insurance - lineage` as a plain subtraction: two 100 %
+    /// shares made that underflow, panicking in debug and wrapping to an enormous caller
+    /// share in release, off a `SlashRouting` nothing had ever checked — `distribute` did
+    /// not call `is_valid`, and `with_slash_routing` did not validate what it stored. The
+    /// on-chain twin has always required validity at `escrow`; this is the off-chain half
+    /// of that guarantee, made structural rather than checked.
+    ///
+    /// The share itself is computed in `u128`, matching the program. `saturating_mul` on
+    /// `u64` silently pins a large bond's share at `u64::MAX / 10_000`, which is a wrong
+    /// payout rather than a refused one.
     pub fn distribute(&self, bond: Usdc) -> SlashDistribution {
         let amount = bond.0;
-        let share = |bps: u32| amount.saturating_mul(bps as u64) / 10_000;
-        let challengers = share(self.to_challengers_bps);
-        let insurance = share(self.to_insurance_bps);
-        let lineage = share(self.to_lineage_bps);
-        let caller = amount - challengers - insurance - lineage; // dust → caller
+        let mut left = amount;
+        let mut take = |bps: u32| {
+            let s = ((amount as u128 * bps as u128) / 10_000) as u64;
+            let s = s.min(left);
+            left -= s;
+            s
+        };
+        let challengers = take(self.to_challengers_bps);
+        let insurance = take(self.to_insurance_bps);
+        let lineage = take(self.to_lineage_bps);
         SlashDistribution {
-            caller: Usdc(caller),
+            caller: Usdc(left), // remainder, so dust → caller
             challengers: Usdc(challengers),
             insurance: Usdc(insurance),
             lineage: Usdc(lineage),
@@ -251,9 +283,35 @@ impl SettlementConfig {
 
     /// Builder: set how a slashed bond is distributed. A meaningful counter-market
     /// (Primitive E) needs `to_challengers_bps > 0` so doubting is +EV when right.
+    ///
+    /// Debug-asserts validity. The signature stays infallible because this is published
+    /// API and `distribute` is now conserving whatever it is handed, so an invalid
+    /// routing can no longer overdraw — it only pays the caller less than the
+    /// configuration claims. Use [`SettlementConfig::try_with_slash_routing`] to be told
+    /// about that rather than to find out from a ledger.
     pub fn with_slash_routing(mut self, routing: SlashRouting) -> Self {
+        debug_assert!(
+            routing.is_valid(),
+            "slash routing must sum to 10_000 bps, got {}",
+            routing.total_bps()
+        );
         self.slash_routing = routing;
         self
+    }
+
+    /// Builder: set the slash routing, refusing one that does not sum to 10 000 bps.
+    ///
+    /// The checked counterpart to [`with_slash_routing`](Self::with_slash_routing), and
+    /// the off-chain equivalent of the program's `require!(routing.is_valid())`.
+    pub fn try_with_slash_routing(mut self, routing: SlashRouting) -> crate::error::Result<Self> {
+        if !routing.is_valid() {
+            return Err(crate::error::ScemaDexError::ConstraintViolation(format!(
+                "slash routing must sum to 10_000 bps, got {}",
+                routing.total_bps()
+            )));
+        }
+        self.slash_routing = routing;
+        Ok(self)
     }
 }
 
@@ -696,6 +754,65 @@ mod tests {
         assert_eq!(d.insurance.0, 200);
         assert_eq!(d.lineage.0, 100);
         assert_eq!(d.caller.0, 403, "caller absorbs the dust");
+    }
+
+    /// **S-04.** An invalid routing must not be able to pay out more than the bond.
+    ///
+    /// Two 100 % shares is the witness the audit's Lean model exhibits
+    /// (`Audit.Escrow.finding_S04_invalid_routing_overdraws`): against the previous
+    /// arithmetic this demanded twice the bond and reached `amount - challengers -
+    /// insurance - lineage` as a plain `u64` subtraction, which underflows — a debug
+    /// panic, or in release a caller share near `u64::MAX`. The on-chain twin refuses
+    /// such a routing at `escrow`; off-chain nothing checked, so conservation is now a
+    /// property of the split itself.
+    #[test]
+    fn invalid_routing_cannot_overdraw() {
+        let routing = SlashRouting {
+            to_caller_bps: 0,
+            to_challengers_bps: 10_000,
+            to_insurance_bps: 10_000,
+            to_lineage_bps: 0,
+        };
+        assert!(!routing.is_valid());
+        let d = routing.distribute(Usdc(1_000));
+        let total = d.caller.0 + d.challengers.0 + d.insurance.0 + d.lineage.0;
+        assert_eq!(total, 1_000, "an invalid routing still pays out exactly the bond");
+        assert_eq!(d.challengers.0, 1_000, "taken in order against the remainder");
+        assert_eq!(d.insurance.0, 0, "nothing left for the second full share");
+        assert_eq!(d.caller.0, 0);
+    }
+
+    /// The four shares summed must not be able to wrap. Four `u32`s near the top of the
+    /// range overflow a `u32` total, and a wrapped total can land on exactly 10 000 —
+    /// which would make `is_valid` vouch for a routing paying out several times over.
+    #[test]
+    fn total_bps_does_not_wrap() {
+        let routing = SlashRouting {
+            to_caller_bps: u32::MAX,
+            to_challengers_bps: u32::MAX,
+            to_insurance_bps: u32::MAX,
+            to_lineage_bps: u32::MAX,
+        };
+        assert!(!routing.is_valid());
+        let d = routing.distribute(Usdc(1_000));
+        assert_eq!(d.caller.0 + d.challengers.0 + d.insurance.0 + d.lineage.0, 1_000);
+    }
+
+    /// The checked builder refuses what the debug assertion only complains about.
+    #[test]
+    fn try_with_slash_routing_refuses_an_invalid_split() {
+        let routing = SlashRouting {
+            to_caller_bps: 5_000,
+            to_challengers_bps: 4_000,
+            to_insurance_bps: 0,
+            to_lineage_bps: 0,
+        };
+        assert!(SettlementConfig::optimistic(60)
+            .try_with_slash_routing(routing)
+            .is_err());
+        assert!(SettlementConfig::optimistic(60)
+            .try_with_slash_routing(SlashRouting::default())
+            .is_ok());
     }
 
     #[test]

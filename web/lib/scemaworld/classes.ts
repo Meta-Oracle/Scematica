@@ -37,7 +37,8 @@
  * quietly pay somebody to inflate a record.
  */
 
-import { EXTENT } from './scale.ts'
+import { EXTENT, LIFE_ENEMY_SHOT, LIFE_ENEMY_SHOT_MAX, SPEED_ENEMY_SHOT,
+} from './scale.ts'
 
 /**
  * A silhouette. `gl.ts` owns one mesh per value; nothing else may choose one.
@@ -112,6 +113,82 @@ export interface ClassSpec {
 }
 
 const S = (f: number) => Math.round(EXTENT * f)
+
+/**
+ * Firing arc, as the minimum `dot(facing, aim)` a craft needs before it will shoot.
+ *
+ * ## Why capitals were never firing at all
+ *
+ * There was one threshold, 0.985 — about ten degrees off the nose — and it is the right number
+ * for a fighter, whose guns are bolted to the hull. Applied to a capital it is a bug with no
+ * symptom: a dreadnought turns at 0.05 radians per second and a titan at 0.014, so bringing a
+ * nose onto anything that is moving takes upward of a minute and in practice never completes.
+ * Capitals therefore sat in each other's engagement envelopes, both in `attack`, and neither ever
+ * fired a shot. The sector's two war fleets ignored each other completely and the reason was a
+ * constant that nobody had thought to make per-class.
+ *
+ * A capital does not aim by turning. It has **turrets**, and the honest model of that is a wide
+ * arc: it fires at anything forward of its beam. Behind the beam is a real blind spot and it is
+ * the counterplay — the old rule was "stay outside a ten-degree cone", which a fighter satisfies
+ * by accident and which therefore made capitals harmless to a moving target rather than
+ * dangerous to a careless one.
+ */
+export const ARC_NOSE = 0.985
+
+/**
+ * A capital's arc: everything forward of the beam, with a blind cone astern.
+ *
+ * Not omnidirectional. A turret ring that covers its own engines would leave nowhere to be safe,
+ * and "get behind it" is the manoeuvre that has to keep working — it is what makes a leviathan a
+ * problem to solve rather than a damage check.
+ */
+export const ARC_TURRET = 0.35
+
+/**
+ * How close something has to be, in multiples of a capital's own radius, before its turrets can
+ * no longer be brought onto it.
+ *
+ * A turret ring cannot depress onto its own hull. That is physically true and it is also the one
+ * piece of counterplay a capital needs to have: the manoeuvre that beats a leviathan is to get
+ * *inside* it, among the superstructure, where nothing can be aimed at you — which is already the
+ * stated design in `game.ts`'s ramming note ("get inside its guns' arc, where a hull that turns at
+ * a twentieth of a radian per second cannot bring anything to bear"). It was stated there and
+ * implemented nowhere, because with a ten-degree arc the guns never fired at anything anyway.
+ *
+ * It costs nothing in a capital duel — two of them fight at a substantial fraction of a sector,
+ * nowhere near each other's hulls.
+ */
+export const TURRET_MIN_RANGE = 1.3
+
+/** The arc a class fires within. */
+export function arcOf(spec: ClassSpec): number {
+  return spec.capital ? ARC_TURRET : ARC_NOSE
+}
+
+/**
+ * How long a round from this class stays alive.
+ *
+ * **A class's rounds must be able to cross the range it is willing to fire at.** They could not,
+ * and it was invisible: every enemy round lived 0.8 seconds and travelled at a sector every 3.4
+ * seconds, so nothing could reach beyond about a quarter of a sector — while a capital's guns
+ * were gated at three to four times that. Capitals in range of each other, on target, firing,
+ * and every round evaporating in empty space. Nothing errored and nothing looked wrong; the two
+ * fleets simply never damaged each other.
+ *
+ * Derived from `aggro` rather than tuned per class, so the gate and the projectile cannot drift
+ * apart again — widening a class's engagement range now lengthens its rounds by construction.
+ * The floor keeps a fighter's rounds exactly as short as they were.
+ */
+export function shotLifeOf(spec: ClassSpec): number {
+  const needed = (spec.aggro / SPEED_ENEMY_SHOT) * 1.25
+  return Math.min(LIFE_ENEMY_SHOT_MAX, Math.max(LIFE_ENEMY_SHOT, needed))
+}
+
+/** Whether a class can engage something at this range. Only capitals have a minimum. */
+export function canEngageAt(spec: ClassSpec, range: number): boolean {
+  return !spec.capital || range > spec.radius * TURRET_MIN_RANGE
+}
+
 
 export const CLASSES: Record<ClassId, ClassSpec> = {
   // Barely armed, and the only thing in the sector you can reliably run down. It exists so a

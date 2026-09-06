@@ -2,7 +2,8 @@ use anyhow::Result;
 use base64::Engine;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig, signature::Keypair, transaction::Transaction,
+    commitment_config::CommitmentConfig, hash::Hash, pubkey::Pubkey, signature::Keypair,
+    signer::Signer, transaction::Transaction,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -98,19 +99,75 @@ impl Facilitator {
         }
     }
 
+    /// The pubkey clients must name as fee payer when building a payment.
+    pub fn fee_payer(&self) -> Pubkey {
+        self.fee_payer.pubkey()
+    }
+
+    /// A blockhash for a client to build against, with the fee payer to name.
+    ///
+    /// Served in the `extra` block of a 402 so the payer can sign the message that will
+    /// actually be submitted — see `submit` for why the facilitator can no longer supply
+    /// one after the fact.
+    pub async fn payment_context(&self) -> Result<(Pubkey, Hash)> {
+        let (blockhash, _) = self
+            .rpc
+            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .await?;
+        Ok((self.fee_payer.pubkey(), blockhash))
+    }
+
+    /// Countersign and submit the transaction **exactly as the payer signed it**.
+    ///
+    /// ## This used to refresh the blockhash, which destroyed the payer's signature
+    ///
+    /// A Solana signature commits to the serialized message, and the blockhash is part of
+    /// that message. Overwriting `recent_blockhash` after the payer had signed left a
+    /// signature over a message that no longer existed, so the network rejected every
+    /// such transaction: the bundled happy path could not collect a payment at all.
+    /// Nothing noticed, because `verify` was not checking the signature either (X-01) and
+    /// the middleware had already served the resource and discarded the settlement error
+    /// (X-02) — three defects that each hid the next.
+    ///
+    /// A second defect sat in the same three lines. `Message::new(&ixs, None)` makes the
+    /// *payer* the fee payer, so `self.fee_payer` was not among the message's signer
+    /// accounts, and `Transaction::partial_sign` panics on that rather than returning an
+    /// error — inside the middleware's detached `tokio::spawn` that panic was swallowed,
+    /// which is why the symptom was "payments silently never arrive".
+    ///
+    /// So the blockhash now comes from the server, in the 402, and travels one way. The
+    /// cost is that a payload expires with its blockhash, which is the correct behaviour
+    /// for a payment authorization and is what `max_timeout_seconds` was always
+    /// describing.
     async fn submit(&self, tx_b64: &str) -> Result<String> {
         let tx_bytes = base64::engine::general_purpose::STANDARD.decode(tx_b64)?;
         let mut tx: Transaction = bincode::deserialize(&tx_bytes)?;
 
-        // Refresh blockhash so the transaction lands
-        let (recent_blockhash, _) = self
-            .rpc
-            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .await?;
-        tx.message.recent_blockhash = recent_blockhash;
+        if tx.message.recent_blockhash == Hash::default() {
+            anyhow::bail!(
+                "Payment carries no recent blockhash; the client must build against the one served in the 402 `extra.recentBlockhash`"
+            );
+        }
 
-        // Add fee payer signature (client's transfer signature is already present)
-        tx.partial_sign(&[self.fee_payer.as_ref()], recent_blockhash);
+        let fee_payer = self.fee_payer.pubkey();
+        let slot = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|k| *k == fee_payer)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Payment does not name {} as an account; the client must build against the fee payer served in the 402 `extra.feePayer`",
+                    fee_payer
+                )
+            })?;
+        if slot >= tx.message.header.num_required_signatures as usize {
+            anyhow::bail!("Fee payer {fee_payer} is present but not in a signing slot");
+        }
+
+        // Sign over the message as it stands. `partial_sign` would panic if the key had
+        // no slot, which the check above has already ruled out with an error instead.
+        tx.partial_sign(&[self.fee_payer.as_ref()], tx.message.recent_blockhash);
 
         let sig = self.rpc.send_and_confirm_transaction(&tx).await?;
         Ok(sig.to_string())
@@ -144,7 +201,10 @@ mod tests {
             amount: 1_000,
             pay_to: pay_to.into(),
             max_timeout_seconds: 120,
-            extra: serde_json::Value::Null,
+            extra: serde_json::json!({
+                "feePayer": "11111111111111111111111111111112",
+                "recentBlockhash": "11111111111111111111111111111112",
+            }),
         }
     }
 

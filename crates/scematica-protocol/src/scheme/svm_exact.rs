@@ -118,19 +118,45 @@ fn verify_inner(payload: &SvmExactPayload, requirements: &PaymentRequirements) -
         bail!("No valid SPL TransferChecked instruction found in transaction");
     }
 
-    // 4. Verify the client actually signed (authority signature must not be default/zero)
+    // 4. Verify the payer's signature — over this message, by this key.
+    //
+    // ## This used to check that the signature slot was not all zeros
+    //
+    // That is not authentication. An attacker could name any wealthy stranger as the
+    // TransferChecked authority, fill the signature slot with 64 arbitrary non-zero
+    // bytes, and `verify` returned `is_valid: true` naming the stranger as payer. The
+    // economic checks above — mint, destination ATA, exact amount, instruction count —
+    // are correct and well tested, and every one of them depends on this step for its
+    // meaning: they establish what the transaction *says*, and only the signature
+    // establishes that anybody agreed to it.
+    //
+    // Note also the old shape: `if let Some(idx) = ...position(...)` fell through to
+    // `Ok` when the payer was not among the account keys at all, so a transaction whose
+    // authority appeared nowhere in the key list verified without reaching any check.
+    // A missing payer is now an error, as is a payer that is not in a required-signature
+    // slot — a key outside the signing region cannot have signed regardless of what
+    // bytes sit at that index.
     let payer = payer_key.ok_or_else(|| anyhow::anyhow!("Could not identify payer"))?;
-    if let Some(idx) = tx.message.account_keys.iter().position(|k| k == &payer) {
-        if idx < tx.signatures.len() {
-            if tx.signatures[idx] == solana_sdk::signature::Signature::default() {
-                bail!("Transaction is not signed by the payer authority");
-            }
-        } else {
-            bail!(
-                "Payer account index {} has no corresponding signature slot",
-                idx
-            );
-        }
+    let idx = tx
+        .message
+        .account_keys
+        .iter()
+        .position(|k| k == &payer)
+        .ok_or_else(|| anyhow::anyhow!("Payer {} is not an account of this transaction", payer))?;
+    if idx >= tx.message.header.num_required_signatures as usize {
+        bail!("Payer {} does not occupy a signing slot", payer);
+    }
+    if idx >= tx.signatures.len() {
+        bail!("Payer account index {} has no corresponding signature slot", idx);
+    }
+    if tx.signatures[idx] == solana_sdk::signature::Signature::default() {
+        bail!("Transaction is not signed by the payer authority");
+    }
+    // The message as the chain will hash it. A signature over anything else — including
+    // the same instructions under a different blockhash — is not a signature on this.
+    let message_bytes = tx.message.serialize();
+    if !tx.signatures[idx].verify(payer.as_ref(), &message_bytes) {
+        bail!("Payer signature does not verify over this transaction");
     }
 
     Ok(payer.to_string())
@@ -160,9 +186,20 @@ mod tests {
             amount,
             pay_to: pay_to.into(),
             max_timeout_seconds: 120,
-            extra: serde_json::Value::Null,
+            // The payment context a real 402 carries. `build_payment_payload` refuses
+            // without it, which is the point: a payment built against no blockhash and no
+            // fee payer verifies locally and can never land.
+            extra: serde_json::json!({
+                "feePayer": FEE_PAYER,
+                "recentBlockhash": BLOCKHASH,
+            }),
         }
     }
+
+    /// A fee payer and blockhash for tests. Any valid base58 of the right length does —
+    /// nothing here reaches a chain.
+    const FEE_PAYER: &str = "11111111111111111111111111111112";
+    const BLOCKHASH: &str = "11111111111111111111111111111112";
 
     /// The honest path: a payload built by our own client for the exact
     /// requirements must verify, and must report the real payer.
@@ -234,6 +271,185 @@ mod tests {
 
     /// A transaction whose payer never signed must not settle — otherwise anyone
     /// could forge a transfer from a stranger's account.
+    #[test]
+    /// **X-01.** A transaction nobody signed, naming a stranger as the transfer
+    /// authority, with 64 arbitrary non-zero bytes in the signature slot.
+    ///
+    /// This is the forgery the audit's Lean model exhibits as
+    /// `Audit.X402.finding_X01_unsigned_payload_verifies`: every economic check passes,
+    /// so the facilitator answered `is_valid: true` and named the victim as payer. The
+    /// old step 4 asked only whether the signature slot was non-zero, and this passes
+    /// that. Note the victim never touched it — the attacker needs nothing but the
+    /// victim's public key.
+    #[test]
+    fn forged_signature_bytes_are_rejected() {
+        let victim = Keypair::new();
+        let pay_to = Pubkey::new_unique();
+        let asset = Pubkey::from_str(USDC).unwrap();
+
+        let source = get_associated_token_address(&victim.pubkey(), &asset);
+        let dest = get_associated_token_address(&pay_to, &asset);
+        let ix = transfer_checked(
+            &spl_token::id(),
+            &source,
+            &asset,
+            &dest,
+            &victim.pubkey(),
+            &[],
+            1_000,
+            DECIMALS,
+        )
+        .unwrap();
+        let msg = Message::new(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(50_000),
+                ComputeBudgetInstruction::set_compute_unit_price(1),
+                ix,
+            ],
+            Some(&victim.pubkey()),
+        );
+        let mut tx = Transaction::new_unsigned(msg);
+        // Not a signature — just bytes that are not the all-zero default.
+        tx.signatures[0] = solana_sdk::signature::Signature::from([7u8; 64]);
+        let b64 =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+
+        let resp = verify(
+            &SvmExactPayload { transaction: b64 },
+            &reqs(USDC, &pay_to.to_string(), 1_000),
+        );
+
+        assert!(!resp.is_valid, "a forged signature must not verify");
+        assert!(
+            resp.invalid_reason.unwrap().contains("does not verify"),
+            "and the reason must be the signature, not an economic check"
+        );
+    }
+
+    /// A payer named as the transfer authority but absent from the account keys used to
+    /// fall straight through to `Ok`: `if let Some(idx) = ...position(...)` simply did
+    /// not run its body. The transfer authority is always an account key in a real
+    /// transaction, so this is a malformed payload rather than an attack — but "the
+    /// check did not apply" must not be spelled the same way as "the check passed".
+    #[test]
+    fn payer_outside_the_signing_region_is_rejected() {
+        let payer = Keypair::new();
+        let other = Keypair::new();
+        let pay_to = Pubkey::new_unique();
+        let asset = Pubkey::from_str(USDC).unwrap();
+
+        let source = get_associated_token_address(&payer.pubkey(), &asset);
+        let dest = get_associated_token_address(&pay_to, &asset);
+        let ix = transfer_checked(
+            &spl_token::id(),
+            &source,
+            &asset,
+            &dest,
+            &payer.pubkey(),
+            &[],
+            1_000,
+            DECIMALS,
+        )
+        .unwrap();
+        // `other` is the fee payer and the only required signer; `payer` lands in the
+        // read-only region, so whatever is in slot 0 is not its signature.
+        let msg = Message::new(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(50_000),
+                ComputeBudgetInstruction::set_compute_unit_price(1),
+                ix,
+            ],
+            Some(&other.pubkey()),
+        );
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.partial_sign(&[&other], msg_blockhash(&tx));
+        let b64 =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+
+        let resp = verify(
+            &SvmExactPayload { transaction: b64 },
+            &reqs(USDC, &pay_to.to_string(), 1_000),
+        );
+        assert!(!resp.is_valid);
+    }
+
+    fn msg_blockhash(tx: &Transaction) -> solana_sdk::hash::Hash {
+        tx.message.recent_blockhash
+    }
+
+    /// **X-03.** Rewriting the blockhash after the payer signed invalidates the payment.
+    ///
+    /// This is what the facilitator used to do on every settlement, and it is why the
+    /// bundled happy path could never collect: a Solana signature commits to the
+    /// serialized message and the blockhash is part of it. The audit's model states the
+    /// same thing as `Audit.X402.msgHash_injective_in_blockhash`.
+    ///
+    /// The test is what makes the fix load-bearing rather than a comment — with `verify`
+    /// now checking the signature, a future `submit` that reintroduces the rewrite
+    /// produces payloads this rejects.
+    #[test]
+    fn rebinding_the_blockhash_breaks_the_payer_signature() {
+        let payer = Keypair::new();
+        let fee_payer = Keypair::new();
+        let pay_to = Pubkey::new_unique();
+        let asset = Pubkey::from_str(USDC).unwrap();
+
+        let source = get_associated_token_address(&payer.pubkey(), &asset);
+        let dest = get_associated_token_address(&pay_to, &asset);
+        let ix = transfer_checked(
+            &spl_token::id(),
+            &source,
+            &asset,
+            &dest,
+            &payer.pubkey(),
+            &[],
+            1_000,
+            DECIMALS,
+        )
+        .unwrap();
+        let original = solana_sdk::hash::Hash::new_unique();
+        let mut msg = Message::new(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(50_000),
+                ComputeBudgetInstruction::set_compute_unit_price(1),
+                ix,
+            ],
+            Some(&fee_payer.pubkey()),
+        );
+        msg.recent_blockhash = original;
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.partial_sign(&[&payer], original);
+
+        let requirements = reqs(USDC, &pay_to.to_string(), 1_000);
+        let encode = |t: &Transaction| {
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(t).unwrap())
+        };
+
+        // As signed, it verifies.
+        let ok = verify(
+            &SvmExactPayload {
+                transaction: encode(&tx),
+            },
+            &requirements,
+        );
+        assert!(ok.is_valid, "the payment as signed must verify: {:?}", ok.invalid_reason);
+
+        // Rewrite the blockhash — exactly what `submit` used to do — and it does not.
+        let mut rebound = tx.clone();
+        rebound.message.recent_blockhash = solana_sdk::hash::Hash::new_unique();
+        let broken = verify(
+            &SvmExactPayload {
+                transaction: encode(&rebound),
+            },
+            &requirements,
+        );
+        assert!(
+            !broken.is_valid,
+            "a payment whose blockhash was rewritten after signing must not verify"
+        );
+        assert!(broken.invalid_reason.unwrap().contains("does not verify"));
+    }
+
     #[test]
     fn unsigned_transaction_is_rejected() {
         let payer = Keypair::new();

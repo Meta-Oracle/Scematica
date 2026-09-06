@@ -39,7 +39,9 @@
 
 import type { Contact, Vec3 } from './generate.ts'
 import { durability } from './weapons.ts'
-import { CLASSES, classFor, SHIELD_DELAY_MS, type ClassSpec } from './classes.ts'
+import {
+  arcOf, canEngageAt, CLASSES, classFor, shotLifeOf, SHIELD_DELAY_MS, type ClassSpec,
+} from './classes.ts'
 import { civilian, hostileTo, nextStop, routeNodes, type Civilian, type Faction } from './factions.ts'
 import type { Node, Space } from './generate.ts'
 import { separate, steerAround, type Grid } from './collide.ts'
@@ -389,7 +391,15 @@ const DISENGAGE = 1.9
  * emerges from the stepping code.
  */
 export function decide(c: Craft, range: number, closing: number, nowMs: number): Behaviour {
-  if (c.spec.capital) return range < c.spec.aggro ? 'attack' : 'patrol'
+  if (c.spec.capital) {
+    // A capital with a quarry closes on it, whether or not it is already in gun range. Gating
+    // `attack` on `range < aggro` meant a capital only ever advanced on something already inside
+    // its envelope — so two fleets placed further apart than that sat still, in `patrol`, for the
+    // whole session. Firing is still gated on range and arc; this decides only whether it is
+    // going somewhere.
+    if (c.target) return 'attack'
+    return range < c.spec.aggro ? 'attack' : 'patrol'
+  }
   const limit = c.behaviour === 'patrol' ? c.spec.aggro : c.spec.aggro * DISENGAGE
   if (range > limit) return 'patrol'
   // Below a third of hull it breaks off. Being able to *let one go* is what stops every
@@ -440,11 +450,36 @@ export function opposes(a: Faction, b: Faction): boolean {
  * structure to keep correct in exchange for a fraction of a millisecond.
  */
 export function nearestOpponent(swarm: Swarm, c: Craft, reach: number): Craft | null {
+  // ## A capital looks for a capital first
+  //
+  // Nearest-of-anything is right for a fighter and wrong for a battleship. Fighters outnumber
+  // capitals about twenty to one, so the nearest opposing craft is essentially always an
+  // interceptor — which is why the sector's two capital fleets, sitting in `attack` with each
+  // other well inside their gun ranges, spent ten minutes shooting at escorts and never once
+  // fired on each other. Every part of the engagement looked correct in isolation.
+  //
+  // Capital ships engage capital ships and leave the screen to the screen. The fallback is the
+  // ordinary search, so a capital with no opposite number still fights.
+  if (c.spec.capital) {
+    const peer = nearestWhere(swarm, c, reach, (o) => o.spec.capital)
+    if (peer) return peer
+  }
+  return nearestWhere(swarm, c, reach, () => true)
+}
+
+/** Nearest live opponent within `reach` satisfying `want`. */
+function nearestWhere(
+  swarm: Swarm,
+  c: Craft,
+  reach: number,
+  want: (o: Craft) => boolean,
+): Craft | null {
   let best: Craft | null = null
   let bestD = reach
   for (const other of swarm.craft) {
     if (!other.alive || other.id === c.id) continue
     if (!opposes(c.faction, other.faction)) continue
+    if (!want(other)) continue
     const d = len(sub(other.at, c.at))
     if (d < bestD) {
       bestD = d
@@ -491,6 +526,15 @@ const MARSHAL_REACH = 2.5
  * thing raiders are for.
  */
 const RAIDER_REACH = 1.2
+
+/**
+ * How much further than its guns a capital looks for a fight, as a multiple of its aggro.
+ *
+ * Wide enough to find the opposing fleet across the volume it was placed in. A capital that can
+ * only see as far as it can shoot is a capital that never moves, because closing is the thing it
+ * would have needed a target to start doing.
+ */
+const CAPITAL_REACH = 20
 
 /**
  * What a craft is currently interested in: where it is, how fast, and which craft it is — or
@@ -575,7 +619,15 @@ function focusOf(
     }
   }
 
-  const reach = c.spec.aggro * (c.faction === 'marshal' ? MARSHAL_REACH : RAIDER_REACH)
+  // A capital searches much further than it can shoot. Its guns reach a third of a sector and the
+  // opposing fleet is placed further away than that, so with a fighter's search radius the two
+  // war fleets never found each other at all: measured, every capital held `target = null` and
+  // took exactly zero damage over ten minutes of sector time. They are the largest sensor
+  // platforms in the volume; behaving as though they see less than an interceptor was the
+  // accident.
+  const reach =
+    c.spec.aggro *
+    (c.spec.capital ? CAPITAL_REACH : c.faction === 'marshal' ? MARSHAL_REACH : RAIDER_REACH)
 
   // Hold the current quarry while it is alive and still in reach. This is the commitment half of
   // `RETARGET_MS`: a craft does not drop a target simply because another drifted a little nearer.
@@ -788,13 +840,25 @@ export function step(
     // Aimed at the focus, for the same reason the steering is. A craft that steers at one thing
     // and shoots at another is not a pilot, it is two bugs agreeing.
     const aim = norm(sub(leadPoint(at, focusAt, focusVel, ENEMY_SHOT_SPEED), at))
-    // It only fires while actually pointing at the solution. A craft that can shoot sideways
-    // makes manoeuvre pointless, which is the entire game here.
-    const onTarget = dot(facing, aim) > 0.985
+    // It only fires while actually pointing at the solution — for a fighter, whose guns are
+    // bolted to the hull. A craft that can shoot sideways makes manoeuvre pointless, which is the
+    // entire game here.
+    //
+    // A capital aims with turrets rather than by turning, and giving it a fighter's arc was a bug
+    // with no symptom: at 0.014–0.05 radians per second it can never bring a nose onto a moving
+    // target, so the sector's two capital fleets sat in each other's envelopes and neither ever
+    // fired. See `arcOf`.
+    const onTarget = dot(facing, aim) > arcOf(c.spec)
     // Unarmed factions never fire, whatever state they are in. Checked on `damage` rather than
     // on the faction so a class with a gun cannot be made peaceful by accident, or the reverse.
     const canFire =
-      c.spec.damage > 0 && behaviour === 'attack' && range < c.spec.aggro && onTarget
+      c.spec.damage > 0 &&
+      behaviour === 'attack' &&
+      range < c.spec.aggro &&
+      onTarget &&
+      // A capital cannot depress its turrets onto its own hull. Getting inside one is the
+      // manoeuvre that beats it — see `canEngageAt`.
+      canEngageAt(c.spec, range)
     // Within a burst the rounds come fast; between bursts is the full cooldown. That rhythm is
     // most of what makes incoming fire feel like an event rather than a drip.
     const gap = burstLeft > 0 ? 90 : c.spec.cooldownMs
@@ -807,7 +871,8 @@ export function step(
       shots.push({
         at,
         dir: aim,
-        life: LIFE_ENEMY_SHOT,
+        // Long enough to cross the range this class fires at — see `shotLifeOf`.
+        life: shotLifeOf(c.spec),
         damage: c.spec.damage,
         owner: c.faction,
         target: focus.target,

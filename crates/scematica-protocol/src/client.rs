@@ -26,6 +26,34 @@ use crate::types::{PaymentPayload, PaymentRequirements, SvmExactPayload, X402_VE
 ///   3. SPL Token: TransferChecked (payer → payTo ATA, exact amount)
 ///
 /// The fee payer slot is left empty (zero pubkey); the facilitator fills it at settlement.
+/// Read the fee payer and blockhash the resource server served in its 402.
+///
+/// Carried in `PaymentRequirements::extra` — which the x402 spec reserves for exactly
+/// this, scheme-specific material a payer needs in order to construct a payment. Both are
+/// required: without the fee payer the payer would put itself in that slot and need SOL,
+/// which is the whole thing the facilitator exists to avoid, and without the blockhash
+/// the transaction cannot land. A missing or malformed value is an error rather than a
+/// default, because every available default here produces a payment that verifies locally
+/// and can never be collected.
+fn payment_context(requirements: &PaymentRequirements) -> Result<(Pubkey, solana_sdk::hash::Hash)> {
+    let field = |name: &str| -> Result<&str> {
+        requirements
+            .extra
+            .get(name)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Payment requirements carry no `extra.{name}`; the resource server must serve one in its 402 response"
+                )
+            })
+    };
+    let fee_payer = Pubkey::from_str(field("feePayer")?)
+        .map_err(|_| anyhow::anyhow!("Invalid extra.feePayer address"))?;
+    let blockhash = solana_sdk::hash::Hash::from_str(field("recentBlockhash")?)
+        .map_err(|_| anyhow::anyhow!("Invalid extra.recentBlockhash"))?;
+    Ok((fee_payer, blockhash))
+}
+
 pub fn build_payment_payload(
     payer: &Keypair,
     requirements: &PaymentRequirements,
@@ -56,13 +84,24 @@ pub fn build_payment_payload(
         token_decimals,
     )?;
 
-    // Build with a dummy recent blockhash — facilitator refreshes it before submission
-    let message = Message::new(
-        &[cu_limit_ix, cu_price_ix, transfer_ix],
-        None, // fee payer left empty for facilitator to fill
-    );
+    // ## Sign the message that will actually be submitted
+    //
+    // This used to build with `Message::new(&ixs, None)` and sign over `Hash::default()`,
+    // on the understanding that the facilitator would refresh the blockhash before
+    // submitting. It does not work and cannot: a signature commits to the serialized
+    // message, blockhash included, so rewriting it afterwards leaves a signature over a
+    // message that no longer exists and the network rejects the transaction. `None` also
+    // made the *payer* the fee payer, so the facilitator's key had no slot to sign into
+    // and `partial_sign` panicked rather than erroring.
+    //
+    // Both are fixed by the server saying, in the 402, which fee payer to name and which
+    // blockhash to build against. The payer then signs the exact bytes that get
+    // submitted, which is what makes a verified payment a collectible one.
+    let (fee_payer, recent_blockhash) = payment_context(requirements)?;
+    let mut message = Message::new(&[cu_limit_ix, cu_price_ix, transfer_ix], Some(&fee_payer));
+    message.recent_blockhash = recent_blockhash;
     let mut tx = Transaction::new_unsigned(message);
-    tx.partial_sign(&[payer], solana_sdk::hash::Hash::default());
+    tx.partial_sign(&[payer], recent_blockhash);
 
     let tx_bytes = bincode::serialize(&tx)?;
     let tx_b64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);

@@ -19,10 +19,7 @@ impl ProtocolServer {
         requirements: Vec<PaymentRequirements>,
         addr: SocketAddr,
     ) -> Self {
-        let gate = Arc::new(PaymentGate {
-            facilitator,
-            requirements,
-        });
+        let gate = Arc::new(PaymentGate::new(facilitator, requirements));
         Self { gate, addr }
     }
 

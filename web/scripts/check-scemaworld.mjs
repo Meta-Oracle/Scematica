@@ -44,7 +44,7 @@ import {
 } from '../lib/scemaworld/navmap.ts'
 import { HULLS, HULL_IDS } from '../lib/scemaworld/hulls.ts'
 import {
-  exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SCEMA_NOTE,
+  exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SALVAGE_NUM, SCEMA_DEN, SCEMA_NOTE,
 } from '../lib/scemaworld/economy.ts'
 import {
   entitlement, toBaseUnits, toWholeTokens, looksLikeAddress,
@@ -2611,12 +2611,15 @@ check('you never get stuck inside a capital hull', () => {
     ship: { ...g.ship, fuel: 1e9 },
     camera: { ...g.camera, position: [cap.at.x, cap.at.y, cap.at.z] },
   }
+  // Counts **ram** charges, not damage. A total-health proxy also catches gunfire, and a ship
+  // parked motionless at the centre of a capital in the middle of a fleet is supposed to be shot
+  // at — that is the sector working, not the collision bug this test is about. The proxy stopped
+  // being equivalent the moment enemy rounds could reach as far as their own fire gate allowed.
   let charged = 0
   const start = g.ship.hull + g.ship.shield
   for (let f = 0; f < 300; f += 1) {
-    const before = g.ship.hull + g.ship.shield
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: f * 16 })
-    if (g.ship.hull + g.ship.shield < before) charged += 1
+    if ((g.notice ?? '').startsWith('collision')) charged += 1
   }
   assert(charged <= 2, `charged ${charged} times for sitting inside one hull`)
   assert(g.throttle === 1, 'the drive was cut inside a capital, stranding the ship')
@@ -3503,22 +3506,40 @@ check('base units are exact, and whole tokens are floored', () => {
   assert(toWholeTokens(90_000_900_000n, 6) === 90_000, 'a fractional balance rounded up')
 })
 
-check('the exchange takes a spread, and never takes salvage for nothing', () => {
-  // The spread is the point: without it the two currencies are one resource with two labels, and
-  // "parts now or a hull later" stops being a question. Charging for salvage that produced no
-  // SCEMA would be a bug that looks exactly like a design decision.
+check('the exchange pays exactly the rate it states, at every amount', () => {
+  // 1.2 salvage to 1 SCEMA, held as 6:5. The rate is stated to the player, so it has to hold
+  // exactly rather than nearly — and 1.2 is not representable in binary floating point, so
+  // `Math.floor(salvage / 1.2)` gets 6 salvage wrong (4, not 5). Integer ratio, multiply first.
+  assert(toScema(6) === 5, `6 salvage bought ${toScema(6)} SCEMA, not 5`)
+  assert(toScema(12) === 10, `12 salvage bought ${toScema(12)}`)
+  assert(toScema(1200) === 1000, `1200 salvage bought ${toScema(1200)}`)
+
+  // Exact over a long sweep, not just at the round numbers where floats happen to behave.
+  for (let n = 0; n < 4000; n += 1) {
+    assert(toScema(n) === Math.floor((n * 5) / 6), `toScema(${n}) = ${toScema(n)}`)
+  }
+
   const r = exchange({ salvage: 1000, scema: 0 })
-  assert(r.ok && r.wallet.scema > 0, 'a thousand salvage bought nothing')
-  assert(r.wallet.scema < 1000 / SALVAGE_PER_SCEMA, 'the exchange took no spread')
+  assert(r.ok && r.wallet.scema === 833, `a thousand salvage bought ${r.wallet.scema}`)
   assert(r.wallet.salvage >= 0, 'the exchange went negative')
 
-  const dust = exchange({ salvage: SALVAGE_PER_SCEMA - 1, scema: 0 })
+  // Sub-unit salvage converts to nothing and is not taken. At 6:5 that is one salvage and not
+  // five — the old floor of `SALVAGE_NUM` would have refused everything up to five while the
+  // stated rate promised otherwise.
+  assert(toScema(2) === 1, 'two salvage buys one SCEMA at 1.2:1')
+  const dust = exchange({ salvage: 1, scema: 0 })
   assert(!dust.ok, 'sub-unit salvage was converted')
-  assert(dust.message.includes(String(SALVAGE_PER_SCEMA)), dust.message)
+  assert(dust.message.includes(String(SALVAGE_NUM)), dust.message)
 
   // Whatever is left is genuinely left: conversion never consumes salvage it did not use.
   const some = exchange({ salvage: 100, scema: 5 })
   assert(some.ok && some.wallet.salvage + salvageFor(some.wallet.scema - 5) >= 99)
+
+  // And the round trip never manufactures value in either direction.
+  for (const n of [6, 7, 59, 100, 1201, 9999]) {
+    const got = toScema(n)
+    assert(salvageFor(got) <= n, `${n} salvage -> ${got} SCEMA -> ${salvageFor(got)} salvage`)
+  }
 })
 
 check('a hull refuses with the shortfall rather than a bare no', () => {

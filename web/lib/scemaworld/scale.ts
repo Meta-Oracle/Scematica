@@ -261,6 +261,15 @@ export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 3.4)
 export const LIFE_ENEMY_SHOT = 0.8
 
 /**
+ * The longest an enemy round may live, whatever class fired it.
+ *
+ * A ceiling rather than a per-class free-for-all: a round that lives for ten seconds is a round
+ * still in flight long after the ship that fired it has been destroyed, which reads as a bug even
+ * when it is arithmetic.
+ */
+export const LIFE_ENEMY_SHOT_MAX = 5.0
+
+/**
  * Hostile craft, base and per-tier.
  *
  * Deliberately below `SPEED_SHIP`, even at the top tier: **disengaging must always be possible.**

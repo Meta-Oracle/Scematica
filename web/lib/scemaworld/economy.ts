@@ -45,35 +45,52 @@
 import { HULLS, type HullId } from './hulls.ts'
 
 /**
- * Salvage per SCEMA.
+ * Salvage per SCEMA, as an exact ratio: **6 salvage buys 5 SCEMA**, i.e. 1.2 to 1.
  *
- * Twelve to one, so a scout is a few dozen kills and a marauder is a campaign. It was described
- * here as a placeholder while SCEMA was one; it is now the **entry price of the redeemable
- * currency**, which makes it the number that decides how much play a token is worth. It has not
- * been changed for that — the caps in `claim.ts` are where the conservatism lives, and moving both
- * would be the same caution applied twice and legible in neither.
+ * Held as a numerator and a denominator rather than as `1.2`, because every amount here is a
+ * whole number of a thing a player can count and 1.2 is not representable in binary floating
+ * point. `Math.floor(salvage / 1.2)` gets 6 salvage wrong — it yields 4 rather than 5 — and the
+ * failure is a player watching a stated rate quietly not hold.
  */
-export const SALVAGE_PER_SCEMA = 12
+export const SALVAGE_NUM = 6
+export const SCEMA_DEN = 5
+
+/** The rate as a number, for display and for anything that only needs to say it. */
+export const SALVAGE_PER_SCEMA = SALVAGE_NUM / SCEMA_DEN
 
 /**
- * The spread taken on conversion, as a fraction.
+ * The spread taken on conversion. **Zero, deliberately, and it used to be 15%.**
  *
- * Deliberately unkind, and it is the only such number in the game. Without it, salvage and SCEMA
- * are the same resource wearing two labels and the choice between a component and a hull is a
- * formality — you would simply buy whichever is cheaper per point of benefit. A loss on the
- * exchange is what makes "spend this on parts now, or bank it toward a hull" an actual question.
+ * The spread existed so that salvage and SCEMA were not the same resource wearing two labels —
+ * without a loss on the exchange, "spend this on parts now or bank it toward a hull" is not a
+ * question, you just buy whichever is cheaper per point of benefit. That argument was right and
+ * it is outranked by a plainer one: the rate is now **stated to the player as an exact figure**,
+ * and a stated rate that quietly pays 15% less is the kind of small dishonesty this codebase
+ * refuses everywhere else it appears. A rate you have to read the source to predict is worse than
+ * a flat economy.
+ *
+ * The tension it was managing is real and has moved rather than gone: what now separates the two
+ * currencies is that SCEMA leaves the game and salvage does not.
  */
-export const EXCHANGE_SPREAD = 0.15
+export const EXCHANGE_SPREAD = 0
 
-/** What `salvage` converts to, after the spread. Never negative, never fractional. */
+/**
+ * What `salvage` converts to. Never negative, never fractional.
+ *
+ * Integer arithmetic throughout — multiply before dividing — so the ratio is exact at every
+ * amount rather than nearly right at most of them.
+ */
 export function toScema(salvage: number): number {
-  if (salvage < SALVAGE_PER_SCEMA) return 0
-  return Math.floor((salvage / SALVAGE_PER_SCEMA) * (1 - EXCHANGE_SPREAD))
+  if (salvage <= 0) return 0
+  // No separate minimum. A floor of `SALVAGE_NUM` was right at the old 12:1 rate and is wrong at
+  // 6:5, where two salvage genuinely buys one SCEMA — it would have quietly refused every amount
+  // between two and five while the stated rate said otherwise. The arithmetic decides.
+  return Math.floor((salvage * SCEMA_DEN) / SALVAGE_NUM)
 }
 
 /** How much salvage a given SCEMA amount costs to obtain. The inverse, rounded against you. */
 export function salvageFor(scema: number): number {
-  return Math.ceil((scema * SALVAGE_PER_SCEMA) / (1 - EXCHANGE_SPREAD))
+  return Math.ceil((scema * SALVAGE_NUM) / SCEMA_DEN)
 }
 
 export interface Wallet {
@@ -90,13 +107,12 @@ export function exchange(w: Wallet, salvage: number = w.salvage): Trade {
   if (gained <= 0) {
     return {
       ok: false,
-      message: `${SALVAGE_PER_SCEMA} salvage buys 1 SCEMA — you have ${w.salvage}`,
+      message: `${SALVAGE_NUM} salvage buys ${SCEMA_DEN} SCEMA — you have ${w.salvage}`,
     }
   }
   // Only the salvage that actually became SCEMA is spent. Charging the remainder would take
   // salvage and give nothing for it, which is a bug that looks exactly like a design decision.
-  const cost = Math.ceil((gained * SALVAGE_PER_SCEMA) / (1 - EXCHANGE_SPREAD))
-  const paid = Math.min(cost, w.salvage)
+  const paid = Math.min(salvageFor(gained), w.salvage)
   return {
     ok: true,
     wallet: { salvage: w.salvage - paid, scema: w.scema + gained },

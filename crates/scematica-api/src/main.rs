@@ -50,13 +50,13 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Seek, SeekFrom},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, warn};
 
 // ── file paths ────────────────────────────────────────────────────────────────
 
@@ -955,18 +955,58 @@ fn present_token(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+/// Constant-time secret comparison.
+///
+/// A port of `scema_daemon::auth::secret_eq`, which cannot be linked from here — it lives
+/// in the `scematica-omni` workspace, kept separate by the dependency pins. It folds
+/// across the full length of both inputs rather than returning at the first differing
+/// byte, so its cost is a function of the two lengths and nothing else. The early-exit
+/// `==` this replaces leaked the matching-prefix length, recoverable one byte at a time
+/// against an endpoint that force-sells a live trading position.
+///
+/// The length difference accumulates at full width. The daemon's version narrows it with
+/// `as u8`, where two lengths differing by a multiple of 256 contribute nothing — it does
+/// not matter there, because the byte loop still runs to the longer length and a token is
+/// never NUL-padded, but there is no reason to carry the hazard into a second copy.
+fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
+}
+
+/// The control-route gate. **Fails closed.**
+///
+/// These routes are not read-only: `/api/controls/dump-mode` force-sells at
+/// `min_out = 0`, `sell-mode` pauses buys, `params` retunes the strategy. The gate used
+/// to pass every request when `SCEMATICA_API_TOKEN` was unset, described in a comment as
+/// a local-dev default — but the listener binds a socket, and until this commit it bound
+/// every interface, so "unauthenticated local dev" meant anyone who could route to the
+/// host could liquidate the operator's positions.
+///
+/// An unconfigured deployment now refuses control routes instead of opening them, and
+/// says which of the two things is wrong: 503 means the server has no token, which is an
+/// operator problem, and 401 means the caller did not present the right one. Collapsing
+/// both into 401 would send someone to look for a bad client when the server is the thing
+/// that is misconfigured. Read-only routes are unaffected.
+///
+/// The omni daemon in this repository does the stronger thing — `auth::load_or_create`
+/// generates a token into a `0600` file on first run, so there is no unconfigured state
+/// at all. That is the better shape and worth adopting here.
 async fn require_token(headers: HeaderMap, req: Request, next: Next) -> Result<Response, StatusCode> {
-    match std::env::var("SCEMATICA_API_TOKEN") {
-        Ok(expected) if !expected.is_empty() => {
-            // Constant-ish comparison is overkill for a LAN pairing secret, but reject
-            // cleanly on any mismatch or absence.
-            if present_token(&headers).as_deref() == Some(expected.as_str()) {
-                Ok(next.run(req).await)
-            } else {
-                Err(StatusCode::UNAUTHORIZED)
-            }
-        }
-        _ => Ok(next.run(req).await), // no token configured → open (local dev)
+    let Ok(expected) = std::env::var("SCEMATICA_API_TOKEN") else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    if expected.is_empty() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    match present_token(&headers) {
+        Some(t) if secret_eq(&t, &expected) => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
 
@@ -1294,6 +1334,18 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // ## CORS is opt-in, and never applies to the control routes
+    //
+    // `allow_origin(Any)` plus a loopback bind is the classic pairing: any web page the
+    // operator happens to visit could POST to `127.0.0.1:3001/api/controls/dump-mode` and
+    // read the reply. A browser will not send `Authorization` cross-origin without a
+    // successful preflight, so the token was some protection — but only for deployments
+    // that had set one, which A-01 is precisely about.
+    //
+    // Read-only routes keep a permissive CORS layer so the web dashboard works from any
+    // origin the operator serves it from. The control routes are merged in **after** this
+    // layer and therefore carry no CORS headers at all, which is the omni daemon's
+    // posture: a page cannot read a reply even if it guesses the route.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
@@ -1336,15 +1388,37 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/replay", post(replay_handler))
         .route("/api/calibration", get(calibration_handler))
         .route("/api/controls", get(controls_get_handler))
-        .merge(gated)
-        .layer(cors);
+        .layer(cors)
+        .merge(gated);
 
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(3001);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // ## Loopback unless somebody says otherwise
+    //
+    // This was `[0, 0, 0, 0]` — every interface — beside a fail-open auth gate. Either
+    // alone is defensible; together they are an unauthenticated control plane on the
+    // network. The default is now loopback, and widening it is an explicit act with a
+    // name attached to it rather than the thing that happens when nobody chose.
+    //
+    // `SCEMATICA_API_BIND` takes an address (`0.0.0.0` to accept the old behaviour, or a
+    // specific interface). A malformed value is refused rather than quietly falling back:
+    // a typo that silently binds loopback would look like a firewall problem, and a typo
+    // that silently binds the world is worse.
+    let host: IpAddr = match std::env::var("SCEMATICA_API_BIND") {
+        Ok(v) => v
+            .parse()
+            .map_err(|_| anyhow::anyhow!("SCEMATICA_API_BIND is not an IP address: {v}"))?,
+        Err(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+    };
+    if !host.is_loopback() {
+        warn!(
+            "binding {host} — the control routes are reachable off this host;              SCEMATICA_API_TOKEN must be set or they will refuse every request"
+        );
+    }
+    let addr = SocketAddr::from((host, port));
     info!("Scematica API listening on http://{}", addr);
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())

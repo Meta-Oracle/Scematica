@@ -375,7 +375,9 @@ impl ArbExecutor {
             accounts: vec![
                 solana_sdk::instruction::AccountMeta::new(src_ata, false),
                 solana_sdk::instruction::AccountMeta::new(swap_state_pda, false),
-                solana_sdk::instruction::AccountMeta::new_readonly(self.wallet.pubkey(), true),
+                // Writable: `profit_or_revert` now closes the swap state and refunds its
+                // rent here, so a baseline cannot outlive the transaction that set it.
+                solana_sdk::instruction::AccountMeta::new(self.wallet.pubkey(), true),
             ],
             data,
         })

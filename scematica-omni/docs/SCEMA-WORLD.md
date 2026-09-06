@@ -59,7 +59,9 @@ being designed in, and it is the sentence that makes the whole thing cohere.
 
 ## The campaign
 
-[SCEMA-WORLD-STORY.md](SCEMA-WORLD-STORY.md) — a storyline built on the one distinction that lets a
+[SCEMA-WORLD-STORY.md](SCEMA-WORLD-STORY.md) (spine) and
+[SCEMA-WORLD-CAMPAIGN.md](SCEMA-WORLD-CAMPAIGN.md) (history, people, beats, endings) — a storyline
+built on the one distinction that lets a
 narrative read the record without breaking the economy: **the record may shape what you are told, it
 may never shape what you are paid.** The plot is the two things `scema verify` cannot prove (that
 the world was as described, and that this is the original record), and its antagonist is a forger

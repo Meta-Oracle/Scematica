@@ -2,6 +2,13 @@
 
 A story for a game whose map is a sealed observation of somewhere real.
 
+**The detail is in [SCEMA-WORLD-CAMPAIGN.md](SCEMA-WORLD-CAMPAIGN.md)** — the history that made
+sealed observation the basis of everything, the nine people, the scene-level beats, the endings, and
+the part this document only gestures at: **the forgery has three generations**, each defeating the
+previous one's tell, and the third cannot be beaten by any instrument that exists or could exist.
+That escalation is what turns "a forger is out there" into a campaign, and its floor is a true
+statement about the software — *verification bounds tampering; it has never bounded intent.*
+
 ## The rule this whole document is written under
 
 `ship.ts`, `raiders.ts`, `factions.ts`, `respawn.ts`, `claim.ts`, `roles.ts` and `quests.ts` all

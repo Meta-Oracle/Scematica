@@ -57,6 +57,16 @@ renderer must show them differently.
 **A well-observed world is a safer place to fly.** That falls out of the mapping rather than
 being designed in, and it is the sentence that makes the whole thing cohere.
 
+## The campaign
+
+[SCEMA-WORLD-STORY.md](SCEMA-WORLD-STORY.md) — a storyline built on the one distinction that lets a
+narrative read the record without breaking the economy: **the record may shape what you are told, it
+may never shape what you are paid.** The plot is the two things `scema verify` cannot prove (that
+the world was as described, and that this is the original record), and its antagonist is a forger
+whose records verify perfectly because they were false when they were written rather than edited
+afterwards. The tell is honesty about ignorance — a forged sector has **no rifts**, because a world
+you invent has nothing in it you failed to see.
+
 ## Arcs
 
 Numbered, in dependency order. Each is shippable on its own. **All six are built.**

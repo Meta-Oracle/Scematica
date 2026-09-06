@@ -48,6 +48,16 @@ import { EXTENT, LIFE_ENEMY_SHOT, LIFE_ENEMY_SHOT_MAX, SPEED_ENEMY_SHOT,
  * which fails the same way colour-only distinctions fail everywhere else in this project.
  */
 export type Shape =
+  /**
+   * A faction citadel, one shape per tier.
+   *
+   * Three entries rather than a parameterised one because the mesh registry in `gl.ts` uploads a
+   * fixed set of buffers once — a shape whose geometry depended on an instance's data would have
+   * to be re-uploaded per draw, which is the one thing the instanced path exists to avoid.
+   */
+  | 'citadel1'
+  | 'citadel2'
+  | 'citadel3'
   | 'sphere'
   | 'shell'
   | 'bolt'
@@ -336,7 +346,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     id: 'warden', label: 'WARDEN', shape: 'dreadnought',
     radius: S(0.135), hull: 1400, shield: 900, shieldRegen: 26,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
-    damage: 15, cooldownMs: 900, burst: 8, bounty: 0, capital: true,
+    damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
   // The marshal titan. One per sector, and the only thing out here that a hostile titan has to
   // take seriously. Finding the two of them already engaged is the sight this whole faction
@@ -345,7 +355,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
     id: 'bastion', label: 'BASTION', shape: 'dreadnought',
     radius: S(0.4), hull: 14000, shield: 9000, shieldRegen: 70,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
-    damage: 18, cooldownMs: 500, burst: 14, bounty: 0, capital: true,
+    damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
   },
 }
 

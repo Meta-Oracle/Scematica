@@ -525,6 +525,55 @@ export function origin(): Wire {
 }
 
 /**
+ * A faction citadel: concentric rings on a common axis, one per tier.
+ *
+ * ## Why rings rather than a bigger station
+ *
+ * Every other node in the vocabulary is one silhouette that says *what* it is. A citadel has to
+ * say what it is **and** how important it is, from a range where no label is legible — a tier-3
+ * seat and a tier-1 outpost carry different contracts and a player routing across a sector needs
+ * to pick between them on sight. Counting rings is the one readout that survives distance: it is
+ * a *count*, and a count reads correctly at any size, where a diameter only reads correctly next
+ * to something else to compare it against.
+ *
+ * That is the same reasoning as the coverage meter being one cell per term rather than a
+ * proportional bar, and the severed limbs being one per blind spot rather than a rate.
+ *
+ * The rings are on **different axes**, alternating, so the structure reads as a volume from any
+ * approach instead of collapsing to a set of parallel lines when seen edge-on — the same trap
+ * `station()` avoids by giving its ring a spindle.
+ *
+ * Radii are fractions of 1 and the outermost is always 1, so a citadel of any tier occupies the
+ * radius the physics and the renderer agree on (`nodeRadius`). A tier that grew the outer ring
+ * would make the hit shell disagree with the picture, which is a rule this codebase has already
+ * paid for twice.
+ */
+export function citadel(tier = 3): Wire {
+  const p: number[][] = []
+  const e: [number, number][] = []
+  const rings = Math.max(1, Math.min(3, tier))
+
+  for (let r = 0; r < rings; r += 1) {
+    // Outermost first, stepping inward by a fixed fraction. `CITADEL_RING_GAP` lives in
+    // `scale.ts` with every other distance, but this one is a *proportion of the mesh* rather
+    // than a world length, so it is expressed here as the unit-sphere fraction it is.
+    const radius = 1 - r * 0.26
+    const plane = r % 2 === 0 ? 'xy' : 'xz'
+    const seg = 16
+    const outer = ring(p, seg, radius, 0, plane as 'xy' | 'xz')
+    const inner = ring(p, seg, radius * 0.88, 0, plane as 'xy' | 'xz')
+    e.push(...loop(outer, seg), ...loop(inner, seg), ...rungs(outer, inner, seg, 2))
+  }
+
+  // A core, so the middle is not empty at close range, and an axis the rings hang from.
+  const core = p.length
+  p.push([0, 0, -0.34], [0, 0, 0.34], [-0.2, 0, 0], [0.2, 0, 0], [0, -0.2, 0], [0, 0.2, 0])
+  e.push([core, core + 1], [core + 2, core + 3], [core + 4, core + 5])
+  e.push([core, core + 2], [core, core + 4], [core + 1, core + 3], [core + 1, core + 5])
+  return wire(p, e)
+}
+
+/**
  * A cylinder along +Z, from the origin to `-length`, radius 1.
  *
  * The bolt. A projectile used to be a sphere, and a sphere moving at half a sector per second is

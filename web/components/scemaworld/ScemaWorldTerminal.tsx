@@ -26,7 +26,10 @@ import {
   route, sensors, tick, useService, type GameState,
 } from '@/lib/scemaworld/game'
 import { progress as jumpProgress } from '@/lib/scemaworld/hyper'
-import { acquire, exchangeAt, withdrawn } from '@/lib/scemaworld/game'
+import { acquire, exchangeAt, withdrawn, rearm, takeContract, dropContract, PHOTON_PRICE } from '@/lib/scemaworld/game'
+import { photonMagazine } from '@/lib/scemaworld/weapons'
+import * as Quests from '@/lib/scemaworld/quests'
+import { ROLES, ROLE_IDS, roleOf, type RoleId } from '@/lib/scemaworld/roles'
 import { Withdraw } from './Withdraw'
 import { HULLS, HULL_IDS, type HullId } from '@/lib/scemaworld/hulls'
 import { SALVAGE_PER_SCEMA, SCEMA_NOTE, toScema } from '@/lib/scemaworld/economy'
@@ -101,6 +104,15 @@ export function ScemaWorldTerminal() {
   const [store] = useState<Store | null>(() => browserStore())
   const saved = useRef<Account | null>(null)
   /**
+   * The role, chosen before a world is flown. See `roles.ts`.
+   *
+   * Held in a ref as well as in state because the render effect that builds the game closes over
+   * its own copy — the same trap `loadedRef` exists for, and here it would silently start every
+   * session as a bounty hunter whatever the player picked.
+   */
+  const [role, setRole] = useState<RoleId>('bounty-hunter')
+  const roleRef = useRef<RoleId>('bounty-hunter')
+  /**
    * Whether the cockpit is live.
    *
    * **Starts true.** It started false and became true only when the canvas was clicked, and every
@@ -129,7 +141,7 @@ export function ScemaWorldTerminal() {
   const [market, setMarket] = useState(false)
   const [zoom, setZoom] = useState(DEFAULT_ZOOM)
   /** Which half of the market is showing. Components are the common case, so it opens there. */
-  const [shop, setShop] = useState<'parts' | 'ships' | 'treasury'>('parts')
+  const [shop, setShop] = useState<'parts' | 'ships' | 'contracts' | 'treasury'>('parts')
   /**
    * Paused. The tick simply is not called, which is the honest way to pause a pure simulation —
    * there is no accumulated real time to reconcile on resume and nothing keeps running behind
@@ -259,7 +271,7 @@ export function ScemaWorldTerminal() {
     // The account is restored **once**, onto the ship `newGame` just built and before the first
     // frame runs. See `wallet.ts` on why it is never applied to a ship already flying: a reload
     // that patched a live balance would resurrect money that had since been spent.
-    const fresh = newGame(loaded.space)
+    const fresh = newGame(loaded.space, roleRef.current)
     game.current = { ...fresh, ship: restoreAccount(fresh.ship, loadAccount(store)) }
     saved.current = accountOf(game.current.ship)
     setHud(game.current)
@@ -438,6 +450,53 @@ export function ScemaWorldTerminal() {
 
       {!loaded && (
         <div className="mx-auto max-w-2xl space-y-4 p-8">
+          {/*
+            ## Choose what you are before you fly
+
+            Shown before the record is dropped rather than after, because the role decides who
+            shoots at you from the first frame — asking afterwards would mean a sector that
+            changed its mind about whether the patrol was hostile while the player watched.
+
+            Every role flies the same hulls with the same components. What differs is who is
+            hostile and what you are paid for, which is stated on each card rather than left to be
+            discovered: a game that hides which faction will open fire is not offering a choice,
+            it is offering a coin toss.
+          */}
+          <div className="space-y-2">
+            <div className="text-omni-dim">Choose a trade. This decides who shoots at you.</div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {ROLE_IDS.map((id) => {
+                const r = ROLES[id]
+                const picked = role === id
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setRole(id)
+                      roleRef.current = id
+                    }}
+                    className={`rounded border px-3 py-2 text-left ${
+                      picked
+                        ? 'border-omni-accent text-omni-text'
+                        : 'border-omni-border text-omni-dim hover:border-omni-accent hover:text-omni-text'
+                    }`}
+                  >
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-omni-text">{r.label}</span>
+                      {picked && <span className="text-omni-accent">selected</span>}
+                    </div>
+                    <div className="mt-0.5">{r.blurb}</div>
+                    <div className="mt-1 text-omni-muted">
+                      hunted by {r.huntedBy.length > 0 ? r.huntedBy.join(' and ') : 'nobody'}
+                      {r.hunts.length > 0 ? ` · paid for ${r.hunts.join(' and ')} hulls` : ' · paid for cargo'}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="text-omni-muted">{roleOf(role).brief}</div>
+          </div>
           <p className="text-omni-muted">
             Drop a sealed decision record — anything <code>scema decide</code> wrote under{' '}
             <code>.scema/decisions/</code>. The world tree it committed to becomes the volume
@@ -565,6 +624,17 @@ export function ScemaWorldTerminal() {
               }
               alarm={!!hud && hud.ship.jumpFuel <= 0}
             />
+            <Row k="role" v={roleOf(hud?.role ?? role).label} />
+            {/*
+              The active contract, on the HUD rather than only in the market panel. A job you have
+              to open a menu to remember is a job you forget you took — and the progress figure is
+              the thing that makes a bounty contract feel different from ambient killing.
+            */}
+            <Row
+              k="contract"
+              v={hud?.quests.active ? Quests.progressLabel(hud.quests.active) : '—'}
+            />
+            <Row k="photons" v={hud ? `${hud.combat.photonsLeft}/${photonMagazine(hud.ship.frame)}` : '—'} />
             <Row k="salvage" v={hud ? String(hud.ship.salvage) : '—'} />
             <Row k="scema" v={hud ? String(hud.ship.scema) : '—'} />
             <Row k="hull class" v={hud ? HULLS[hud.ship.frame].label : '—'} />
@@ -893,7 +963,31 @@ export function ScemaWorldTerminal() {
                 >
                   exchange → {toScema(hud.ship.salvage)} SCEMA
                 </button>
-                {(['parts', 'ships', 'treasury'] as const).map((tab) => (
+                {/*
+                  Rearming lives on the market bar rather than under a service key, because it
+                  spends salvage and every other thing that spends salvage is here. The label
+                  carries the count and the price: a button that says only "rearm" is one a
+                  player presses to find out what it costs.
+                */}
+                <button
+                  type="button"
+                  disabled={hud.combat.photonsLeft >= photonMagazine(hud.ship.frame)}
+                  title={
+                    hud.combat.photonsLeft >= photonMagazine(hud.ship.frame)
+                      ? 'tubes are full'
+                      : `${PHOTON_PRICE} salvage per round`
+                  }
+                  onClick={() => {
+                    const g = game.current
+                    if (!g) return
+                    game.current = rearm(g)
+                    setHud(game.current)
+                  }}
+                  className="rounded border border-omni-border px-2 py-0.5 text-omni-text hover:border-omni-accent disabled:opacity-40"
+                >
+                  rearm {hud.combat.photonsLeft}/{photonMagazine(hud.ship.frame)} · {PHOTON_PRICE}
+                </button>
+                {(['parts', 'ships', 'contracts', 'treasury'] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
@@ -1024,6 +1118,83 @@ export function ScemaWorldTerminal() {
                   )
                 })}
               </div>
+              {/*
+                ## The contract board
+                
+                Faction-scoped: the board you see is the one the node you are docked at offers,
+                and a faction that will not deal with your role says so **with a reason**. An
+                empty board with no explanation is indistinguishable from a broken one — the same
+                lesson as the station panel that refused three services in a notice that faded in
+                three seconds.
+              */}
+              {shop === 'contracts' && (
+                <div className="mt-2 space-y-2">
+                  {(() => {
+                    const node = hud.nearby
+                    const faction = node?.faction ?? (node?.kind === 'origin' ? 'marshal' : null)
+                    if (!node || !faction) {
+                      return (
+                        <div className="text-omni-dim">
+                          Contracts are issued at faction citadels. Look for the ringed stations —
+                          more rings, better work.
+                        </div>
+                      )
+                    }
+                    const why = Quests.refusal(faction, hud.role)
+                    if (why) return <div className="text-omni-dim">{why}.</div>
+                    const active = hud.quests.active
+                    if (active) {
+                      return (
+                        <div className="space-y-1">
+                          <div className="text-omni-text">{active.quest.title}</div>
+                          <div className="text-omni-dim">
+                            {Quests.progressLabel(active)} · {active.quest.reward} salvage on
+                            completion
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const g = game.current
+                              if (!g) return
+                              game.current = dropContract(g)
+                              setHud(game.current)
+                            }}
+                            className="rounded border border-omni-border px-2 py-0.5 text-omni-dim hover:border-omni-accent hover:text-omni-text"
+                          >
+                            abandon
+                          </button>
+                        </div>
+                      )
+                    }
+                    const offers = Quests.board(
+                      loaded?.space.seed ?? '',
+                      faction,
+                      hud.role,
+                      loaded?.space.nodes ?? [],
+                      hud.quests.done,
+                    )
+                    if (offers.length === 0) {
+                      return <div className="text-omni-dim">No work here right now.</div>
+                    }
+                    return offers.map((q) => (
+                      <button
+                        key={q.id}
+                        type="button"
+                        onClick={() => {
+                          const g = game.current
+                          if (!g) return
+                          game.current = takeContract(g, q)
+                          setHud(game.current)
+                        }}
+                        className="block w-full rounded border border-omni-border px-2 py-1 text-left hover:border-omni-accent"
+                      >
+                        <div className="text-omni-text">{q.title}</div>
+                        <div className="text-omni-dim">{q.reward} salvage</div>
+                      </button>
+                    ))
+                  })()}
+                </div>
+              )}
               {shop === 'treasury' && (
                 <Withdraw
                   scema={hud.ship.scema}

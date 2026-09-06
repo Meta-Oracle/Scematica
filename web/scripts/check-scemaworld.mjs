@@ -89,6 +89,10 @@ import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
 import * as Wallet from '../lib/scemaworld/wallet.ts'
+import * as Roles from '../lib/scemaworld/roles.ts'
+import * as Quests from '../lib/scemaworld/quests.ts'
+import { CITADELS } from '../lib/scemaworld/generate.ts'
+import { rearm, PHOTON_PRICE } from '../lib/scemaworld/game.ts'
 import * as Raiders from '../lib/scemaworld/raiders.ts'
 import { Rng } from '../lib/omni/fractal.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
@@ -543,14 +547,19 @@ check('cooldown limits the rate of fire', () => {
 })
 
 check('photons are finite and firing an empty tube does nothing', () => {
+  // Against the **hull's** magazine, not `PHOTON.magazine`. That field is documented as a
+  // fallback only — the real count is the tube count — and this test read the fallback, so it
+  // silently stopped exercising an empty tube the moment the two diverged. It fired six rounds
+  // out of eight and asserted the tubes were empty.
+  const mag = photonMagazine('skiff')
   let c = switchWeapon(newCombat())
   let t = 0
-  for (let i = 0; i < PHOTON.magazine + 5; i += 1) {
+  for (let i = 0; i < mag + 5; i += 1) {
     t += PHOTON.cooldownMs
     c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, t, [])
   }
   assert(c.photonsLeft === 0, `photonsLeft was ${c.photonsLeft}`)
-  assert(c.projectiles.length === PHOTON.magazine, `fired ${c.projectiles.length}`)
+  assert(c.projectiles.length === mag, `fired ${c.projectiles.length} of ${mag}`)
 })
 
 check('a photon locks a ghost as readily as a solid', () => {
@@ -891,9 +900,14 @@ check('a crossing is quick, and the distance is carried by the jump drive instea
   // time long enough to be felt turns that decision into a commute. Making the ship faster
   // still would flatten the space, so the distance moved onto the jump drive — which charges,
   // costs a scarce fuel, and refuses to spin up in a fight.
-  const seconds = EXTENT / topSpeed(0)
-  assert(seconds > 6, `a crossing takes ${seconds.toFixed(1)}s — too fast to feel like distance`)
-  assert(seconds < 16, `a crossing takes ${seconds.toFixed(1)}s — that is a commute`)
+  // Measured against the **sector**, not against one extent, which is the unit that actually
+  // moved: the tree now runs to nearly nine extents corner to corner, so "an extent in N seconds"
+  // stopped being a statement about travel at all. A full crossing lands near half a minute —
+  // brisk, and still long enough that the jump drive is the answer to a long haul rather than a
+  // convenience.
+  const crossing = (SCALE.SECTOR_REACH * 1.5) / topSpeed(0)
+  assert(crossing > 12, `a sector crossing takes ${crossing.toFixed(1)}s — too fast to feel like distance`)
+  assert(crossing < 60, `a sector crossing takes ${crossing.toFixed(1)}s — that is a commute`)
 })
 
 // ── services ──────────────────────────────────────────────────────────────────
@@ -1446,11 +1460,23 @@ check('the photon magazine is the hull, and the component is the warhead', () =>
   // Asserted as literal numbers rather than as an ordering, because the numbers themselves are
   // the design — a pilot has to be able to answer "how many missiles do I have" without
   // arithmetic, and an ordering test would pass just as happily against a formula.
-  assert(photonMagazine('marauder') === 6, `marauder carries ${photonMagazine('marauder')}`)
-  assert(photonMagazine('lancer') === 4, `lancer carries ${photonMagazine('lancer')}`)
-  assert(photonMagazine('corvette') === 2, `corvette carries ${photonMagazine('corvette')}`)
-  assert(photonMagazine('skiff') === 1, `skiff carries ${photonMagazine('skiff')}`)
-  assert(photonMagazine('scout') === 1, `scout carries ${photonMagazine('scout')}`)
+  // **Eight on the starting hull.** The counts were 1/1/2/4/6, which made the photon a round you
+  // hoarded and never fired: a dreadnought has 2300 effective hit points and a warhead does 240,
+  // so a skiff's single tube could never be part of killing one. Eight is the number that makes
+  // the starting loadout capable of a capital kill with laser support, which is the bar the
+  // magazine now has to clear. The ordering across hulls is unchanged and still flat counts.
+  assert(photonMagazine('marauder') === 24, `marauder carries ${photonMagazine('marauder')}`)
+  assert(photonMagazine('lancer') === 16, `lancer carries ${photonMagazine('lancer')}`)
+  assert(photonMagazine('corvette') === 12, `corvette carries ${photonMagazine('corvette')}`)
+  assert(photonMagazine('skiff') === 8, `skiff carries ${photonMagazine('skiff')}`)
+  assert(photonMagazine('scout') === 8, `scout carries ${photonMagazine('scout')}`)
+  // The bar itself, asserted rather than described: a full starting magazine plus sustained
+  // laser fire has to be able to bring down the smallest capital.
+  const cap = CLASSES.dreadnought.hull + CLASSES.dreadnought.shield
+  assert(
+    photonMagazine('skiff') * PHOTON.damage > cap * 0.75,
+    `a full starting magazine does ${photonMagazine('skiff') * PHOTON.damage} against a ${cap}-point capital`,
+  )
 
   // And **no component moves any of those**. That is the whole reason the numbers above can be
   // stated flatly wherever the player reads them.
@@ -2692,9 +2718,31 @@ check('the patrol fields war classes of its own', () => {
   // everything makes the sector safe, which is not the point of having one.
   assert(CLASSES.warden.hull === CLASSES.dreadnought.hull, 'the warden is not a dreadnought')
   assert(CLASSES.bastion.hull === CLASSES.titan.hull, 'the bastion is not a titan')
-  // And killing one pays nothing. The reward rule is about where salvage may come from at all,
-  // and a bounty on the good guys would be the game paying for the sector to be less policed.
-  assert(CLASSES.warden.bounty === 0 && CLASSES.bastion.bounty === 0, 'the patrol carries a bounty')
+  // And killing one pays **a bounty hunter** nothing. The reward rule is about where salvage may
+  // come from at all, and a payout on the good guys would be the game paying for the sector to be
+  // less policed.
+  //
+  // The class bounty is no longer zero, because a pirate is paid for exactly these hulls — see
+  // `roles.ts`. The rule survives intact as the stronger statement it always was: **you are paid
+  // only for what your role hunts.** A bounty hunter earns nothing for a marshal, a pirate
+  // nothing for a raider, and neither can be nudged into the other's work by the payout table.
+  for (const role of Roles.ROLE_IDS) {
+    const hunter = Roles.bountyScale('marshal', role)
+    assert(
+      (role === 'pirate') === (hunter > 0),
+      `${role} ${hunter > 0 ? 'is paid' : 'is not paid'} for a marshal hull`,
+    )
+    const raiderPay = Roles.bountyScale('raider', role)
+    assert(
+      (role === 'bounty-hunter') === (raiderPay > 0),
+      `${role} ${raiderPay > 0 ? 'is paid' : 'is not paid'} for a raider hull`,
+    )
+  }
+  // The floors the capitals have to clear, on **both** factions.
+  assert(CLASSES.warden.bounty >= 200, 'a marshal dreadnought is worth less than 200')
+  assert(CLASSES.bastion.bounty >= 300, 'a marshal titan is worth less than 300')
+  assert(CLASSES.dreadnought.bounty >= 200, 'a raider dreadnought is worth less than 200')
+  assert(CLASSES.titan.bounty >= 300, 'a raider titan is worth less than 300')
   // Never rollable. `classFor` picks hostiles; a warden turning up in a raider wing would be
   // both a gameplay bug and a lie about who is out there.
   assert(!CLASS_IDS.includes('warden') && !CLASS_IDS.includes('bastion'), 'a patrol class is rollable')
@@ -4113,7 +4161,7 @@ check('the laser reach comment is the reach the constants give', () => {
   const asExtent = reach / EXTENT
   assert(asExtent > 0.18 && asExtent < 0.23, `reach is ${asExtent.toFixed(3)}·EXTENT, not ~0.20`)
   const crossing = EXTENT / SPEED_LASER
-  assert(crossing > 1.8 && crossing < 2.6, `a laser crosses in ${crossing.toFixed(1)}s, not ~2`)
+  assert(crossing > 0.9 && crossing < 1.2, `a laser crosses an extent in ${crossing.toFixed(2)}s, not ~1.05`)
 })
 
 check('a laser outranges every fighter and no capital', () => {
@@ -4141,7 +4189,7 @@ check('every figure the scale table quotes about itself is true', () => {
   // The general form of D-1. A figure in a comment is a claim, and a claim with no test is a
   // claim that will be wrong eventually. These are the ones `scale.ts` states in prose.
   const claims = [
-    ['a stock engine covers an extent every seven and a half seconds', EXTENT / topSpeed(0), 7.1, 7.9],
+    ['a stock engine covers an extent every 3.2 seconds', EXTENT / topSpeed(0), 3.0, 3.4],
     // Up from 2000:1, deliberately: the far plane had to grow to cover the sector's *diameter*
     // (see below), and holding the old ratio would have meant a near plane further out than the
     // player's own hull. Z-fighting needs two surfaces at nearly the same depth, which does not
@@ -4155,6 +4203,11 @@ check('every figure the scale table quotes about itself is true', () => {
   }
   // And the one the file makes about craft never outrunning you, which `classes.ts` relies on.
   assert(SPEED_CRAFT + 4 * SPEED_CRAFT_PER_TIER < topSpeed(0), 'a craft can outrun a stock ship')
+  // **A bolt must outrun the ship that fired it.** Not previously pinned, and the first attempt
+  // at raising engine speed produced a fully upgraded hull flying faster than its own lasers —
+  // which does not fail any other assertion here and is nonsense on screen.
+  assert(SPEED_LASER > topSpeed(4), 'a fully upgraded ship outruns its own laser')
+  assert(SPEED_PHOTON < SPEED_LASER, 'a photon is not slower than a laser')
 })
 
 // ── the claim ledger under concurrency ───────────────────────────────────────
@@ -4739,6 +4792,220 @@ check('the patrol is scattered where the raiders are', () => {
     ratio > 0.3 && ratio < 3,
     `the patrol sits ${ratio.toFixed(1)}x as far out as the raiders it hunts`,
   )
+})
+
+// ── roles and contracts ──────────────────────────────────────────────────────
+
+check('a role decides who shoots at you, and there is one implementation of it', () => {
+  // `hostileTo` was `f === 'raider'` read in six places — the enemy AI, the jump inhibitor, the
+  // sensor board, the threat readout, the fire gate and the collision handler. A pirate makes the
+  // answer depend on who is asking, and a seventh call site that disagreed would be a craft that
+  // steers at you and never fires.
+  assert(Roles.hostileToPlayer('raider', 'bounty-hunter'), 'raiders ignore a bounty hunter')
+  assert(!Roles.hostileToPlayer('marshal', 'bounty-hunter'), 'the patrol hunts a bounty hunter')
+  assert(Roles.hostileToPlayer('marshal', 'pirate'), 'the patrol ignores a pirate')
+  assert(!Roles.hostileToPlayer('raider', 'pirate'), 'raiders hunt a pirate')
+  // The smuggler is the only role with no friends at all, which is what it is paid for.
+  assert(
+    Roles.hostileToPlayer('raider', 'smuggler') && Roles.hostileToPlayer('marshal', 'smuggler'),
+    'a smuggler is safe from somebody',
+  )
+})
+
+check('you are paid only for what your role hunts', () => {
+  // The sharpened form of "a bounty on the good guys would be the game paying for the sector to be
+  // less policed". That rule was about a payout pulling a player toward work the game would rather
+  // they did not do; it survives a pirate role as the stronger statement, because what each role
+  // is paid for is exactly what it declared itself to be.
+  for (const role of Roles.ROLE_IDS) {
+    const paid = ['raider', 'marshal'].filter((f) => Roles.bountyScale(f, role) > 0)
+    const declared = Roles.ROLES[role].hunts
+    assert(
+      paid.length === declared.length && paid.every((f) => declared.includes(f)),
+      `${role} is paid for [${paid}] but declared [${declared}]`,
+    )
+  }
+  // A trader and a smuggler are paid for no kill at all — their money is cargo.
+  assert(Roles.bountyScale('raider', 'trader') === 0, 'a trader is paid for kills')
+  assert(Roles.bountyScale('marshal', 'smuggler') === 0, 'a smuggler is paid for kills')
+})
+
+check('the role reaches the AI, not just the sensor board', () => {
+  // The gap this exists for was nearly shipped. `focusOf`'s raider branch fell through to the
+  // player unconditionally and its marshal branch never reached the player at all — right for a
+  // bounty hunter and exactly backwards for a pirate, who would have been hunted by the wing that
+  // counts them as one of their own and ignored by the patrol they are paid to fight. Every other
+  // role check passed while that was true, because they all test the *tables* rather than the
+  // simulation.
+  const s = generate(world, digest)
+  const measure = (role) => {
+    let g = newGame(s, role)
+    // Park the ship in the middle of the roster so both factions have something to decide about.
+    let hunted = { raider: 0, marshal: 0 }
+    for (let f = 0; f < 60 * 40; f += 1) {
+      g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+      for (const c of Enemy.living(g.swarm)) {
+        // `target === null` on an armed craft means "the player" — see `focusOf`.
+        if (c.target === null && (c.faction === 'raider' || c.faction === 'marshal')) {
+          const d = Math.hypot(
+            c.at.x - g.camera.position[0],
+            c.at.y - g.camera.position[1],
+            c.at.z - g.camera.position[2],
+          )
+          if (d < c.spec.aggro) hunted[c.faction] += 1
+        }
+      }
+    }
+    return hunted
+  }
+  const hunter = measure('bounty-hunter')
+  assert(hunter.marshal === 0, `the patrol closed on a bounty hunter ${hunter.marshal} times`)
+  const pirate = measure('pirate')
+  assert(pirate.raider === 0, `a raider closed on a pirate ${pirate.raider} times`)
+})
+
+check('a contract reads no record field', () => {
+  // The same source scan the reward path already carries, extended to the two new modules. A
+  // contract that paid by `blind_spots` would be the original defect wearing a quest marker.
+  for (const m of ['quests', 'roles']) {
+    const src = codeOf(join(here, '..', 'lib', 'scemaworld', `${m}.ts`))
+    const body = src.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    for (const field of ['blind_spots', 'signals', 'magnitude', 'legibility', 'provenance']) {
+      assert(!body.includes(field), `${m}.ts reads \`${field}\` — a reward path must not`)
+    }
+  }
+})
+
+check('a board is deterministic, faction-scoped and role-scoped', () => {
+  const s = generate(world, digest)
+  const a = Quests.board(s.seed, 'marshal', 'bounty-hunter', s.nodes)
+  const b = Quests.board(s.seed, 'marshal', 'bounty-hunter', s.nodes)
+  assert(JSON.stringify(a) === JSON.stringify(b), 'the same board came back different')
+  const other = Quests.board(s.seed, 'raider', 'pirate', s.nodes)
+  assert(
+    JSON.stringify(a) !== JSON.stringify(other),
+    'two factions offer the same list wearing different labels',
+  )
+  // A hunting contract never asks you to hunt the faction offering it.
+  for (const q of [...a, ...other]) {
+    if (q.quarry) assert(q.quarry !== q.faction, `${q.faction} pays for its own hulls`)
+  }
+})
+
+check('a faction that will not deal with you says why', () => {
+  // An empty board with no explanation is indistinguishable from a broken one — the same lesson
+  // as the station panel that refused three services in a notice that faded in three seconds.
+  const why = Quests.refusal('marshal', 'pirate')
+  assert(typeof why === 'string' && why.length > 0, 'a marshal board silently ignored a pirate')
+  assert(Quests.refusal('marshal', 'bounty-hunter') === null, 'the patrol refused a bounty hunter')
+})
+
+check('a contract advances on an act, never on a survey', () => {
+  const s = generate(world, digest)
+  const q = Quests.board(s.seed, 'marshal', 'bounty-hunter', s.nodes).find((x) => x.kind === 'bounty')
+  assert(q, 'no bounty contract was offered to a bounty hunter')
+  let st = Quests.accept(Quests.newQuests(), q)
+  // A kill of the wrong faction does nothing at all.
+  st = Quests.recordKill(st, 'marshal', false).state
+  assert(st.active.progress === 0, 'a marshal kill advanced a raider contract')
+  let completed = null
+  for (let i = 0; i < q.count; i += 1) {
+    const r = Quests.recordKill(st, 'raider', false)
+    st = r.state
+    completed = r.completed ?? completed
+  }
+  assert(completed && completed.id === q.id, 'the contract never completed')
+  assert(st.active === null, 'a completed contract stayed active')
+  assert(st.earned === q.reward, `earned ${st.earned}, not ${q.reward}`)
+})
+
+check('a haul needs both legs, in order', () => {
+  const s = generate(world, digest)
+  const q = Quests.board(s.seed, 'marshal', 'trader', s.nodes).find((x) => x.kind === 'haul')
+  assert(q, 'no haul was offered to a trader')
+  let st = Quests.accept(Quests.newQuests(), q)
+  // Arriving at the destination first does nothing: there is nothing aboard yet.
+  st = Quests.recordDock(st, q.to).state
+  assert(!st.active.picked, 'cargo was delivered before it was collected')
+  st = Quests.recordDock(st, q.from).state
+  assert(st.active.picked, 'the pickup did not register')
+  const done = Quests.recordDock(st, q.to)
+  assert(done.completed, 'the delivery did not complete')
+})
+
+check('a live contraband run is what makes the patrol hostile to a trader', () => {
+  // The mechanic in one line: a pirate is always hunted by the patrol, a trader carrying one
+  // illegal crate is hunted only while carrying it.
+  const s = generate(world, digest)
+  const q = Quests.board(s.seed, 'raider', 'smuggler', s.nodes).find((x) => x.kind === 'contraband')
+  assert(q, 'no contraband was offered to a smuggler')
+  let st = Quests.accept(Quests.newQuests(), q)
+  assert(!Quests.carryingContraband(st), 'contraband was aboard before the pickup')
+  st = Quests.recordDock(st, q.from).state
+  assert(Quests.carryingContraband(st), 'the pickup did not load the contraband')
+})
+
+check('a citadel is placed by the seed, tiered, and one of each per faction', () => {
+  // The same rule as `WINGS` and `GARRISON`: a record cannot buy itself more of the stations that
+  // issue the work. Both factions are represented in every world on purpose — a roll would leave
+  // some sectors with no board at all for two of the four roles.
+  const s = generate(world, digest)
+  const cits = s.nodes.filter((n) => n.kind === 'citadel')
+  assert(cits.length === CITADELS, `${cits.length} citadels, not ${CITADELS}`)
+  for (const f of ['marshal', 'raider']) {
+    const tiers = cits.filter((c) => c.faction === f).map((c) => c.tier).sort()
+    assert(
+      JSON.stringify(tiers) === JSON.stringify([1, 2, 3]),
+      `${f} citadel tiers are [${tiers}], not one of each`,
+    )
+  }
+  // Full service, so a citadel is somewhere you come back to rather than visit once.
+  for (const c of cits) {
+    for (const want of ['refuel', 'repair', 'trade']) {
+      assert(c.services.includes(want), `a citadel does not offer ${want}`)
+    }
+  }
+  // And its label must never collide with a class label, or `drawList` matching on label returns
+  // a station where a craft was meant — which is exactly what `BASTION` did.
+  const classLabels = CLASS_IDS.map((id) => CLASSES[id].label)
+  for (const c of cits) {
+    for (const l of classLabels) {
+      assert(!c.label.includes(l), `citadel "${c.label}" collides with the class label ${l}`)
+    }
+  }
+})
+
+check('the citadel roll does not perturb the fractal', () => {
+  // Drawing from the fractal's own stream inside the growth loop shifts every subsequent jitter,
+  // which changes the *shape of the tree*. Measured when it happened: the node count fell from
+  // 424 to 374 because a decision about station kinds was consuming the fractal's randomness.
+  const s = generate(world, digest)
+  assert(s.nodes.length > 400, `only ${s.nodes.length} nodes — a stream is being shared`)
+})
+
+check('photons can be replaced with salvage, and only where ordnance is sold', () => {
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const dock = s.nodes.find((n) => n.services.includes('trade'))
+  assert(dock, 'no trading node in the sector')
+  const mag = photonMagazine('skiff')
+  // Spend two rounds, bank some salvage, and dock.
+  g = { ...g, combat: { ...g.combat, photonsLeft: mag - 2 }, ship: { ...g.ship, salvage: 500 } }
+  g = { ...g, nearby: dock }
+  const after = rearm(g)
+  assert(after.combat.photonsLeft === mag, `rearmed to ${after.combat.photonsLeft} of ${mag}`)
+  assert(after.ship.salvage === 500 - 2 * PHOTON_PRICE, `charged ${500 - after.ship.salvage}`)
+  // A partial reload is sold rather than refused — refusing to sell four rounds to somebody who
+  // cannot afford eight is a refusal with no reason behind it.
+  let poor = { ...g, ship: { ...g.ship, salvage: PHOTON_PRICE } }
+  poor = rearm(poor)
+  assert(poor.combat.photonsLeft === mag - 1, 'a partial reload was refused')
+  // And nowhere without ordnance.
+  const rift = s.nodes.find((n) => n.kind === 'rift')
+  if (rift) {
+    const nope = rearm({ ...g, nearby: rift })
+    assert(nope.combat.photonsLeft === mag - 2, 'a rift sold photons')
+  }
 })
 
 // ── the account survives the tab ─────────────────────────────────────────────

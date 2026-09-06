@@ -34,6 +34,12 @@ export const HITBOX: Record<Shape, Mesh.Bounds> = {
   shell: { ahead: 1, behind: 1, cross: 1 },
   // A bolt is tested by its own sweep in `weapons.ts`; it is never a target.
   bolt: { ahead: 1, behind: 1, cross: 1 },
+  // A citadel's bound is its outermost ring, which is radius 1 at every tier by construction —
+  // see `meshes.ts::citadel`. Measured from the mesh anyway rather than asserted here, because
+  // "the hit test uses the radius the renderer draws" is a rule this file exists to enforce.
+  citadel1: Mesh.boundsOf(Mesh.citadel(1)),
+  citadel2: Mesh.boundsOf(Mesh.citadel(2)),
+  citadel3: Mesh.boundsOf(Mesh.citadel(3)),
   interceptor: Mesh.boundsOf(Mesh.interceptor()),
   gunship: Mesh.boundsOf(Mesh.gunship()),
   capital: Mesh.boundsOf(Mesh.capital()),

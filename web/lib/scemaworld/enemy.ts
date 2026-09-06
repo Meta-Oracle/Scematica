@@ -43,6 +43,7 @@ import {
   arcOf, canEngageAt, CLASSES, classFor, shotLifeOf, SHIELD_DELAY_MS, type ClassSpec,
 } from './classes.ts'
 import { civilian, hostileTo, nextStop, routeNodes, type Civilian, type Faction } from './factions.ts'
+import { DEFAULT_ROLE, hostileToPlayer, type RoleId } from './roles.ts'
 import type { Node, Space } from './generate.ts'
 import { separate, steerAround, type Grid } from './collide.ts'
 import {
@@ -629,6 +630,7 @@ function focusOf(
   nowMs: number,
   byId: Map<string, Craft>,
   space?: Space,
+  role: RoleId = DEFAULT_ROLE,
 ): { at: Vec3; vel: Vec3; target: string | null; routeTo: Node | null; retargetMs: number } {
   if (civilian(c.faction)) {
     const route = space ? routeNodes(space, c.faction) : []
@@ -674,7 +676,23 @@ function focusOf(
     retargetMs = nowMs + RETARGET_MS + retargetPhase(c.id)
   }
 
+  // ## Whether this craft is interested in the player at all
+  //
+  // The single question a role changes, and it has to be asked on **both** branches below. Before
+  // roles existed the raider branch fell through to the player unconditionally and the marshal
+  // branch never reached them at all, which is exactly right for a bounty hunter and exactly
+  // backwards for a pirate: the wings that should ignore you hunt you, and the patrol you are
+  // being paid to fight flies past.
+  const huntsPlayer = hostileToPlayer(c.faction, role)
+
   if (c.faction === 'marshal') {
+    // A marshal takes the player only when the player's role has made them a target — and then on
+    // the same terms a raider does: whichever of the player and its current quarry is nearer, so
+    // a patrol already locked onto a raider does not abandon it the moment a pirate appears on
+    // the far side of the sector.
+    if (huntsPlayer && (!quarry || len(sub(playerAt, c.at)) < len(sub(quarry.at, c.at)))) {
+      return { at: playerAt, vel: playerVel, target: null, routeTo: null, retargetMs }
+    }
     // Nothing to hunt: hold a patrol heading rather than drifting toward the player, which would
     // look exactly like a hostile closing in.
     if (!quarry) {
@@ -698,11 +716,26 @@ function focusOf(
   // A raider. It fights back against a marshal that is genuinely on it, and otherwise it is here
   // for the player. "Genuinely on it" is decided by range: whichever of the two is nearer, with
   // the marshal held to the tighter reach above.
-  if (quarry && len(sub(quarry.at, c.at)) < len(sub(playerAt, c.at))) {
+  //
+  // **Unless the player is not its enemy.** A pirate is one of theirs, so a raider wing keeps
+  // hunting the patrol and flies past — which is the whole feel of the role, and the reason this
+  // could not be left as an unconditional fall-through.
+  if (quarry && (!huntsPlayer || len(sub(quarry.at, c.at)) < len(sub(playerAt, c.at)))) {
     return {
       at: quarry.at,
       vel: scale(quarry.facing, quarry.speed),
       target: quarry.id,
+      routeTo: null,
+      retargetMs,
+    }
+  }
+  if (!huntsPlayer) {
+    // No quarry and no interest in the player: patrol, exactly as an idle marshal does. Falling
+    // through to `playerAt` here would have a raider fly escort on a pirate forever.
+    return {
+      at: add(c.at, scale(c.facing, c.spec.aggro * 4)),
+      vel: { x: 0, y: 0, z: 0 },
+      target: null,
       routeTo: null,
       retargetMs,
     }
@@ -718,6 +751,8 @@ export function step(
   nowMs: number,
   grid?: Grid,
   space?: Space,
+  /** What the player declared themselves to be. Decides which factions engage them at all. */
+  role: RoleId = DEFAULT_ROLE,
 ): StepResult {
   const craft: Craft[] = []
   const shots: EnemyShot[] = []
@@ -739,7 +774,7 @@ export function step(
     // ── who this craft is interested in ──────────────────────────────────────
     // One answer, used by the steering, the lead and the fire gate alike. See `focusOf` for what
     // went wrong when each of the three decided for itself.
-    const focus = focusOf(swarm, c, playerAt, playerVel, nowMs, before, space)
+    const focus = focusOf(swarm, c, playerAt, playerVel, nowMs, before, space, role)
     const focusAt = focus.at
     const focusVel = focus.vel
     const routeTo = focus.routeTo
@@ -1001,6 +1036,17 @@ export interface HitResult {
   throughShield: boolean
   /** Salvage owed for a kill. Class-derived; zero when nothing died. */
   bounty: number
+  /**
+   * What died, when something did.
+   *
+   * Reported rather than looked up by the caller, because by the time `hit` returns the craft is
+   * `alive: false` and every "find it in the swarm" helper filters those out — so the caller had
+   * no way to ask what it had just destroyed. Both facts are needed now: the faction decides
+   * whether the kill pays at all (`roles.ts`) and whether it advances a contract, and `capital`
+   * is what separates a capital contract from a bounty one.
+   */
+  faction: Faction | null
+  capital: boolean
 }
 
 /** Register a player hit. Shields absorb first, exactly as the player's do. */
@@ -1008,6 +1054,8 @@ export function hit(swarm: Swarm, id: string, amount: number, nowMs: number): Hi
   let killed = false
   let throughShield = false
   let bounty = 0
+  let faction: Faction | null = null
+  let capital = false
   const craft = swarm.craft.map((c) => {
     if (c.id !== id || !c.alive) return c
     const absorbed = Math.min(c.shield, amount)
@@ -1017,11 +1065,13 @@ export function hit(swarm: Swarm, id: string, amount: number, nowMs: number): Hi
     if (hull <= 0) {
       killed = true
       bounty = c.spec.bounty
+      faction = c.faction
+      capital = c.spec.capital
       return { ...c, shield: 0, hull: 0, alive: false, lastHitMs: nowMs }
     }
     return { ...c, shield: c.shield - absorbed, hull, lastHitMs: nowMs }
   })
-  return { swarm: { ...swarm, craft }, killed, throughShield, bounty }
+  return { swarm: { ...swarm, craft }, killed, throughShield, bounty, faction, capital }
 }
 
 /** Live craft, for rendering and for targeting. */
@@ -1029,13 +1079,23 @@ export function living(swarm: Swarm): Craft[] {
   return swarm.craft.filter((c) => c.alive)
 }
 
-/** The nearest live hostile — for the sensor panel and for the jump inhibitor. */
-export function nearestThreat(swarm: Swarm, at: Vec3): { craft: Craft; range: number } | null {
+/**
+ * The nearest live hostile — for the sensor panel and for the jump inhibitor.
+ *
+ * **Takes the role**, because who counts as a threat is now a property of what the player
+ * declared themselves to be: a marshal is scenery to a bounty hunter and the thing hunting you
+ * to a pirate. Defaulted so every existing caller keeps its meaning.
+ */
+export function nearestThreat(
+  swarm: Swarm,
+  at: Vec3,
+  role: RoleId = DEFAULT_ROLE,
+): { craft: Craft; range: number } | null {
   let best: { craft: Craft; range: number } | null = null
   // Only factions that will actually shoot at *you*. A marshal on the sensor board is not a
-  // threat, and counting one would inhibit the jump drive because a friendly patrol flew past —
-  // which is the kind of bug that reads as the mechanic being broken.
-  for (const c of living(swarm).filter((k) => hostileTo(k.faction))) {
+  // threat to a bounty hunter, and counting one would inhibit the jump drive because a friendly
+  // patrol flew past — which is the kind of bug that reads as the mechanic being broken.
+  for (const c of living(swarm).filter((k) => hostileToPlayer(k.faction, role))) {
     const range = len(sub(c.at, at))
     if (!best || range < best.range) best = { craft: c, range }
   }

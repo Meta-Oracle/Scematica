@@ -62,8 +62,38 @@ export const R_PHANTOM = Math.round(EXTENT * 0.0075)
 export const R_RIFT = Math.round(EXTENT * 0.013)
 export const R_MARKER = Math.round(EXTENT * 0.005)
 
-/** The largest a node can be, so docking range can be checked against it. */
-export const R_NODE_MAX = R_ORIGIN
+/**
+ * A faction citadel: the largest structure in the sector and the only one with tiers.
+ *
+ * Half again the origin and nearly three times a station, drawn as concentric rings rather than a
+ * shell (`meshes.ts`), one ring per tier. The size is the point — a citadel has to be
+ * identifiable as *the* place from across a sector, because it is where contracts come from and a
+ * player needs to be able to set a course for one on sight rather than through the nav list.
+ *
+ * **It is bounded from above by the clustering rule, not by taste.** `R_NODE_MAX` is this now, and
+ * the sector's roominess is pinned as `median node gap / R_NODE_MAX > 5` — so a bigger citadel
+ * literally re-clusters the map by making the things in the gaps larger. At 0.028 it measured
+ * 4.64 and failed, which is the check doing exactly what it was written for: the last enlargement
+ * of a node radius is what made the sector feel cramped in the first place.
+ */
+export const R_CITADEL = Math.round(EXTENT * 0.024)
+
+/**
+ * Spacing between a citadel's rings, as a fraction of its own radius.
+ *
+ * Wide enough that the gaps are flyable at this scale: the rings are a structure you pass
+ * through, and rings you can only look at would make the biggest station in the sector the one
+ * with the least to do.
+ */
+export const CITADEL_RING_GAP = 0.26
+
+/**
+ * The largest a node can be, so docking range can be checked against it.
+ *
+ * A citadel now, not the origin. This is exactly the constant that has to move when a bigger node
+ * kind is added, and the `DOCK_RANGE` relationship below is what catches it if it does not.
+ */
+export const R_NODE_MAX = R_CITADEL
 
 /** Base radius of a contact, before its magnitude is added. */
 export const R_CONTACT = Math.round(EXTENT * 0.0024)
@@ -102,7 +132,7 @@ export const R_PLAYER = Math.round(EXTENT * 0.0035)
  *
  * A test now pins the relationship rather than the number.
  */
-export const DOCK_RANGE = Math.round(EXTENT * 0.055)
+export const DOCK_RANGE = Math.round(EXTENT * 0.075)
 
 /**
  * Default sensor and engagement ranges.
@@ -195,21 +225,27 @@ export const MIN_NODE_GAP = Math.round(EXTENT * 0.105)
 // ── speeds, as sector crossings ──────────────────────────────────────────────
 
 /**
- * Top speed of a stock engine: an extent every seven and a half seconds.
+ * Top speed of a stock engine: an extent every 3.2 seconds.
  *
- * Up by half again, and the figure that matters is not this one but what it buys against the
- * distances above. **A hop to the next node went from 0.34 seconds to 0.94.** The first of those
- * is not travel — you arrive before you have finished looking at where you left — and it is the
- * other half of why the sector read as cluttered: things were close together *and* nothing took
- * any time to reach, so the map had no sense of distance to lose.
+ * Raised by a factor of 2.3, which takes a corner-to-corner crossing from 67 seconds to **28**.
+ * That is the number the sector's size had made unreasonable: the map grew by a factor of fifty
+ * in volume and the engine did not keep up, so the main drive stopped being a way of getting
+ * anywhere and the jump drive stopped being a choice.
  *
- * Crossing the whole sector at full burn now takes about a minute. That is deliberate and it is
- * what the jump drive is for (`hyper.ts`): the main drive is for closing, for getting out of a
- * fight, and for the hop between two neighbours. A ship that can cross the map on the main engine
- * makes the jump drive decoration.
+ * **The cost is stated rather than hidden: a hop to the neighbouring node is back to 0.4 seconds
+ * from 0.94.** That is the same shortness the previous tuning existed to fix, and it is accepted
+ * here because a hop between two adjacent nodes is no longer the unit of travel — at this speed
+ * the interesting distances are tens of nodes away, and the sector is large enough to have them.
+ * If the map ever reads as cluttered again, this is the constant that did it.
+ *
+ * Every other speed in this file moved with it, in the same edit, because several of them are
+ * ordered against this one and the ordering is load-bearing: a craft may never outrun the player,
+ * enemy fire must outrun a *fully upgraded* player, and a laser must outrun the ship that fired
+ * it. That last one is the trap — it is not pinned by any test, and at the first attempt at this
+ * retune a maxed ship flew faster than its own bolts.
  */
-export const SPEED_SHIP = Math.round(EXTENT / 7.5)
-export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 20.4)
+export const SPEED_SHIP = Math.round(EXTENT / 3.2)
+export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 8.7)
 
 /**
  * Lateral and vertical thrusters.
@@ -217,7 +253,7 @@ export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 20.4)
  * Fast enough to matter in a dogfight — a jink sideways is how you break a firing solution,
  * and a thruster that only helps you dock makes combat a pure turning contest.
  */
-export const SPEED_THRUST = Math.round(EXTENT / 30)
+export const SPEED_THRUST = Math.round(EXTENT / 13)
 
 // ── attitude: the ship turns like a ship, not like a turret ──────────────────
 //
@@ -255,7 +291,7 @@ export const SPIN_DAMP = 5.0
  * Roughly two and a half seconds from rest to cruise on a stock hull, which is short enough that
  * the throttle still reads as a throttle and long enough that the ship has obvious mass.
  */
-export const ACCEL_MAIN = Math.round(EXTENT / 18.7)
+export const ACCEL_MAIN = Math.round(EXTENT / 8)
 
 /**
  * Flight assist: how fast velocity is dragged onto the nose, per second.
@@ -274,8 +310,13 @@ export const ACCEL_MAIN = Math.round(EXTENT / 18.7)
 export const ASSIST = 1.5
 
 /**
- * A laser crosses the sector in a little over two seconds and lives for just under half of one, so
- * its reach is about **0.20 of the sector — roughly 1.8 times `AGGRO_RANGE`**.
+ * A laser crosses an extent in 1.05 seconds and lives for a fifth of one, so its reach is about
+ * **0.20 of the sector — roughly 1.8 times `AGGRO_RANGE`**.
+ *
+ * The speed more than doubled and the life more than halved, together, so the *reach* — which is
+ * the design statement below — did not move at all. The speed had to rise because a fully
+ * upgraded ship now flies at 0.77 extents per second and a bolt slower than the ship firing it is
+ * not a weapon.
  *
  * Both figures were raised by half again when detection range was (see `classes.ts`), *together*,
  * so the ratio and the design line below are unchanged. That is the whole discipline this comment
@@ -304,11 +345,11 @@ export const ASSIST = 1.5
  * that will be wrong eventually; the only question is when somebody notices. Found by an
  * external audit rather than by this repository, which is the point.
  */
-export const SPEED_LASER = Math.round(EXTENT / 2.2)
-export const LIFE_LASER = 0.45
+export const SPEED_LASER = Math.round(EXTENT / 1.05)
+export const LIFE_LASER = 0.21
 
 /** A photon missile is slower and lives far longer, so it reaches — and it tracks. */
-export const SPEED_PHOTON = Math.round(EXTENT / 6)
+export const SPEED_PHOTON = Math.round(EXTENT / 2.6)
 export const LIFE_PHOTON = 2.0
 
 /**
@@ -319,14 +360,14 @@ export const LIFE_PHOTON = 2.0
  * outrunnable by exactly the pilot most likely to try it. Raised with the engines, in the same
  * edit, for the same reason `SPEED_CRAFT` was.
  */
-export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 2.6)
+export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 1.15)
 /**
  * Raised with `LIFE_LASER` and for the same reason: everything now detects and engages half again
  * as far, and a round that expired before it covered the new engagement band would mean craft
  * shooting at each other and never connecting. A tracer that dies short is also the least legible
  * possible firefight — the streaks stop halfway to their target.
  */
-export const LIFE_ENEMY_SHOT = 0.8
+export const LIFE_ENEMY_SHOT = 0.27
 
 /**
  * The longest an enemy round may live, whatever class fired it.
@@ -349,8 +390,8 @@ export const LIFE_ENEMY_SHOT_MAX = 5.0
  * unchanged at about a ninth. Raising the player alone would have kept the test green and quietly
  * turned every pursuit into a formality.
  */
-export const SPEED_CRAFT = Math.round(EXTENT / 14)
-export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 85)
+export const SPEED_CRAFT = Math.round(EXTENT / 6)
+export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 36)
 
 // ── the camera ───────────────────────────────────────────────────────────────
 

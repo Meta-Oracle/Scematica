@@ -28,6 +28,8 @@ import {
 import * as Hyper from './hyper.ts'
 import { CLASSES } from './classes.ts'
 import { hostileTo } from './factions.ts'
+import * as Quests from './quests.ts'
+import { DEFAULT_ROLE, bountyScale, hostileToPlayer, type RoleId } from './roles.ts'
 import * as Economy from './economy.ts'
 import * as Respawn from './respawn.ts'
 import * as Arrivals from './arrivals.ts'
@@ -200,9 +202,19 @@ export interface GameState {
   nowMs: number
   /** True once the hull is gone. The sector keeps rendering; you just cannot act. */
   lost: boolean
+  /**
+   * What the player declared themselves to be. See `roles.ts`.
+   *
+   * On the state rather than in a module-level variable for the same reason `waves` is: a session
+   * can hold two records open, and a role stored outside the state would make one sector's choice
+   * govern the other's hostility.
+   */
+  role: RoleId
+  /** Contracts. See `quests.ts`. */
+  quests: Quests.QuestState
 }
 
-export function newGame(space: Space): GameState {
+export function newGame(space: Space, role: RoleId = DEFAULT_ROLE): GameState {
   return {
     // Offset from the origin and pointed *away* from it. Two bugs live here and both were found
     // by tests rather than by looking. Spawning at [0,0,0] put the ship inside the origin market,
@@ -238,6 +250,8 @@ export function newGame(space: Space): GameState {
     waves: Respawn.newWaves(),
     nowMs: 0,
     lost: false,
+    role,
+    quests: Quests.newQuests(),
   }
 }
 
@@ -428,7 +442,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // Resolved before weapons so a jump that lands this frame puts the ship at its destination
   // before anything is aimed from it — otherwise the first frame after arrival fires from the
   // old position, which reads as a shot coming out of nowhere.
-  const threat = Enemy.nearestThreat(state.swarm, v3(camera.position))
+  const threat = Enemy.nearestThreat(state.swarm, v3(camera.position), state.role)
   const waypointNode =
     state.waypoint === null ? null : (space.nodes.find((n) => n.id === state.waypoint) ?? null)
   const jump = Hyper.advance(
@@ -478,7 +492,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // in it would let a stray round start a war with the patrol.
   const contactById = new Map([...space.contacts, ...space.raiders].map((c) => [c.id, c]))
   const moved = Enemy.living(state.swarm)
-    .filter((k) => hostileTo(k.faction))
+    // Everything the player's own weapons may resolve against. Role-dependent: a pirate's rounds
+    // have to be able to reach a marshal, and a bounty hunter's must not start a war with one.
+    .filter((k) => hostileToPlayer(k.faction, state.role))
     .map((k) => {
       const c = contactById.get(k.id)
       return {
@@ -531,6 +547,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   }
 
   let swarm = state.swarm
+  let quests = state.quests
   for (const h of advanced.hits) {
     const res = Enemy.hit(swarm, h.contact, h.damage, nowMs)
     swarm = res.swarm
@@ -539,11 +556,24 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     // heavily-shielded gunship reads as invulnerable.
     flashes[h.contact] = res.throughShield ? 1 : 0.45
     if (res.killed) {
-      ship = Ship.bounty(ship, res.bounty)
+      // Paid only for what the role hunts — see `roles.ts`. The kill still happens either way;
+      // a pirate can shoot a raider, it simply is not work anybody commissioned.
+      const faction = res.faction ?? 'raider'
+      const paid = Math.round(res.bounty * bountyScale(faction, state.role))
+      ship = Ship.bounty(ship, paid)
       // `combat.destroyed` is what stops it being drawn. Written here rather than in
       // `weapons.ts` for the same reason the damage is: one authority over one fact.
       combat = { ...combat, destroyed: [...combat.destroyed, h.contact] }
-      notice = `destroyed — +${res.bounty} salvage`
+
+      // A contract advances on the **act**, not on a survey of the world. See `quests.ts`.
+      const adv = Quests.recordKill(quests, faction, res.capital)
+      quests = adv.state
+      if (adv.completed) {
+        ship = Ship.bounty(ship, adv.completed.reward)
+        notice = `contract complete — +${adv.completed.reward} salvage`
+      } else {
+        notice = paid > 0 ? `destroyed — +${paid} salvage` : 'destroyed'
+      }
     }
   }
 
@@ -551,7 +581,9 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // Craft still avoid nodes even though they cannot hit them. A wing flying *through* a station
   // ring is technically correct and looks like the geometry is decorative; steering round one
   // costs nothing and reads as piloting.
-  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid, space)
+  // The role reaches the AI, not just the sensor board. Without it a pirate is hunted by the
+  // raiders who count them as one of their own and ignored by the patrol they are paid to fight.
+  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid, space, state.role)
   swarm = enemyStep.swarm
   let shake = Math.max(0, state.shake - dt * 2.2)
   if (enemyStep.damage > 0) {
@@ -603,7 +635,10 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     const res = Enemy.hit(swarm, c.id, cost, nowMs)
     swarm = res.swarm
     if (res.killed) {
-      if (hostileTo(c.faction)) ship = Ship.bounty(ship, res.bounty)
+      // **Paid only for what the role hunts.** `bountyScale` is 0 for everything else, which is
+      // how "the game never pays you to make the sector less policed" survives a pirate role —
+      // see `roles.ts`. A ram still kills; it just does not always pay.
+      ship = Ship.bounty(ship, Math.round(res.bounty * bountyScale(c.faction, state.role)))
       combat = { ...combat, destroyed: [...combat.destroyed, c.id] }
     }
     flashes[c.id] = 1
@@ -664,11 +699,29 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
 
   const nearby = nearestService(space, v3(camera.position))
 
+  // ## A haul advances on arrival, not on proximity
+  //
+  // Keyed on `nearby` **changing**, so holding station inside a node's docking shell does not
+  // re-trigger it, and on the same `DOCK_RANGE` the services use — a contract that could be
+  // completed by flying past would make the delivery half of the trader role a formality.
+  if (nearby && nearby.id !== state.nearby?.id) {
+    const arrived = Quests.recordDock(quests, nearby.id)
+    quests = arrived.state
+    if (arrived.completed) {
+      ship = Ship.bounty(ship, arrived.completed.reward)
+      notice = `contract complete — +${arrived.completed.reward} salvage`
+    } else if (quests.active?.picked && !state.quests.active?.picked) {
+      notice = 'cargo aboard'
+    }
+  }
+
   return {
     camera,
     throttle,
     ship,
     combat,
+    role: state.role,
+    quests,
     swarm,
     waves: topUp.waves,
     nowMs,
@@ -872,6 +925,81 @@ export const COMMAND_KEYS = [
  * currencies one resource with two labels, and the choice between a component now and a hull
  * later stops being a question.
  */
+/**
+ * What a full magazine of photons costs in salvage, per round.
+ *
+ * Priced per round rather than per reload so a marauder's twenty-four cost eight times a skiff's
+ * three — a flat reload price would make the largest magazine the cheapest ammunition in the
+ * sector, which inverts the one decision the tube count exists to create.
+ */
+export const PHOTON_PRICE = 45
+
+/**
+ * Rearm the photon tubes for salvage, at a dock or a market.
+ *
+ * **The magazine was previously unrefillable anywhere except by buying a different hull.** A dock
+ * reloaded it as a side effect of its other services and nothing else did, so a player who spent
+ * their rounds mid-sector had no route back to a full magazine that did not involve flying home.
+ * With a starting magazine of eight and capitals that need most of it, that is the difference
+ * between the photon being a weapon and being a consumable you hoard and never use.
+ *
+ * Partial reloads are allowed and charged for what they deliver: refusing to sell four rounds to
+ * somebody who cannot afford eight is a refusal with no reason behind it.
+ */
+export function rearm(state: GameState): GameState {
+  const node = state.nearby
+  if (!node) return { ...state, noticeAt: PENDING, notice: 'nothing in range' }
+  const services = servicesOf(node.kind)
+  if (!services.includes('trade') && !services.includes('refuel')) {
+    return { ...state, noticeAt: PENDING, notice: `${node.label} has no ordnance` }
+  }
+  const full = Weapons.photonMagazine(state.ship.frame)
+  const missing = full - state.combat.photonsLeft
+  if (missing <= 0) {
+    return { ...state, noticeAt: PENDING, notice: 'tubes already full' }
+  }
+  const afford = Math.floor(state.ship.salvage / PHOTON_PRICE)
+  if (afford <= 0) {
+    return {
+      ...state,
+      noticeAt: PENDING,
+      notice: `a photon is ${PHOTON_PRICE} salvage — you have ${state.ship.salvage}`,
+    }
+  }
+  const rounds = Math.min(missing, afford)
+  return {
+    ...state,
+    ship: { ...state.ship, salvage: state.ship.salvage - rounds * PHOTON_PRICE },
+    combat: { ...state.combat, photonsLeft: state.combat.photonsLeft + rounds },
+    noticeAt: PENDING,
+    notice: `+${rounds} photon${rounds === 1 ? '' : 's'} — ${rounds * PHOTON_PRICE} salvage`,
+  }
+}
+
+/** Take a contract. At most one at a time — see `quests.ts`. */
+export function takeContract(state: GameState, quest: Quests.Quest): GameState {
+  if (state.quests.active) {
+    return { ...state, noticeAt: PENDING, notice: 'you already have a contract' }
+  }
+  return {
+    ...state,
+    quests: Quests.accept(state.quests, quest),
+    noticeAt: PENDING,
+    notice: `contract taken — ${quest.title}`,
+  }
+}
+
+/** Drop the contract. Free, deliberately — see `quests.ts`. */
+export function dropContract(state: GameState): GameState {
+  if (!state.quests.active) return state
+  return {
+    ...state,
+    quests: Quests.abandon(state.quests),
+    noticeAt: PENDING,
+    notice: 'contract abandoned',
+  }
+}
+
 export function exchangeAt(state: GameState, salvage?: number): GameState {
   const node = state.nearby
   if (!node || !servicesOf(node.kind).includes('trade')) {
@@ -953,7 +1081,7 @@ export function withdrawn(state: GameState, spend: number, tokens: number): Game
  * player the mechanic exists at all.
  */
 export function jumpRefusal(state: GameState): string | null {
-  const threat = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  const threat = Enemy.nearestThreat(state.swarm, v3(state.camera.position), state.role)
   return Hyper.refusal({
     threat: threat ? threat.range : null,
     charges: state.ship.jumpFuel,
@@ -964,7 +1092,7 @@ export function jumpRefusal(state: GameState): string | null {
 
 /** How far the nearest hostile is, and what it is. `null` when sensors are clear. */
 export function contact(state: GameState) {
-  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position), state.role)
   if (!t) return null
   return { spec: t.craft.spec, range: t.range, behaviour: t.craft.behaviour, id: t.craft.id }
 }
@@ -995,6 +1123,6 @@ export function sensors(state: GameState, limit = 6) {
 
 /** True while a hostile is close enough to inhibit the jump drive. */
 export function inhibited(state: GameState): boolean {
-  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position))
+  const t = Enemy.nearestThreat(state.swarm, v3(state.camera.position), state.role)
   return t !== null && t.range < JUMP_INHIBIT
 }

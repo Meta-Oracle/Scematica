@@ -16,7 +16,7 @@ import { COURSE_CLEAR, COURSE_DASHES, FAR_PLANE } from './scale.ts'
 import { streak } from './arrivals.ts'
 import {
   R_CONTACT, R_CONTACT_SPAN, R_DEPOT, R_DERELICT, R_DOCK, R_LASER, R_MARKER, R_MARKET,
-  R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
+  R_CITADEL, R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
 } from './scale.ts'
 import type { ClassSpec, Shape } from './classes.ts'
 
@@ -33,6 +33,9 @@ export type Role =
   | 'marker'
   | 'phantom'
   | 'rift'
+  /** A faction citadel, coloured by who holds it. */
+  | 'citadel-marshal'
+  | 'citadel-raider'
   | 'lane'
   | 'lane-severed'
   | 'hostile'
@@ -72,6 +75,11 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   marker: [0.3, 0.28, 0.36],
   phantom: [0.45, 0.7, 0.95],
   rift: [0.44, 0.4, 0.56],
+  // Faction colours, matching the craft that fly for them: marshal yellow, raider orange. A
+  // citadel has to be identifiable as *whose* from across the sector, because approaching the
+  // wrong one as a pirate is a decision with consequences rather than a wasted trip.
+  'citadel-marshal': [1.0, 0.85, 0.3],
+  'citadel-raider': [1.0, 0.55, 0.2],
   // Services are cyan-ward so they read as *infrastructure* rather than as a contact. A
   // player scanning for somewhere to refuel should not have to distinguish a depot from a
   // hostile by shade.
@@ -185,6 +193,12 @@ export function shapeOf(b: Body): Shape {
     case 'phantom':
     case 'marker':
       return b.role
+    case 'citadel-marshal':
+    case 'citadel-raider':
+      // The tier decides the mesh, and it rides on the body because a `Role` says *whose* the
+      // citadel is, never how large. A missing tier draws the smallest rather than throwing: the
+      // field is optional on `Node`, and an absent one must be inert.
+      return b.tier === 3 ? 'citadel3' : b.tier === 2 ? 'citadel2' : 'citadel1'
     case 'self':
       // Never reached: the player's body always carries an explicit `shape` from its hull, and
       // the early return above takes it. Present so the switch is exhaustive rather than relying
@@ -252,6 +266,11 @@ export const LANE_ALPHA = 0.07
 export const LANE_SEVERED_ALPHA = 0.14
 
 export function roleOfNode(n: Node): Role {
+  // A citadel carries its faction into the role, because the colour is the readout — see the
+  // palette note. Everything else maps straight through.
+  if (n.kind === 'citadel') {
+    return n.faction === 'raider' ? 'citadel-raider' : 'citadel-marshal'
+  }
   return n.kind
 }
 
@@ -269,6 +288,14 @@ export interface Body {
   role: Role
   /** World-space radius. */
   radius: number
+  /**
+   * A citadel's tier, 1..3, which picks its mesh. Absent on everything else.
+   *
+   * On the body rather than derived in `gl.ts` for the same reason every colour decision is: the
+   * renderer places geometry and looks nothing up. A tier read in the GL layer would be a second
+   * place that knows what a citadel is.
+   */
+  tier?: number
   /** False draws an outline instead of a filled body. */
   solid: boolean
   label: string
@@ -347,6 +374,9 @@ export function nodeRadius(role: Role): number {
       return R_DOCK
     case 'depot':
       return R_DEPOT
+    case 'citadel-marshal':
+    case 'citadel-raider':
+      return R_CITADEL
     default:
       return R_MARKER
   }
@@ -440,6 +470,7 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       // measured from one that was estimated, which is a different claim entirely.
       solid: false,
       label: n.label,
+      ...(n.tier ? { tier: n.tier } : {}),
       // A fixed heading, so a station's ring is not edge-on to the same axis everywhere. Derived
       // from the node id rather than a clock or a random draw: two players holding the same
       // record see the same sector, orientations included.

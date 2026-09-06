@@ -136,7 +136,11 @@ export function jumpCharge(drive: number, base: number): number {
 }
 
 export function fuelCapacity(tanks: number, frame: HullId = 'skiff'): number {
-  return Math.round((120 + tanks * 60) * HULLS[frame].tanks)
+  // **200 at level zero.** The sector grew by a factor of fifty in volume, and a tank sized for
+  // the old one turned every crossing into a fuel calculation — which is a fine tension when the
+  // map is small enough to know, and simple attrition when it is not. Levels still add 60 each,
+  // so the upgrade keeps the same shape and only the floor moved.
+  return Math.round((200 + tanks * 60) * HULLS[frame].tanks)
 }
 
 export function hullMax(hull: number, frame: HullId = 'skiff'): number {

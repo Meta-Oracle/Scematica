@@ -366,6 +366,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     phantom: Mesh.phantom,
     marker: Mesh.marker,
     origin: Mesh.origin,
+    citadel1: () => Mesh.citadel(1),
+    citadel2: () => Mesh.citadel(2),
+    citadel3: () => Mesh.citadel(3),
   }
   const groups: Record<Shape, Group> = {
     sphere: group(bodyProg, sphere, gl.TRIANGLES, 'aSolid'),
@@ -386,6 +389,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     phantom: group(wireProg, WIRES.phantom(), gl.LINES, 'aFlash'),
     marker: group(wireProg, WIRES.marker(), gl.LINES, 'aFlash'),
     origin: group(wireProg, WIRES.origin(), gl.LINES, 'aFlash'),
+    citadel1: group(wireProg, WIRES.citadel1(), gl.LINES, 'aFlash'),
+    citadel2: group(wireProg, WIRES.citadel2(), gl.LINES, 'aFlash'),
+    citadel3: group(wireProg, WIRES.citadel3(), gl.LINES, 'aFlash'),
   }
   /** Which program each group draws with, so `draw` does not restate the table. */
   const PROGRAM_OF: Record<Shape, WebGLProgram> = Object.fromEntries(

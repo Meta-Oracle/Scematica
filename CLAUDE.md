@@ -1036,6 +1036,39 @@ Rules the 298 checks carry, each paid for:
   sector at one size and stopped the moment it changed. Floored at `SECTOR_REACH` now. A raider's
   reach is deliberately *not* floored: it is here for the player, and that asymmetry is what keeps
   the ambient violence from becoming the whole sector.
+- **A role decides who shoots at you and what you are paid for** (`roles.ts`). Four: bounty
+  hunter (hunts raiders), pirate (hunts marshals), trader and smuggler (paid for cargo, not
+  kills; the smuggler is hunted by both factions). `hostileToPlayer` is the **single**
+  implementation — `hostileTo` was `f === 'raider'` read in six places, and a pirate makes the
+  answer depend on who is asking, so a seventh site that disagreed would be a craft that steers
+  at you and never fires. The marshal war classes carry real bounties now, which looks like it
+  contradicts "a payout for killing the good guys would be the game paying for the sector to be
+  less policed" and does not: **you are paid only for what your role hunts**, so a bounty hunter
+  still earns nothing for a marshal and a pirate nothing for a raider. The old rule survives as
+  the stronger form of itself — a payout can never pull you toward work you did not declare.
+- **A contract's terms come from the seed; only its subject may be a place** (`quests.ts`). The
+  obvious quest is "destroy the six contacts this record reported" and it is the defect this
+  project has shipped twice: attach a payout to `blind_spots` and you have paid somebody to hide
+  them. So kind, count, tier and reward are a function of `(seed, faction, role, index)` and
+  nothing else; a haul may name a node, because using the map is not the same as being paid by
+  it. Progress advances on **acts** — a kill the swarm already reported, a dock the station panel
+  already detected — never on a survey the player could satisfy by reading a panel. A faction
+  that will not deal with your role says **why**, because an empty board with no explanation is
+  indistinguishable from a broken one.
+- **Faction citadels are placed by the seed and tiered by rings** (`generate.ts::CITADELS`,
+  `meshes.ts::citadel`). Six per sector, one of each tier per faction, so all four roles find a
+  board in every world — a roll would leave some sectors with no work for two of them. Rings are
+  a **count**, not a diameter: a count reads correctly at any distance where a size only reads
+  correctly next to something to compare against, the same reasoning as the coverage meter's
+  cells and the fractal's severed limbs. The outer ring is radius 1 at every tier so the hit
+  shell keeps agreeing with the picture.
+- **Two traps the citadels sprang, both caught by existing checks.** Rolling their placement from
+  the fractal's own `Rng` shifted every subsequent jitter and changed the shape of the tree —
+  node count fell 424 → 374 because a decision about station *kinds* was consuming the fractal's
+  randomness; it needs its own digest slice, like raiders and traffic. And the first label was
+  `BASTION`, which is also the marshal titan's class label, so `drawList` bodies matched by label
+  started returning a 0.028-extent station where a 0.4-extent ship was meant. **A node label must
+  never collide with a class label.**
 - **Earning has to survive the tab** (`wallet.ts`). `newGame` builds from `newShip()`, so salvage
   and SCEMA reset on every page load and every record dropped — which made the withdrawal path,
   whose minimum is ten SCEMA, unreachable for most players however long they flew. The account

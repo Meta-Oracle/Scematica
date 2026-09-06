@@ -61,6 +61,15 @@ import { EXTENT, MIN_BRANCH, MIN_NODE_GAP, TRUNK } from './scale.ts'
  */
 export { EXTENT }
 
+/**
+ * How many faction citadels a sector carries. A **constant**, for the same reason `WINGS` is.
+ *
+ * Six: three per faction, one of each tier, so both a pirate and a bounty hunter find a full
+ * ladder of boards in every world. A count derived from the record would make a forged record
+ * worth more work.
+ */
+export const CITADELS = 6
+
 export interface Vec3 {
   x: number
   y: number
@@ -77,6 +86,14 @@ export type NodeKind =
   | 'marker'
   | 'phantom'
   | 'rift'
+  /**
+   * A faction citadel. Placed by the game, never by the record.
+   *
+   * Which stations become citadels is drawn from the seed — the same mechanism that already
+   * decides which become markets, docks and depots — so a record cannot buy itself more of them,
+   * and every world carries the same faction presence. See `CITADELS` in this file.
+   */
+  | 'citadel'
 
 /** What a node will do for you if you approach it. */
 export type Service = 'refuel' | 'repair' | 'trade' | 'scavenge'
@@ -104,6 +121,10 @@ export function servicesOf(kind: NodeKind): Service[] {
       return ['refuel']
     case 'derelict':
       return ['scavenge']
+    case 'citadel':
+      // Everything, and contracts on top (`quests.ts`). A citadel that could not rearm you would
+      // be a place you visit once for a contract and never again.
+      return ['refuel', 'repair', 'trade']
     case 'origin':
       // The home station is the one node that does everything. It is where the ship starts and
       // where a new player learns what the service keys are for, and a first station that
@@ -126,6 +147,21 @@ export interface Node {
   services: Service[]
   /** The object this came from, when it came from one. */
   label: string
+  /**
+   * Which faction holds this node. Set only on a `citadel`.
+   *
+   * Drawn from the seed alongside the kind, never from the record — a world cannot decide whose
+   * space it is any more than it can decide how dangerous it is.
+   */
+  faction?: 'marshal' | 'raider'
+  /**
+   * A citadel's tier, 1..3. Drawn as that many concentric rings.
+   *
+   * The rings are the readout: a three-ring citadel is visibly the seat of the faction in this
+   * sector and carries the contracts to match, and you can tell which one you are approaching
+   * from further away than any label is legible.
+   */
+  tier?: number
 }
 
 /** A traversable lane between two nodes. */
@@ -316,6 +352,18 @@ export function generate(world: WorldState, digest: string): Space {
   // and the count in the legend cannot disagree.
   const riftLevel = Math.max(1, g.depth - 2)
   let riftsPlaced = 0
+  let citadelsPlaced = 0
+  /**
+   * A separate stream for the citadel roll.
+   *
+   * **Not `rng`.** Drawing from the fractal's own stream inside the growth loop shifts every
+   * subsequent jitter, which changes the shape of the tree — measured, the node count fell from
+   * 424 to 374 purely because a decision about station *kinds* was consuming the fractal's
+   * randomness. The same reasoning as raiders and traffic each taking their own slice of the
+   * digest: a stream is shared or it is not, and sharing one couples two things that have no
+   * business affecting each other.
+   */
+  const citadelRng = new Rng(digest.slice(20, 28) || digest.slice(8, 16) || digest)
 
   // A long trunk and a slow taper: the tree has to reach the edges of a volume this size or
   // the sector is a dense knot with emptiness around it, which reads as smaller than a map
@@ -397,6 +445,8 @@ export function generate(world: WorldState, digest: string): Space {
     // rather than from anything the record measured — a dock is a convenience the sector
     // happens to have, and deriving it from a reported quantity would make that quantity
     // worth misreporting. Same reasoning as combat durability.
+    let faction: 'marshal' | 'raider' | undefined
+    let tier: number | undefined
     if (kind === 'station') {
       // Rare, common, commonest. A market on every tenth node makes outfitting a formality;
       // it should be somewhere you plan a route around.
@@ -406,13 +456,46 @@ export function generate(world: WorldState, digest: string): Space {
       else if (roll <= 8) kind = 'depot'
     }
 
+    // ## Faction citadels
+    //
+    // Rarer than a market and drawn from the same stream, so a record cannot buy itself more of
+    // them — the whole reason the service roll above is seeded rather than derived. A citadel is
+    // where contracts come from (`quests.ts`), so making the count a function of the record's
+    // contents would be paying a producer for what it reported, one indirection removed.
+    //
+    // Deep nodes only: a citadel adjacent to the spawn would hand a new player the sector's best
+    // station before they had flown anywhere, and the tier system exists to give them somewhere
+    // to work toward.
+    if (kind === 'station' && level >= 2 && citadelsPlaced < CITADELS) {
+      const c = citadelRng.below(9)
+      if (c === 0) {
+        kind = 'citadel'
+        // Alternating rather than rolled: every sector gets both factions represented, so a
+        // pirate and a bounty hunter each have somewhere to take work in every world. A roll
+        // would leave some sectors with no board for one of the four roles.
+        faction = citadelsPlaced % 2 === 0 ? 'marshal' : 'raider'
+        tier = 1 + (citadelsPlaced % 3)
+        citadelsPlaced += 1
+      }
+    }
+
     nodes.push({
       id,
       at,
       depth: level,
       kind,
       services: servicesOf(kind),
-      label: isRift ? 'rift' : (obj?.label ?? `waypoint ${id}`),
+      label: isRift
+        ? 'rift'
+        : kind === 'citadel'
+          // **Never a class label.** `BASTION` was the first choice and it is also the marshal
+          // titan's label, so `drawList` bodies matching on label started returning a station
+          // where a craft was meant — caught by "a craft size comes from its class", which found
+          // a 0.028-extent node standing in for a 0.4-extent ship.
+          ? `${faction === 'marshal' ? 'CITADEL' : 'FREEHOLD'} ${'I'.repeat(tier ?? 1)}`
+          : (obj?.label ?? `waypoint ${id}`),
+      ...(faction ? { faction } : {}),
+      ...(tier ? { tier } : {}),
     })
     lanes.push({ from: parent, to: id, severed: isRift })
     if (isRift) return

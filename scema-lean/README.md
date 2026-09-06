@@ -37,6 +37,42 @@ Those are the ones formalized here. Three modules:
 Everywhere else in this repository those rules are enforced by convention, comments and
 tests. Here they are theorems.
 
+## The second library: `Audit`
+
+`Audit.lean` and `Audit/` are the companion artefact to [`SECURITY-AUDIT.md`](../SECURITY-AUDIT.md)
+at the repository root — a model of the security-relevant code, in which **every claim the
+report makes is a theorem**. The split it maintains is the one that makes it readable: a
+finding is *exhibited* (a `finding_*` theorem produces the witness), a guarantee is *proved*,
+and each proposed fix is modelled beside the defect so the post-condition is stated rather
+than described. Six modules:
+
+| Module | What it models |
+|---|---|
+| `Audit/Escrow.lean` | bond-split arithmetic, the four-state lifecycle, `settle`'s account set |
+| `Audit/Vault.lean` | vault accounting as a transition system, including third-party donations |
+| `Audit/Swap.lean` | the profit-or-revert guard |
+| `Audit/X402.lean` | transactions, signatures, `verify`, settlement, the HTTP gate |
+| `Audit/Access.lean` | constant-time comparison, the `Host` check, entitlement, the control gate |
+| `Audit/Effect.lean` | the two gates in front of the agent's write path |
+
+**A second `lean_lib`, not a second package**, and that is the whole design decision. It
+arrived as a root package with its own `lean-toolchain` (4.28.0) and a Mathlib dependency —
+which would have meant two toolchains, two build commands, and a cold build measured in tens
+of minutes for a repository whose Lean story is "this is checkable in a minute, offline". As a
+library here there is one toolchain, one `lake build`, and the no-Mathlib rule below covers it
+too. It can, because every module under `Audit/` imports nothing at all — not even `Scema`.
+
+The cost of the backport was one lemma: `Nat.div_le_div_right` does not exist under that name
+on 4.18.0, so `Audit/Escrow.lean` proves the monotonicity it needs from `Nat.le_div_iff_mul_le`
+and `Nat.div_mul_le_self`, both of which the file already used. Proving it locally is the
+better arrangement anyway — a package whose selling point is an offline build on a pinned
+toolchain should not be one core rename away from failing.
+
+The gap section below applies to `Audit/` with **more** force than to `Scema/`: these are
+models of Anchor programs and async Rust, which are further from a pure total function than a
+canonical encoder is. What the model buys is that each finding is a precise claim rather than
+a paragraph, and that a regression in one of the positive results is a build failure.
+
 ## The result worth reading
 
 `Term.lean` proves two things that are better together than apart:
@@ -123,12 +159,24 @@ build failure. It is not built yet, and this README will say so until it is.
 ```
 lean-toolchain        pinned to v4.18.0 — no toolchain fetch, so this builds offline
 lakefile.toml         no dependencies, deliberately (see the comment in it)
-Scema.lean            root
+Scema.lean            root of the invariants library
 Scema/Term.lean       Term, Coverage, the utility equation
 Scema/Merkle.lean     the anchor tree and CVE-2012-2459
 Scema/Canonical.lean  tags, key order, fixed-point
+Audit.lean            root of the audit library
+Audit/Escrow.lean     bond routing, the lifecycle, settle's account set
+Audit/Vault.lean      vault solvency along every reachable history
+Audit/Swap.lean       the profit-or-revert guard
+Audit/X402.lean       forgery, replay, and blockhash rebinding
+Audit/Access.lean     token comparison, Host, entitlement, the control gate
+Audit/Effect.lean     the two gates in front of the write path
 Main.lean             `formalize` — the checks as a runnable report
 ```
+
+`lake build` discharges both libraries; `lake exe formalize` re-runs the decidable `Scema`
+checks as computations. There is no `formalize` for `Audit/` — its statements are about
+lifecycles and account sets rather than bytes, so there is nothing to recompute that reading
+the theorem does not already say.
 
 ## Notes for anyone extending it
 

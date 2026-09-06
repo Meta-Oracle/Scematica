@@ -7,6 +7,13 @@ Autonomous AI trading infrastructure for Solana. Token sniping, cross-DEX arbitr
 > **New to coding?** See [BEGINNER_GUIDE.md](docs/BEGINNER_GUIDE.md) for a complete step-by-step setup walkthrough — no experience needed.
 >
 > 📚 **All documentation lives in [`docs/`](docs/README.md)** — getting started, the ScemaDEX SDK, trading strategy, the Fibonacci protocol, and the whitepaper.
+>
+> 🔐 **Security audit:** [SECURITY-AUDIT.md](SECURITY-AUDIT.md) — scope, findings, and what
+> was done about each, with a machine-checked Lean model of every claim in
+> [`scema-lean/Audit/`](scema-lean/Audit/) (`cd scema-lean ; lake build`). The audit and the
+> model were produced by [Aristotle](https://aristotle.harmonic.fun)
+> (`Co-authored-by: Aristotle (Harmonic) <aristotle-harmonic@harmonic.fun>`); the
+> remediations in §6 were applied here.
 
 ## Quick Start (Windows, one-click)
 

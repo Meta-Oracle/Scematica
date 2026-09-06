@@ -301,6 +301,209 @@ export function dreadnought(): Wire {
 }
 
 /**
+ * A cruiser: the medium tier's own silhouette.
+ *
+ * The tier between a gunboat and a capital had no shape of its own, and borrowing one would have
+ * put a `marauder` on screen at five times a marauder's size — which reads as a rendering fault
+ * rather than as a bigger ship, because scale alone is not a silhouette. What separates this from
+ * everything below it is **outriggers**: two nacelles carried away from the hull on booms, a
+ * feature no fighter has the room for and no capital bothers with.
+ *
+ * Long, narrow, and asymmetric top-to-bottom like the fighters, so roll still reads.
+ */
+export function cruiser(): Wire {
+  const p: number[][] = [
+    [0, 0.04, 1.6], // 0 prow
+    [-0.26, 0.18, 0.55], [0.26, 0.18, 0.55], [-0.26, -0.14, 0.55], [0.26, -0.14, 0.55],
+    [-0.32, 0.16, -1.05], [0.32, 0.16, -1.05], [-0.32, -0.16, -1.05], [0.32, -0.16, -1.05],
+    [0, 0.46, 0.1], // 9 command tower
+    [0, -0.34, -0.5], // 10 keel
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+    [9, 1], [9, 2], [9, 5], [9, 6],
+    [10, 7], [10, 8], [10, 3], [10, 4],
+  ]
+  // The outriggers: a boom out from the flank, then a nacelle running fore-and-aft on the end of
+  // it. This is the feature that says "medium" from any angle and at any distance.
+  let n = p.length
+  for (const s of [-1, 1]) {
+    p.push(
+      [s * 0.3, 0.02, -0.2],
+      [s * 0.92, 0.02, -0.2],
+      [s * 0.92, 0.1, 0.5],
+      [s * 0.92, 0.1, -0.95],
+      [s * 0.92, -0.06, 0.5],
+      [s * 0.92, -0.06, -0.95],
+    )
+    e.push(
+      [n, n + 1],
+      [n + 2, n + 3], [n + 4, n + 5], [n + 2, n + 4], [n + 3, n + 5],
+      [n + 1, n + 2], [n + 1, n + 3],
+    )
+    n += 6
+  }
+  // Ribs across the beam. Three only: enough to give the hull a scale cue without turning it
+  // into a small capital.
+  for (let i = 1; i <= 3; i += 1) {
+    const t = i / 4
+    const z = 0.55 - t * 1.6
+    const w = 0.26 + 0.06 * t
+    p.push([-w, 0.17, z], [w, 0.17, z], [w, -0.15, z], [-w, -0.15, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  return wire(p, e)
+}
+
+/**
+ * A bulwark: the first hull a player can fly that is genuinely a capital.
+ *
+ * Ribbed **across the beam** rather than along the length, which is the whole reason it is a
+ * separate mesh from `dreadnought` rather than that one drawn larger. The hostile war hulls are
+ * long-ribbed and read as a spine receding away from you; this one reads as a wall coming toward
+ * you. In a sector where every other large silhouette is trying to kill you, the ship you own has
+ * to be identifiable at a glance — the same argument the player fighters already make, and it
+ * gets stronger as the hulls get bigger rather than weaker.
+ *
+ * Wide, flat, deep-keeled, with armoured shoulder blocks at the bow.
+ */
+export function bulwark(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.45], // 0 prow
+    [-0.62, 0.2, 0.55], [0.62, 0.2, 0.55], [-0.62, -0.26, 0.55], [0.62, -0.26, 0.55],
+    [-0.86, 0.22, -1.15], [0.86, 0.22, -1.15], [-0.86, -0.28, -1.15], [0.86, -0.28, -1.15],
+    [0, 0.52, -0.15], // 9 bridge
+    [0, -0.62, -0.35], // 10 keel
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+    [9, 1], [9, 2], [9, 5], [9, 6],
+    [10, 3], [10, 4], [10, 7], [10, 8],
+  ]
+  let n = p.length
+  // Shoulder blocks: armour boxes either side of the prow, and the feature that reads first at
+  // the range a capital is usually seen from.
+  for (const s of [-1, 1]) {
+    p.push(
+      [s * 0.5, 0.24, 0.95], [s * 0.86, 0.24, 0.75],
+      [s * 0.5, -0.1, 0.95], [s * 0.86, -0.1, 0.75],
+    )
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3], [n + 1, s < 0 ? 5 : 6])
+    n += 4
+  }
+  // Transverse ribs: hoops around the beam, spaced along the hull, each with a dorsal and a
+  // ventral spur. A wall rather than a spine.
+  for (let i = 1; i <= 6; i += 1) {
+    const t = i / 7
+    const z = 0.55 - t * 1.7
+    const w = 0.62 + 0.24 * t
+    const top = 0.2 + 0.02 * t
+    const bot = -0.26 - 0.02 * t
+    p.push(
+      [-w, top, z], [w, top, z], [w, bot, z], [-w, bot, z],
+      [0, top + 0.22, z], [0, bot - 0.26, z],
+    )
+    e.push(
+      [n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n],
+      [n + 4, n], [n + 4, n + 1], [n + 5, n + 2], [n + 5, n + 3],
+    )
+    n += 6
+  }
+  // Engine bank: four wide nozzles across the stern.
+  for (const x of [-0.6, -0.2, 0.2, 0.6]) {
+    p.push([x, -0.02, -1.15], [x, -0.02, -1.5])
+    e.push([n, n + 1])
+    n += 2
+  }
+  return wire(p, e)
+}
+
+/**
+ * A sovereign: the largest hull anybody can own.
+ *
+ * A spinal ship. The whole thing is one axis with a command tower forward, three rib clusters
+ * along the keel, flank galleries and an engine cage at the stern. At the size this is drawn the
+ * eye is close enough to individual features that their absence reads as a lack of detail rather
+ * than as distance — the argument `dreadnought` already makes, and it applies harder here,
+ * because this is the hull the player looks at for a whole session.
+ *
+ * The rib clusters are grouped rather than evenly spread, which is what gives a hull this long a
+ * bow, a waist and a stern instead of one undifferentiated run. The engine cage is deliberately
+ * open: a solid block at this scale is a smudge, where a cage keeps interior lines and stays
+ * legible both when it fills a third of the screen and when the ship is a speck on somebody
+ * else's sensor board.
+ */
+export function sovereign(): Wire {
+  const p: number[][] = [
+    [0, 0, 2.0], // 0 prow
+    [-0.4, 0.16, 1.05], [0.4, 0.16, 1.05], [-0.4, -0.2, 1.05], [0.4, -0.2, 1.05],
+    [-0.7, 0.2, -1.35], [0.7, 0.2, -1.35], [-0.7, -0.26, -1.35], [0.7, -0.26, -1.35],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+
+  // Command tower, forward and tall. On a hull too long to see both ends of at once, the bridge
+  // is the thing a pilot orients by.
+  p.push([0, 0.24, 0.9], [0, 0.86, 0.5], [-0.2, 0.62, 0.35], [0.2, 0.62, 0.35], [0, 0.3, 0.1])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 4], [n + 3, n + 4], [n + 1, n + 4])
+  n += 5
+
+  // Three rib clusters rather than one continuous run.
+  for (const z0 of [0.85, -0.15, -1.0]) {
+    for (let i = 0; i < 3; i += 1) {
+      const z = z0 - i * 0.2
+      const t = (2.0 - z) / 3.35
+      const w = 0.36 + 0.36 * t
+      const top = 0.15 + 0.06 * t
+      const bot = -0.18 - 0.09 * t
+      p.push([-w, top, z], [w, top, z], [w, bot, z], [-w, bot, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+      n += 4
+    }
+  }
+
+  // Flank galleries: what a spinal ship carries instead of turrets on a superstructure.
+  for (const s of [-1, 1]) {
+    p.push(
+      [s * 0.98, 0.02, 0.5], [s * 0.98, 0.02, -1.0],
+      [s * 0.72, 0.14, 0.5], [s * 0.72, 0.14, -1.0],
+    )
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
+    n += 4
+  }
+
+  // The engine cage: six pylons in a ring behind the stern, braced fore and aft.
+  const cage = n
+  const R = 0.52
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2
+    p.push(
+      [Math.cos(a) * R, Math.sin(a) * R * 0.7, -1.35],
+      [Math.cos(a) * R, Math.sin(a) * R * 0.7, -1.95],
+    )
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const j = (i + 1) % 6
+    e.push([cage + i * 2, cage + i * 2 + 1])
+    e.push([cage + i * 2, cage + j * 2])
+    e.push([cage + i * 2 + 1, cage + j * 2 + 1])
+  }
+  return wire(p, e)
+}
+
+/**
  * ## The stations
  *
  * Nodes used to be shaded spheres, which told you a thing was there and nothing else: a market

@@ -22,7 +22,7 @@ import type { Ship as ShipState } from './ship.ts'
 import { forward, right, rotate, translate, up, type Camera } from './camera.ts'
 
 import {
-  ACCEL_MAIN, AGGRO_RANGE, ASSIST, DOCK_RANGE, EXTENT, JUMP_INHIBIT, R_ORIGIN, R_PLAYER,
+  ACCEL_MAIN, AGGRO_RANGE, ASSIST, DOCK_RANGE, EXTENT, JUMP_INHIBIT, R_ORIGIN,
   RATE_PITCH, RATE_ROLL, RATE_YAW, SENSOR_MULTIPLIER, SPIN_ACCEL, SPIN_DAMP, SPEED_THRUST,
 } from './scale.ts'
 import * as Hyper from './hyper.ts'
@@ -263,10 +263,27 @@ function dist(a: Vec3, b: Vec3): number {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
 }
 
-/** Nearest node within docking range. */
-export function nearestService(space: Space, at: Vec3): Node | null {
+/**
+ * How close this hull has to be to a node to use its services.
+ *
+ * **Measured from the hull, never from its centre**, which is why it is a function of the frame
+ * rather than the bare `DOCK_RANGE` constant. A dominion has a radius of 0.135 extents against a
+ * docking range of 0.075: with a centre-to-centre test the ship would have to swallow the station
+ * whole to dock with it, and the panel would report `nothing in range` while the structure was
+ * visibly inside the hull. That is the same failure as the original refuelling bug — a dockable
+ * shell the ship could not occupy — arriving from the other direction.
+ *
+ * The invariant `check:scemaworld` pins therefore generalises rather than moving: the dockable
+ * band clears the largest node for **every** hull, not just the stock one.
+ */
+export function dockRange(frame: HullId): number {
+  return DOCK_RANGE + Ship.hullRadius(frame)
+}
+
+/** Nearest node within this hull's docking range. */
+export function nearestService(space: Space, at: Vec3, frame: HullId = 'skiff'): Node | null {
   let best: Node | null = null
-  let bestD = DOCK_RANGE
+  let bestD = dockRange(frame)
   for (const n of space.nodes) {
     // Axis rejects before the square root. This runs over a thousand nodes every frame, and a
     // `Math.hypot` per node was most of what it cost.
@@ -308,9 +325,12 @@ export interface TickInput {
  * back a half-second frame) a plain `v += a * dt` sails past the commanded rate and the ship
  * snaps into a spin the player never asked for.
  */
-function approach(cur: Vec3, cmd: Vec3, dt: number): Vec3 {
+function approach(cur: Vec3, cmd: Vec3, dt: number, agility: number): Vec3 {
   const step = (c: number, want: number): number => {
-    const rate = want === 0 ? SPIN_DAMP : SPIN_ACCEL
+    // Scaled by the hull, exactly as the commanded rates are. Scaling only the peak gives a ship
+    // that snaps instantly into a slow rotation, which reads as a bug rather than as mass — the
+    // felt weight of a capital is in how long it takes to *start* turning at all.
+    const rate = (want === 0 ? SPIN_DAMP : SPIN_ACCEL) * agility
     const d = want - c
     const max = rate * dt
     if (Math.abs(d) <= max) return want
@@ -331,12 +351,20 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // lower than `SPIN_ACCEL`, so the ship carries its turn for a moment after the stick is
   // centred — which is the difference between flying something and pointing a camera.
   let camera = state.camera
+  //
+  // Every rate is multiplied by the hull's `agility`, which is the stat that makes a tier feel
+  // like a tier. It cannot be top speed: `scale.ts` and `classes.ts` both pin that every hull
+  // outruns every hostile, because disengaging has to stay possible. So what a heavy hull pays is
+  // the delay between deciding to point somewhere and pointing there — which is also the axis the
+  // whole dogfight model turns on, so a fighter that stays out of a capital's arc is a real
+  // problem for the largest ship in the game.
+  const agility = Ship.agilityOf(state.ship.frame)
   const cmd = {
-    x: ((keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)) * RATE_PITCH,
-    y: ((keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0)) * RATE_YAW,
-    z: ((keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0)) * RATE_ROLL,
+    x: ((keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)) * RATE_PITCH * agility,
+    y: ((keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0)) * RATE_YAW * agility,
+    z: ((keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0)) * RATE_ROLL * agility,
   }
-  const spin = approach(state.spin, cmd, dt)
+  const spin = approach(state.spin, cmd, dt, agility)
   if (spin.x || spin.y || spin.z) {
     camera = rotate(camera, spin.x * dt, spin.y * dt, spin.z * dt)
   }
@@ -435,7 +463,10 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // and a better home for it, since a wall is a fact about the world and a sensor return is a
   // fact about what somebody knows.
   const grid = gridFor(space)
-  const crossed = Collide.crossed(space, v3(was), v3(camera.position), R_PLAYER)
+  // The hull's own radius, not the stock constant. A capital touches structures a fighter passes
+  // beside, and that is the point of flying one.
+  const selfR = Ship.hullRadius(state.ship.frame)
+  const crossed = Collide.crossed(space, v3(was), v3(camera.position), selfR)
   if (crossed) notice = Collide.passageNote(crossed.kind, crossed.label)
 
   // ── the jump drive ─────────────────────────────────────────────────────────
@@ -583,7 +614,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // costs nothing and reads as piloting.
   // The role reaches the AI, not just the sensor board. Without it a pirate is hunted by the
   // raiders who count them as one of their own and ignored by the patrol they are paid to fight.
-  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid, space, state.role)
+  const enemyStep = Enemy.step(swarm, at, velocity, dt, nowMs, grid, space, state.role, selfR)
   swarm = enemyStep.swarm
   let shake = Math.max(0, state.shake - dt * 2.2)
   if (enemyStep.damage > 0) {
@@ -618,7 +649,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   for (const c of Enemy.living(swarm)) {
     const gap = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
     const core = c.spec.capital ? c.spec.radius * CAPITAL_CORE : c.spec.radius
-    const touch = R_PLAYER + core
+    const touch = selfR + core
     if (gap >= touch) continue
     touching.push(c.id)
     // Already inside it last frame: no second charge, no second push. Flying out is the player's
@@ -697,7 +728,7 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // overwriting the former with the latter is how feedback stops being trusted.
   if (!notice) notice = topUp.notice
 
-  const nearby = nearestService(space, v3(camera.position))
+  const nearby = nearestService(space, v3(camera.position), state.ship.frame)
 
   // ## A haul advances on arrival, not on proximity
   //

@@ -42,7 +42,7 @@ import * as Factions from '../lib/scemaworld/factions.ts'
 import {
   build as navBuild, pick as navPick, ZOOMS as NAV_ZOOMS, DEFAULT_ZOOM as NAV_DEFAULT_ZOOM,
 } from '../lib/scemaworld/navmap.ts'
-import { HULLS, HULL_IDS } from '../lib/scemaworld/hulls.ts'
+import { HULLS, HULL_IDS, HULL_TIERS, hullsOf, purchasable } from '../lib/scemaworld/hulls.ts'
 import {
   exchange, buyHull, toScema, salvageFor, SALVAGE_PER_SCEMA, SALVAGE_NUM, SCEMA_DEN, SCEMA_NOTE,
 } from '../lib/scemaworld/economy.ts'
@@ -64,7 +64,7 @@ import {
   acquire, exchangeAt, command, COMMAND_KEYS, jumpRefusal,
 } from '../lib/scemaworld/game.ts'
 import { course as courseOf } from '../lib/scemaworld/view.ts'
-import { refit, noseOffset } from '../lib/scemaworld/ship.ts'
+import { refit, noseOffset, hullRadius } from '../lib/scemaworld/ship.ts'
 import {
   HITBOX, capsuleOf, strikes, segmentDistance,
 } from '../lib/scemaworld/hitbox.ts'
@@ -84,7 +84,7 @@ import * as Hyper from '../lib/scemaworld/hyper.ts'
 import * as Meshes from '../lib/scemaworld/meshes.ts'
 import { interceptor, gunship, capital, bolt, starfield } from '../lib/scemaworld/meshes.ts'
 import { shapeOf, LANE_ALPHA } from '../lib/scemaworld/view.ts'
-import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../lib/scemaworld/game.ts'
+import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE, dockRange } from '../lib/scemaworld/game.ts'
 import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
@@ -3757,7 +3757,12 @@ check('a titan threatens by volume of fire, not by a one-shot', () => {
 check('the war classes still obey every invariant', () => {
   for (const id of ['dreadnought', 'leviathan', 'titan']) {
     const c = CLASSES[id]
-    assert(c.speed < topSpeed(0, 'marauder'), `${id} outruns the slowest hull`)
+    // Against the slowest hull **in the table**, found rather than named. It was `'marauder'`,
+    // which was the slowest hull on the day it was written and is now the fifth of seventeen —
+    // a capital is slower than all of them, so the assertion was quietly checking something
+    // easier than it claimed. The disengagement invariant is about the worst case, always.
+    const slowest = HULL_IDS.reduce((a, b) => (topSpeed(0, a) <= topSpeed(0, b) ? a : b))
+    assert(c.speed < topSpeed(0, slowest), `${id} outruns the ${slowest}`)
     assert((c.speed * 0.3) / c.turn <= c.standoff * 1.6, `${id} cannot reach its own standoff`)
     assert(c.bounty > 0, `${id} pays nothing`)
   }
@@ -4033,9 +4038,35 @@ check('the chase distance scales with the hull', () => {
   // A marauder is four times a skiff. A fixed camera distance either buries the lens in the big
   // hull or leaves the small one a speck.
   const ship = camera([0, 0, 0])
-  const near = chase(ship, EXTENT * HULLS.skiff.size * 7.5, 0)
-  const far = chase(ship, EXTENT * HULLS.marauder.size * 7.5, 0)
+  const backOf = (h) => EXTENT * HULLS[h].size * HULLS[h].chaseBack
+  const near = chase(ship, backOf('skiff'), 0)
+  const far = chase(ship, backOf('marauder'), 0)
   assert(far.position[2] > near.position[2] * 2, 'the camera does not back off for a bigger hull')
+
+  // Within a tier the lens backs off with the hull. **Across** tiers it deliberately does not,
+  // and that is the design rather than a lapse: heavier hulls sit proportionally closer, so the
+  // first capital is framed nearer than the top medium and therefore fills more of the screen.
+  // A capital's own bow in the lower third of the frame is the view — it is the whole difference
+  // between flying one and flying a fighter that has been scaled up — so what is pinned here is
+  // monotonicity *inside* a tier plus the framing trend *between* tiers, never one blanket rule
+  // that would quietly forbid the effect.
+  for (const tier of HULL_TIERS) {
+    const hs = hullsOf(tier).slice().sort((a, b) => a.size - b.size)
+    for (let i = 1; i < hs.length; i += 1) {
+      const d = EXTENT * hs[i].size * hs[i].chaseBack
+      const prev = EXTENT * hs[i - 1].size * hs[i - 1].chaseBack
+      assert(d > prev, `the ${hs[i].id} pulls the camera in from the ${hs[i - 1].id}`)
+    }
+    for (const h of hs) assert(h.chaseBack > 1, `${h.id} puts the camera inside its own hull`)
+  }
+  const framing = (tier) => Math.max(...hullsOf(tier).map((h) => h.chaseBack))
+  assert(framing('medium') < framing('light'), 'a medium is framed no closer than a fighter')
+  assert(framing('capital') < framing('medium'), 'a capital is framed no closer than a medium')
+  // No hull may push the lens far enough back to clip the sector it is flying in. The far plane
+  // is about thirteen extents, so this has enormous margin — which is exactly why it is worth
+  // pinning rather than recomputing by hand the next time a hull size moves.
+  const furthest = Math.max(...HULL_IDS.map(backOf))
+  assert(furthest < SCALE.FAR_PLANE * 0.25, `the camera sits ${(furthest / EXTENT).toFixed(2)} extents back`)
 })
 
 check('you can see your own ship, as the hull you actually bought', () => {
@@ -4053,11 +4084,183 @@ check('you can see your own ship, as the hull you actually bought', () => {
   }
 })
 
+// ── the heavy tiers ──────────────────────────────────────────────────────────
+//
+// Twelve hulls arrived at once, in two weight classes the player did not previously have, and
+// four of the rules they have to obey are rules this project has already broken elsewhere: a
+// hitbox that stopped matching the drawn radius, a constant that was right at one scale and
+// silently wrong at another, a table whose top entries could never be reached, and a silhouette
+// distinction that collapsed into a size difference.
+
+check('every hull is complete, tiered, and drawable', () => {
+  const seen = new Set()
+  for (const tier of HULL_TIERS) {
+    for (const spec of hullsOf(tier)) {
+      seen.add(spec.id)
+      assert(spec.tier === tier, `${spec.id} is filed under ${tier} and says ${spec.tier}`)
+      assert(typeof Meshes[spec.shape] === 'function', `${spec.id} draws as ${spec.shape}, which has no mesh`)
+      assert(Meshes[spec.shape]().length > 0, `${spec.shape} builds an empty mesh`)
+      assert(HITBOX[spec.shape], `${spec.shape} has no hitbox`)
+      assert(spec.size > 0 && spec.armour > 0 && spec.shields > 0, `${spec.id} has a nonsense statline`)
+      assert(spec.agility > 0 && spec.agility <= 1.5, `${spec.id} has a nonsense agility`)
+      assert(spec.tubes > 0 && spec.chaseBack > 0 && spec.chaseUp > 0, `${spec.id} is missing a field`)
+      assert(spec.price >= 0, `${spec.id} costs a negative amount`)
+    }
+  }
+  // Every hull is reachable through the grouping the shipyard actually renders. A hull present in
+  // the table and absent from every tier is one nobody can buy, which is the same class of defect
+  // as a class the roll could never produce.
+  assert(seen.size === HULL_IDS.length, `${HULL_IDS.length - seen.size} hulls are in no tier`)
+})
+
+check('a tier is a weight class, and the ladder is monotone within it', () => {
+  // Not across tiers — a prowler is lighter than a marauder on purpose, because the medium tier
+  // opens with a hull that still explores. Within a tier the order the shipyard prints has to be
+  // the order the prices run, or the grid reads as unsorted.
+  for (const tier of HULL_TIERS) {
+    const hs = hullsOf(tier)
+    for (let i = 1; i < hs.length; i += 1) {
+      assert(hs[i].price > hs[i - 1].price, `${hs[i].id} is cheaper than ${hs[i - 1].id} above it`)
+    }
+  }
+  const heaviest = (tier) => Math.max(...hullsOf(tier).map((h) => h.size))
+  const lightest = (tier) => Math.min(...hullsOf(tier).map((h) => h.size))
+  assert(lightest('medium') > heaviest('light'), 'a medium is no bigger than a light hull')
+  assert(lightest('capital') > heaviest('medium'), 'a capital is no bigger than a medium')
+})
+
+check('mass is agility, never top speed — every hull still outruns every hostile', () => {
+  // The standing invariant, and the reason a capital is slow to *turn* rather than slow to fly:
+  // `scale.ts` and `classes.ts` both state that disengaging must always be possible, or the game
+  // punishes the exploring it is about. A hull that could be run down from behind by an
+  // interceptor would make the largest purchase in the game the one that takes your options away.
+  const slowest = HULL_IDS.reduce((a, b) => (topSpeed(0, a) <= topSpeed(0, b) ? a : b))
+  for (const id of ALL_CLASS_IDS) {
+    assert(
+      CLASSES[id].speed < topSpeed(0, slowest),
+      `${id} at ${CLASSES[id].speed} runs down a ${slowest} at ${topSpeed(0, slowest)}`,
+    )
+  }
+  // And the tier trade is real in the other direction: every capital turns more slowly than every
+  // light hull, which is where the weight is actually paid.
+  const fastestCapitalTurn = Math.max(...hullsOf('capital').map((h) => h.agility))
+  const slowestLightTurn = Math.min(...hullsOf('light').map((h) => h.agility))
+  assert(fastestCapitalTurn < slowestLightTurn, 'a capital turns as well as a fighter')
+})
+
+check('the biggest hull you can fly is not the biggest thing in the sector', () => {
+  // A game whose top purchase makes you the apex object has nothing left to point at. The largest
+  // flyable hull is exactly a hostile dreadnought across — an equality rather than an inequality,
+  // because "about the same size" is the sort of claim that drifts on the next tuning pass — and
+  // the leviathan and the titan stay larger than anything the shipyard sells.
+  const biggest = Math.max(...HULL_IDS.map((h) => HULLS[h].size))
+  assert(
+    Math.round(EXTENT * biggest) === CLASSES.dreadnought.radius,
+    `the largest hull is ${Math.round(EXTENT * biggest)} against a dreadnought's ${CLASSES.dreadnought.radius}`,
+  )
+  assert(EXTENT * biggest < CLASSES.leviathan.radius, 'you can buy your way past a leviathan')
+  assert(EXTENT * biggest < CLASSES.titan.radius, 'you can buy your way past a titan')
+})
+
+check('a hull is hit at the size it is drawn, with a floor under the smallest', () => {
+  // The rule this project has now paid for three times: the physics radius **is** the drawn
+  // radius. A dominion hit-tested as a skiff would have a hitbox smaller than its own bridge, so
+  // enemy fire would pass visibly through a war hull and miss.
+  for (const h of HULL_IDS) {
+    const r = hullRadius(h)
+    assert(r >= SCALE.R_PLAYER, `${h} is hittable below the floor`)
+    const drawn = EXTENT * HULLS[h].size * HITBOX[HULLS[h].shape].cross
+    if (drawn > SCALE.R_PLAYER) {
+      assert(Math.abs(r - drawn) <= 1, `${h} is hit at ${r} and drawn at ${drawn}`)
+    }
+  }
+  assert(
+    hullRadius('dominion') > hullRadius('skiff') * 20,
+    'the largest hull is not meaningfully larger to hit than the smallest',
+  )
+})
+
+check('docking is measured from the hull, so every hull can dock', () => {
+  // The original refuelling bug arriving from the other direction. A dominion's radius is 0.135
+  // extents against a docking range of 0.075: with a centre-to-centre test the ship would have to
+  // swallow the station whole, and the panel would report `nothing in range` while the structure
+  // was visibly inside the hull.
+  for (const h of HULL_IDS) {
+    const reach = dockRange(h)
+    assert(
+      reach > R_NODE_MAX + hullRadius(h),
+      `a ${h} touching the largest node is out of range`,
+    )
+    const band = reach - (R_NODE_MAX + hullRadius(h))
+    assert(band > R_NODE_MAX, `the ${h}'s dockable shell is too thin to stop in`)
+    assert(reach < SCALE.AGGRO_RANGE + hullRadius(h), `a ${h} docks from beyond engagement range`)
+  }
+})
+
+check('a capital turns visibly more slowly than a fighter, in the tick itself', () => {
+  // The statline is a claim about handling and the tick is where handling happens. Scaling only
+  // the commanded rate — and not the control authority behind it — gives a ship that snaps
+  // instantly into a slow rotation, which reads as a bug rather than as mass, so the behavioural
+  // assertion is the one worth having.
+  const s = generate(world, digest)
+  const spun = (frame) => {
+    let g = { ...newGame(s), ship: refit(newShip(), frame) }
+    for (let f = 0; f < 30; f += 1) {
+      g = tick(g, s, { keys: new Set(['KeyQ']), firing: false, dt: 1 / 60, nowMs: f * 16 })
+    }
+    return Math.abs(g.spin.z)
+  }
+  const light = spun('skiff')
+  const heavy = spun('dominion')
+  assert(light > 0, 'the stock hull did not roll at all')
+  assert(heavy > 0, 'the largest hull cannot roll, which is not the same as turning slowly')
+  assert(heavy < light * 0.25, `a dominion rolls at ${heavy} against a skiff's ${light}`)
+})
+
+check('the heavy tiers do not borrow a hostile silhouette', () => {
+  // In third person you look at yours for a whole session, and the argument gets *stronger* as
+  // the hulls get bigger: a capital is on screen constantly, and in a sector where every other
+  // large silhouette is trying to kill you, the one you own has to be identifiable at a glance.
+  // Drawing a `marauder` at fifteen times a marauder's size reads as a rendering fault rather
+  // than as a bigger ship — scale alone is not a silhouette.
+  const hostile = new Set(ALL_CLASS_IDS.map((id) => CLASSES[id].shape))
+  for (const tier of ['medium', 'capital']) {
+    const own = hullsOf(tier).filter((h) => !hostile.has(h.shape))
+    assert(own.length > 0, `every ${tier} hull borrows a hostile shape`)
+  }
+  for (const h of hullsOf('capital')) {
+    assert(!hostile.has(h.shape), `the ${h.id} is drawn as a hostile ${h.shape}`)
+  }
+})
+
+check('a capital carries endurance, not an answer to everything', () => {
+  // The magazine is a flat count because the count *is* the decision (`hulls.ts`). Letting it
+  // scale with the hull turns the heavy tiers into an ammunition check and quietly deletes that
+  // decision — a dominion is fifteen times a marauder's mass and carries under twice its
+  // warheads, which is the shape the tier is supposed to have.
+  const marauder = HULLS.marauder.tubes
+  const dominion = HULLS.dominion.tubes
+  assert(dominion < marauder * 2, `a dominion carries ${dominion} against a marauder's ${marauder}`)
+  // And it still kills the largest thing out there several times over, or the tier's magazine is
+  // an obstacle rather than a plan.
+  assert(dominion > CLASSES_MOD.PHOTONS_TO_KILL.titan * 4, 'the largest hull cannot see a titan fight through')
+})
+
+check('a hull is bought with money and never with a prerequisite', () => {
+  // No tech tree, at any tier. A player who has scraped together the price of a capital has
+  // already done everything a gate would be asking them to do.
+  for (const a of HULL_IDS) {
+    for (const b of HULL_IDS) {
+      assert(purchasable(a, b) === (a !== b), `${a} → ${b} is gated by something other than price`)
+    }
+  }
+})
+
 check('each player hull has its own silhouette where it matters', () => {
   // In third person you look at yours for the whole session, and a ship indistinguishable from
   // the thing shooting at you is a poor thing to identify with.
   const shapes = new Set(HULL_IDS.map((h) => HULLS[h].shape))
-  assert(shapes.size >= 4, `only ${shapes.size} distinct player silhouettes`)
+  assert(shapes.size >= 7, `only ${shapes.size} distinct player silhouettes`)
   for (const shape of shapes) {
     assert(typeof Meshes[shape] === 'function', `${shape} has no mesh`)
     assert(Meshes[shape]().length > 0, `${shape} builds an empty mesh`)

@@ -753,6 +753,15 @@ export function step(
   space?: Space,
   /** What the player declared themselves to be. Decides which factions engage them at all. */
   role: RoleId = DEFAULT_ROLE,
+  /**
+   * How much ship there is to hit.
+   *
+   * The player's hull radius, which stopped being a constant when the heavy tiers arrived: a
+   * dominion is drawn sixty times a skiff's size, and testing enemy fire against `R_PLAYER` would
+   * have rounds passing visibly through a war hull and missing. Defaulted rather than required so
+   * every existing caller and every test keeps the stock hull's behaviour unchanged.
+   */
+  playerRadius: number = R_PLAYER,
 ): StepResult {
   const craft: Craft[] = []
   const shots: EnemyShot[] = []
@@ -992,7 +1001,7 @@ export function step(
     const life = s.life - dt
     if (s.target === null) {
       // Swept, for the same reason player shots are: at this speed an endpoint test misses.
-      if (nearSegment(playerAt, s.at, at) <= R_PLAYER) {
+      if (nearSegment(playerAt, s.at, at) <= playerRadius) {
         damage += s.damage
         continue
       }

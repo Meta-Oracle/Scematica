@@ -67,6 +67,17 @@ export type Shape =
   | 'dreadnought'
   | 'corvette'
   | 'marauder'
+  /**
+   * The player's own medium and capital silhouettes.
+   *
+   * Deliberately not shared with the hostile war hulls. A hull drawn at five times its own
+   * size reads as a rendering fault rather than as a bigger ship, and a ship indistinguishable
+   * from the thing shooting at you is a poor thing to identify with — an argument that gets
+   * stronger as the hulls get bigger, since a capital is on screen for the whole session.
+   */
+  | 'cruiser'
+  | 'bulwark'
+  | 'sovereign'
   | 'station'
   | 'market'
   | 'dock'

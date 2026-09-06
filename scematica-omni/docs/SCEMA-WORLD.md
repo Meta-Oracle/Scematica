@@ -611,6 +611,83 @@ attached.
 An embedded record gets no more trust than a dropped file: it goes through the same verifier. The
 image is not a signature.
 
+## Arc 13 — Two tiers above the fighters *(done)*
+
+The ladder topped out at the marauder: a hull explicitly described as *built to stand in front of
+a capital*, which is a supporting role in somebody else's fight. Everything large in the sector
+belonged to somebody else. Twelve hulls now sit above it, in two weight classes — six **medium**
+and six **capital** — and the largest of them is a dreadnought you own.
+
+### What separates a tier is agility, and it could not have been speed
+
+The obvious way to make a heavy hull heavy is to slow it down, and it is closed off here by an
+invariant that predates the tier: **every hull outruns every hostile class**, because disengaging
+has to stay possible or the game punishes the exploring it is about. A capital that could be run
+down from behind by an interceptor would make the largest purchase in the game the one that takes
+your options away.
+
+So `agility` is the stat, and it scales the commanded rates **and** the control authority behind
+them together. Scaling only the peak gives a ship that snaps instantly into a slow rotation, which
+reads as a bug rather than as mass — the felt weight of a capital is in how long it takes to
+*start* turning at all. A dominion rolls at an eighth of a skiff's rate and takes most of a second
+to get there.
+
+That lands on the axis the whole combat model already turns on. `classes.ts` states it plainly: a
+dogfight is a contest of turn rate against speed, not of hit points. Which means a fighter that
+stays outside a capital's arc is a genuine problem for the largest ship in the game, and the
+counterplay that beats a hostile leviathan — keep moving laterally, never fly straight at it — is
+the same thing that will be done *to* you the moment you buy one. The tier is legible because it
+is the existing rule pointed the other way.
+
+### Three things the size broke, all of them previously-paid-for failures
+
+**The player's hitbox was a constant.** `R_PLAYER` was defensible while every flyable hull was
+within a factor of four of every other, and a dominion is drawn sixty times a skiff — hit-testing
+it as a skiff gives the largest ship in the game a hitbox smaller than its own bridge, so enemy
+fire passes visibly through the hull and misses. This is the rule the renderer and the hit test
+already share for every *other* craft (*the physics radius is the drawn radius, one table*), and it
+simply had never been applied to the player. `Ship.hullRadius` applies it, with `R_PLAYER` demoted
+to a **floor**: several light hulls measure *under* the old constant, so taking the measurement raw
+would have silently shrunk the starter's hitbox by nearly half and made every existing balance
+figure a claim about a different game.
+
+**Docking was measured from the centre.** A dominion has a radius of 0.135 extents against a
+docking range of 0.075: centre-to-centre, the ship has to swallow the station whole to dock with
+it, and the panel reports `nothing in range` while the structure is visibly inside the hull. That is
+the original refuelling bug arriving from the other direction — a dockable shell the ship cannot
+occupy — so `dockRange(frame)` measures from the hull's surface and the pinned invariant
+generalises to *every* hull rather than the stock one.
+
+**The chase camera was a shared `7.5 ×`.** Right for a dart, absurd for a ship a tenth of a sector
+across: a dominion would be framed from two-thirds of a sector behind, a speck in the middle of a
+volume it is meant to dominate. `chaseBack`/`chaseUp` are per hull and heavier hulls sit
+proportionally *closer*, so a capital's own bow fills the lower third of the frame. The consequence
+is deliberate and the test says so: the first capital is framed nearer than the top medium, so
+across a tier boundary the lens moves *in*. Monotonicity is therefore pinned inside a tier, with
+the framing trend pinned between tiers — one blanket rule would have quietly forbidden the effect.
+
+### The rules the twelve hulls had to obey
+
+- **You never become the biggest thing in the sector.** The largest flyable hull is *exactly* a
+  hostile dreadnought across — an equality, not an approximation, because "about the same size" is
+  the kind of claim that drifts on the next tuning pass — leaving the leviathan and the titan
+  larger than anything the shipyard sells. A game whose top purchase makes you the apex object has
+  nothing left to point at.
+- **A capital carries endurance, not an answer to everything.** The photon magazine is a flat count
+  because the count *is* the decision, and a dominion carries under twice a marauder's warheads for
+  fifteen times the mass. Letting the magazine scale with the hull turns the tier into an ammunition
+  check and deletes the decision the count exists to create.
+- **The heavy tiers get their own silhouettes** — `cruiser`, `bulwark`, `sovereign`. Drawing a
+  `marauder` at fifteen times a marauder's size reads as a rendering fault rather than as a bigger
+  ship: scale alone is not a silhouette. The argument for a player hull looking like nothing that
+  shoots at you gets *stronger* as the hulls get bigger, because a capital is on screen constantly.
+  `bulwark` is ribbed across the beam rather than along the length precisely so it does not read as
+  a hostile war hull at distance — a wall coming toward you rather than a spine receding.
+- **No tech tree, at any tier.** A player who has scraped together the price of a capital has
+  already done everything a prerequisite would be asking them to do. The cost is the gate.
+- **Nothing here reads the record.** A hull is bought with SCEMA earned from acts. A world with more
+  blind spots does not sell you a cheaper dreadnought.
+
 ### The economy rule, sharpened
 
 Arc 4 said "no economy" and a test enforced it. The rule was aimed at a real failure and stated

@@ -1116,6 +1116,28 @@ Rules the 298 checks carry, each paid for:
   hiding works only for the other side; impact cost is closing speed at the point of contact, so
   a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
   collision system becomes flypaper.
+- **Two tiers above the fighters, and what separates them is `agility`, never top speed**
+  (`hulls.ts`). Six medium and six capital hulls; the largest flyable hull is *exactly* a hostile
+  dreadnought across, so the leviathan and the titan stay bigger than anything the shipyard sells.
+  Speed could not carry the tier: `scale.ts` and `classes.ts` both pin that **every hull outruns
+  every hostile**, because disengaging has to stay possible or the game punishes the exploring it
+  is about. So mass is paid in attitude — `agility` scales the commanded rates **and** the control
+  authority together, since scaling only the peak gives a ship that snaps instantly into a slow
+  rotation, which reads as a bug rather than as mass. It lands on the axis the dogfight already
+  turns on, so the manoeuvre that beats a leviathan is the one that will be used on you. Three
+  constants broke on contact with the size, each a failure this repo had already paid for
+  elsewhere: the player's hitbox was a **constant** (`R_PLAYER`) while every other craft obeys
+  "the physics radius is the drawn radius" — now `hullRadius`, with `R_PLAYER` demoted to a floor,
+  because several light hulls measure *under* it and taking the measurement raw would have shrunk
+  the starter's hitbox by half; docking was measured **centre to centre**, so a capital had to
+  swallow a station to dock with it (the original refuelling bug from the other direction) — now
+  `dockRange(frame)`, measured from the hull; and the chase camera was a shared `7.5 ×`, which
+  framed a dominion from two-thirds of a sector back. Camera distance is per hull and heavier
+  hulls sit proportionally **closer**, so across a tier boundary the lens moves *in* — pinned as
+  monotonicity inside a tier plus a framing trend between them, because one blanket rule would
+  have forbidden the effect. A capital's magazine grows **slowly** (under twice a marauder's for
+  fifteen times the mass) or the tier becomes an ammunition check, and the heavy tiers carry their
+  own silhouettes (`cruiser`/`bulwark`/`sovereign`) because scale alone is not a silhouette.
 - **A PNG written by `scema nft <record>` carries the record** in an `iTXt` chunk, so the image
   flies in Scema-World and verifies in `/omni` with no vault and no network. `iTXt` not `tEXt`
   (Latin-1 would corrupt a label lifted from an observed page), the **raw text** not a

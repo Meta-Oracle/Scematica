@@ -24,7 +24,7 @@ import { SPEED_SHIP, SPEED_SHIP_PER_LEVEL } from './scale.ts'
 import { SHIELD_DELAY_MS } from './classes.ts'
 import { HULLS, type HullId } from './hulls.ts'
 import { HITBOX } from './hitbox.ts'
-import { EXTENT } from './scale.ts'
+import { EXTENT, R_PLAYER } from './scale.ts'
 
 export type Component =
   | 'engine' | 'hull' | 'sensors' | 'laser' | 'missiles' | 'tanks' | 'shields' | 'drive'
@@ -285,6 +285,50 @@ export function refit(ship: Ship, frame: HullId): Ship {
  */
 export function noseOffset(frame: HullId): number {
   return Math.round(EXTENT * HULLS[frame].size * HITBOX[HULLS[frame].shape].ahead * 1.15)
+}
+
+/**
+ * The hull's collision radius: how much ship there is to hit, dock with, and fly into things.
+ *
+ * **This used to be a constant** (`R_PLAYER`), which was defensible while every flyable hull was
+ * within a factor of four of every other and is not defensible now. A dominion is drawn sixty
+ * times a skiff's size; hit-testing it as a skiff would give the largest ship in the game a
+ * hitbox smaller than its own bridge, so enemy fire would pass visibly through the hull and miss.
+ * The rule the renderer and the hit test already share for every *other* craft — the physics
+ * radius **is** the drawn radius, one table — applies to the player too, and this is where it
+ * gets applied.
+ *
+ * It is the hull's cross-section rather than its length, so it matches what `capsuleOf` gives an
+ * enemy of the same silhouette. Taking the nose extent instead would make a long ship a sphere
+ * the size of its length, which is the exact error the capsule hitboxes exist to correct.
+ *
+ * The consequences are all intended and all the right way round: a capital is much easier to hit,
+ * touches nodes it used to pass beside, and — see `dockRange` in `game.ts` — docks from further
+ * out, because docking is a question about the hull's surface and never about its centre.
+ */
+export function hullRadius(frame: HullId): number {
+  // Floored at `R_PLAYER`, which is what the constant now *means*: the smallest hitbox the game
+  // is willing to give the player, rather than the size of every ship. The light hulls are drawn
+  // between two and eight thousandths of a sector across and several of them measure *under* the
+  // old constant — a skiff's true cross-section is 0.0019 against 0.0035 — so taking the
+  // measurement raw would silently shrink the starter's hitbox by nearly half and make every
+  // existing balance figure a claim about a different game. Below this floor the hull is a few
+  // pixels anyway, and a hit test tighter than a player can see reads as fire passing through
+  // things. Above it the measurement wins, which is the entire point: a marauder is already
+  // larger than the floor, and a dominion is seventy times it.
+  return Math.max(R_PLAYER, Math.round(EXTENT * HULLS[frame].size * HITBOX[HULLS[frame].shape].cross))
+}
+
+/**
+ * The multiplier this hull applies to every attitude rate and to the control authority behind it.
+ *
+ * Read by `game.ts::tick` and nowhere else, but it lives here beside the other derived statlines
+ * so the shipyard can quote it: what actually separates the tiers is the time between deciding to
+ * point somewhere and pointing there, and a stat a player cannot see before buying is a stat that
+ * arrives as a surprise after the largest purchase in the game.
+ */
+export function agilityOf(frame: HullId): number {
+  return HULLS[frame].agility
 }
 
 // ── services ──────────────────────────────────────────────────────────────────

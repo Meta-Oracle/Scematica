@@ -31,7 +31,7 @@ import { photonMagazine } from '@/lib/scemaworld/weapons'
 import * as Quests from '@/lib/scemaworld/quests'
 import { ROLES, ROLE_IDS, roleOf, type RoleId } from '@/lib/scemaworld/roles'
 import { Withdraw } from './Withdraw'
-import { HULLS, HULL_IDS, type HullId } from '@/lib/scemaworld/hulls'
+import { HULLS, HULL_IDS, HULL_TIERS, TIER_NOTE, hullsOf, type HullId } from '@/lib/scemaworld/hulls'
 import { SALVAGE_PER_SCEMA, SCEMA_NOTE, toScema } from '@/lib/scemaworld/economy'
 import { DEFAULT_ZOOM } from '@/lib/scemaworld/navmap'
 import { NavMap } from './NavMap'
@@ -314,9 +314,15 @@ export function ScemaWorldTerminal() {
         // is a pure function of it. Two separately-animated transforms would give the game two
         // ideas about where the player is, and every one of those questions would then have to
         // pick one.
+        // The chase distance is **per hull**, not a shared `7.5 ×` constant. That constant is
+        // right for a dart and absurd for a ship a tenth of a sector across: a dominion would be
+        // framed from two-thirds of a sector behind, with the ship a speck in the middle of a
+        // volume it is meant to dominate. Heavier hulls sit proportionally closer, so a capital's
+        // own bow fills the lower third of the frame — which is the whole difference between
+        // flying a capital and flying a fighter that has been scaled up.
         const hull = SHIP_HULLS[live.ship.frame]
-        const back = EXTENT * hull.size * 7.5
-        const eye = chase(live.camera, back, EXTENT * hull.size * 2.2)
+        const back = EXTENT * hull.size * hull.chaseBack
+        const eye = chase(live.camera, back, EXTENT * hull.size * hull.chaseUp)
         r.draw(mul(proj, view(eye)), mul(proj, viewRotation(eye)), w, h)
       }
 
@@ -1018,10 +1024,25 @@ export function ScemaWorldTerminal() {
                   derelicts — press 4 to route to one.
                 </div>
               )}
+              {/*
+                Grouped by tier, with the trade stated once per group.
+                Seventeen hulls in one flat grid is a wall, and the thing a player actually has to
+                decide is which *weight* of ship they want — the numbers inside a tier are a
+                preference, the tier itself is a commitment. `agility` is quoted beside the usual
+                multipliers because it is what separates the tiers, and a stat nobody can see
+                before buying is one that arrives as a surprise after the largest purchase in the
+                game.
+              */}
               {shop === 'ships' && (
-                <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
-                  {HULL_IDS.map((h) => {
-                    const spec = HULLS[h]
+                <div className="space-y-2">
+                  {HULL_TIERS.map((tier) => (
+                    <div key={tier}>
+                      <div className="mb-1 text-omni-dim">
+                        <span className="text-omni-text">{tier.toUpperCase()}</span> — {TIER_NOTE[tier]}
+                      </div>
+                      <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                  {hullsOf(tier).map((spec) => {
+                    const h = spec.id
                     const owned = hud.ship.frame === h
                     const can =
                       !owned &&
@@ -1046,7 +1067,8 @@ export function ScemaWorldTerminal() {
                         </div>
                         <div className="text-omni-dim">{spec.note}</div>
                         <div className="text-omni-dim">
-                          hull ×{spec.armour} · shield ×{spec.shields} · speed ×{spec.speed}
+                          hull ×{spec.armour} · shield ×{spec.shields} · speed ×{spec.speed} ·
+                          {' '}turn ×{spec.agility}
                         </div>
                         <div className={can ? 'text-omni-valid' : 'text-omni-dim'}>
                           {owned
@@ -1060,6 +1082,9 @@ export function ScemaWorldTerminal() {
                       </button>
                     )
                   })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
               {/*

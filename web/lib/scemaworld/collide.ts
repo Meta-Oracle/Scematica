@@ -309,10 +309,113 @@ export const SEPARATION_RATE = 0.25
  * away still interpenetrates while it turns, and two wireframes occupying one point is the exact
  * thing that reads as cheap.
  *
- * O(n²) within the swarm, which is seventy craft: five thousand tests, once a frame, on numbers
- * already in cache. A grid here would be machinery guarding nothing.
+ * ## It was O(n²), and the comment saying that was fine has stopped being true
+ *
+ * The old note read: *"O(n²) within the swarm, which is seventy craft: five thousand tests, once a
+ * frame, on numbers already in cache. A grid here would be machinery guarding nothing."* Every
+ * word of that was correct when it was written and the premise moved out from under it. The sector
+ * now carries three standing firefight clusters (`clusters.ts`) on top of the scattered roster —
+ * **230 craft**, so twenty-six thousand pair tests a frame — and the whole tick was measured at
+ * 6.78ms against a 16.7ms budget and a 4ms assertion. It is the exact failure the comment warned
+ * about in its own last sentence, arriving from the direction it was not watching.
+ *
+ * ## Sweep on one axis, with the big hulls handled separately
+ *
+ * A uniform grid is the obvious answer and it is the wrong one here, because the radii span four
+ * orders of magnitude: a cell sized for a titan holds the entire sector's fighters, and a cell
+ * sized for an interceptor means a titan touches thousands of them. So:
+ *
+ * - **Big movers** (a handful of capitals) are tested against everything. Eleven times 230 is
+ *   nothing, and it sidesteps the whole problem of a huge object in a fine index.
+ * - **Everything else** is swept along `x`. Sorted once, and for each mover the scan stops at the
+ *   first neighbour further away in `x` than the largest separation a small pair can want — which
+ *   at fighter radii is a rounding error against the sector, so almost nothing survives.
+ *
+ * ## Determinism is preserved exactly, not approximately
+ *
+ * Floating-point addition is not associative, so accumulating the same pushes in a different order
+ * gives different bits. The sector's *generation* is pure of this file, but a fight that diverges
+ * between two machines because an optimisation reordered a sum is not a trade worth making
+ * silently. So the two passes only decide **which pairs to test**; the surviving pairs are then
+ * sorted back into the original `(i, j)` order and applied in exactly the sequence the nested
+ * loops would have applied them. The result is bit-identical to the O(n²) version, and
+ * `check:scemaworld` pins that against a brute-force reference rather than trusting this note.
  */
 export function separate(movers: Mover[]): Vec3[] {
+  const n = movers.length
+  const push: Vec3[] = movers.map(() => ({ x: 0, y: 0, z: 0 }))
+  if (n < 2) return push
+
+  // The split point. Derived from the movers actually present rather than from a constant: a
+  // "big" hull is one far larger than the median, and hard-coding a radius here would silently
+  // stop splitting anything the first time the class table moved.
+  let maxR = 0
+  for (const m of movers) if (m.radius > maxR) maxR = m.radius
+  const bigAt = maxR / 8
+
+  const small: number[] = []
+  const big: number[] = []
+  for (let i = 0; i < n; i += 1) (movers[i].radius >= bigAt ? big : small).push(i)
+
+  const pairs: [number, number][] = []
+  const seen = new Set<number>()
+  const add = (i: number, j: number) => {
+    const a = i < j ? i : j
+    const b = i < j ? j : i
+    // Big-against-big is reachable from both passes; the key keeps it one pair. `n` fits in the
+    // low half of a double comfortably at these sizes.
+    const key = a * n + b
+    if (seen.has(key)) return
+    seen.add(key)
+    pairs.push([a, b])
+  }
+
+  for (const i of big) for (let j = 0; j < n; j += 1) if (j !== i) add(i, j)
+
+  // The sweep. `smallMax` bounds how far apart two small movers can be and still touch, so the
+  // inner scan can stop rather than run to the end of the array.
+  let smallMax = 0
+  for (const i of small) if (movers[i].radius > smallMax) smallMax = movers[i].radius
+  const window = smallMax * 2 * SEPARATION
+  const order = small.slice().sort((a, b) => movers[a].at.x - movers[b].at.x)
+  for (let a = 0; a < order.length; a += 1) {
+    const i = order[a]
+    for (let b = a + 1; b < order.length; b += 1) {
+      const j = order[b]
+      if (movers[j].at.x - movers[i].at.x > window) break
+      add(i, j)
+    }
+  }
+
+  // Back into the order the nested loops would have used, so the arithmetic is identical.
+  pairs.sort((p, q) => (p[0] - q[0]) || (p[1] - q[1]))
+
+  for (const [i, j] of pairs) {
+    const a = movers[i]
+    const b = movers[j]
+    const d = sub(b.at, a.at)
+    const want = (a.radius + b.radius) * SEPARATION
+    const dist = len(d)
+    if (dist >= want) continue
+    // Two craft at exactly the same point have no direction to separate along. Any axis will
+    // do; what matters is that they pick one and that the choice is deterministic, because two
+    // players holding the same record must see the same fight.
+    const dir = dist < 1e-6 ? { x: 1, y: 0, z: 0 } : norm(d)
+    const half = ((want - dist) / 2) * SEPARATION_RATE
+    push[i] = { x: push[i].x - dir.x * half, y: push[i].y - dir.y * half, z: push[i].z - dir.z * half }
+    push[j] = { x: push[j].x + dir.x * half, y: push[j].y + dir.y * half, z: push[j].z + dir.z * half }
+  }
+  return push
+}
+
+/**
+ * The brute-force separation, kept only so the fast path can be checked against it.
+ *
+ * Exported rather than duplicated in the test file: a reference implementation that lives beside
+ * the thing it verifies cannot drift away from the contract it is asserting, and one copied into a
+ * check script eventually does.
+ */
+export function separateSlow(movers: Mover[]): Vec3[] {
   const push: Vec3[] = movers.map(() => ({ x: 0, y: 0, z: 0 }))
   for (let i = 0; i < movers.length; i += 1) {
     for (let j = i + 1; j < movers.length; j += 1) {
@@ -322,9 +425,6 @@ export function separate(movers: Mover[]): Vec3[] {
       const want = (a.radius + b.radius) * SEPARATION
       const dist = len(d)
       if (dist >= want) continue
-      // Two craft at exactly the same point have no direction to separate along. Any axis will
-      // do; what matters is that they pick one and that the choice is deterministic, because two
-      // players holding the same record must see the same fight.
       const dir = dist < 1e-6 ? { x: 1, y: 0, z: 0 } : norm(d)
       const half = ((want - dist) / 2) * SEPARATION_RATE
       push[i] = { x: push[i].x - dir.x * half, y: push[i].y - dir.y * half, z: push[i].z - dir.z * half }

@@ -50,6 +50,7 @@ interface TreasuryReading {
   slot: number
   host: string
   configured: boolean
+  signer?: { reason: string; detail: string } | null
 }
 
 type Treasury =
@@ -260,8 +261,18 @@ export function Withdraw({
       {/* Why the button is off, always said. A disabled control with no reason is a dead key. */}
       {!configured && treasury.state !== 'unread' && (
         <div className="text-omni-warn">
-          This deployment can price a withdrawal but has no treasury signer, so it cannot pay one.
-          The figures above are real; the button is not available here.
+          This deployment can price a withdrawal but cannot pay one. The figures above are real;
+          the button is not available here.
+          {/*
+            And **which** of the four ways it is unconfigured, because "no signer" is true and
+            useless: nothing set, a key file this host cannot read, a secret that does not parse,
+            and a key that is somebody else's wallet send an operator to four different places. A
+            deployment inheriting a developer's `SCEMAWORLD_TREASURY_KEYFILE` is the common one and
+            it used to be indistinguishable from having configured nothing at all.
+          */}
+          {treasury.state === 'ok' && treasury.reading.signer && (
+            <div className="mt-1 text-omni-dim">{treasury.reading.signer.detail}</div>
+          )}
         </div>
       )}
       {wallet !== '' && !looksLikeAddress(wallet) && (

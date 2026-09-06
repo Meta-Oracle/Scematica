@@ -115,6 +115,118 @@ export const treasuryOwner = () => (process.env.SCEMAWORLD_TREASURY?.trim() || T
  * path is preferred over either, so the secret can live in a file with its own permissions rather
  * than in an environment block that gets printed by half the tools that read it.
  */
+/**
+ * Why this deployment has no signer, when it has none.
+ *
+ * **A refusal must say which refusal it is**, and this was the one place in the money path that did
+ * not. `signer()` collapsed four genuinely different states into `null`, and the panel rendered all
+ * four as one sentence — *this deployment has no treasury signer*. That sentence is true and it is
+ * useless: "you configured nothing", "the key file you named is not on this host", "the secret is
+ * there and does not parse" and "the key parses and is somebody else's wallet" send an operator to
+ * four different places, and only one of them is a mistake in the configuration they are looking at.
+ *
+ * It cost a real diagnosis. A working local checkout and a deployment that could not pay differed
+ * only in that `SCEMAWORLD_TREASURY_KEYFILE` named a path that exists on one machine — which the
+ * page had no way to say, so the reported symptom was "I cannot withdraw" against a treasury that
+ * was demonstrably funded and a key that was demonstrably correct.
+ *
+ * `key_unreadable` deliberately does **not** carry the path. It is served to anybody who opens the
+ * page, and a filesystem path is an operator's business; naming the *variable* is enough to fix it
+ * and tells a stranger nothing.
+ */
+export type SignerStatus =
+  /** A signer is configured, parses, and is the treasury. The only state that can pay. */
+  | { ok: true; pubkey: string }
+  /** Neither `SCEMAWORLD_TREASURY_KEYFILE` nor `SCEMAWORLD_TREASURY_SECRET` is set. */
+  | { ok: false; reason: 'absent'; detail: string }
+  /** A key file is named and could not be read *on this host*. The deployment case. */
+  | { ok: false; reason: 'key_unreadable'; detail: string }
+  /** Something is configured and is not a keypair. */
+  | { ok: false; reason: 'key_malformed'; detail: string }
+  /**
+   * It parses, and it is not the treasury.
+   *
+   * `settle` already refuses this as `signer_mismatch`, but only at the moment somebody presses the
+   * button — so a deployment configured with the wrong wallet looked completely healthy until the
+   * first claim failed. Checking it here moves the discovery from a player's failed withdrawal to
+   * the panel.
+   */
+  | { ok: false; reason: 'signer_mismatch'; detail: string }
+
+/** Read the configured signer, or say precisely why there is not one. */
+export async function signerStatus(): Promise<SignerStatus> {
+  const file = process.env.SCEMAWORLD_TREASURY_KEYFILE?.trim()
+  let raw = process.env.SCEMAWORLD_TREASURY_SECRET?.trim() ?? ''
+  let from = 'SCEMAWORLD_TREASURY_SECRET'
+
+  if (file) {
+    from = 'SCEMAWORLD_TREASURY_KEYFILE'
+    try {
+      raw = (await readFile(file, 'utf8')).trim()
+    } catch {
+      return {
+        ok: false,
+        reason: 'key_unreadable',
+        detail:
+          'SCEMAWORLD_TREASURY_KEYFILE names a key file this host cannot read. A file path is ' +
+          'machine-local: set SCEMAWORLD_TREASURY_SECRET instead on a deployment.',
+      }
+    }
+  }
+  if (!raw) {
+    return {
+      ok: false,
+      reason: 'absent',
+      detail:
+        'no signer is configured — set SCEMAWORLD_TREASURY_SECRET (a base58 key or a JSON byte ' +
+        'array) or SCEMAWORLD_TREASURY_KEYFILE (a path, local hosts only).',
+    }
+  }
+
+  let key: Keypair
+  try {
+    const bytes = raw.startsWith('[')
+      ? Uint8Array.from(JSON.parse(raw) as number[])
+      : bs58.decode(raw)
+    key = Keypair.fromSecretKey(bytes)
+  } catch {
+    return {
+      ok: false,
+      reason: 'key_malformed',
+      detail: `${from} is set and is not a keypair — expected base58 or a JSON array of 64 bytes.`,
+    }
+  }
+
+  const want = treasuryOwner()
+  if (key.publicKey.toBase58() !== want) {
+    return {
+      ok: false,
+      reason: 'signer_mismatch',
+      detail: `the configured signer is ${key.publicKey.toBase58()}, not the treasury ${want}.`,
+    }
+  }
+  return { ok: true, pubkey: key.publicKey.toBase58() }
+}
+
+/**
+ * The treasury's keypair, or `null` when this deployment has none.
+ *
+ * `null` is a first-class answer and the default one. A build with no secret is a build that can
+ * read the treasury, quote a claim exactly, and refuse to settle it — which is a genuinely useful
+ * state and the one every checkout is in. It must never be papered over.
+ *
+ * Two encodings accepted, because both are what people actually have: base58 (what a wallet
+ * exports) and a JSON byte array (what `solana-keygen` writes). A `SCEMAWORLD_TREASURY_KEYFILE`
+ * path is preferred over either, so the secret can live in a file with its own permissions rather
+ * than in an environment block that gets printed by half the tools that read it — but a path is
+ * **machine-local**, and a deployment that inherits one from a developer's `.env.local` has a
+ * signer that exists on exactly one computer. That is the failure `signerStatus` exists to name.
+ *
+ * Deliberately keeps returning a bare `Keypair | null`: every caller here wants the key or nothing,
+ * and threading a status through the settle path would put a diagnostic in the way of the money.
+ * It mismatches rather than reimplements — `settle` still checks the pubkey against the treasury,
+ * because a check that only runs when somebody is looking at a panel is not a check.
+ */
 export async function signer(): Promise<Keypair | null> {
   const file = process.env.SCEMAWORLD_TREASURY_KEYFILE?.trim()
   let raw = process.env.SCEMAWORLD_TREASURY_SECRET?.trim() ?? ''
@@ -122,9 +234,6 @@ export async function signer(): Promise<Keypair | null> {
     try {
       raw = (await readFile(file, 'utf8')).trim()
     } catch {
-      // Deliberately not fatal and deliberately not detailed: a missing key file leaves the
-      // deployment in the unconfigured state, which is already handled and already reported. The
-      // path is not echoed anywhere a player can see.
       return null
     }
   }
@@ -165,6 +274,13 @@ export interface TreasuryReading {
   authenticated: boolean
   /** False when this deployment can quote a claim and cannot settle one. */
   configured: boolean
+  /**
+   * Why it cannot, when it cannot. `null` when it can.
+   *
+   * Beside `configured` rather than replacing it: the boolean is what the button reads and the
+   * reason is what a person reads, and collapsing them would make every caller do the narrowing.
+   */
+  signer: Exclude<SignerStatus, { ok: true }> | null
 }
 
 export type TreasuryFailure = 'mint_unreadable' | 'not_a_mint' | 'account_unreadable' | 'rpc_failed'
@@ -185,7 +301,8 @@ export type TreasuryResult =
  */
 export async function readTreasury(): Promise<TreasuryResult> {
   const { conn, host, authenticated } = connection()
-  const configured = (await signer()) !== null
+  const status = await signerStatus()
+  const configured = status.ok
   let mintKey: PublicKey
   let ownerKey: PublicKey
   try {
@@ -274,6 +391,7 @@ export async function readTreasury(): Promise<TreasuryResult> {
         host,
         authenticated,
         configured,
+        signer: status.ok ? null : status,
       },
     }
   } catch (e) {

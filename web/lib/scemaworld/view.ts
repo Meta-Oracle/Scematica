@@ -13,7 +13,7 @@
 
 import { EXTENT, type Contact, type Node, type Space, type Vec3 } from './generate.ts'
 import { COURSE_CLEAR, COURSE_DASHES, FAR_PLANE } from './scale.ts'
-import { streak } from './arrivals.ts'
+import { jumpField, streak } from './arrivals.ts'
 import {
   R_CONTACT, R_CONTACT_SPAN, R_DEPOT, R_DERELICT, R_DOCK, R_LASER, R_MARKER, R_MARKET,
   R_CITADEL, R_ORIGIN, R_PHANTOM, R_PHOTON, R_RIFT, R_STATION,
@@ -48,6 +48,16 @@ export type Role =
   | 'ally-shot'
   | 'warp-hostile'
   | 'warp-ally'
+  | 'jump-field'
+  /**
+   * Sparks and detonations (`fx.ts`). Three roles, because the three events they mark are three
+   * different facts and a player has to tell them apart out of the corner of an eye — a shield
+   * soaking a round and a hull opening must never look the same, which is the same rule the hit
+   * flash already carries.
+   */
+  | 'spark-shield'
+  | 'spark-hull'
+  | 'detonation'
   | 'raider'
   | 'waypoint'
   | 'course'
@@ -114,6 +124,21 @@ export const PALETTE: Record<Role, readonly [number, number, number]> = {
   // arriving" are different facts and only one of them means turn around.
   'warp-hostile': [1.0, 0.75, 0.62],
   'warp-ally': [1.0, 0.98, 0.72],
+  // The player's own drive spinning up. **Violet, and in neither faction family**, which is the
+  // whole point of giving it a role of its own: every other bright thing in the sector is a claim
+  // about somebody else — an arrival, a round, a hull — and this one is a claim about *you*. A
+  // pilot inside a closing cage has to be able to tell at a glance that it is theirs.
+  //
+  // It is also the only role here that is not orange, red, blue or yellow, so it cannot be
+  // confused with a faction at any distance or in any peripheral glimpse.
+  'jump-field': [0.72, 0.62, 1.0],
+  // A shield soaking a hit: cold, and the dimmest of the three. It is the *absence* of damage.
+  'spark-shield': [0.55, 0.8, 1.0],
+  // Hull. Warm, and unmistakably not the shield colour — this is the one that means progress.
+  'spark-hull': [1.0, 0.72, 0.35],
+  // A detonation. Pushed to white, because on an additive pass overlapping shards sum and the
+  // core of a burst should clip rather than be drawn as a core.
+  detonation: [1.0, 0.95, 0.8],
   // A raider is not from the record. Orange rather than red keeps that visible from the
   // cockpit: red things are signals somebody reported, orange things are just out here.
   raider: [1.0, 0.55, 0.2],
@@ -420,6 +445,22 @@ export interface Dynamic {
    * state for it.
    */
   arrivals?: { at: Vec3; dir: Vec3; faction: string; progress: number }[]
+  /**
+   * The player's own drive spinning up: where the ship is, where it points, and how far along.
+   *
+   * `null` whenever the drive is not charging, which is the overwhelming majority of frames — an
+   * empty array would work and would put an allocation and a loop in every frame for a thing that
+   * happens twice a session.
+   */
+  jump?: { at: Vec3; facing: Vec3; progress: number } | null
+  /**
+   * Sparks and detonations, already reduced to shards by `fx.ts`.
+   *
+   * The renderer receives *segments*, not particle state: a burst is a pure function of its seed
+   * and its age, so nothing here integrates anything and the tick stores one small object per
+   * explosion rather than thirty.
+   */
+  bursts?: { from: Vec3; to: Vec3; alpha: number; kind: 'shield' | 'hull' | 'detonation' }[]
   /** Contact ids destroyed, so they stop being drawn. */
   destroyed: string[]
   /**
@@ -614,6 +655,29 @@ export function drawList(space: Space, dyn: Dynamic = NOTHING): DrawList {
       solid: true,
       label: a.faction === 'raider' ? 'hyperspace entry' : 'patrol arriving',
       facing: a.dir,
+    })
+  }
+
+  // The player's own jump field. Drawn last of the warp effects so it sits over anything else
+  // arriving, which is correct: if a wing is dropping in while your drive is spinning up, the
+  // thing you need to see is your own clock.
+  //
+  // It carries no body of its own — only struts. A core would be drawn *inside the ship*, where it
+  // is invisible in third person and blinds you in first.
+  if (dyn.jump) {
+    for (const strand of jumpField(dyn.jump.at, dyn.jump.facing, dyn.jump.progress)) {
+      warp.push({ from: strand.from, to: strand.to, role: 'jump-field', alpha: strand.alpha })
+    }
+  }
+
+  // Sparks and detonations. They ride the same additive pass the bolts and the warp streaks ride,
+  // which is what makes a dense burst clip to white at its core without anybody computing a core.
+  for (const sh of dyn.bursts ?? []) {
+    warp.push({
+      from: sh.from,
+      to: sh.to,
+      role: sh.kind === 'shield' ? 'spark-shield' : sh.kind === 'hull' ? 'spark-hull' : 'detonation',
+      alpha: sh.alpha,
     })
   }
 

@@ -1116,6 +1116,57 @@ Rules the 298 checks carry, each paid for:
   hiding works only for the other side; impact cost is closing speed at the point of contact, so
   a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
   collision system becomes flypaper.
+- **The laser could not reach a capital at all, and that was a constant rather than a balance
+  problem.** `LIFE_LASER` gave a reach of 0.20 extents against a titan's 0.40 standoff, so every
+  bolt fired at one evaporated less than halfway there — the third time this shape has been found
+  here (`shotLifeOf` documents the enemy-fire version). A bolt now lives long enough to cross the
+  sector, derived from `SECTOR_REACH`; what limits the weapon is **flight time**, which is
+  self-enforcing, not a range cap that had been doing the opposite of its stated job. Hostile
+  durability is ×3 and `PHOTON.damage` is ×3 **together**, so `PHOTONS_TO_KILL` is byte-for-byte
+  unchanged — the ladder is a count a pilot holds in their head, and tripling one without the other
+  makes a titan a 24-warhead wall. Per-shot enemy damage did **not** move: durability is already a
+  lethality multiplier (three times as long in the envelope), and stacking both killed a stock ship
+  before its first kill in a scenario that had always passed.
+- **Craft collide as the capsule the renderer draws, not a sphere** (`game.ts`, `hitbox.ts`). A
+  sphere of the class radius misses a dreadnought's prow and stern and claims empty space beside it,
+  and the earlier "fix" — a solid core at 22% of the drawn radius — made the solid part *narrower
+  than the hull*, so you flew through everything visible. Three defects fell out of doing it right:
+  contact must be **sticky** (a long hull plus a perpendicular push re-collides every other frame —
+  133 charges for one impact), the loop's `break` on a charge meant every craft after it was never
+  recorded as touching (202 charges cycling through four overlapping capitals), and the test itself
+  counted **frames showing a notice** rather than notices raised.
+- **Capitals are replaced, slowly** (`respawn.ts`). It was *never*, which left the sector out of the
+  only fights worth crossing it for on both sides. One per 150s across both factions, of the class
+  actually missing, placed far outside sensor range — a titan's awareness reaches 0.60 of the
+  sector, so warping one in at arrival range means it is hunting you before its entry effect ends.
+- **Three firefight clusters** (`clusters.ts`): 29 craft of both sides in one place, already
+  fighting — a destination that is not a station, which a scattered roster cannot produce.
+  Reinforcement is **held while the player is inside one**, or the battle is unaffectable. Anything
+  counting "the roster" must exclude cluster craft: three clusters carry exactly the patrol's roster
+  strength of wardens, so the capital top-up reported them complete and the scattered ones were
+  never replaced. `collide.ts::separate` was O(n²) with a comment saying a grid would guard nothing
+  — true at 70 craft, false at 230 — and is now a sweep whose passes only choose which pairs to
+  test, with survivors sorted back into the original order because float addition is not associative.
+- **The player's jump is visible** (`arrivals.ts::jumpField`): a cage of struts assembling around
+  the ship, violet and in neither faction family. Every other craft's entry has been drawn since
+  `streak` was written; the one jump the player performs was the only invisible one.
+- **Effects are derived, not stored** (`fx.ts`): a burst is a pure function of a seed and an age, so
+  it costs one object rather than thirty particles and two machines see the same explosion. Shards
+  are segments on the additive pass. Shield / hull / detonation differ in **shape**, not colour. A
+  photon always detonates, and `hits` carries the weapon kind rather than letting anybody infer it
+  from a damage threshold that just tripled. `dialogue.ts` gives each craft a *voice* — one line per
+  `(seed, id, beat)` — capitals speak for a crew, unarmed traffic makes no threats, and chatter sits
+  below the notice so a raider's last words cannot overwrite HULL BREACHED. `audio.ts` is
+  synthesised (no assets, nothing to fetch), suspended until a real gesture, hard voice cap, and
+  **distance gates before the cap** so a distant firefight cannot decide which sounds you hear.
+- **`lib/scemaworld/github.ts` is the fifth producer on `scema.world/1`** — a GitHub repository
+  perceived in the browser, with no server of ours in the path. Rules 1 and 4 have teeth here:
+  GitHub truncates a tree without saying how much and the truncated array still looks plausible, so
+  `extent.total` goes `null`; rate limits and private repos are blind spots naming the mechanism.
+  **It produces an observation, not a decision record**, and the page says so — the HUD shows
+  `OBSERVED` as a third state beside VERIFIED and INVALID, because printing VERIFIED would let an
+  unsealed thing borrow a sealed one's authority and INVALID would accuse somebody of an edit
+  nobody made.
 - **Two tiers above the fighters, and what separates them is `agility`, never top speed**
   (`hulls.ts`). Six medium and six capital hulls; the largest flyable hull is *exactly* a hostile
   dreadnought across, so the leviathan and the titan stay bigger than anything the shipyard sells.

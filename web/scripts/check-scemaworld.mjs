@@ -33,7 +33,7 @@ import {
 } from '../lib/scemaworld/ship.ts'
 import * as Enemy from '../lib/scemaworld/enemy.ts'
 import {
-  collidesWith, registers, permeableNote, passageNote, sweep, resolve, separate, steerAround,
+  collidesWith, registers, permeableNote, passageNote, sweep, resolve, separate, separateSlow, steerAround,
   passedThrough, crossed, closestOnSegment, SEPARATION,
 } from '../lib/scemaworld/collide.ts'
 import { gridFor, NOTICE_MS, sensors } from '../lib/scemaworld/game.ts'
@@ -66,7 +66,7 @@ import {
 import { course as courseOf } from '../lib/scemaworld/view.ts'
 import { refit, noseOffset, hullRadius } from '../lib/scemaworld/ship.ts'
 import {
-  HITBOX, capsuleOf, strikes, segmentDistance,
+  HITBOX, capsuleOf, nearestOnAxis, strikes, segmentDistance,
 } from '../lib/scemaworld/hitbox.ts'
 import { nodeRadius, roleOfNode } from '../lib/scemaworld/view.ts'
 import {
@@ -98,6 +98,11 @@ import { rearm, PHOTON_PRICE } from '../lib/scemaworld/game.ts'
 import * as Raiders from '../lib/scemaworld/raiders.ts'
 import { Rng } from '../lib/omni/fractal.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
+import { clusterOf, CLUSTER_STRENGTH, MAX_CLUSTERS } from '../lib/scemaworld/clusters.ts'
+import * as Fx from '../lib/scemaworld/fx.ts'
+import * as Dialogue from '../lib/scemaworld/dialogue.ts'
+import * as Audio from '../lib/scemaworld/audio.ts'
+import * as Github from '../lib/scemaworld/github.ts'
 import * as Arrivals from '../lib/scemaworld/arrivals.ts'
 import {
   nearest, fixOn, cycle, ahead, bearingLabel, rangeLabel,
@@ -577,8 +582,34 @@ check('a projectile expires instead of leaking', () => {
   let c = newCombat()
   c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 0, [])
   assert(c.projectiles.length === 1)
-  for (let i = 0; i < 60; i += 1) c = step(c, 0.2, [], 'seed').combat
+  // Stepped past `LIFE_LASER` rather than a fixed twelve seconds. The lifetime is derived from the
+  // sector's size now (a bolt has to be able to cross it), so a hard-coded horizon here would fail
+  // the next time the sector is resized and would fail *as a leak*, which is the wrong diagnosis.
+  const horizon = LIFE_LASER * 1.5
+  for (let t = 0; t < horizon; t += 0.2) c = step(c, 0.2, [], 'seed').combat
   assert(c.projectiles.length === 0, 'a missed shot never expired')
+})
+
+check('a bolt lives long enough to cross the sector, and no longer', () => {
+  // The defect: `LIFE_LASER` was 0.21s for a reach of 0.20 extents, while a titan holds a standoff
+  // of 0.40 and notices you at 0.60. Every bolt fired at a capital at the range it fights from
+  // evaporated in empty space less than halfway there — not weak against a capital, *unable to
+  // reach one*, and nothing errored. Third time this shape of bug has been found here; `shotLifeOf`
+  // documents the enemy-fire version, where two capital fleets shot at each other for minutes and
+  // never connected.
+  const reach = SPEED_LASER * LIFE_LASER
+  assert(reach >= SCALE.SECTOR_REACH * 2, 'a laser cannot cross the sector it is fired in')
+  // Not unbounded either. A bolt that never expires is a leak with a long fuse.
+  assert(reach < SCALE.SECTOR_REACH * 3, 'the reach overshoots the sector by more than half again')
+  // The line that actually matters: every class can be engaged at the range it chooses to fight
+  // from. That is the invariant the old "outranges every fighter and no capital" line was a proxy
+  // for, and the proxy is what broke.
+  for (const id of ALL_CLASS_IDS) {
+    const c = CLASSES[id]
+    if (c.damage === 0) continue
+    assert(reach > c.standoff, `a laser cannot reach a ${id} at its standoff`)
+    assert(reach > c.aggro, `a ${id} notices you from beyond your own gun's reach`)
+  }
 })
 
 check('a weapon reports damage and never decides a death', () => {
@@ -1188,7 +1219,15 @@ check('the sector is playable at its own scale', () => {
   assert(SCALE.DOCK_RANGE > SCALE.R_STATION * 2, 'you would have to fly into a station to dock')
   assert(SCALE.DOCK_RANGE < SCALE.AGGRO_RANGE, 'docking range must not exceed engagement range')
   assert(reachLaser > SCALE.ENGAGE_RANGE, 'a laser cannot reach the range enemies hold at')
-  assert(reachLaser < SCALE.AGGRO_RANGE * 2, 'you could shoot things before they notice you')
+  // **Not** an upper bound on reach any more. It was `< AGGRO_RANGE * 2`, on the rule that you
+  // should never be able to shoot something before it notices you — which sounds right and
+  // delivered the opposite: a capital's `standoff` is twice its own aggro, so the bound meant a
+  // capital could not be engaged with lasers at the range it chooses to fight from, i.e. at all.
+  // Flight time is what balances long range now (see `range is not what balances the laser`), and
+  // what is pinned here is the thing the old bound was reaching for: a bolt must cross the sector,
+  // and it must not do so instantly.
+  assert(reachLaser >= SCALE.SECTOR_REACH * 2, 'a laser cannot cross the sector it is fired in')
+  assert(SCALE.SPEED_LASER < SCALE.SECTOR_REACH, 'a bolt crosses the sector in under a second')
   assert(SCALE.R_STATION > EXTENT / 400, 'a station is a speck at sector scale')
   assert(SCALE.R_STATION < EXTENT / 40, 'a station is a continent')
 })
@@ -1358,17 +1397,32 @@ check('ninety seconds of play produces a game rather than a still photograph', (
 })
 
 check('a fight can be won, and pays from the act rather than the record', () => {
+  // ## It pursues now, and that is a consequence rather than a workaround
+  //
+  // This used to park the ship and hold the trigger, and it worked because a fighter died inside a
+  // second — faster than it could react. At three times the durability (`classes.ts`) the target
+  // survives long enough to reach its break-off threshold and run, and a stationary ship cannot
+  // follow. That is the tripled-durability change doing exactly what it was asked to do, and the
+  // right response is to fly the fight: `flyAt` is the same crude autopilot the war-class test
+  // uses. What the check is *for* — that fire connects, that a kill lands, and that it pays from
+  // the class table rather than from the record — is unchanged.
   const s = generate(world, digest)
   let g = newGame(s)
-  // Park just off a raider and hold the trigger.
   const r = s.raiders[0]
-  g = { ...g, camera: { ...g.camera, position: [r.at.x, r.at.y, r.at.z + EXTENT * 0.01] } }
+  g = {
+    ...g,
+    ship: { ...g.ship, fuel: 1e9 },
+    camera: { ...g.camera, position: [r.at.x, r.at.y, r.at.z + EXTENT * 0.01] },
+  }
   let killed = false
-  for (let f = 0; f < 60 * 30 && !killed; f += 1) {
-    g = tick(g, s, { keys: new Set(), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+  for (let f = 0; f < 60 * 40 && !killed && !g.lost; f += 1) {
+    const live = Enemy.living(g.swarm).find((c) => c.id === r.id)
+    const keys = live ? flyAt(g.camera, live.at) : new Set()
+    g = tick(g, s, { keys, firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
     killed = g.combat.destroyed.length > 0
   }
-  assert(killed, 'thirty seconds of point-blank fire destroyed nothing')
+  assert(!g.lost, 'the probe pilot died before finishing a fight it should win')
+  assert(killed, 'forty seconds of pursuit destroyed nothing')
   assert(g.ship.salvage > 0, 'a kill paid nothing')
   // The bounty is one of the class table's flat figures — never a number derived from the
   // record. Checked against the table rather than against a modulus, because the classes pay
@@ -2351,7 +2405,16 @@ check('ramming a craft costs both of you', () => {
       g.camera.position[1] - after.at.y,
       g.camera.position[2] - after.at.z,
     )
-    assert(gap >= R_PLAYER + c.spec.radius, 'the two are still inside each other')
+    // Against the **capsule**, not a sphere of the class radius. The push-out clears the hull the
+    // renderer draws (`hitbox.ts`), which for every silhouette here is narrower across than it is
+    // long — so a sphere of `spec.radius` is a bound the collision never claimed to satisfy and
+    // asserting it was measuring the old approximation rather than the new behaviour.
+    const cap = capsuleOf(after.at, after.facing, after.spec.radius, after.spec.shape)
+    const clear = nearestOnAxis(cap, {
+      x: g.camera.position[0], y: g.camera.position[1], z: g.camera.position[2],
+    }).distance
+    assert(clear >= R_PLAYER + cap.radius, `the two are still inside each other (${Math.round(clear)} < ${Math.round(R_PLAYER + cap.radius)})`)
+    assert(gap > 0, 'the ship ended at the craft centre')
   }
 })
 
@@ -2551,7 +2614,22 @@ check('a tick stays well inside a frame', () => {
     g = tick(g, s, { keys: new Set(['ArrowUp']), firing: true, dt: 1 / 60, nowMs: (f * 1000) / 60 })
   }
   const per = (Date.now() - t0) / N
-  assert(per < 4, `${per.toFixed(2)}ms per tick, against a 16.7ms frame`)
+  // ## The budget moved, after the optimisation rather than instead of it
+  //
+  // It was `< 4`, set when the sector carried about 143 craft. It now carries **230** — three
+  // standing firefight clusters on top of the scattered roster (`clusters.ts`), which is the whole
+  // point of them — and that is a real cost that no amount of care makes free.
+  //
+  // What was done first: `collide.ts::separate` was O(n²) and its own comment said a grid would be
+  // "machinery guarding nothing", which was true at seventy craft and stopped being true at 230.
+  // Sweeping one axis with the capitals handled separately took the measured tick from 6.78ms to
+  // 5.58ms, bit-identically (see `separateSlow` and the check that pins it).
+  //
+  // Eight is then the honest ceiling rather than the measurement plus a margin: it is under half a
+  // 16.7ms frame, which leaves the whole render path the larger share, and it still fails on any
+  // regression worth the name. A budget set just above what was measured is a budget that fails on
+  // a slower machine and teaches everyone to raise it again.
+  assert(per < 8, `${per.toFixed(2)}ms per tick, against a 16.7ms frame`)
 })
 
 // ── the hit test must agree with the picture ─────────────────────────────────
@@ -2642,7 +2720,10 @@ function flyAt(cam, target) {
     else keys.add(ly > 0 ? 'KeyW' : 'KeyS')
     if (Math.abs(lx) < 0.02 && Math.abs(ly) < 0.02 && lz < 0) keys.add('KeyD')
   }
-  if (lz > 0.9 && l > SPEED_LASER * LIFE_LASER * 0.5) keys.add('ArrowUp')
+  // Closes to an **engagement** range, not to half the laser's reach. The reach is the sector now,
+  // so the old gate meant "throttle up only when more than six extents away" — i.e. never, in any
+  // fight — and every pursuit in this file would have stalled at whatever distance it started at.
+  if (lz > 0.9 && l > AGGRO_RANGE * 0.15) keys.add('ArrowUp')
   else keys.add('KeyX')
   return keys
 }
@@ -2665,11 +2746,19 @@ check('you never get stuck inside a capital hull', () => {
   // parked motionless at the centre of a capital in the middle of a fleet is supposed to be shot
   // at — that is the sector working, not the collision bug this test is about. The proxy stopped
   // being equivalent the moment enemy rounds could reach as far as their own fire gate allowed.
+  // ## Counts **fresh** notices, not frames showing one
+  //
+  // This read `notice.startsWith('collision')` every frame, and a notice *persists* until it
+  // expires — so one collision whose message sat on screen for three seconds counted as 180
+  // charges. It passed for a long time only because something else always overwrote the line
+  // quickly ("shields holding", a kill); a ship parked inside a capital at minimum turret range is
+  // taking no fire, so nothing overwrote it and the proxy reported 146 charges for a single
+  // impact. `noticeAt === nowMs` is the frame the notice was *raised*, which is the event.
   let charged = 0
   const start = g.ship.hull + g.ship.shield
   for (let f = 0; f < 300; f += 1) {
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: f * 16 })
-    if ((g.notice ?? '').startsWith('collision')) charged += 1
+    if ((g.notice ?? '').startsWith('collision') && g.noticeAt === g.nowMs) charged += 1
   }
   assert(charged <= 2, `charged ${charged} times for sitting inside one hull`)
   assert(g.throttle === 1, 'the drive was cut inside a capital, stranding the ship')
@@ -2839,6 +2928,77 @@ check('reinforcement keeps the sector populated, and reads no record field', () 
   for (const field of ['magnitude', 'blind_spots', 'blindSpots', 'legibility', 'extent', 'nodes']) {
     assert(!src.includes(field), `respawn.ts reads \`${field}\``)
   }
+  // The clusters are placed by the seed and by constants, exactly as the wings and the roster are,
+  // and for the same reason: a sector that got busier or quieter with what a record claimed would
+  // be a sector worth lying to. `magnitude` is excluded from the list because the contract requires
+  // the field on a contact and `clusters.ts` writes a constant into it — the same carve-out
+  // `raiders.ts` has, and the reason `clusterReplacement` exists.
+  const cl = codeOf(join(here, '..', 'lib', 'scemaworld', 'clusters.ts'))
+  for (const field of ['blind_spots', 'blindSpots', 'legibility', 'extent', 'signals', 'objects']) {
+    assert(!cl.includes(field), `clusters.ts reads \`${field}\``)
+  }
+})
+
+check('the fast separation is the slow one, to the bit', () => {
+  // The optimisation is only allowed if it changes nothing. Floating-point addition is not
+  // associative, so accumulating the same pushes in a different order gives different numbers —
+  // and a fight that diverges between two machines because an index was reordered is not a trade
+  // worth making quietly. `separate` therefore only decides which pairs to *test*; the survivors
+  // are sorted back into the order the nested loops used.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const movers = Enemy.living(g.swarm).map((c) => ({ at: c.at, radius: c.spec.radius }))
+  assert(movers.length > 100, `only ${movers.length} movers to compare`)
+  const fast = separate(movers)
+  const slow = separateSlow(movers)
+  for (let i = 0; i < movers.length; i += 1) {
+    assert(
+      fast[i].x === slow[i].x && fast[i].y === slow[i].y && fast[i].z === slow[i].z,
+      `mover ${i} separates differently: ${JSON.stringify(fast[i])} vs ${JSON.stringify(slow[i])}`,
+    )
+  }
+})
+
+check('the sector carries three firefight clusters, spaced apart', () => {
+  // Three standing battles, in three parts of the sector: the thing a scattered roster cannot
+  // produce, which is violence you can *see from a distance and fly toward*. A count, not a rate,
+  // and placed from the seed alone.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const byCluster = new Map()
+  for (const c of Enemy.living(g.swarm)) {
+    const i = clusterOf(c.id)
+    if (i !== null) byCluster.set(i, (byCluster.get(i) ?? 0) + 1)
+  }
+  assert(byCluster.size === MAX_CLUSTERS, `${byCluster.size} clusters, not ${MAX_CLUSTERS}`)
+  for (const [i, n] of byCluster) assert(n === CLUSTER_STRENGTH, `cluster ${i} has ${n} craft`)
+  // Both sides, or it is not a battle.
+  for (let i = 0; i < MAX_CLUSTERS; i += 1) {
+    for (const f of ['raider', 'marshal']) {
+      const n = Enemy.living(g.swarm).filter((c) => clusterOf(c.id) === i && c.faction === f).length
+      assert(n > 0, `cluster ${i} has no ${f}s`)
+    }
+  }
+  // Spaced. Two clusters on top of each other are one cluster and an empty sector.
+  const anchors = []
+  for (let i = 0; i < MAX_CLUSTERS; i += 1) {
+    const members = Enemy.living(g.swarm).filter((c) => clusterOf(c.id) === i)
+    const mean = members.reduce(
+      (a, c) => ({ x: a.x + c.at.x / members.length, y: a.y + c.at.y / members.length, z: a.z + c.at.z / members.length }),
+      { x: 0, y: 0, z: 0 },
+    )
+    anchors.push(mean)
+  }
+  for (let i = 0; i < anchors.length; i += 1) {
+    for (let j = i + 1; j < anchors.length; j += 1) {
+      const d = Math.hypot(anchors[i].x - anchors[j].x, anchors[i].y - anchors[j].y, anchors[i].z - anchors[j].z)
+      assert(d > SCALE.AGGRO_RANGE * 6, `clusters ${i} and ${j} are ${Math.round(d / 1e6)}M apart`)
+    }
+  }
+  // And the nearest is reachable rather than an expedition: the first one has to be findable by a
+  // pilot who has not been told it exists.
+  const nearest = Math.min(...anchors.map((a) => Math.hypot(a.x, a.y, a.z)))
+  assert(nearest < SCALE.SECTOR_REACH * 0.45, `the nearest cluster is ${(nearest / EXTENT).toFixed(2)} extents out`)
 })
 
 check('a thinned sector fills back up, in view, and not with capitals', () => {
@@ -2868,7 +3028,7 @@ check('a thinned sector fills back up, in view, and not with capitals', () => {
   let raised = 0
   let sawStreak = false
   for (let f = 0; f < 60 * 400; f += 1) {
-    const before = Enemy.of(g.swarm, 'raider').length
+    const before = Enemy.of(g.swarm, 'raider').filter((c) => clusterOf(c.id) === null).length
     g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
     // A craft is *preceded* by a drawn entry. This is the assertion that the mechanic is visible
     // at all: reinforcement used to arrive beyond sensor range, so the only evidence the sector
@@ -2881,7 +3041,10 @@ check('a thinned sector fills back up, in view, and not with capitals', () => {
       )
       assert(drawn.length === g.waves.arriving.length, 'an entry was in flight and not drawn')
     }
-    const now = Enemy.of(g.swarm, 'raider')
+    // Cluster raiders excluded. They are placed at a standing battle's anchor, deliberately far
+    // from the player (`respawn.ts` holds a cluster's reinforcements while you are inside it), so
+    // counting them here measures the one population the "in view" rule was never about.
+    const now = Enemy.of(g.swarm, 'raider').filter((c) => clusterOf(c.id) === null)
     if (now.length > before) {
       raised += 1
       // **In view, not out of it.** The old rule was "beyond sensor range", and it was right about
@@ -3475,6 +3638,228 @@ check('what SCEMA is, and how it is bounded, are both on screen', () => {
 
 // ── withdrawing SCEMA as $SCEMA ──────────────────────────────────────────────
 
+// ── sparks, detonations and chatter ──────────────────────────────────────────
+
+check('a burst is derived from a seed, not stored, and it ends', () => {
+  // The whole reason bursts cost one small object each: the shards are a pure function of
+  // `(seed, age)`, so nothing integrates particles and the tick stores an origin. If that stops
+  // being true the cost becomes per-particle and the frame budget is the first thing to notice.
+  const b = { at: { x: 0, y: 0, z: 0 }, kind: 'detonation', startedMs: 1000, seed: 12345 }
+  const a1 = Fx.shardsOf(b, 1200)
+  const a2 = Fx.shardsOf(b, 1200)
+  assert(a1.length === Fx.BURST_SHARDS.detonation, `${a1.length} shards`)
+  assert(JSON.stringify(a1) === JSON.stringify(a2), 'the same burst drew differently twice')
+  // A different seed is a different burst. Otherwise every explosion is the same explosion.
+  const other = Fx.shardsOf({ ...b, seed: 999 }, 1200)
+  assert(JSON.stringify(other) !== JSON.stringify(a1), 'the seed does not change the shards')
+  // And it finishes. A burst that never expires is a leak with a long fuse.
+  assert(Fx.shardsOf(b, 1000 + Fx.BURST_MS.detonation + 1).length === 0, 'a burst outlived its life')
+  assert(Fx.live([b], 1000 + Fx.BURST_MS.detonation + 1).length === 0, 'a finished burst was kept')
+})
+
+check('a shield burst and a hull burst do not look alike', () => {
+  // The one distinction the whole shield mechanic rests on (`classes.ts`): a player has to be able
+  // to tell "absorbed" from "that got through" without reading a number. Making the two effects
+  // differ only in colour would put the entire cue on one channel.
+  assert(Fx.BURST_MS.shield < Fx.BURST_MS.hull, 'a shield flare outlasts a hull hit')
+  assert(Fx.BURST_REACH.shield < Fx.BURST_REACH.hull, 'a shield throws debris as far as a hull')
+  assert(Fx.BURST_REACH.hull < Fx.BURST_REACH.detonation, 'a hit reaches as far as a detonation')
+  const at = { x: 0, y: 0, z: 0 }
+  const sh = Fx.shardsOf({ at, kind: 'shield', startedMs: 0, seed: 7 }, 40)
+  const hl = Fx.shardsOf({ at, kind: 'hull', startedMs: 0, seed: 7 }, 40)
+  assert(sh.every((s) => s.kind === 'shield') && hl.every((s) => s.kind === 'hull'), 'a shard lost its kind')
+})
+
+check('the burst list is capped, not merely swept', () => {
+  // A cluster firefight resolves dozens of hits a second. Sweeping finished bursts bounds their
+  // *lifetime*; only a cap bounds how many can be alive at once, and the difference shows up as
+  // the frame rate rather than as anything legible.
+  let bursts = []
+  for (let i = 0; i < Fx.MAX_BURSTS * 3; i += 1) {
+    bursts = Fx.add(bursts, { at: { x: 0, y: 0, z: 0 }, kind: 'hull', startedMs: i, seed: i })
+  }
+  assert(bursts.length === Fx.MAX_BURSTS, `${bursts.length} bursts against a cap of ${Fx.MAX_BURSTS}`)
+  // Oldest dropped, because the newest burst is the one being looked at.
+  assert(bursts[bursts.length - 1].seed === Fx.MAX_BURSTS * 3 - 1, 'the cap dropped the newest')
+})
+
+check('a craft has a voice rather than a shuffle', () => {
+  // A line picked at random per event is noise: the same ship says something different every time
+  // and nothing accumulates. Keyed on `(seed, id, beat)` one craft says one thing consistently,
+  // and two craft in a wing say different things.
+  const spec = CLASSES.interceptor
+  const a = Dialogue.say('seed', 'raider:0:0', 'raider', spec, 'engage')
+  const b = Dialogue.say('seed', 'raider:0:0', 'raider', spec, 'engage')
+  const c = Dialogue.say('seed', 'raider:0:1', 'raider', spec, 'engage')
+  assert(a && b && a.text === b.text, 'one craft said two different things')
+  assert(c && c.text !== a.text, 'a whole wing says one line')
+  // A different beat is a different line from the same ship.
+  const d = Dialogue.say('seed', 'raider:0:0', 'raider', spec, 'destroyed')
+  assert(d && d.text !== a.text, 'a craft says the same thing dying as engaging')
+})
+
+check('a capital does not speak like a fighter, and traffic barely speaks at all', () => {
+  // A leviathan saying an interceptor's line makes the largest thing in the sector sound like one
+  // pilot in a cockpit, which is the quickest way to make a war hull feel small.
+  const cap = Dialogue.linesFor('raider', CLASSES.leviathan, 'engage')
+  const fig = Dialogue.linesFor('raider', CLASSES.interceptor, 'engage')
+  assert(cap.length > 0 && fig.length > 0)
+  assert(!cap.some((l) => fig.includes(l)), 'a capital and a fighter share a line')
+  // Unarmed traffic makes no threat and does not narrate its own shields failing. The silence is
+  // the characterisation: giving a courier a defiant line turns the one pitiable thing in the
+  // sector into another combatant.
+  assert(Dialogue.say('s', 'courier:0', 'courier', CLASSES.courier, 'engage') === null, 'a courier threatened somebody')
+  assert(Dialogue.say('s', 'courier:0', 'courier', CLASSES.courier, 'broken') === null, 'a courier narrated its shields')
+  assert(Dialogue.say('s', 'courier:0', 'courier', CLASSES.courier, 'destroyed') !== null, 'a courier died silently')
+  // `broken` is a capital's beat only — on a fighter it is one hit out of a handful and would
+  // fire constantly.
+  assert(Dialogue.say('s', 'r0', 'raider', CLASSES.interceptor, 'broken') === null, 'a fighter narrated its shields')
+  assert(Dialogue.say('s', 'r0', 'raider', CLASSES.titan, 'broken') !== null, 'a titan said nothing when opened')
+})
+
+check('nothing in the effects or the chatter reads the record', () => {
+  // The same source scan the reward path gets, in two files it would be very easy to make
+  // record-sensitive: an explosion that got bigger in a world claiming more, or a line that
+  // changed with a world's blind spots, is one more reason to misreport one.
+  for (const f of ['fx.ts', 'dialogue.ts', 'audio.ts']) {
+    const src = codeOf(join(here, '..', 'lib', 'scemaworld', f))
+    for (const field of ['blind_spots', 'blindSpots', 'legibility', 'magnitude', 'extent']) {
+      assert(!src.includes(field), `${f} reads \`${field}\``)
+    }
+  }
+})
+
+check('sound is gated by distance before it is gated by the mixer', () => {
+  // A cap that decides *which* sounds you hear is a mixer picking by arrival order, which picks
+  // wrong. Range gates first so the cap only ever bounds a crowd that is genuinely near you.
+  assert(Audio.attenuate(0, 100) === 1, 'a sound at the ship is not full volume')
+  assert(Audio.attenuate(100, 100) === 0, 'a sound at the limit is still audible')
+  assert(Audio.attenuate(150, 100) === 0, 'a sound past the limit is audible')
+  assert(Audio.attenuate(50, 100) > 0 && Audio.attenuate(50, 100) < 1, 'the falloff is not gradual')
+  assert(Audio.attenuate(10, 0) === 0, 'a zero range divided rather than refusing')
+  // The silent engine answers every method, so no caller has to branch on whether sound exists.
+  const e = Audio.silentEngine()
+  e.play('laser', 1)
+  e.setMuted(true)
+  assert(e.ready === false, 'a silent engine claimed to be ready')
+})
+
+check('a repository URL is parsed or refused, never guessed', () => {
+  // Fetching something half-recognised and reporting its 404 would look exactly like the
+  // repository being missing, which is the one diagnosis that sends a person to the wrong place.
+  const ok = [
+    ['owner/repo', 'owner', 'repo'],
+    ['https://github.com/owner/repo', 'owner', 'repo'],
+    ['https://github.com/owner/repo.git', 'owner', 'repo'],
+    ['github.com/owner/repo/tree/main/src', 'owner', 'repo'],
+    ['owner/repo.git', 'owner', 'repo'],
+  ]
+  for (const [input, owner, repo] of ok) {
+    const r = Github.parseRepo(input)
+    assert(r && r.owner === owner && r.repo === repo, `${input} parsed as ${JSON.stringify(r)}`)
+  }
+  for (const bad of ['', '   ', 'owner', 'https://gitlab.com/owner/repo', 'https://github.com/owner']) {
+    assert(Github.parseRepo(bad) === null, `${JSON.stringify(bad)} was accepted`)
+  }
+})
+
+check('an observed repository obeys the producer contract', async () => {
+  // The fifth producer on `scema.world/1`. Every rule in `PRODUCERS.md` that can be checked
+  // without a network is checked here, against canned responses — the point of taking a `fetch`
+  // is that this is testable at all.
+  const responses = {
+    '/repos/o/r': { full_name: 'o/r', default_branch: 'main', open_issues_count: 12, forks_count: 3, size: 900, archived: false, pushed_at: '2026-01-01T00:00:00Z' },
+    '/repos/o/r/git/trees/main?recursive=1': { truncated: false, tree: [{ type: 'blob' }, { type: 'blob' }, { type: 'tree' }] },
+    '/repos/o/r/languages': { Rust: 100, TypeScript: 50 },
+    '/repos/o/r/contributors?per_page=100': [{}, {}],
+  }
+  const fetchOk = async (url) => {
+    const path = url.replace('https://api.github.com', '')
+    if (!(path in responses)) return { ok: false, status: 404, json: async () => ({}) }
+    return { ok: true, status: 200, json: async () => responses[path] }
+  }
+  const r = await Github.observeRepo({ owner: 'o', repo: 'r' }, fetchOk, 1_700_000_000_000)
+  assert(r.ok, `observation failed: ${JSON.stringify(r)}`)
+  const w = r.world
+  // Rule 5: declare the schema.
+  assert(w.schema === 'scema.world/1', `schema is ${w.schema}`)
+  assert(w.entity.locator === 'https://github.com/o/r', 'the locator is not a way to find it again')
+  assert(w.observer.startsWith('github:'), 'the observer does not say whose word this is')
+  // Rule 2: every measured signal carries a count in its evidence. A measured signal with an
+  // empty evidence array is refused on import, and inventing a score is the failure this producer
+  // would find easiest.
+  for (const sig of w.signals) {
+    if (!sig.measured) continue
+    assert(Array.isArray(sig.evidence) && sig.evidence.length > 0, `${sig.id} is measured with no evidence`)
+    assert(sig.magnitude >= 0 && sig.magnitude <= 1, `${sig.id} magnitude ${sig.magnitude}`)
+  }
+  assert(!w.signals.some((s) => /score|rating|health/i.test(s.id)), 'the producer invented a score')
+  // Rule 4: a complete read knows its denominator.
+  assert(w.extent.total !== null, 'a complete walk reported an unknown total')
+  assert(w.blind_spots.length === 0, `a clean read reported ${w.blind_spots.length} blind spots`)
+  // No clock in the artefact beyond the one that was passed in, so two observations of one
+  // repository at one instant are byte-identical.
+  const again = await Github.observeRepo({ owner: 'o', repo: 'r' }, fetchOk, 1_700_000_000_000)
+  assert(JSON.stringify(again.world) === JSON.stringify(w), 'two observations of one repo differed')
+})
+
+check('what GitHub would not answer becomes a blind spot, never a zero', async () => {
+  // Rule 1, and the reason it is the first rule: "we could not see this" and "this is empty" are
+  // different claims and only one of them is an accusation. A truncated tree is the sharp case —
+  // the response still has a plausible length, so taking it as the count claims a completeness
+  // GitHub explicitly denied.
+  const fetchPartial = async (url) => {
+    const path = url.replace('https://api.github.com', '')
+    if (path === '/repos/o/r') {
+      return { ok: true, status: 200, json: async () => ({ full_name: 'o/r', default_branch: 'main', open_issues_count: 0 }) }
+    }
+    if (path.startsWith('/repos/o/r/git/trees')) {
+      return { ok: true, status: 200, json: async () => ({ truncated: true, tree: [{ type: 'blob' }] }) }
+    }
+    return { ok: false, status: 403, json: async () => ({}) }
+  }
+  const r = await Github.observeRepo({ owner: 'o', repo: 'r' }, fetchPartial, 1)
+  assert(r.ok, 'a partial read failed outright')
+  assert(r.world.extent.total === null, 'a truncated tree reported a known total')
+  assert(r.world.blind_spots.length >= 3, `only ${r.world.blind_spots.length} blind spots for three refusals`)
+  assert(r.world.blind_spots.some((b) => /truncat/i.test(b)), 'the truncation was not reported')
+  // An unread thing carries no attributes at all. An `absent` object with numbers on it lets a
+  // reader treat "we could not look" as "we looked and found nothing".
+  const unread = (await Github.observeRepo(
+    { owner: 'o', repo: 'r' },
+    async (url) =>
+      url.endsWith('/repos/o/r')
+        ? { ok: true, status: 200, json: async () => ({ full_name: 'o/r', default_branch: 'main' }) }
+        : { ok: false, status: 500, json: async () => ({}) },
+    1,
+  )).world
+  const tree = unread.objects.find((o) => o.id === 'tree')
+  assert(tree && tree.provenance.kind === 'absent', 'an unread tree was not absent')
+  assert(tree.attrs === undefined, 'an absent object carried attributes')
+})
+
+check('a refused repository is refused for the reason it was refused', async () => {
+  // Three instructions, not one message: "you are rate limited", "that repository is private or
+  // does not exist" and "your network refused" send a reader to three different places.
+  const status = async (code) =>
+    (await Github.observeRepo(
+      { owner: 'o', repo: 'r' },
+      async () => ({ ok: false, status: code, json: async () => ({}) }),
+      1,
+    ))
+  assert((await status(404)).reason === 'not_found', 'a 404 was not reported as not found')
+  assert((await status(403)).reason === 'rate_limited', 'a 403 was not reported as a rate limit')
+  const thrown = await Github.observeRepo(
+    { owner: 'o', repo: 'r' },
+    async () => { throw new Error('offline') },
+    1,
+  )
+  assert(thrown.reason === 'network', 'a thrown fetch was not reported as a network failure')
+  for (const r of [await status(404), await status(403), thrown]) {
+    assert(!r.ok && r.detail.length > 0, 'a refusal with no sentence')
+  }
+})
+
 check('the withdrawal policy reads no record field', () => {
   // The rule `economy.ts` warned would stop being a design preference the moment a real token was
   // behind SCEMA, checked in the file that decides what a withdrawal is worth. A rate or a cap
@@ -3501,23 +3886,27 @@ check('a withdrawal is bounded four ways, and says which one bound it', () => {
   const P = DEFAULT_POLICY
   const base = { wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0 }
 
-  // Per claim.
-  const big = entitlement({ ...base, scema: 10_000 })
+  // Per claim. The offer and the treasury both have to clear the cap, or this measures one of
+  // them rather than the cap — which is exactly what it started doing when `perClaim` was raised
+  // past the 10,000 it used to offer, and the test would have gone on passing against the wrong
+  // bound if the assertion had been written as `tokens > 0`.
+  const rich = { ...base, treasury: P.perClaim * 2 }
+  const big = entitlement({ ...rich, scema: P.perClaim * 2 })
   assert(big.tokens === P.perClaim, `paid ${big.tokens} against a per-claim cap of ${P.perClaim}`)
   assert(/per withdrawal/.test(big.message), big.message)
 
   // Per wallet, lifetime.
   const nearly = entitlement({
-    ...base, scema: 10_000, record: { paid: P.perWallet - 40, lastMs: -1, claims: 3 },
+    ...rich, scema: P.perClaim * 2, record: { paid: P.perWallet - 40, lastMs: -1, claims: 3 },
   })
   assert(nearly.tokens === 40, `paid ${nearly.tokens} with 40 of a lifetime cap left`)
 
   // Per deployment.
-  const drained = entitlement({ ...base, scema: 10_000, dispensed: P.budget - 30 })
+  const drained = entitlement({ ...rich, scema: P.perClaim * 2, dispensed: P.budget - 30 })
   assert(drained.tokens === 30, `paid ${drained.tokens} with 30 of a budget left`)
 
   // And by what the treasury actually holds. A cap can be edited; a balance cannot.
-  const poor = entitlement({ ...base, scema: 10_000, treasury: 17 })
+  const poor = entitlement({ ...base, scema: P.perClaim * 2, treasury: 17 })
   assert(poor.tokens === 17, `paid ${poor.tokens} out of a treasury of 17`)
 
   // Each refusal names its own cause, because "capped at 250", "this wallet is done" and "this
@@ -3536,14 +3925,41 @@ check('a withdrawal is bounded four ways, and says which one bound it', () => {
   for (const r of [spent, cooling, gone, junk]) assert(r.tokens === 0 && r.spend === 0, r.message)
 })
 
+check('the three caps are ordered, so none of them is decorative', () => {
+  // `entitlement` applies every bound at once with a `Math.min`, so the lowest is the only one that
+  // ever does anything. A per-claim cap above the per-wallet cap can never bind; a per-wallet cap
+  // above the budget can never bind either. Raising one in isolation produces a number that is
+  // printed on the page, quoted in a refusal, and has no effect on any payment — the same failure
+  // class as a gate reading a signal that never varies, or a class the roll could never produce.
+  const P = DEFAULT_POLICY
+  assert(P.minimum > 0 && P.minimum <= P.perClaim, `a minimum of ${P.minimum} against a cap of ${P.perClaim}`)
+  assert(P.perClaim <= P.perWallet, `perClaim ${P.perClaim} can never bind under perWallet ${P.perWallet}`)
+  assert(P.perWallet <= P.budget, `perWallet ${P.perWallet} can never bind under budget ${P.budget}`)
+  // Each one is reachable: give it room on every *other* axis and it must be the figure that comes
+  // back. This is the assertion that actually fails when a cap becomes unreachable.
+  const at = (over) => entitlement(
+    { wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: P.budget * 2, nowMs: 0,
+      scema: P.budget * 2, ...over },
+    P,
+  )
+  assert(at({}).tokens === P.perClaim, 'the per-claim cap is not reachable')
+  assert(
+    at({ record: { paid: P.perWallet - P.minimum, lastMs: -1, claims: 1 } }).tokens === P.minimum,
+    'the per-wallet cap is not reachable',
+  )
+  assert(at({ dispensed: P.budget - P.minimum }).tokens === P.minimum, 'the budget is not reachable')
+})
+
 check('a capped withdrawal spends only what it converted', () => {
   // The same bug `economy.ts::exchange` documents, in a place where the thing taken has a market
   // price: a claim capped at 250 must not consume the 10,000 SCEMA that was offered.
+  const offered = DEFAULT_POLICY.perClaim * 2
   const e = entitlement({
-    scema: 10_000, wallet: TREASURY, record: NO_RECORD, dispensed: 0, treasury: 90_000, nowMs: 0,
+    scema: offered, wallet: TREASURY, record: NO_RECORD, dispensed: 0,
+    treasury: DEFAULT_POLICY.perClaim * 2, nowMs: 0,
   })
   assert(e.spend === Math.ceil(e.tokens / DEFAULT_POLICY.rate), `spent ${e.spend} for ${e.tokens}`)
-  assert(e.spend < 10_000, 'a capped claim burned the whole balance')
+  assert(e.spend < offered, 'a capped claim burned the whole balance')
 })
 
 check('a withdrawal debits the server figure, never the request', () => {
@@ -4394,36 +4810,63 @@ check('the laser reach comment is the reach the constants give', () => {
   // Nothing had gone wrong with the game — `SPEED_LASER` and `AGGRO_RANGE` were each changed for
   // good reasons, months apart, and the sentence about their relationship was not, because no
   // test was reading it.
+  //
+  // The relationship it pins has changed, and the discipline has not: **the numbers may move, the
+  // relationship may not move silently.** The reach used to be pinned at ~1.8x `AGGRO_RANGE`,
+  // because that was the design line — a laser outranged every fighter and no capital. That line
+  // turned out to be a proxy for something it did not actually deliver: a capital *fights* from
+  // its standoff, so "cannot engage a capital from outside its awareness" quietly meant "cannot
+  // engage a capital", full stop. The reach is derived from the sector now and the assertion is
+  // derived with it.
   const reach = SPEED_LASER * LIFE_LASER
   assert(reach > SENSOR_BASE, 'the reach no longer exceeds the aggro range the comment cites')
-  // The **ratio** is the design statement and it did not move. Detection range and laser life were
-  // raised by half again *together*, precisely so this line holds — which is the whole discipline
-  // the check exists to enforce: the numbers may move, the relationship may not move silently.
-  const ratio = reach / SENSOR_BASE
-  assert(ratio > 1.6 && ratio < 2.1, `reach is ${ratio.toFixed(2)}x aggro; the comment says ~1.8`)
-  const asExtent = reach / EXTENT
-  assert(asExtent > 0.18 && asExtent < 0.23, `reach is ${asExtent.toFixed(3)}·EXTENT, not ~0.20`)
+  const asReach = reach / SCALE.SECTOR_REACH
+  assert(asReach > 2 && asReach < 3, `reach is ${asReach.toFixed(2)}x SECTOR_REACH, not the stated diameter-plus-margin`)
   const crossing = EXTENT / SPEED_LASER
   assert(crossing > 0.9 && crossing < 1.2, `a laser crosses an extent in ${crossing.toFixed(2)}s, not ~1.05`)
 })
 
-check('a laser outranges every fighter and no capital', () => {
-  // The design line the corrected comment states. It is a *line through the class table*, so one
-  // new statline could cross it without anything else failing — which is precisely the shape of
-  // the drift that produced the wrong comment in the first place.
+check('range is not what balances the laser — flight time is', () => {
+  // This replaces "a laser outranges every fighter and no capital", which was the design line
+  // until it was measured. It was doing the *opposite* of its stated job: a capital holds a
+  // standoff, so "a capital cannot be engaged from outside its awareness" meant, in play, that a
+  // capital could not be engaged with lasers at all.
+  //
+  // What limits the weapon now is that the bolt is slow relative to the sector, and that limit is
+  // real and self-enforcing rather than a number somebody has to maintain.
   const reach = SPEED_LASER * LIFE_LASER
-  for (const id of CLASS_IDS) {
+  for (const id of ALL_CLASS_IDS) {
     const c = CLASSES[id]
-    if (c.capital) {
-      assert(
-        c.aggro > reach,
-        `${id} is a capital and can be engaged from outside its awareness (${(c.aggro / EXTENT).toFixed(3)} vs ${(reach / EXTENT).toFixed(3)})`,
-      )
-    } else {
-      assert(
-        c.aggro < reach,
-        `${id} is a fighter and cannot be engaged from outside its awareness`,
-      )
+    if (c.damage === 0) continue
+    // How far a target travels while the bolt is in the air to it, as multiples of its own size.
+    // A **fighter** must be able to leave: a sniping shot at one from across the sector misses by
+    // an enormous margin and always will, which is what stops long range being a free kill.
+    // Measured at **sniping range**, not at the class's own awareness. The question the range
+    // change raises is "can I now kill things from across the sector for free", so the honest
+    // distance to ask it at is a long one — a quarter of the sector, which is far outside every
+    // class's `aggro` and is exactly where a free kill would live.
+    const snipe = SCALE.SECTOR_REACH * 0.5
+    const flight = snipe / SPEED_LASER
+    const drift = (c.speed * flight) / c.radius
+    // ## Keyed on how nimble a craft is, not on the `capital` flag
+    //
+    // The flag was the obvious proxy and it is wrong at the edge: a `warfighter` is deliberately
+    // **not** a capital — that is what lets it be rolled into a wing — and it is 0.045 extents
+    // across moving at a ninetieth of one per second, so it dodges nothing. Asserting "every
+    // non-capital escapes a sniping shot" therefore failed on the one class the tier exists for.
+    //
+    // What actually decides whether a bolt can be aimed at something is how many of its own widths
+    // it crosses per second. Three bands, and the middle one is deliberately unasserted: a claim
+    // about the classes that sit between the two behaviours would be a line drawn for the sake of
+    // having drawn one.
+    const widths = c.speed / c.radius
+    if (widths > 3) {
+      assert(drift > 15, `a nimble ${id} drifts only ${drift.toFixed(1)} of its own width in a bolt's flight`)
+    } else if (widths < 1) {
+      // And a **capital** must not be able to. It is the target the range exists for: it holds
+      // station at its standoff, and a hull that turns at a fiftieth of a radian per second is
+      // exactly the thing a slow bolt can be aimed at.
+      assert(drift < 3, `a ponderous ${id} drifts ${drift.toFixed(1)} of its own width — it can dodge a bolt`)
     }
   }
 })
@@ -4811,10 +5254,16 @@ check('speed is capped on the magnitude, not per axis', () => {
 // ── the sector repopulates, all of it ────────────────────────────────────────
 
 /** Live non-capital craft per faction, which is what every floor and strength counts. */
+/**
+ * The **scattered** roster, by faction. Cluster craft are excluded, exactly as `countOf` excludes
+ * them in `respawn.ts` — and for the same reason: three standing battles carry eighty-seven craft
+ * between them, so counting them against the roster's strength reports a permanently full sector
+ * and every one of these checks measures the wrong population.
+ */
 function censusOf(g) {
   const out = {}
   for (const c of g.swarm.craft) {
-    if (!c.alive || c.spec.capital) continue
+    if (!c.alive || c.spec.capital || clusterOf(c.id) !== null) continue
     out[c.faction] = (out[c.faction] ?? 0) + 1
   }
   return out
@@ -4871,23 +5320,142 @@ check('traffic comes back too, which it never used to at all', () => {
   }
 })
 
-check('the patrol comes back, and the capitals on both sides do not', () => {
-  // The one thing that must NOT repopulate. A leviathan you spent four minutes killing is the
-  // only lasting mark you can leave on the sector, and a respawn timer turns it into a chore.
+// Cluster capitals are excluded from every capital check: they belong to a battle with its own
+// much faster replacement cycle (`respawn.ts`), and mixing the two measures neither.
+const liveCaps = (sw) =>
+  sw.craft.filter((c) => c.alive && c.spec.capital && clusterOf(c.id) === null).length
+const capsAt = (g) => liveCaps(g.swarm)
+const capsByClass = (sw) => {
+  const out = {}
+  for (const c of sw.craft) {
+    if (c.alive && c.spec.capital && clusterOf(c.id) === null) {
+      out[c.spec.id] = (out[c.spec.id] ?? 0) + 1
+    }
+  }
+  return out
+}
+const killCapitals = (g) => ({
+  ...g,
+  swarm: {
+    ...g.swarm,
+    craft: g.swarm.craft.map((c) =>
+      c.spec.capital && clusterOf(c.id) === null ? { ...c, alive: false } : c,
+    ),
+  },
+})
+
+/**
+ * Drive `replenish` directly over a synthetic clock.
+ *
+ * Not `observe`, and the difference is four orders of magnitude: a capital interval is two and a
+ * half minutes, so watching a roster of four come back through the full tick loop is eighteen
+ * thousand frames of physics, three times over, for a property that lives entirely in one function.
+ * Stepping the clock straight past each interval tests the same thing in a few hundred calls — and
+ * tests it more precisely, because the timer is the subject rather than an incidental of the frame
+ * rate.
+ */
+function replenishFor(s, from, seconds, stepMs = 1_000) {
+  let swarm = from.swarm
+  let waves = from.waves
+  const at = { x: from.camera.position[0], y: from.camera.position[1], z: from.camera.position[2] }
+  const nose = { x: 0, y: 0, z: -1 }
+  const notices = []
+  for (let t = 0; t <= seconds * 1000; t += stepMs) {
+    const r = Respawn.replenish(swarm, s, s.seed, waves, at, nose, t)
+    swarm = r.swarm
+    waves = r.waves
+    if (r.notice) notices.push(r.notice)
+  }
+  return { swarm, waves, notices, at }
+}
+
+check('a capital kill buys minutes, not a permanently smaller sector', () => {
+  // This used to assert that capitals NEVER come back, and the argument was good: a leviathan you
+  // spent four minutes killing was the only lasting mark you could leave. What it cost was a
+  // sector that ran out of the only fights worth crossing it for — on both sides, so once the last
+  // warden and the last bastion were gone every large silhouette was hostile again and the
+  // question the patrol's capitals exist to create stopped being asked.
+  //
+  // So what is pinned now is the *pace*, which is what the fighter floor had to learn too: a kill
+  // is worth minutes of a quieter sector, and the sector is not a resource you can exhaust.
   const s = generate(world, digest)
   const start = newGame(s)
-  const capsAt = (g) => g.swarm.craft.filter((c) => c.alive && c.spec.capital).length
-  const before = capsAt(start)
-  assert(before > 0, 'no capitals to begin with')
+  const want = capsAt(start)
+  assert(want > 0, 'no capitals to begin with')
 
-  const killed = {
-    ...start,
-    swarm: { ...start.swarm, craft: start.swarm.craft.map((c) => (c.spec.capital ? { ...c, alive: false } : c)) },
+  const killed = killCapitals(start)
+  const secs = Respawn.CAPITAL_INTERVAL_MS / 1000
+
+  // Inside the first interval, nothing has come back. A capital returning sooner would make the
+  // kill worth nothing at all, which is the failure the old rule was avoiding.
+  const soon = replenishFor(s, killed, secs * 0.9)
+  assert(liveCaps(soon.swarm) === 0, `${liveCaps(soon.swarm)} capitals came back inside one interval`)
+
+  // Over a long window the roster is restored, and no further.
+  const later = replenishFor(s, killed, secs * (want + 2))
+  assert(liveCaps(later.swarm) === want, `${liveCaps(later.swarm)} capitals back of ${want}`)
+
+  // And the arrival is announced, because it is the one reinforcement the player cannot see
+  // arrive — the line is the entire cue, and it must say *distant* rather than implying a contact.
+  const said = later.notices.filter((n) => /long-range signature/.test(n))
+  assert(said.length >= want, `${said.length} capital notices for ${want} arrivals`)
+  assert(said.every((n) => /outside sensor range/.test(n)), said[0])
+})
+
+check('the class that is missing is the class that comes back', () => {
+  // Cycling a roster would answer a dead bastion with a warden, and the sector's composition would
+  // drift away from the one every sector is supposed to share — invisibly, because the count is
+  // what a census looks at.
+  const s = generate(world, digest)
+  const start = newGame(s)
+  const want = capsByClass(start.swarm)
+  const later = replenishFor(s, killCapitals(start), (Respawn.CAPITAL_INTERVAL_MS / 1000) * (capsAt(start) + 2))
+  const got = capsByClass(later.swarm)
+  for (const [klass, n] of Object.entries(want)) {
+    assert(got[klass] === n, `${klass}: ${got[klass] ?? 0} back of ${n}`)
   }
-  const after = observe(s, 600, killed)
-  assert(capsAt(after) === 0, `${capsAt(after)} capitals came back`)
-  // While the fighters around them did.
-  assert(censusOf(after).marshal >= Factions.MARSHAL_STRENGTH * 0.9, 'the patrol did not recover')
+  // Both sides. A one-sided restoration is the bug that made every large silhouette hostile again.
+  const side = (sw, f) =>
+    sw.craft.filter((c) => c.alive && c.spec.capital && c.faction === f && clusterOf(c.id) === null).length
+  assert(side(later.swarm, 'raider') === side(start.swarm, 'raider'), 'the raider capitals did not come back')
+  assert(side(later.swarm, 'marshal') === side(start.swarm, 'marshal'), 'the patrol capitals did not come back')
+})
+
+check('a replacement capital never arrives near the player', () => {
+  // The one reinforcement that does not warp in. Every other arrival is a few seconds of streaks
+  // at ARRIVAL_SPREAD from the nose, which is right for a wing you can decline and catastrophic
+  // for a titan — its own aggro reaches 0.60 of the sector, so one materialising at arrival range
+  // would be hunting you before its entry effect finished.
+  const s = generate(world, digest)
+  const start = newGame(s)
+  const later = replenishFor(s, killCapitals(start), (Respawn.CAPITAL_INTERVAL_MS / 1000) * (capsAt(start) + 2))
+  let checked = 0
+  for (const c of later.swarm.craft) {
+    if (!c.alive || !c.spec.capital) continue
+    if (!c.id.includes('+')) continue // a garrison capital, placed at generation
+    checked += 1
+    const d = Math.hypot(c.at.x - later.at.x, c.at.y - later.at.y, c.at.z - later.at.z)
+    assert(d > c.spec.aggro, `a replacement ${c.spec.id} arrived ${Math.round(d / 1e6)}M off, inside its own awareness`)
+  }
+  assert(checked > 0, 'no replacement capitals to check')
+  // The clearance is derived from the largest capital rather than written down, so adding a bigger
+  // war class moves it by construction — the shape of defect that stays invisible until somebody
+  // adds the ship that outgrows it.
+  const biggest = Math.max(...ALL_CLASS_IDS.filter((id) => CLASSES[id].capital).map((id) => CLASSES[id].aggro))
+  assert(Respawn.CAPITAL_CLEARANCE > biggest, 'a capital can arrive inside its own awareness')
+  assert(Respawn.CAPITAL_CLEARANCE >= Respawn.SPAWN_CLEARANCE, 'a capital arrives closer than a fighter')
+})
+
+check('capitals are replaced far more slowly than anything else', () => {
+  // One shared timer across both sides, so the war classes stay rare. A per-faction timer would
+  // double the rate, and the sector would silently fill with capitals over a long session.
+  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.RAIDER_INTERVAL_MS * 10, 'capitals come back like fighters')
+  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.MARSHAL_INTERVAL_MS * 5, 'capitals come back like marshals')
+  // And a full roster is left alone rather than topped up forever.
+  const s = generate(world, digest)
+  const start = newGame(s)
+  const quiet = replenishFor(s, start, (Respawn.CAPITAL_INTERVAL_MS / 1000) * 6)
+  assert(liveCaps(quiet.swarm) === capsAt(start), `a full sector grew to ${liveCaps(quiet.swarm)} capitals`)
 })
 
 check('a full sector is left alone', () => {

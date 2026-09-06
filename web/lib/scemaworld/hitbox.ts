@@ -146,6 +146,26 @@ export function segmentDistance(p: Vec3, q: Vec3, r: Vec3, s: Vec3): number {
   return Math.hypot(c1.x - c2.x, c1.y - c2.y, c1.z - c2.z)
 }
 
+/**
+ * The point on a capsule's axis nearest `at`, and how far away it is.
+ *
+ * What a hull collision needs and a shot does not: a shot only asks *whether*, but a ship that has
+ * flown into something has to be pushed back out, and the direction it is pushed is the one from
+ * this point rather than from the craft's centre. Using the centre on a hull four times longer than
+ * it is wide throws a ship clipping the prow of a dreadnought sideways out of the *middle* of the
+ * ship — a shove of most of a hull length, in a direction it was nowhere near.
+ */
+export function nearestOnAxis(cap: Capsule, at: Vec3): { at: Vec3; distance: number } {
+  const ax = { x: cap.head.x - cap.tail.x, y: cap.head.y - cap.tail.y, z: cap.head.z - cap.tail.z }
+  const len2 = ax.x * ax.x + ax.y * ax.y + ax.z * ax.z
+  const t = len2 <= 1e-9
+    ? 0
+    : Math.max(0, Math.min(1,
+        ((at.x - cap.tail.x) * ax.x + (at.y - cap.tail.y) * ax.y + (at.z - cap.tail.z) * ax.z) / len2))
+  const on = { x: cap.tail.x + ax.x * t, y: cap.tail.y + ax.y * t, z: cap.tail.z + ax.z * t }
+  return { at: on, distance: Math.hypot(at.x - on.x, at.y - on.y, at.z - on.z) }
+}
+
 /** Whether a shot travelling `from → to` with calibre `calibre` strikes `cap`. */
 export function strikes(cap: Capsule, from: Vec3, to: Vec3, calibre: number): boolean {
   return segmentDistance(from, to, cap.tail, cap.head) <= cap.radius + calibre

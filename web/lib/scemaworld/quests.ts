@@ -243,6 +243,74 @@ function build(
   }
 }
 
+/**
+ * The contract you are given before you have been anywhere.
+ *
+ * ## Why one is handed over at all
+ *
+ * A new pilot spawns with a full board of *nothing to do*. Contracts live at citadels, citadels
+ * are scattered over a sector twelve extents across, and the panel that would tell you they exist
+ * is one you have to already be docked at to see. The first session's actual shape was therefore
+ * "fly somewhere, find out there was a reason to fly somewhere" — and the thing that makes an open
+ * sector legible is not a tutorial, it is having a reason to point the ship at something.
+ *
+ * ## It obeys every rule the board obeys, and one more
+ *
+ * Terms come from `(seed, role, index)` and nothing else — no record field anywhere near the count
+ * or the reward, exactly as `build` does, because an opening contract that paid more in a
+ * richer-looking world would be the same corruption arriving at the friendlier end of the game.
+ *
+ * The extra rule is that it is **small**. It is a first job, not a campaign: the count is at the
+ * bottom of the band and the subject is deliberately the sort of thing that is already happening
+ * near the origin. A big opening contract is one a new player abandons, and abandoning the only
+ * thing on your board teaches that the board is optional.
+ *
+ * Returns `null` for a role no faction will deal with in this world, which cannot happen today —
+ * every role has a `welcome` faction — but is a real answer rather than a thrown error if that
+ * ever changes.
+ */
+export function opening(seed: string, role: RoleId, nodes: Node[]): Quest | null {
+  const r = roleOf(role)
+  // The first faction that will actually deal with this role. `welcome` and not `hunts`: who takes
+  // your money at a dock and who shoots at you in open space are different questions, and deriving
+  // one from the other is the mistake `servedBy` exists to prevent.
+  const faction = r.welcome[0]
+  if (!faction || refusal(faction, role) !== null) return null
+  const kinds = kindsFor(role, faction)
+  if (kinds.length === 0) return null
+
+  // Its own slice of the stream and its own salt, so the opening job is not simply the first entry
+  // of the board the player will later find at a citadel — meeting the same contract twice, once
+  // as a gift and once as an offer, reads as the board being broken.
+  const rng = new Rng(seed.slice(0, 8) || seed)
+  const salt = [...`opening:${role}`].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 997, 23)
+  for (let i = 0; i < salt; i += 1) rng.below(1024)
+
+  const q = build(kinds[0], faction, role, 0, rng, nodes)
+  if (!q) return null
+  return {
+    ...q,
+    // A distinct id namespace, so completing it never marks a citadel offer as done and the
+    // dedupe in `board` cannot silently remove a job because the opening one resembled it.
+    id: `opening:${role}`,
+    // Smallest useful version of whatever kind it is. `Math.min` rather than a literal, so a
+    // change to the bands in `build` carries here instead of leaving a number nobody looks at.
+    count: Math.min(q.count, q.kind === 'capital' ? 1 : 3),
+    reward: RATE[q.kind] * Math.min(q.count, q.kind === 'capital' ? 1 : 3),
+    title: q.kind === 'bounty'
+      ? `Destroy 3 ${q.quarry} craft`
+      : q.kind === 'capital'
+        ? `Destroy 1 ${q.quarry} capital hull`
+        : q.title,
+  }
+}
+
+/** The state a new pilot starts in: one small contract, already accepted. */
+export function openingState(seed: string, role: RoleId, nodes: Node[]): QuestState {
+  const q = opening(seed, role, nodes)
+  return q ? { active: { quest: q, progress: 0, picked: false }, done: [], earned: 0 } : newQuests()
+}
+
 /** Why a faction will not deal with you. `null` when it will. */
 export function refusal(faction: Faction, role: RoleId): string | null {
   const r = roleOf(role)

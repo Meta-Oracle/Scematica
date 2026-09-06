@@ -59,10 +59,42 @@ export const TREASURY = 'FCm6Yn1Xmv8XqVx9jnC2pMnff2ZkMC6gShpfRS9ETJ1C'
 /**
  * The policy. Whole tokens, never base units — see `Entitlement` for why the two are kept apart.
  *
- * Deliberately conservative against a treasury of roughly ninety thousand. The per-wallet lifetime
- * cap is the number that decides how much a single forged balance is worth, and the budget is the
- * number that decides how much *every* forged balance together is worth. Neither is a guess about
- * how honest people are; they are the two figures that bound the loss when somebody is not.
+ * The per-wallet lifetime cap is the number that decides how much a single forged balance is
+ * worth, and the budget is the number that decides how much *every* forged balance together is
+ * worth. Neither is a guess about how honest people are; they are the two figures that decide what
+ * happens when somebody is not.
+ *
+ * ## The three caps are one decision, and setting only one of them is a dead setting
+ *
+ * `entitlement` applies every bound at once with a `Math.min`, so **the lowest one is the only one
+ * that ever does anything.** A per-claim cap above the per-wallet cap can never bind; a per-wallet
+ * cap above the budget can never bind either. Raising one in isolation therefore produces a number
+ * that is printed on the page, quoted in a refusal message, and has no effect on any payment — the
+ * same failure class this repository has now hit four times (a momentum gate reading a signal that
+ * was always zero, a Ψ term pinned at 0, an argmax that never moved, a class the roll could never
+ * produce). So the three move together, and `check:scemaworld` asserts the ordering.
+ *
+ * ## What the operator is choosing here
+ *
+ * At `perClaim: 1_000_000` against a measured treasury of 900,000, **the caps no longer bound the
+ * loss** — the treasury balance does. That is a deliberate change of posture and it deserves to be
+ * written down rather than inferred from three numbers: a single claim can now take the whole
+ * treasury, and since a balance lives in a browser tab and is trivially forgeable (see the note
+ * above, which has not stopped being true), the honest description of this deployment is *a
+ * treasury that anyone who opens a developer console can empty in one request*.
+ *
+ * Two things still hold and are worth not losing:
+ *
+ * - **The treasury is still the ceiling, and `entitlement` says so.** A claim above the balance is
+ *   capped at the balance and reports `capped by the treasury balance`; an empty one refuses with
+ *   `treasury_short`. Nothing here can promise money that is not there.
+ * - **Every limit is overridable from the environment** (`treasury.ts::policy`), so lowering the
+ *   exposure is one variable rather than a code change. `SCEMAWORLD_CLAIM_MAX`,
+ *   `SCEMAWORLD_WALLET_MAX` and `SCEMAWORLD_TREASURY_BUDGET`, documented in `.env.example`.
+ *
+ * The bound that remains is the one the caps were never the whole of anyway: **fund the treasury
+ * with what you are willing to distribute.** That was always the real limit, and at these figures
+ * it is the only one.
  */
 export interface Policy {
   /** Whole $SCEMA per unit of in-game SCEMA. */
@@ -81,15 +113,27 @@ export interface Policy {
 
 export const DEFAULT_POLICY: Policy = {
   // One for one. A rate that is not one invites the question "why that number", and there is no
-  // answer to it that is not arbitrary — the *caps* are where the conservatism lives, and putting
+  // answer to it that is not arbitrary — the *caps* are where any conservatism lives, and putting
   // it in the rate as well would be the same conservatism applied twice and legible nowhere.
   rate: 1,
-  perClaim: 250,
-  perWallet: 1_000,
-  // A tenth of a ninety-thousand treasury. The remainder is not reserved for anything in
-  // particular; it is simply not exposed to a bug or a raid in this path.
-  budget: 9_000,
+  // A million at a time.
+  perClaim: 1_000_000,
+  // Equal to the per-claim cap, not above it and not below it. Below it, `perClaim` could never
+  // bind and would be decorative; above it, the lifetime cap would be a second number nobody could
+  // reach, since one claim already takes the maximum. Equal means exactly one thing: **a wallet
+  // gets one withdrawal at the cap, or several adding to it.**
+  perWallet: 1_000_000,
+  // The deployment total, and the same reasoning one level up. Set below `perWallet` it becomes the
+  // real cap and the other two are theatre; set here it means the first wallet to claim the maximum
+  // has taken the deployment's whole allowance, which is a true and legible statement.
+  budget: 1_000_000,
+  // Unchanged, and it still does something: a wallet drawing less than the maximum repeatedly is
+  // paced by this. A wallet drawing the maximum exhausts its lifetime cap in one claim and the
+  // cooldown never gets a chance to apply, which is a consequence of the figures above rather than
+  // a fault in this one.
   cooldownMs: 6 * 60 * 60 * 1_000,
+  // Still ten. The floor exists because a smaller transfer costs more in network fees than it moves,
+  // and that arithmetic does not care what the ceiling is.
   minimum: 10,
 }
 

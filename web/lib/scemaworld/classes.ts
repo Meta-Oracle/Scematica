@@ -212,13 +212,46 @@ export function canEngageAt(spec: ClassSpec, range: number): boolean {
 }
 
 
+/**
+ * ## Everything here is three times as durable as it was, and the photon ladder did not move
+ *
+ * "Far more formidable" is a request about *how long a fight lasts*, and the only honest way to
+ * grant it is to say which number carries it and what had to move with it. Every `hull`, `shield`
+ * and `shieldRegen` in this table is exactly three times its previous value, and `PHOTON.damage`
+ * in `weapons.ts` is three times its previous value — so **`PHOTONS_TO_KILL` is unchanged, to the
+ * round number, for every one of the fifteen classes.** That is not a coincidence, it is the point:
+ * the ladder is a thing a pilot holds in their head ("eight for a titan, six for a dreadnought,
+ * one for a fighter") and scaling durability without scaling the warhead would have quietly turned
+ * a titan into a twenty-four-photon problem, which is not a plan, it is a wall.
+ *
+ * What genuinely changes is **laser** time-to-kill, which is what the tier of buff was aimed at.
+ * See `weapons.ts::LASER`.
+ *
+ * ## Per-shot `damage` did not move at all, and that was measured rather than chosen
+ *
+ * The first attempt raised it by a quarter alongside the durability, on the reasoning that
+ * "formidable" ought to mean dangerous as well as durable. It did not survive contact: a stock
+ * ship parked in a raider wing died before finishing its first kill, in a scenario that has passed
+ * since the sector had wings in it at all.
+ *
+ * The arithmetic is obvious once it is written down. **Durability is already a lethality
+ * multiplier**, because it multiplies how long you spend inside the envelope: a fight that takes
+ * three times as long delivers three times the incoming fire whatever the per-shot figure is. The
+ * player's own hull is not tripled — a stock ship carries 140 points — so tripling durability had
+ * already raised the effective difficulty by about three, and a damage multiplier on top of that
+ * compounds rather than adds.
+ *
+ * So the sector's craft take three times the killing and hit exactly as hard as they always did.
+ * Anyone who wants them deadlier as well should move the *player's* durability in the same edit
+ * and state the ratio, rather than discovering it in a fight.
+ */
 export const CLASSES: Record<ClassId, ClassSpec> = {
   // Barely armed, and the only thing in the sector you can reliably run down. It exists so a
   // new player has something to win against — a game whose first encounter is unwinnable
   // teaches the wrong lesson about every later one.
   skiff: {
     id: 'skiff', label: 'SKIFF', shape: 'interceptor',
-    radius: S(0.0022), hull: 14, shield: 0, shieldRegen: 0,
+    radius: S(0.0022), hull: 42, shield: 0, shieldRegen: 0,
     speed: S(1 / 20), turn: 1.5, aggro: S(0.075), standoff: S(0.012),
     damage: 4, cooldownMs: 1400, burst: 1, bounty: 15, capital: false,
   },
@@ -226,14 +259,14 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // away and come back on your terms, not to out-turn it.
   interceptor: {
     id: 'interceptor', label: 'INTERCEPTOR', shape: 'interceptor',
-    radius: S(0.0028), hull: 22, shield: 12, shieldRegen: 4,
+    radius: S(0.0028), hull: 66, shield: 36, shieldRegen: 12,
     speed: S(1 / 15), turn: 2.4, aggro: S(0.112), standoff: S(0.009),
     damage: 6, cooldownMs: 620, burst: 2, bounty: 30, capital: false,
   },
   // Fast and fragile, fights at a distance. Punishes sitting still.
   lancer: {
     id: 'lancer', label: 'LANCER', shape: 'interceptor',
-    radius: S(0.0032), hull: 20, shield: 22, shieldRegen: 6,
+    radius: S(0.0032), hull: 60, shield: 66, shieldRegen: 18,
     speed: S(1 / 14), turn: 1.8, aggro: S(0.15), standoff: S(0.028),
     damage: 11, cooldownMs: 1500, burst: 1, bounty: 45, capital: false,
   },
@@ -241,21 +274,21 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // first time the turn/speed trade is the whole answer.
   gunship: {
     id: 'gunship', label: 'GUNSHIP', shape: 'gunship',
-    radius: S(0.0055), hull: 160, shield: 100, shieldRegen: 8,
+    radius: S(0.0055), hull: 480, shield: 300, shieldRegen: 24,
     speed: S(1 / 26), turn: 0.85, aggro: S(0.135), standoff: S(0.016),
     damage: 9, cooldownMs: 900, burst: 3, bounty: 90, capital: false,
   },
   // The smallest capital. It does not chase and it does not need to.
   frigate: {
     id: 'frigate', label: 'FRIGATE', shape: 'capital',
-    radius: S(0.028), hull: 280, shield: 180, shieldRegen: 12,
+    radius: S(0.028), hull: 840, shield: 540, shieldRegen: 36,
     speed: S(1 / 90), turn: 0.22, aggro: S(0.225), standoff: S(0.055),
     damage: 16, cooldownMs: 1100, burst: 4, bounty: 350, capital: true,
   },
   // Star-destroyer class: four times a station across, and visible from most of the sector.
   destroyer: {
     id: 'destroyer', label: 'DESTROYER', shape: 'capital',
-    radius: S(0.075), hull: 460, shield: 300, shieldRegen: 20,
+    radius: S(0.075), hull: 1380, shield: 900, shieldRegen: 60,
     speed: S(1 / 150), turn: 0.09, aggro: S(0.30), standoff: S(0.1),
     damage: 24, cooldownMs: 800, burst: 6, bounty: 1200, capital: true,
   },
@@ -274,7 +307,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
    */
   warfighter: {
     id: 'warfighter', label: 'WARFIGHTER', shape: 'capital',
-    radius: S(0.045), hull: 580, shield: 380, shieldRegen: 18,
+    radius: S(0.045), hull: 1740, shield: 1140, shieldRegen: 54,
     // Aggro sits **below** a laser's reach (0.20 extents) and below `MIN_ARRIVAL`, which are the
     // two lines every non-capital has to stay under: a fighter you cannot engage from outside its
     // awareness breaks "a laser outranges every fighter and no capital", and one whose awareness
@@ -294,7 +327,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // is now low enough that being caught once is a mistake rather than the end.
   dreadnought: {
     id: 'dreadnought', label: 'DREADNOUGHT', shape: 'dreadnought',
-    radius: S(0.135), hull: 860, shield: 580, shieldRegen: 22,
+    radius: S(0.135), hull: 2580, shield: 1740, shieldRegen: 66,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
     damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
@@ -306,7 +339,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // intent: perseverance and a manoeuvre, not a bigger number.
   leviathan: {
     id: 'leviathan', label: 'LEVIATHAN', shape: 'dreadnought',
-    radius: S(0.24), hull: 1010, shield: 670, shieldRegen: 26,
+    radius: S(0.24), hull: 3030, shield: 2010, shieldRegen: 78,
     speed: S(1 / 420), turn: 0.028, aggro: S(0.51), standoff: S(0.26),
     damage: 21, cooldownMs: 800, burst: 10, bounty: 14000, capital: true,
   },
@@ -323,7 +356,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // not difficulty, it is a coin toss with extra steps.
   titan: {
     id: 'titan', label: 'TITAN', shape: 'dreadnought',
-    radius: S(0.4), hull: 1150, shield: 770, shieldRegen: 30,
+    radius: S(0.4), hull: 3450, shield: 2310, shieldRegen: 90,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
   },
@@ -337,7 +370,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // the markets look like they are for something.
   courier: {
     id: 'courier', label: 'COURIER', shape: 'interceptor',
-    radius: S(0.0024), hull: 14, shield: 8, shieldRegen: 3,
+    radius: S(0.0024), hull: 42, shield: 24, shieldRegen: 9,
     speed: S(1 / 13), turn: 2.0, aggro: S(0.09), standoff: S(0.01),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
   },
@@ -346,7 +379,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // the wrong reason.
   freighter: {
     id: 'freighter', label: 'FREIGHTER', shape: 'gunship',
-    radius: S(0.009), hull: 150, shield: 100, shieldRegen: 6,
+    radius: S(0.009), hull: 450, shield: 300, shieldRegen: 18,
     speed: S(1 / 42), turn: 0.6, aggro: S(0.09), standoff: S(0.014),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
   },
@@ -355,7 +388,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // patrol that always wins makes the sector safe, which is not the point of having one.
   marshal: {
     id: 'marshal', label: 'MARSHAL', shape: 'interceptor',
-    radius: S(0.0032), hull: 26, shield: 20, shieldRegen: 6,
+    radius: S(0.0032), hull: 78, shield: 60, shieldRegen: 18,
     speed: S(1 / 14), turn: 2.2, aggro: S(0.165), standoff: S(0.012),
     damage: 8, cooldownMs: 700, burst: 2, bounty: 0, capital: false,
   },
@@ -381,7 +414,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // The marshal dreadnought. What answers a raider capital.
   warden: {
     id: 'warden', label: 'WARDEN', shape: 'dreadnought',
-    radius: S(0.135), hull: 860, shield: 580, shieldRegen: 22,
+    radius: S(0.135), hull: 2580, shield: 1740, shieldRegen: 66,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
     damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
   },
@@ -390,7 +423,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // exists to produce.
   bastion: {
     id: 'bastion', label: 'BASTION', shape: 'dreadnought',
-    radius: S(0.4), hull: 1150, shield: 770, shieldRegen: 30,
+    radius: S(0.4), hull: 3450, shield: 2310, shieldRegen: 90,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
   },

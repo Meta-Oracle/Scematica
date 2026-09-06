@@ -221,7 +221,12 @@ export const PER_WING = 4
  *
  * Every sector gets the same garrison. A record cannot buy itself a quieter one.
  */
-const GARRISON: ClassId[] = ['dreadnought', 'dreadnought', 'leviathan', 'titan']
+export const GARRISON: ClassId[] = ['dreadnought', 'dreadnought', 'leviathan', 'titan']
+
+/** How many of each class the garrison carries. What a replacement has to restore. */
+export function garrisonStrength(klass: ClassId): number {
+  return GARRISON.filter((k) => k === klass).length
+}
 
 /**
  * How far apart a wing's craft sit, as a fraction of engagement range.
@@ -304,6 +309,60 @@ export function raiderWing(
 }
 
 /**
+ * A **replacement** capital of a named class.
+ *
+ * Deliberately separate from the garrison loop in `raidersOf` rather than a refactor of it. Factor
+ * the two together and the opening sector's layout moves, because the garrison shares one `Rng`
+ * pass whose draws depend on how many capitals precede each other — and the opening sector is the
+ * part of this game that has to be a pure function of the record. So this is an independent
+ * stream with its own id form, and every existing world is byte-identical to what it was.
+ *
+ * The class is **named, not rolled**, and the caller names the one that is missing. Cycling
+ * `GARRISON` by index instead would replace a dead titan with a dreadnought and let the sector's
+ * composition drift away from the roster every sector is supposed to share.
+ *
+ * `clearance` is much larger than a fighter's for a reason that is not politeness: a titan's own
+ * `aggro` reaches 0.60 of the sector, so a capital placed at a fighter's clearance is already
+ * hunting the player at the instant it exists.
+ */
+export function raiderCapital(
+  seed: string,
+  klass: ClassId,
+  index: number,
+  awayFrom: Vec3 = ORIGIN,
+  clearance: number = AGGRO_RANGE * 5,
+): Contact {
+  // The garrison's own slice, advanced past the opening placements and then by wave, so a
+  // replacement never lands exactly where the capital it replaces started — which is what sharing
+  // the stream would do, and it would read as the same ship coming back rather than as another
+  // one arriving.
+  const rng = new Rng(seed.slice(4, 12) || seed.slice(8, 16) || seed)
+  const offset = [...`capital:${klass}`].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 997, 11)
+  for (let i = 0; i < GARRISON.length + offset + index * 5; i += 1) rng.below(1024)
+
+  let at = scatter(rng, SECTOR_REACH, SCATTER_PULL, SPAWN_STANDOFF)
+  let guard = 0
+  while (
+    Math.hypot(at.x - awayFrom.x, at.y - awayFrom.y, at.z - awayFrom.z) < clearance &&
+    guard < 24
+  ) {
+    at = { x: at.x * 2 - awayFrom.x, y: at.y * 2 - awayFrom.y, z: at.z * 2 - awayFrom.z + clearance }
+    guard += 1
+  }
+  return {
+    // `+` before the wave number, so a replacement id can never collide with a garrison id.
+    id: `raider:capital:${klass}+${index}`,
+    at,
+    hostility: 'hostile',
+    solid: true,
+    magnitude: 0.8,
+    label: 'RAIDER',
+    unlogged: true,
+    klass,
+  }
+}
+
+/**
  * Place the sector's raiders: the wings, plus the capital garrison.
  *
  * Deterministic in the seed, so two players holding the same record fight the same sector —
@@ -359,8 +418,12 @@ export function raidersOf(seed: string): Contact[] {
  * wings: four craft arriving together is an encounter, and one craft appearing alone every so
  * often is a leak.
  *
- * **The capital garrison is not replaced.** A leviathan you killed stays killed, or the largest
- * thing you can do in the sector becomes a chore with a respawn timer.
+ * **The capital garrison is replaced, slowly and one at a time.** It used to be never, on the
+ * reasoning that a leviathan you spent four minutes killing is the only lasting mark you can leave
+ * — which is a real cost, and it was paid for by a sector that ran permanently out of the only
+ * fights worth crossing it for. `CAPITAL_INTERVAL_MS` is what keeps both halves: a kill still buys
+ * minutes of a quieter sector, so clearing the war classes is worth doing, and the sector does not
+ * become a place where the largest thing in it is a resource you can exhaust.
  */
 export const RAIDER_FLOOR = Math.round(WINGS * PER_WING * 0.6)
 
@@ -379,6 +442,7 @@ export const RAIDER_FLOOR = Math.round(WINGS * PER_WING * 0.6)
  * worth doing, because what it buys is time rather than a permanent dent — the deficit comes back
  * over minutes, which is a pace, where a dent is just less game.
  *
- * The capital garrison is still never replaced, which is why this counts fighters only.
+ * The capital garrison is replenished on its own, much slower timer, which is why this counts
+ * fighters only — a dead capital is not a fighter shortfall and must never surge the wings.
  */
 export const RAIDER_STRENGTH = WINGS * PER_WING

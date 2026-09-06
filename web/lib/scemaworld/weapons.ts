@@ -76,7 +76,26 @@ export const LASER: Weapon = {
   tracking: false,
   magazine: null,
   calibre: Math.round(R_CONTACT * 1.4),
-  damage: 5,
+  /**
+   * Per bolt. **Seven, and the figure is set by one measurement: ninety seconds on a titan.**
+   *
+   * A stock ship fires every 110ms, so seven a bolt is 63.6 a second. A titan carries 5,760
+   * effective points (`classes.ts`, three times what it did), and 5760 / 63.6 is ninety-one
+   * seconds of *unbroken* fire — which is a minute and a half of holding a firing solution on
+   * something that is shooting back with a fourteen-round broadside, and is therefore a real
+   * engagement rather than a number.
+   *
+   * The buff and the durability change are one decision and have to be read together. Against a
+   * fighter the laser got roughly twice as slow to kill (an interceptor is 1.6 seconds now against
+   * 0.75), and against a capital it went from *impossible* to ninety seconds — impossible not
+   * because of this number but because the bolt died before it arrived; see `LIFE_LASER`.
+   *
+   * Upgrades still matter and still shorten it: four laser levels and a lancer's `guns` take the
+   * cooldown to its 26ms floor, which is a titan in about twenty seconds. That spread — ninety
+   * seconds stock, twenty fully specced — is the widest this weapon has ever had, and it is the
+   * reason the component is worth buying.
+   */
+  damage: 7,
 }
 
 /**
@@ -108,7 +127,22 @@ export const PHOTON: Weapon = {
   tracking: true,
   magazine: 1,
   calibre: Math.round(R_CONTACT * 7),
-  damage: 240,
+  /**
+   * **720, which is three times what it was, and the multiplier is not free-standing.**
+   *
+   * Every `hull`, `shield` and `shieldRegen` in `classes.ts` was tripled to make the sector's
+   * craft more formidable. Had this stayed at 240, `PHOTONS_TO_KILL` would have tripled with it —
+   * a titan becoming a twenty-four-warhead problem, from a magazine that holds at most 44. The
+   * ladder is the whole design of this weapon: it is a **count a pilot holds in their head**, and
+   * a count nobody can hold is not a plan, it is a wall.
+   *
+   * So the two moved together and the ladder came out **byte for byte identical** — eight for a
+   * titan, seven for a leviathan, six for a dreadnought, four for a warfighter, two for a heavy
+   * fighter, one for a fighter. `check:scemaworld` asserts `ceil(ehp / PHOTON.damage)` against
+   * that table for all fifteen classes, which is what makes the claim checkable rather than
+   * asserted.
+   */
+  damage: 720,
 }
 
 export const WEAPONS: Weapon[] = [LASER, PHOTON]
@@ -343,6 +377,15 @@ export interface Hit {
   contact: string
   /** How much damage the round carried. The *swarm* decides what that does to a hull. */
   damage: number
+  /**
+   * Which weapon landed it.
+   *
+   * Carried so the *effect* can differ without anybody inferring it from the damage figure. A
+   * photon detonates and a laser sparks, and deriving that from `damage > 500` would be a
+   * threshold that silently stops meaning anything the first time a yield moves — which is exactly
+   * what happened when `PHOTON.damage` tripled.
+   */
+  kind: WeaponKind
 }
 
 /** Advance projectiles by `dt` seconds and resolve hits. Pure. */
@@ -394,8 +437,27 @@ export function step(
     if (blocked && blocked(p.at, at)) continue
 
     let consumed = false
+    // How far this step could possibly reach, for the cheap reject below. One number per
+    // projectile rather than per contact.
+    const span = travel + w.calibre
     for (const contact of contacts) {
       if (destroyed.includes(contact.id)) continue
+      // ## An axis reject, before anything allocates
+      //
+      // `LIFE_LASER` now covers the whole sector, which took a stock ship's live bolt count from
+      // about two to about a hundred and ten. This loop is bolts × contacts, and the capsule path
+      // below builds three vectors per test — so without a reject the change would have gone from
+      // 500 capsule constructions a second to 1.6 million, and the symptom would have been the
+      // frame rate rather than anything legible.
+      //
+      // Rejecting on each axis separately costs three comparisons and no allocation, and it is the
+      // same trick `nearestService` uses over the node list for the same reason. The bound is
+      // deliberately generous — a hull's own extent, times its longest reach along the nose — so it
+      // can only ever reject something the real test would also have missed.
+      const reach = span + (contact.radius ?? R_CONTACT + R_CONTACT_SPAN) * 2.2
+      if (Math.abs(contact.at.x - p.at.x) > reach) continue
+      if (Math.abs(contact.at.y - p.at.y) > reach) continue
+      if (Math.abs(contact.at.z - p.at.z) > reach) continue
       // Swept along the whole step, so a fast shot cannot pass through a target between frames.
       //
       // ## The target is a shape, not a sphere around one
@@ -433,7 +495,7 @@ export function step(
         hitCount[contact.id] = (hitCount[contact.id] ?? 0) + 1
         // The round's own stamped yield, not the table's. A photon fired before a MISSILES
         // upgrade must land for what it was loaded with.
-        hits.push({ contact: contact.id, damage: p.damage })
+        hits.push({ contact: contact.id, damage: p.damage, kind: p.kind })
         consumed = true
         break
       }

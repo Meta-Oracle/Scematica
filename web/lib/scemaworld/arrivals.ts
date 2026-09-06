@@ -35,7 +35,7 @@
 
 import type { Vec3 } from './generate.ts'
 import type { Faction } from './factions.ts'
-import { AGGRO_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
+import { AGGRO_RANGE, ENGAGE_RANGE, SENSOR_MULTIPLIER } from './scale.ts'
 
 /**
  * How long the entry streak is on screen before the craft exists.
@@ -183,6 +183,36 @@ export function arrivalPoint(
 //     than the dimmest. Fading out and then producing a ship reads as two unrelated events.
 
 /** How many streaks in one entry. Enough to read as a bundle, few enough that a wing is not a wall. */
+/**
+ * The player's own jump field: how many struts the cage is built from.
+ *
+ * Far more than an arriving craft's six, because this one is **around you**, filling the frame,
+ * for two and a half seconds. Six strands read as a bundle at a distance and as four visible lines
+ * when you are inside them. Twenty-eight reads as a *structure* closing in, which is the thing the
+ * spin-up was missing: charging the drive was a progress bar and a notice, with nothing happening
+ * in the world you are looking at.
+ */
+export const FIELD_STRUTS = 28
+
+/** How many rings the cage has along the ship's axis. */
+export const FIELD_RINGS = 5
+
+/** How far the field reaches at the start of the charge, as a multiple of engagement range. */
+export const FIELD_REACH = 0.9
+
+/** How wide the cage is at the start, as a multiple of engagement range. */
+export const FIELD_RADIUS = 0.42
+
+/**
+ * How tight the cage gets at full charge, as a fraction of its opening radius.
+ *
+ * Not zero. A field that collapses onto the hull would put every strut inside the ship on the last
+ * frames, where they are invisible, so the effect would appear to *stop* a moment before the jump
+ * rather than peak at it. A tenth keeps the cage a hand's breadth off the hull at the instant it
+ * fires, which is where it should be brightest.
+ */
+export const FIELD_MIN = 0.1
+
 export const STREAK_STRANDS = 6
 
 /** How far back along the entry vector the streaks begin, at t=0. */
@@ -233,6 +263,79 @@ export function perpBasis(dir: Vec3): [Vec3, Vec3] {
       z: dir.x * uy - dir.y * ux,
     },
   ]
+}
+
+/**
+ * The player's own hyperspace field at charge `t`, 0..1.
+ *
+ * ## What this replaces
+ *
+ * Nothing. A jump was a progress figure in the HUD, a notice, and then the ship was somewhere
+ * else — the single largest thing the player does, with no presence in the world at all. Every
+ * *other* craft's entry has had a visible effect since `streak` was written, so the one jump the
+ * player actually performs was the only one they could not see.
+ *
+ * ## The shape, and why it is a cage rather than a glow
+ *
+ * A radial glow is what a shader does when nobody has decided what the effect *is*. It carries no
+ * information, reads identically at every stage of the charge, and — the practical objection — is
+ * invisible in a wireframe renderer that has no post-processing and deliberately no depth writes
+ * on its additive pass.
+ *
+ * So the field is built out of the one thing this renderer is good at: **lines**. A cage of struts
+ * runs fore-and-aft along the ship's own axis, in rings, and **draws inward and forward** as the
+ * charge completes — reach shortens, radius tightens, brightness climbs. What a pilot sees is
+ * something being *assembled* around them on a clock they can read without looking at the HUD,
+ * which is exactly what a two-and-a-half-second commitment window needs.
+ *
+ * Pure, and pure of the record: nothing here reads a world. A jump looks the same in every sector,
+ * because it is a fact about your drive rather than about what somebody perceived.
+ *
+ * Aborting is legible for free — the strands simply stop being emitted, and a structure that was
+ * closing in vanishing is unmistakably a thing that did not happen.
+ */
+export function jumpField(at: Vec3, facing: Vec3, t: number): Strand[] {
+  const k = Math.max(0, Math.min(1, t))
+  const [u, v] = perpBasis(facing)
+  // Squared on the way in, so the cage spends most of the charge wide and slams shut at the end.
+  // Linear reads as a steady shrink, which is a loading bar drawn in three dimensions.
+  const tighten = FIELD_MIN + (1 - FIELD_MIN) * (1 - k) * (1 - k)
+  const radius = ENGAGE_RANGE * FIELD_RADIUS * tighten
+  const reach = ENGAGE_RANGE * FIELD_REACH * tighten
+
+  const out: Strand[] = []
+  for (let i = 0; i < FIELD_STRUTS; i += 1) {
+    const a = (i / FIELD_STRUTS) * Math.PI * 2
+    // Each strut is offset around the axis and twisted with the charge, so the cage visibly
+    // *rotates* as it closes. A static cage that only shrinks reads as a scaling sprite.
+    const twist = a + k * 2.2
+    const ox = (u.x * Math.cos(twist) + v.x * Math.sin(twist)) * radius
+    const oy = (u.y * Math.cos(twist) + v.y * Math.sin(twist)) * radius
+    const oz = (u.z * Math.cos(twist) + v.z * Math.sin(twist)) * radius
+    for (let r = 0; r < FIELD_RINGS; r += 1) {
+      // Rings from astern to ahead. The ship sits at the middle, so the cage brackets it rather
+      // than trailing behind it — a field that is only behind you is an exhaust.
+      const z0 = -reach + (reach * 2 * r) / FIELD_RINGS
+      const z1 = -reach + (reach * 2 * (r + 1)) / FIELD_RINGS
+      out.push({
+        from: {
+          x: Math.round(at.x + facing.x * z0 + ox),
+          y: Math.round(at.y + facing.y * z0 + oy),
+          z: Math.round(at.z + facing.z * z0 + oz),
+        },
+        to: {
+          x: Math.round(at.x + facing.x * z1 + ox),
+          y: Math.round(at.y + facing.y * z1 + oy),
+          z: Math.round(at.z + facing.z * z1 + oz),
+        },
+        // Rings nearer the nose are brighter, so the structure has a direction. Brightness climbs
+        // with the charge for the same reason an entry brightens as it closes: an effect that
+        // faded out and *then* fired would read as two unrelated events.
+        alpha: (0.18 + 0.55 * k) * (0.45 + (0.55 * (r + 1)) / FIELD_RINGS),
+      })
+    }
+  }
+  return out
 }
 
 /**

@@ -135,6 +135,17 @@ export const R_PLAYER = Math.round(EXTENT * 0.0035)
 export const DOCK_RANGE = Math.round(EXTENT * 0.075)
 
 /**
+ * How far away something can be and still be heard (`audio.ts`).
+ *
+ * A fraction of the sector, like every other distance in this file, and generous on purpose: the
+ * gate is not a physics claim — there is no sound in vacuum and the game is not pretending
+ * otherwise — it is the mechanism that stops a firefight on the far side of the volume from
+ * filling a sixteen-voice mixer. Set to a little over the sensor reach, so anything you can *see*
+ * on the board can be faintly heard, and nothing beyond it can take a voice from something near.
+ */
+export const AUDIBLE_RANGE = Math.round(EXTENT * 0.6)
+
+/**
  * Default sensor and engagement ranges.
  *
  * Every armed class overrides both from `classes.ts` — a destroyer sees further than a skiff,
@@ -346,7 +357,39 @@ export const ASSIST = 1.5
  * external audit rather than by this repository, which is the point.
  */
 export const SPEED_LASER = Math.round(EXTENT / 1.05)
-export const LIFE_LASER = 0.21
+
+/**
+ * How long a laser bolt lives — **long enough to cross the whole sector**.
+ *
+ * ## The defect this fixes, which was invisible and total
+ *
+ * It was 0.21 seconds, giving a reach of 0.20 extents. A titan holds a standoff of **0.40** and
+ * notices you at 0.60. So a titan sat at exactly the range it wants to fight at, and every laser
+ * bolt fired at it evaporated in empty space less than halfway there. Not *weak* against a
+ * capital — unable to reach one, at all, ever, unless the player flew inside a standoff the ship
+ * is designed to hold. Nothing errored and the shots looked fine leaving the muzzle.
+ *
+ * This is the third time this exact shape of bug has been found here. `shotLifeOf` documents it
+ * for enemy rounds — two capital fleets in each other's engagement envelopes, both firing, every
+ * round dying in the gap — and the fix there was to derive the lifetime from the range the class
+ * is willing to fire at rather than tune it. Same fix, one scale up: **a bolt lives long enough
+ * to cross the sector**, so "can my laser reach that" is never a question a player has to hold.
+ *
+ * Derived from `SECTOR_REACH`, never written down, for the reason every other derived distance in
+ * this file is: the sector has been resized twice and both times a hand-written constant survived
+ * the change while quietly meaning something else.
+ *
+ * ## Why unlimited range is not the balance problem it sounds like
+ *
+ * The bolt is not instantaneous. It crosses an extent in 1.05 seconds, so the far edge of the
+ * sector is *twelve seconds* of flight — and an interceptor moving at a fifteenth of an extent per
+ * second travels fifteen times its own width in the first second alone. Sniping a fighter across
+ * the sector misses by an enormous margin and always will. What the range actually buys is the
+ * thing it was taken away from: hitting something that is **holding station at its standoff**,
+ * which is precisely what a capital does and precisely what a fighter never does. The weapon
+ * became an anti-capital weapon by being allowed to reach one.
+ */
+export const LIFE_LASER = Math.round((((SECTOR_REACH * 2) / SPEED_LASER) + 0.5) * 100) / 100
 
 /** A photon missile is slower and lives far longer, so it reaches — and it tracks. */
 export const SPEED_PHOTON = Math.round(EXTENT / 2.6)

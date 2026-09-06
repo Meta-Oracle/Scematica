@@ -16,9 +16,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { verifyRecordText, webSha256, type Verification } from '@/lib/omni/verify'
-import { plateSourceFromText } from '@/lib/omni/nft'
+import { plateSourceFromText, renderSvg } from '@/lib/omni/nft'
 import { readWorldCommitment, readEmbeddedRecord } from '@/lib/omni/raster'
 import { explain, fetchWorld, matchesRequest, retryable } from '@/lib/scemaworld/vault'
+import { observeRepo, parseRepo, type WorldState as RepoWorld } from '@/lib/scemaworld/github'
+import { attenuate, createEngine, type Engine } from '@/lib/scemaworld/audio'
+import { AUDIBLE_RANGE } from '@/lib/scemaworld/scale'
 import { generate, type Space } from '@/lib/scemaworld/generate'
 import { drawList, boundaryLabel, sensorLabel } from '@/lib/scemaworld/view'
 import {
@@ -79,10 +82,30 @@ import {
   type Combat,
 } from '@/lib/scemaworld/weapons'
 
+/**
+ * How long a spoken line stays on screen.
+ *
+ * Longer than a notice, because a notice is a state you can re-read off the panels and a line is
+ * gone the moment it fades — and shorter than the fight it was said in, or the last thing a dead
+ * raider said sits under the crosshair while you are being shot by something else.
+ */
+const CHATTER_MS = 4_200
+
 interface Loaded {
   name: string
   space: Space
-  verification: Verification
+  /**
+   * `null` for a world **observed here**, which was never sealed and therefore cannot be verified.
+   *
+   * A third state, not a default. VERIFIED and INVALID are both claims about a commitment, and a
+   * world perceived in this browser has none: printing VERIFIED would let an observation borrow a
+   * decision record's authority, and printing INVALID would be an accusation about an edit nobody
+   * made. It is the em-dash rule in the one place a player would act on it — an unmeasured thing
+   * must not look like a measured one.
+   */
+  verification: Verification | null
+  /** The plate, when the world was drawn here rather than dropped. */
+  plate?: string | null
 }
 
 
@@ -162,6 +185,25 @@ export function ScemaWorldTerminal() {
   const loadedRef = useRef<Loaded | null>(null)
 
   const [ticket, setTicket] = useState<string | null>(null)
+  const [repoInput, setRepoInput] = useState('')
+  const [repoMsg, setRepoMsg] = useState<string | null>(null)
+  const [observing, setObserving] = useState(false)
+  /** A world perceived from a repository, drawn, and waiting to be entered. */
+  const [observed, setObserved] = useState<
+    { name: string; world: RepoWorld; digest: string; svg: string } | null
+  >(null)
+  /**
+   * The sound engine, held from mount and **silent until a gesture resumes it**.
+   *
+   * A ref rather than state: it is a device, not a value the UI renders from, and putting it in
+   * state would re-render the tree every time a mute toggled. `muted` is mirrored into state
+   * separately, because the indicator *is* a rendered value.
+   */
+  const audio = useRef<Engine | null>(null)
+  const [muted, setMuted] = useState(false)
+  /** What the last frame saw, so a cue fires on a *change* rather than on a condition. */
+  const heard = useRef({ bursts: 0, shots: 0, phase: 'idle' as string })
+
   const [vault, setVault] = useState('')
   const [holder, setHolder] = useState('')
   const [vaultMsg, setVaultMsg] = useState<string | null>(null)
@@ -206,6 +248,71 @@ export function ScemaWorldTerminal() {
     },
     [vault, holder],
   )
+
+  /**
+   * Perceive a GitHub repository and draw it, without entering it.
+   *
+   * ## Two steps, deliberately
+   *
+   * Observing and entering are separate presses, and the split is the same one `scema simulate`
+   * and `scema decide` keep: they compute exactly the same thing up to the last step, and the only
+   * thing stopping a look from reading as a commitment is that they are not the same keystroke.
+   * Here it also gives the plate somewhere to exist — the point of drawing a world is that you get
+   * to look at it before you fly it.
+   *
+   * ## Why the plate is drawn from the serialised text rather than the object
+   *
+   * Same reason `/omni` verifies raw text and never a re-serialised object: the commitment is over
+   * the **canonical encoding**, and a `JSON.parse`/`stringify` round trip collapses `0.0` to `0`,
+   * which moves it from the FLOAT tag to the INTEGER tag and changes the digest. So the world is
+   * serialised once, and that string is the artefact — the digest, the plate and the space are all
+   * derived from the same bytes, and cannot disagree about which world this is.
+   */
+  const observeGithub = useCallback(async () => {
+    setRepoMsg(null)
+    setObserved(null)
+    setError(null)
+    const ref = parseRepo(repoInput)
+    if (!ref) {
+      setRepoMsg(
+        'That does not name a repository. Paste a GitHub URL or `owner/repo` — nothing is ' +
+          'guessed from a partial name, because fetching the wrong thing and reporting a 404 ' +
+          'would look like the repository being missing.',
+      )
+      return
+    }
+    setObserving(true)
+    try {
+      const r = await observeRepo(ref, fetch, Date.now())
+      if (!r.ok) {
+        setRepoMsg(r.detail)
+        return
+      }
+      const text = JSON.stringify(r.world)
+      const source = await plateSourceFromText(text, webSha256)
+      setObserved({
+        name: `${ref.owner}/${ref.repo}`,
+        world: r.world,
+        digest: source.digest,
+        svg: renderSvg(source.world, source.digest),
+      })
+    } catch (e) {
+      setRepoMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setObserving(false)
+    }
+  }, [repoInput])
+
+  /** Enter a world that was observed here. It has no commitment to check — see `Loaded`. */
+  const enterObserved = useCallback(() => {
+    if (!observed) return
+    setLoaded({
+      name: `${observed.name} — observed`,
+      space: generate(observed.world as never, observed.digest),
+      verification: null,
+      plate: observed.svg,
+    })
+  }, [observed])
 
   const flyRecordText = useCallback(async (text: string, name: string) => {
     const verification = await verifyRecordText(text, webSha256)
@@ -276,6 +383,12 @@ export function ScemaWorldTerminal() {
     saved.current = accountOf(game.current.ship)
     setHud(game.current)
 
+    // Created here and suspended; browsers refuse a context resumed outside a gesture, and a page
+    // that starts one on load gets silence plus a console warning — which presents as broken sound
+    // rather than as a refused sound. `resume` is called from the key handler below.
+    if (!audio.current) audio.current = createEngine()
+    setMuted(audio.current.muted)
+
     let last = 0
     const frame = (t: number) => {
       const dt = last === 0 ? 0.016 : Math.min((t - last) / 1000, 0.1)
@@ -292,6 +405,40 @@ export function ScemaWorldTerminal() {
           dt,
           nowMs: t,
         })
+      }
+
+      // ## Cues fire on a change, never on a condition
+      //
+      // A frame loop is the wrong place to ask "is something exploding" — the answer is true for
+      // every frame of a burst's life, so a condition plays the same sound sixty times. What is
+      // read here is the *difference* between this frame and the last: bursts that did not exist
+      // before, rounds that were not in the air before, a drive phase that has changed.
+      //
+      // Distance gates before the engine's voice cap does, so a firefight on the far side of the
+      // sector cannot fill the mixer and decide which sounds you hear — see `audio.ts`.
+      const snd = audio.current
+      const now = game.current
+      if (snd && now && !pausedRef.current) {
+        const at = now.camera.position
+        for (const b of now.bursts ?? []) {
+          if (b.startedMs <= heard.current.bursts) continue
+          const d = Math.hypot(b.at.x - at[0], b.at.y - at[1], b.at.z - at[2])
+          const vol = attenuate(d, AUDIBLE_RANGE)
+          if (vol > 0) snd.play(b.kind === 'detonation' ? 'kill' : b.kind, vol)
+        }
+        heard.current.bursts = now.nowMs
+        // Your own guns. Counted rather than watched for a `firing` flag, so the cue tracks
+        // rounds actually leaving the tubes — a held trigger on an empty magazine makes no sound,
+        // which is the feedback a magazine count exists to give.
+        const shots = now.combat.projectiles.length
+        if (shots > heard.current.shots) snd.play('laser', 0.9)
+        heard.current.shots = shots
+        const phase = now.drive.phase
+        if (phase !== heard.current.phase) {
+          if (phase === 'charging') snd.play('jump-charge', 1)
+          else if (heard.current.phase === 'charging' && phase === 'idle') snd.play('jump-fire', 1)
+          heard.current.phase = phase
+        }
       }
 
       const w = canvas.clientWidth
@@ -405,6 +552,24 @@ export function ScemaWorldTerminal() {
       if (pausedRef.current) return
       keys.current.add(e.code)
       setGreeted(true)
+
+      // ## The gesture that lets the sound exist
+      //
+      // A browser suspends an `AudioContext` resumed outside a user gesture, so the engine is
+      // built on mount and woken here, on the first key a player presses. Doing it on mount
+      // instead is the common mistake and its symptom is silence with a console warning — which
+      // everybody reads as "the sound is broken" rather than as "the browser refused".
+      //
+      // Safe to call every keypress: `resume` on a running context is a no-op.
+      void audio.current?.resume()
+      if (e.code === 'KeyN') {
+        const snd = audio.current
+        if (snd) {
+          snd.setMuted(!snd.muted)
+          setMuted(snd.muted)
+        }
+        return
+      }
 
       const g = game.current
       const world = loadedRef.current
@@ -522,6 +687,96 @@ export function ScemaWorldTerminal() {
             <span className="text-omni-text">Choose a record — or a PNG that names one…</span>
           </label>
           {error && <p className="text-omni-invalid">{error}</p>}
+
+          {/*
+            ## A repository, perceived here
+
+            The fifth producer on the `scema.world/1` contract, and the first one a player can run
+            without installing anything — see `lib/scemaworld/github.ts` for why it lives in the
+            browser rather than in omni.
+
+            **The card says what this is, on screen and not only in a comment.** A world observed
+            here is an observation and not a decision: nobody ran the loop, nobody weighed anything,
+            and nothing was sealed. It can be drawn and flown and it cannot be verified, because
+            there is no commitment to check it against. Every rule in this project exists to stop an
+            unsealed thing borrowing a sealed one's authority, and this is the exact place that
+            would happen quietly.
+          */}
+          <div className="rounded border border-omni-border-hi p-4">
+            <div className="text-omni-accent">…or perceive a repository, right here</div>
+            <p className="mt-1 text-omni-dim">
+              Paste a GitHub URL or <code>owner/repo</code>. This page becomes the observer: it
+              reads the repository from your browser, writes down what it counted{' '}
+              <em>and what it could not read</em>, and draws the world that comes out. Nothing is
+              uploaded and no server of ours is in the path.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <input
+                value={repoInput}
+                onChange={(e) => setRepoInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void observeGithub()
+                }}
+                placeholder="github.com/owner/repo"
+                className="min-w-[16rem] flex-1 rounded border border-omni-border bg-black px-2 py-1 font-mono text-xs text-omni-text"
+              />
+              <button
+                type="button"
+                disabled={!repoInput || observing}
+                onClick={() => void observeGithub()}
+                className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent disabled:opacity-40"
+              >
+                {observing ? 'observing…' : 'Observe'}
+              </button>
+            </div>
+            {repoMsg && <p className="mt-2 text-omni-warn">{repoMsg}</p>}
+            {observed && (
+              <div className="mt-4 flex flex-col gap-4 sm:flex-row">
+                {/*
+                  The plate. Drawn by the same renderer the CLI uses (`lib/omni/nft.ts`, pinned
+                  byte-for-byte against Rust by `check:omni`), so what is on screen here is the
+                  artefact and not a preview of one.
+                */}
+                <div
+                  className="w-full max-w-[16rem] shrink-0 self-start"
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: observed.svg }}
+                />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="font-mono text-xs text-omni-text">{observed.name}</div>
+                  <div className="break-all font-mono text-xs text-omni-dim">
+                    world {observed.digest.slice(0, 24)}…
+                  </div>
+                  <div className="text-omni-dim">
+                    {observed.world.objects.length} object(s) ·{' '}
+                    {observed.world.signals.length} signal(s) ·{' '}
+                    {observed.world.blind_spots.length} blind spot(s)
+                  </div>
+                  {observed.world.blind_spots.length > 0 && (
+                    <ul className="space-y-0.5 text-omni-warn">
+                      {observed.world.blind_spots.map((b) => (
+                        <li key={b}>— {b}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="text-omni-muted">
+                    This is an <span className="text-omni-warn">observation</span>, not a sealed
+                    decision record. It has a world commitment, computed here with the same encoder
+                    the CLI uses — so the space is reproducible and the plate is its derivative.
+                    What it does not have is a seal, so there is nothing to verify and the HUD will
+                    say <span className="text-omni-warn">OBSERVED</span> rather than VERIFIED.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={enterObserved}
+                    className="rounded border border-omni-border-hi px-3 py-1 text-omni-text hover:border-omni-accent"
+                  >
+                    Enter this world
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           {ticket && (
             <div className="rounded border border-omni-border-hi p-4">
               <div className="text-omni-accent">This image names a world.</div>
@@ -594,10 +849,18 @@ export function ScemaWorldTerminal() {
             <div className="text-omni-dim">world {s.seed.slice(0, 16)}…</div>
             <div
               className={
-                loaded.verification.valid ? 'text-omni-valid' : 'text-omni-invalid'
+                loaded.verification === null
+                  ? 'text-omni-warn'
+                  : loaded.verification.valid
+                    ? 'text-omni-valid'
+                    : 'text-omni-invalid'
               }
             >
-              {loaded.verification.valid ? 'VERIFIED' : 'INVALID — this record was edited'}
+              {loaded.verification === null
+                ? 'OBSERVED — perceived here, never sealed'
+                : loaded.verification.valid
+                  ? 'VERIFIED'
+                  : 'INVALID — this record was edited'}
             </div>
           </div>
 
@@ -728,7 +991,7 @@ export function ScemaWorldTerminal() {
                 M market
               </div>
               <div className="mt-1">
-                1 route to fuel · 2 repair · 3 market · 4 salvage · 0 clear waypoint
+                1 route to fuel · 2 repair · 3 market · 4 salvage · 7 contract · 0 clear
               </div>
               <div className="mt-1 text-omni-accent">
                 HOLD J to jump to the waypoint — the drive will not spin up with hostiles in
@@ -821,9 +1084,44 @@ export function ScemaWorldTerminal() {
             />
           )}
 
+          {/*
+            The sound state, on screen. A mute with no indicator is indistinguishable from audio
+            that never worked — which is exactly what a suspended `AudioContext` looks like, so the
+            one state a player most needs to be able to see is the one that has no other symptom.
+          */}
+          <div className="pointer-events-none absolute bottom-4 right-5 font-mono text-xs text-omni-muted">
+            {muted ? 'sound off (N)' : 'sound on (N)'}
+          </div>
+
           {hud?.notice && (
             <div className="pointer-events-none absolute inset-x-0 top-24 text-center font-mono text-xs text-omni-accent">
               {hud.notice}
+            </div>
+          )}
+
+          {/*
+            Faction chatter (`dialogue.ts`). **Below the notice, not in it**, and in the speaker's
+            own colour rather than the notice accent.
+
+            A notice is the game telling you something — a hull breach, a contract completing, a
+            refusal — and chatter is somebody in the sector talking. Putting them in one slot would
+            let a raider's last words overwrite HULL BREACHED, which is the one line a player has
+            to see. Two lines, two authorities, and the colour says which is which without reading.
+
+            It expires on the same clock the notice does, so a line does not sit under the
+            crosshair after the ship that said it stopped existing.
+          */}
+          {hud?.chatter && hud.nowMs - hud.chatterAt < CHATTER_MS && (
+            <div
+              className={`pointer-events-none absolute inset-x-0 top-32 text-center font-mono text-xs ${
+                hud.chatter.faction === 'raider'
+                  ? 'text-omni-invalid'
+                  : hud.chatter.faction === 'marshal'
+                    ? 'text-omni-warn'
+                    : 'text-omni-dim'
+              }`}
+            >
+              <span className="opacity-70">{hud.chatter.speaker}:</span> {hud.chatter.text}
             </div>
           )}
 
@@ -1298,7 +1596,9 @@ export function ScemaWorldTerminal() {
                     ['LEFT CLICK', 'switch weapon'],
                     ['F / R / V', 'refuel · repair · scavenge'],
                     ['M', 'market and shipyard'],
+                    ['N', 'sound on / off'],
                     ['1 / 2 / 3 / 4', 'course to fuel · repair · market · salvage'],
+                    ['7', 'course to the active contract'],
                     ['0', 'clear course'],
                     ['hold J', 'jump to course'],
                     ['ESC', 'pause'],
@@ -1362,7 +1662,7 @@ export function ScemaWorldTerminal() {
             </div>
           )}
 
-          {!loaded.verification.valid && (
+          {loaded.verification !== null && !loaded.verification.valid && (
             <div className="pointer-events-none absolute inset-x-0 bottom-24 mx-auto max-w-xl rounded border border-omni-invalid bg-black/80 p-3 text-center text-xs text-omni-invalid">
               This record does not match its own commitment, so this space is not the one it
               claims to describe. It is drawn anyway — a forgery you cannot look at is one

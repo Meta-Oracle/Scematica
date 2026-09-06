@@ -36,6 +36,10 @@ import * as Arrivals from './arrivals.ts'
 import { HULLS, type HullId } from './hulls.ts'
 import { trafficOf } from './factions.ts'
 import * as Collide from './collide.ts'
+import * as Clusters from './clusters.ts'
+import * as Fx from './fx.ts'
+import * as Dialogue from './dialogue.ts'
+import { capsuleOf, nearestOnAxis, segmentDistance } from './hitbox.ts'
 import { nodeRadius, roleOfNode } from './view.ts'
 
 export { DOCK_RANGE }
@@ -101,13 +105,33 @@ export function gridFor(space: Space): Collide.Grid {
 const RAM_DAMAGE = 34
 
 /**
- * How much of a capital's drawn radius is actually solid.
+ * How far past the hull a collision keeps counting as one collision, as a multiple of the contact
+ * distance.
  *
- * The rest is superstructure. It is what makes flying *inside* a dreadnought possible, and
- * flying inside one is the tactic that makes it beatable: a hull that turns at a twentieth of a
- * radian per second cannot bring a gun to bear on something already past its nose.
+ * See the ramming loop for the measurement that set it. The number only has to exceed how far a
+ * ship at cruise travels in a frame relative to the hull it is scraping along, and 1.6 is
+ * comfortably past that at every hull size — the alternative is a sequence of separate collisions
+ * with one surface, which is a death sentence rather than a mistake.
  */
-const CAPITAL_CORE = 0.22
+const CONTACT_HYSTERESIS = 1.6
+
+/**
+ * A stable seed for one burst, from what it happened to and when.
+ *
+ * The burst's shards are derived from this rather than stored, so it has to be the same number on
+ * every machine that reaches this frame — `Math.random` here would make two players watching one
+ * explosion see two different explosions, which is the same class of defect as two machines
+ * generating different sectors.
+ */
+function burstSeed(id: string, nowMs: number): number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  h ^= Math.round(nowMs) & 0xffff
+  return Math.imul(h, 16777619) >>> 0
+}
 
 /**
  * How far the ship starts from the origin node.
@@ -212,6 +236,28 @@ export interface GameState {
   role: RoleId
   /** Contracts. See `quests.ts`. */
   quests: Quests.QuestState
+  /**
+   * Live sparks and detonations (`fx.ts`).
+   *
+   * Origins and start times only — the shards themselves are derived by the renderer from a seed,
+   * so a burst costs one small object rather than thirty integrated particles a frame. It is
+   * capped (`Fx.MAX_BURSTS`) and swept once a tick, because an uncapped effect list is an
+   * unbounded allocation whose symptom is the frame rate rather than anything legible.
+   */
+  bursts: Fx.Burst[]
+  /**
+   * The last thing a faction said, and when.
+   *
+   * One line at a time. A queue would be a chat log, and the moment two ships are talking over
+   * each other neither gets read — the same reasoning as `notice`, which this deliberately sits
+   * beside rather than inside: a notice is the game telling you something, and chatter is somebody
+   * in the sector talking. Conflating them would let a raider's last words overwrite "HULL
+   * BREACHED".
+   */
+  chatter: Dialogue.Line | null
+  chatterAt: number
+  /** Which cluster the ship is currently inside, so entering one is an event and being in one is not. */
+  inCluster: number | null
 }
 
 export function newGame(space: Space, role: RoleId = DEFAULT_ROLE): GameState {
@@ -233,9 +279,17 @@ export function newGame(space: Space, role: RoleId = DEFAULT_ROLE): GameState {
     // separation between them is a claim about provenance, not about behaviour. Traffic —
     // couriers, freighters and marshals — joins the same swarm for the same reason: one loop
     // steps everything that flies, so an ally and an enemy cannot drift apart in how they move.
+    // Plus the three firefight clusters (`clusters.ts`): a lot of both sides, in one place,
+    // already fighting. The scattered roster produces real fights and almost no *findable* ones —
+    // eighteen wings and eighteen marshals meeting in ones and twos across twelve extents — so a
+    // cluster is the thing the sector was missing: a destination that is not a station. They join
+    // the same swarm as everything else, because one loop steps everything that flies.
     swarm: Enemy.withTraffic(
-      Enemy.swarmOf([...space.contacts, ...space.raiders], space.seed),
-      trafficOf(space, space.seed),
+      Enemy.swarmOf(
+        [...space.contacts, ...space.raiders, ...Clusters.clusterRaiders(space.seed)],
+        space.seed,
+      ),
+      [...trafficOf(space, space.seed), ...Clusters.clusterMarshals(space.seed)],
     ),
     nearby: null,
     noticeAt: -1e9,
@@ -251,7 +305,16 @@ export function newGame(space: Space, role: RoleId = DEFAULT_ROLE): GameState {
     nowMs: 0,
     lost: false,
     role,
-    quests: Quests.newQuests(),
+    // **One contract, already accepted.** A new pilot used to spawn with an empty board and no way
+    // to learn there was one: contracts live at citadels, citadels are scattered over twelve
+    // extents, and the panel that names them is one you have to be docked at to read. See
+    // `quests.ts::opening` — it obeys every rule the citadel boards obey, and is deliberately the
+    // smallest job of its kind.
+    quests: Quests.openingState(space.seed, role, space.nodes),
+    bursts: [],
+    chatter: null,
+    chatterAt: -1e9,
+    inCluster: null,
   }
 }
 
@@ -579,9 +642,55 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
 
   let swarm = state.swarm
   let quests = state.quests
+
+  // Sparks, detonations and chatter. Declared here because the hit loop below is the first thing
+  // that raises any of them, and a `let` used before its declaration is a runtime error rather
+  // than a hoisting nicety.
+  //
+  // Bursts age out once a tick, so the list cannot grow without bound; `Fx.add` caps it as well,
+  // because a cluster firefight resolves dozens of hits a second and a sweep alone is not a bound.
+  let bursts = Fx.live(state.bursts ?? [], nowMs)
+  let chatter = state.chatter ?? null
+  let chatterAt = state.chatterAt ?? -1e9
+  const speak = (
+    id: string,
+    faction: string,
+    spec: (typeof CLASSES)[keyof typeof CLASSES],
+    beat: Dialogue.Beat,
+  ) => {
+    const line = Dialogue.say(space.seed, id, faction as never, spec, beat)
+    if (!line) return
+    chatter = line
+    chatterAt = nowMs
+  }
+
   for (const h of advanced.hits) {
+    // Looked up **before** the hit resolves, because a kill removes it and a burst has to be
+    // drawn where the ship was rather than where nothing is.
+    const target = Enemy.living(swarm).find((c) => c.id === h.contact) ?? null
     const res = Enemy.hit(swarm, h.contact, h.damage, nowMs)
     swarm = res.swarm
+    if (target) {
+      // Shield or hull, and the two look different on purpose. It is the same distinction the
+      // flash below carries and the only cue telling a player whether they are making progress or
+      // wasting rounds on a buffer — a burst that looked identical either way would undo it.
+      // **A photon always detonates.** It is one decisive round out of a magazine a pilot counts,
+      // and giving it the same spark a laser bolt gets would make the most expensive thing you can
+      // fire the least legible. The weapon says so itself (`h.kind`) rather than being inferred
+      // from the damage figure — a `damage > 500` threshold would have silently stopped meaning
+      // anything the moment `PHOTON.damage` tripled, which it just did.
+      bursts = Fx.add(bursts, {
+        at: target.at,
+        kind: h.kind === 'photon' ? 'detonation' : res.throughShield ? 'hull' : 'shield',
+        startedMs: nowMs,
+        seed: burstSeed(h.contact, nowMs),
+      })
+      // A capital says something the first time its shields fail. Only a capital: on a fighter
+      // that is one hit out of a handful and the line would fire constantly.
+      if (res.throughShield && target.spec.capital && target.shield <= 0) {
+        speak(h.contact, target.faction, target.spec, 'broken')
+      }
+    }
     // A hit on hull flashes harder than one soaked by a shield. That is the only cue telling a
     // player whether they are making progress or wasting rounds on a buffer, and without it a
     // heavily-shielded gunship reads as invulnerable.
@@ -595,6 +704,15 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
       // `combat.destroyed` is what stops it being drawn. Written here rather than in
       // `weapons.ts` for the same reason the damage is: one authority over one fact.
       combat = { ...combat, destroyed: [...combat.destroyed, h.contact] }
+      if (target) {
+        bursts = Fx.add(bursts, {
+          at: target.at,
+          kind: 'detonation',
+          startedMs: nowMs,
+          seed: burstSeed(`${h.contact}:dead`, nowMs),
+        })
+        speak(h.contact, target.faction, target.spec, 'destroyed')
+      }
 
       // A contract advances on the **act**, not on a survey of the world. See `quests.ts`.
       const adv = Quests.recordKill(quests, faction, res.capital)
@@ -624,37 +742,102 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     // shields absorbing and hull being opened must not feel identical.
     shake = Math.min(1, shake + (ship.hull < before ? 0.85 : 0.35))
     notice = ship.hull < before ? 'HULL BREACHED' : 'shields holding'
+    // On your own hull, at the nose rather than at the camera — the same reason shots leave the
+    // muzzle. A burst at the lens is a flash in the middle of the screen with no location in it.
+    bursts = Fx.add(bursts, {
+      at: muzzle,
+      kind: ship.hull < before ? 'hull' : 'shield',
+      startedMs: nowMs,
+      seed: burstSeed('self', nowMs),
+    })
   }
-  // ── ramming ────────────────────────────────────────────────────────────────
-  // Both parties pay, and the player is pushed clear. A craft you can fly through is a craft
-  // that is not there, and at these closing speeds an interceptor crossing your nose ought to be
-  // an event rather than a texture.
+  // ── ramming, against the hull that is drawn ────────────────────────────────
+  // Both parties pay, and the player is pushed clear. A craft you can fly through is a craft that
+  // is not there, and at these closing speeds an interceptor crossing your nose ought to be an
+  // event rather than a texture.
   //
-  // ## Capitals are volumes you fly *through*, not walls
+  // ## A capital is solid now, and the sphere was why it was not
   //
-  // A leviathan's radius is a quarter of a sector. Treating that sphere as a hull meant flying
-  // into one put the ship permanently inside a hurtbox: every frame re-collided, every frame
-  // charged damage and zeroed the throttle, and the push-out teleported the ship a quarter of a
-  // sector in a near-arbitrary direction. Stuck, and then dead.
+  // The reported symptom was flying straight through a dreadnought, and the cause was two
+  // approximations compounding. A craft was collided as a **sphere of its class radius**, which is
+  // wrong for these hulls in both directions at once: the `dreadnought` mesh reaches 2.1 along its
+  // nose and 0.72 across, so a sphere misses the whole prow and the whole stern while claiming a
+  // great deal of empty space beside the ship. And because that sphere is enormously too wide —
+  // a leviathan's is a quarter of a sector — flying into one used to trap the ship inside a
+  // hurtbox that re-collided every frame, so the fix at the time was to shrink it to `CAPITAL_CORE`,
+  // 22% of the drawn radius. Which made it *narrower than the hull*: the ship passed through
+  // everything you can see and touched an invisible ball somewhere near the middle.
   //
-  // So a capital has a **core** — a small fraction of its drawn radius — and only that collides.
-  // The rest is superstructure you can fly between, which is also the tactic that makes a
-  // dreadnought survivable: get inside its guns' arc, where a hull that turns at a twentieth of a
-  // radian per second cannot bring anything to bear.
+  // The same fix `weapons.ts` already had is the fix here. **Collide against the capsule the
+  // renderer draws** (`hitbox.ts`, whose extents are measured from the vertex data rather than
+  // declared) and the two problems dissolve together: the hull is solid along its whole length,
+  // and the empty volume beside it is not. This is the project's own rule — *a hit test must use
+  // the radius the renderer draws* — applied to the one collision that had been exempted from it.
   //
-  // And a ram is charged **on entry**, not while overlapping. Charging per frame is what turns
-  // one mistake into a death.
+  // **Swept**, not an endpoint test, for the same reason a shot is: a ship crosses a substantial
+  // fraction of a hull length in one frame and an endpoint test tunnels straight through a prow.
+  //
+  // ## What the capsule preserves that the core was protecting
+  //
+  // Getting *inside* a capital's turret envelope is the counterplay that makes one beatable
+  // (`classes.ts::TURRET_MIN_RANGE`, 1.3 radii), and a solid hull could have deleted it. It does
+  // not, but the margin is thinner than it looks and is worth stating rather than assuming: the
+  // war hull's capsule measures **1.05 radii** across — the sponsons reach further than the plating
+  // does, which is why the extents are measured from the vertex data and never declared — so the
+  // shell where the guns cannot depress and the ship is not inside anything runs from 1.05 to 1.3
+  // radii. Narrow, and real. Hugging the hull is now literally hugging the hull.
+  //
+  // The trapping that the old 22% core was introduced to prevent cannot recur, because the volume
+  // being pushed out of is a hull rather than a sphere the size of a region.
   let rammed: string | null = null
   const touching: string[] = []
+  // ## Charge once a frame, but **finish the scan**
+  //
+  // This loop used to `break` the moment it charged, and with a small sphere per craft that was
+  // harmless: at most one thing was ever in contact. Against hulls it is a bug with a spectacular
+  // symptom. `touching` is built *by this loop*, so breaking early means every craft after the one
+  // that charged is never recorded as being in contact — and next frame it is therefore "new" and
+  // charges, and breaks, and the frame after that the next one does. A ship sitting among four
+  // overlapping capitals cycles through them forever: measured at **202 charges in 300 frames**,
+  // each one a different hull wearing the same label, which is why it read as one capital charging
+  // over and over.
+  //
+  // So the charge is capped at one per frame — the push-out can only put the ship in one place, and
+  // two pushes in a frame fight each other — while the scan always runs to completion.
+  let charged = false
   for (const c of Enemy.living(swarm)) {
-    const gap = Math.hypot(c.at.x - at.x, c.at.y - at.y, c.at.z - at.z)
-    const core = c.spec.capital ? c.spec.radius * CAPITAL_CORE : c.spec.radius
-    const touch = selfR + core
-    if (gap >= touch) continue
+    // Facing rather than velocity: a stationary capital still points somewhere, and a zero-length
+    // facing would collapse the capsule onto its own centre — which is the sphere again.
+    const cap = capsuleOf(c.at, c.facing, c.spec.radius, c.spec.shape)
+    const touch = selfR + cap.radius
+    // Swept against the axis. `was` is where the ship started the frame.
+    const struck = segmentDistance(v3(was), at, cap.tail, cap.head) < touch
+    // ## Contact is sticky, and it has to be
+    //
+    // "Charged on entry, not while overlapping" is enforced by `state.touching`, and with a sphere
+    // that was enough: the push-out cleared a small ball and a ship at cruise was gone from it in
+    // one frame. Against a **hull** it is not. A capsule is long, the push is perpendicular to the
+    // axis, and a ship under thrust drives straight back into the flank on the next frame — so the
+    // ship leaves contact and re-enters it every second frame, and every re-entry is a fresh
+    // charge. Measured: a ship parked inside one dreadnought was charged **133 times in 300
+    // frames**, which is the exact failure the entry rule exists to prevent, arriving through a
+    // door the rule did not cover.
+    //
+    // So contact persists out to a band well past the hull, and only a genuine crossing of the
+    // surface charges. Grinding along a war hull is one collision with a long tail, which is both
+    // the honest reading and the one that does not kill somebody for a mistake they made once.
+    const near = nearestOnAxis(cap, at)
+    const inBand = near.distance < touch * CONTACT_HYSTERESIS
+    if (!struck && !inBand) continue
     touching.push(c.id)
-    // Already inside it last frame: no second charge, no second push. Flying out is the player's
+    // Already in contact last frame: no second charge, no second push. Flying out is the player's
     // problem and takes as long as it takes.
     if (state.touching.includes(c.id)) continue
+    // In the band but not actually through the surface — nothing to charge for.
+    if (!struck) continue
+    // One charge a frame, and the scan continues regardless — see the note above the loop.
+    if (charged) continue
+    charged = true
 
     const closing = Math.hypot(velocity.x, velocity.y, velocity.z) + c.speed
     // Scaled against the *stock* top speed, not this hull's. A marauder is slower, and charging
@@ -671,20 +854,30 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
       // see `roles.ts`. A ram still kills; it just does not always pay.
       ship = Ship.bounty(ship, Math.round(res.bounty * bountyScale(c.faction, state.role)))
       combat = { ...combat, destroyed: [...combat.destroyed, c.id] }
+      speak(c.id, c.faction, c.spec, 'destroyed')
     }
     flashes[c.id] = 1
     shake = Math.min(1, shake + 0.9)
-    // Nudged clear along the line between them rather than placed on the surface. A placement is
-    // a teleport at capital scale; a nudge lets the ship keep flying the way it was going.
+    bursts = Fx.add(bursts, {
+      at: near.at,
+      kind: 'detonation',
+      startedMs: nowMs,
+      seed: burstSeed(`${c.id}:ram`, nowMs),
+    })
+    // Pushed out from the nearest point **on the hull's axis**, not from the craft's centre. On a
+    // ship four times longer than it is wide those are different places by most of a hull length,
+    // and using the centre shoves somebody who clipped the prow sideways out of the middle of the
+    // ship, in a direction they were nowhere near.
+    const gap = near.distance
     const dir = gap < 1e-6 ? { x: 1, y: 0, z: 0 } : {
-      x: (at.x - c.at.x) / gap,
-      y: (at.y - c.at.y) / gap,
-      z: (at.z - c.at.z) / gap,
+      x: (at.x - near.at.x) / gap,
+      y: (at.y - near.at.y) / gap,
+      z: (at.z - near.at.z) / gap,
     }
     const out = touch * 1.02
     camera = {
       ...camera,
-      position: [c.at.x + dir.x * out, c.at.y + dir.y * out, c.at.z + dir.z * out],
+      position: [near.at.x + dir.x * out, near.at.y + dir.y * out, near.at.z + dir.z * out],
     }
     // Kill the part of the velocity that was carrying the ship *into* the thing it just hit.
     // Nudging the position clear while leaving the momentum pointed inward flies straight back in
@@ -702,7 +895,6 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     // the ship in the one place it most needs to be able to leave.
     if (!c.spec.capital) throttle = 0
     rammed = `collision — ${c.spec.label} (−${cost})`
-    break
   }
   if (rammed) notice = rammed
 
@@ -727,6 +919,33 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
   // is about something they just did; "a wing is on sensors" can wait for a quiet frame, and
   // overwriting the former with the latter is how feedback stops being trusted.
   if (!notice) notice = topUp.notice
+
+  // ## Entering a standing battle
+  //
+  // Keyed on the cluster index *changing*, exactly as the docking beat is keyed on `nearby`
+  // changing: a line that fired while you were inside would repeat sixty times a second, and one
+  // that fired on proximity rather than entry would fire again every time you drifted across the
+  // boundary. Whoever is nearest speaks, because a battle is announced by somebody in it.
+  const anchors = Clusters.clusterAnchors(space.seed)
+  const reach = AGGRO_RANGE * Clusters.CLUSTER_SPREAD
+  let inCluster: number | null = null
+  for (let i = 0; i < anchors.length; i += 1) {
+    const a2 = anchors[i]
+    if (Math.hypot(at.x - a2.x, at.y - a2.y, at.z - a2.z) < reach) {
+      inCluster = i
+      break
+    }
+  }
+  if (inCluster !== null && inCluster !== (state.inCluster ?? null)) {
+    const near2 = Enemy.living(swarm)
+      .filter((c) => Clusters.clusterOf(c.id) === inCluster)
+      .sort(
+        (p, q) =>
+          Math.hypot(p.at.x - at.x, p.at.y - at.y, p.at.z - at.z) -
+          Math.hypot(q.at.x - at.x, q.at.y - at.y, q.at.z - at.z),
+      )[0]
+    if (near2) speak(near2.id, near2.faction, near2.spec, 'cluster')
+  }
 
   const nearby = nearestService(space, v3(camera.position), state.ship.frame)
 
@@ -766,6 +985,10 @@ export function tick(state: GameState, space: Space, input: TickInput): GameStat
     flashes,
     shake,
     touching,
+    bursts,
+    chatter,
+    chatterAt,
+    inCluster,
     ...noticeState(state, notice, nowMs),
     lost: Ship.destroyed(ship),
   }
@@ -856,6 +1079,49 @@ export function route(state: GameState, space: Space, service: Service): GameSta
   }
 }
 
+/**
+ * Point the nav computer at the active contract.
+ *
+ * Bound to `7`, beside the four service keys, because a contract's subject is a destination in
+ * exactly the way a fuel depot is — and until this existed the only way to find the place a haul
+ * named was to read the label off the panel and then cycle `3` until the same name came round.
+ *
+ * **It refuses with a reason rather than doing nothing**, which is the rule the station panel had
+ * to learn: three services were reported broken and all three were declining correctly into a
+ * notice that faded in three seconds. A hunting contract genuinely has no waypoint — its subject
+ * is a *kind of craft*, not a place — and saying so is the difference between a key that is
+ * inapplicable and a key that is dead.
+ */
+export function routeToQuest(state: GameState, space: Space): GameState {
+  const active = state.quests.active
+  if (!active) {
+    return { ...state, noticeAt: PENDING, notice: 'no contract — dock at a citadel for a board' }
+  }
+  // Which leg. Before the pickup the destination is the origin of the haul; after it, the drop.
+  const target = active.quest.kind === 'haul' || active.quest.kind === 'contraband'
+    ? (active.picked ? active.quest.to : active.quest.from)
+    : null
+  if (target === null) {
+    return {
+      ...state,
+      noticeAt: PENDING,
+      notice: `${active.quest.title} — a hunting contract has no waypoint; its quarry moves`,
+    }
+  }
+  const fix = Nav.fixOn(space, state.camera, target)
+  if (!fix) {
+    // The node named by the contract is not in this sector's node list, which should be
+    // impossible — `build` picks from `nodes` — so it is reported rather than silently ignored.
+    return { ...state, noticeAt: PENDING, notice: 'the contract names a place this sector has no record of' }
+  }
+  return {
+    ...state,
+    waypoint: target,
+    noticeAt: PENDING,
+    notice: `contract: ${fix.node.label} — ${Nav.rangeLabel(fix.range)}`,
+  }
+}
+
 /** What the renderer needs from the live state. */
 export function dynamicOf(state: GameState, space?: Space) {
   const wp =
@@ -877,6 +1143,19 @@ export function dynamicOf(state: GameState, space?: Space) {
       faction: a.faction as string,
       progress: Arrivals.progress(a, state.nowMs),
     })),
+    // The player's own drive spinning up. `null` on almost every frame, on purpose — see the
+    // field on `Dynamic`. `Hyper.progress` is the same figure the HUD reads, so the cage and the
+    // readout cannot disagree about how close the jump is.
+    jump:
+      state.drive.phase === 'charging'
+        ? {
+            at: v3(state.camera.position),
+            facing: v3(forward(state.camera)),
+            progress: Hyper.progress(state.drive, state.ship.levels.drive),
+          }
+        : null,
+    // Sparks and detonations. Derived shards, not stored particles — see `fx.ts`.
+    bursts: (state.bursts ?? []).flatMap((b) => Fx.shardsOf(b, state.nowMs)),
     craft: Enemy.living(state.swarm).map((c) => ({
       id: c.id,
       at: c.at,
@@ -937,6 +1216,11 @@ export function command(state: GameState, space: Space, code: string): GameState
       return route(state, space, 'trade')
     case 'Digit4':
       return route(state, space, 'scavenge')
+    // The active contract's subject, which is a destination in exactly the way a fuel depot is.
+    // Until this existed the only way to find the place a haul named was to read the label off the
+    // panel and cycle `3` until the same name came round.
+    case 'Digit7':
+      return routeToQuest(state, space)
     case 'Digit0':
       return { ...state, waypoint: null, noticeAt: PENDING, notice: 'course cleared' }
     default:
@@ -946,7 +1230,7 @@ export function command(state: GameState, space: Space, code: string): GameState
 
 /** Every key `command` answers to, so the pause menu and the tests share one list. */
 export const COMMAND_KEYS = [
-  'KeyF', 'KeyR', 'KeyV', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit0',
+  'KeyF', 'KeyR', 'KeyV', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit7', 'Digit0',
 ]
 
 /**

@@ -82,11 +82,25 @@ const ROSTER: { faction: Exclude<Faction, 'raider'>; klass: ClassId; count: numb
  * faction quietly disappears from a game that never says it has. Reinforcement is what keeps the
  * ambient violence ambient rather than a one-off event early in a session.
  *
- * The capitals are deliberately **not** replaced. A warden is a thing that was there and is now
- * gone, and respawning one would make killing it meaningless in the one place the sector has
- * something at stake.
+ * The capitals are replaced too now, on their own much slower timer (`respawn.ts`), and counted
+ * separately — see `MARSHAL_CAPITALS`. They were never replaced, on the reasoning that killing one
+ * ought to mean something, and the cost of that was a sector whose war classes ran out on both
+ * sides: once the last warden and the last bastion were gone, every large silhouette on the
+ * horizon was hostile again and the question the patrol's capitals exist to create stopped being
+ * asked. A long interval keeps the kill meaningful without making the roster a resource.
  */
 export const MARSHAL_STRENGTH = strengthOf('marshal', 'marshal')
+
+/**
+ * The patrol's war classes and how many of each the sector holds.
+ *
+ * Read off `ROSTER` rather than restated, for the reason `strengthOf` exists: two places to change
+ * and one of them silently wins. A replacement restores the class that is **missing** — cycling a
+ * list would answer a dead bastion with a warden and let the roster drift.
+ */
+export const MARSHAL_CAPITALS: { klass: ClassId; count: number }[] = ROSTER.filter(
+  (e) => e.faction === 'marshal' && CLASSES[e.klass].capital,
+).map((e) => ({ klass: e.klass, count: e.count }))
 
 /**
  * How many of one class of one faction the sector tries to keep flying, read off `ROSTER`.
@@ -264,7 +278,14 @@ export function civilianReinforcement(
     faction,
     spec: CLASSES[klass],
     at,
-    destination: route.length > 0 ? route[index % route.length].id : null,
+    // **A capital does not fly a delivery route**, exactly as in `trafficOf`. Without this guard a
+    // replacement warden is handed a destination and sets off across the sector at a hundredth of
+    // a fighter's speed, which is not what a capital is for and is not what the one it replaced
+    // was doing. The guard was in the placement path and not in this one, which is the shape of
+    // bug that only appears once capitals start being replaced at all.
+    destination: CLASSES[klass].capital || route.length === 0
+      ? null
+      : route[index % route.length].id,
   }
 }
 

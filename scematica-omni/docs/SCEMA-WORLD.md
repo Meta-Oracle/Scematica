@@ -690,6 +690,163 @@ the framing trend pinned between tiers — one blanket rule would have quietly f
 - **Nothing here reads the record.** A hull is bought with SCEMA earned from acts. A world with more
   blind spots does not sell you a cheaper dreadnought.
 
+## Arc 14 — A sector that fights back, and a repository you can fly *(done)*
+
+Everything below came out of one session of playing it, and most of the fixes are the same shape:
+a constant that was correct at one scale and silently wrong at another.
+
+### The laser could not reach a capital. At all. Ever.
+
+`LIFE_LASER` was 0.21 seconds, giving a reach of 0.20 extents. A titan holds a standoff of **0.40**
+and notices you at 0.60. So a titan sat at exactly the range it fights from and every bolt fired at
+it evaporated in empty space less than halfway there. Not *weak* against a capital — unable to
+engage one, unless you flew inside a standoff the ship exists to hold.
+
+Third time this shape has been found here. `shotLifeOf` documents the enemy-fire version — two
+capital fleets in each other's envelopes, both firing, every round dying in the gap — and the fix is
+the same one scaled up: **a bolt lives long enough to cross the sector**, derived from
+`SECTOR_REACH` rather than tuned.
+
+What stops unlimited range being a free kill is flight time, not a cap. A bolt crosses an extent in
+1.05 seconds, so the far edge is twelve seconds away, and an interceptor moves fifteen times its own
+width in the first second of that. Sniping a fighter across the sector misses by an enormous margin
+and always will. What the range buys is hitting the thing that *holds station* — which is what a
+capital does and what a fighter never does. The check that used to read "a laser outranges every
+fighter and no capital" now measures drift-per-own-width at sniping range, in three bands, with the
+middle band deliberately unasserted.
+
+### Enemies are three times as durable, and hit exactly as hard as before
+
+Every `hull`, `shield` and `shieldRegen` in `classes.ts` is ×3, and `PHOTON.damage` is ×3 with it —
+so `PHOTONS_TO_KILL` came out **byte-for-byte identical** for all fifteen classes. That was the
+constraint, not a coincidence: the ladder is a count a pilot holds in their head, and tripling
+durability alone would have made a titan a twenty-four-warhead problem out of a magazine that holds
+at most forty-four. Not a plan; a wall.
+
+Per-shot damage did **not** move, and that was measured rather than chosen. The first attempt raised
+it a quarter alongside; a stock ship parked in a raider wing then died before finishing its first
+kill, in a scenario that had passed since the sector had wings in it. **Durability is already a
+lethality multiplier** — three times as long in the envelope is three times the incoming fire — and
+the player's own hull is not tripled.
+
+The laser's yield is set by one measurement: 7 a bolt, 63.6 a second stock, against a titan's 5,760
+points, is ninety-one seconds. Fully specced it is about twenty. That spread is the widest this
+weapon has had and is why the component is worth buying.
+
+### You can hit a dreadnought now
+
+Craft were collided as a **sphere of the class radius**, which is wrong in both directions at once:
+the `dreadnought` mesh reaches 2.1 along its nose and 1.05 across, so a sphere misses the prow and
+the stern while claiming empty space beside the ship. And because that sphere was enormously too
+wide, flying into one used to trap the ship — so the fix at the time was to shrink it to 22% of the
+drawn radius, which made it *narrower than the hull*. You passed through everything visible and
+touched an invisible ball near the middle.
+
+Collision is against the **capsule the renderer draws**, swept, pushed out from the nearest point on
+the hull's axis rather than from the craft's centre. The project's own rule — *a hit test must use
+the radius the renderer draws* — finally applied to the one collision exempted from it. Two defects
+fell out of doing it:
+
+- **Contact had to become sticky.** A capsule is long and the push is perpendicular, so a ship under
+  thrust drives back into the flank next frame; measured at **133 charges in 300 frames** for one
+  impact. Contact now persists to 1.6× the touch distance and only a genuine crossing charges.
+- **The loop `break`ed on a charge**, so every craft after it was never recorded as touching — and
+  next frame *that* one was "new" and charged, and so on around four overlapping capitals. 202
+  charges in 300 frames, each a different hull wearing the same label.
+
+And the test that reported all this was itself wrong: it counted **frames showing a collision
+notice**, and a notice persists. One impact, three seconds on screen, 180 "charges". It passed for a
+long time only because something always overwrote the line quickly.
+
+### Capitals come back, slowly
+
+The rule was *never replaced*, and the argument was good — a leviathan you spent four minutes
+killing was the only lasting mark you could leave. The cost was a sector that ran out of the only
+fights worth crossing it for, on **both** sides: once the last warden and bastion were gone, every
+large silhouette was hostile again and the question the patrol's capitals exist to create stopped
+being asked.
+
+One capital per 150 seconds, across both sides, of the class that is actually missing, placed far
+outside sensor range rather than warped in near you — a titan's awareness reaches 0.60 of the
+sector, so one materialising at arrival range would be hunting you before its entry effect finished.
+
+### Three firefight clusters
+
+The sector had ambient violence and no *findable* violence: eighteen wings and eighteen marshals
+scattered over twelve extents meet in ones and twos. A cluster is twenty-nine craft of both sides in
+one place, already fighting — a **destination that is not a station**. Three of them, spaced by a
+minimum angle, the first near enough to find by accident and the others a trip.
+
+Reinforcement is **held while you are inside one**, which is what makes it worth fighting: a battle
+that refills itself while you stand in it is a battle you cannot affect.
+
+Two counting bugs came out of it, both the same: a cluster carries a `warden`, and three clusters
+carry exactly the patrol's roster strength of them — so the capital top-up reported the wardens
+complete and the three *scattered* ones a player had killed were never replaced. Anything counting
+"the roster" now excludes cluster furniture, in the code and in the checks.
+
+`collide.ts::separate` was O(n²) and its own comment said a grid would be "machinery guarding
+nothing" — true at seventy craft, false at 230. Sweeping one axis with capitals handled separately
+took the tick from 6.78ms to 5.58ms, **bit-identically**: the passes only choose which pairs to
+test, and the survivors are sorted back into the original order because floating-point addition is
+not associative.
+
+### A jump you can see
+
+The largest thing the player does had no presence in the world at all — a progress figure, a notice,
+and then the ship was somewhere else. Every *other* craft's entry has had a visible effect since
+`streak` was written.
+
+A cage of twenty-eight struts in five rings now assembles around the ship, drawing inward and
+forward and brightening as the charge completes, rotating as it closes. Violet — in neither faction
+family, because every other bright thing in the sector is a claim about somebody else and this one
+is about you. Aborting is legible for free: a structure that was closing in simply stops.
+
+### Sparks, detonations, voices and sound
+
+`fx.ts` — bursts are **derived from a seed and an age**, never stored as particles, so an explosion
+costs one small object and two machines see the same one. Shards are line segments riding the
+additive pass the bolts already ride, so a dense burst clips to white without anybody computing a
+core. Shield, hull and detonation differ in *shape* rather than colour, because that distinction is
+the one the whole shield mechanic rests on. A photon always detonates, and the weapon says so
+itself rather than being inferred from a damage threshold that just tripled.
+
+`dialogue.ts` — one line per craft per beat, keyed on `(seed, id, beat)`, so a ship has a *voice*
+rather than a shuffle. Capitals speak for a crew; unarmed traffic makes no threats and does not
+narrate its own shields failing, and that silence is the characterisation. Chatter sits **below**
+the notice and in the speaker's colour, because a raider's last words must never overwrite HULL
+BREACHED.
+
+`audio.ts` — synthesised, no assets, nothing to fetch (the page has no server side and that is a
+standing claim). Suspended until a real gesture resumes it, hard voice cap, and **distance gates
+before the cap does** so a firefight across the sector cannot decide which sounds you hear.
+
+### A contract in your hands, and a key to find it
+
+A new pilot spawned with an empty board and no way to learn there was one. `quests.ts::opening`
+hands over one small job, obeying every rule the citadel boards obey. `7` routes to the active
+contract, and **refuses with a reason** — a hunting contract genuinely has no waypoint, and saying so
+is the difference between a key that is inapplicable and a key that is dead.
+
+### The fifth producer: a GitHub repository, perceived in the browser
+
+Paste a URL on the opening page and it becomes the observer — reading the repository from your own
+browser, writing down what it counted *and what it could not read*, drawing the plate, and offering
+to fly it. No server of ours in the path, so the page's standing claim survives.
+
+It obeys the five producer rules, and the ones with teeth here are 1 and 4: GitHub truncates a tree
+without telling you how much, and the truncated array still has a plausible length — so
+`extent.total` goes `null` and the truncation is a blind spot. Rate limits, private repositories and
+unread endpoints are blind spots naming the mechanism, never empty lists. There is no "repository
+health" figure and there must never be one.
+
+**And it is an observation, not a decision record**, stated on the page rather than only in a
+comment. It has a world commitment, computed with the same encoder the CLI uses, so the space is
+reproducible and the plate is its derivative. It has no seal, so there is nothing to verify — the
+HUD says `OBSERVED`, a third state beside VERIFIED and INVALID. Printing VERIFIED would let an
+observation borrow a decision record's authority; printing INVALID would be an accusation about an
+edit nobody made. The em-dash rule, in the one place a player would act on it.
+
 ### The economy rule, sharpened
 
 Arc 4 said "no economy" and a test enforced it. The rule was aimed at a real failure and stated

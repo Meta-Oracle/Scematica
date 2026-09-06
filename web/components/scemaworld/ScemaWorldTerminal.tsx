@@ -38,6 +38,18 @@ import {
   MAX_LEVEL, UPGRADES, fuelCapacity, hullMax, jumpCapacity, shieldMax, upgradeCost,
   type Component,
 } from '@/lib/scemaworld/ship'
+import {
+  accountOf,
+  browserStore,
+  changed as walletChanged,
+  // Aliased: this component already has a `load`, for reading a dropped record file. Two
+  // different `load`s in one scope is how the wrong one gets called.
+  load as loadAccount,
+  restore as restoreAccount,
+  save as saveAccount,
+  type Account,
+  type Store,
+} from '@/lib/scemaworld/wallet'
 import { EXTENT, servicesOf } from '@/lib/scemaworld/generate'
 import { FAR_PLANE, JUMP_INHIBIT, NEAR_PLANE } from '@/lib/scemaworld/scale'
 import { fuelCapacity as _fc } from '@/lib/scemaworld/ship'
@@ -75,6 +87,19 @@ export function ScemaWorldTerminal() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /**
+   * The persisted account (`wallet.ts`).
+   *
+   * `store` is resolved lazily on first use rather than at module scope — this component renders
+   * on the server during the Next build, where there is no `localStorage` at all, and touching it
+   * at import time is the classic hydration crash. `null` is a perfectly good store: the session
+   * runs and forgets.
+   *
+   * `saved` is what was last written, so the 120 ms tick can decide whether there is anything to
+   * write without reading storage back.
+   */
+  const [store] = useState<Store | null>(() => browserStore())
+  const saved = useRef<Account | null>(null)
   /**
    * Whether the cockpit is live.
    *
@@ -231,7 +256,12 @@ export function ScemaWorldTerminal() {
     // The sky is a function of the commitment, so it is built once per world rather than per
     // frame — and two players holding the same record see the same stars.
     r.sky(loaded.space.seed)
-    game.current = newGame(loaded.space)
+    // The account is restored **once**, onto the ship `newGame` just built and before the first
+    // frame runs. See `wallet.ts` on why it is never applied to a ship already flying: a reload
+    // that patched a live balance would resurrect money that had since been spent.
+    const fresh = newGame(loaded.space)
+    game.current = { ...fresh, ship: restoreAccount(fresh.ship, loadAccount(store)) }
+    saved.current = accountOf(game.current.ship)
     setHud(game.current)
 
     let last = 0
@@ -284,7 +314,21 @@ export function ScemaWorldTerminal() {
 
     // The HUD reads a snapshot on a timer rather than on every frame: re-rendering the React
     // tree sixty times a second to move a fuel gauge is how a game loop becomes a slideshow.
-    const pulse = window.setInterval(() => setHud(game.current), 120)
+    //
+    // The account is written on the same timer, and for the same reason — a `localStorage` write
+    // is synchronous and blocks the main thread, so doing one per frame is a visible stutter.
+    // `changed` means the common case is a comparison and no write at all: salvage moves when you
+    // kill something, not continuously.
+    const pulse = window.setInterval(() => {
+      setHud(game.current)
+      const live = game.current
+      if (!live) return
+      const now = accountOf(live.ship)
+      if (!saved.current || walletChanged(saved.current, now)) {
+        saveAccount(store, now)
+        saved.current = now
+      }
+    }, 120)
     return () => {
       cancelAnimationFrame(raf)
       window.clearInterval(pulse)
@@ -996,6 +1040,16 @@ export function ScemaWorldTerminal() {
                     // here estimates, and nothing here debits optimistically.
                     game.current = withdrawn(g, spend, tokens)
                     setHud(game.current)
+                    // Persisted **now**, not on the next 120 ms tick. Everywhere else that window
+                    // costs at most a few seconds of salvage; here it is the one debit that has
+                    // already been paid out on a chain, so a tab closed inside it would leave the
+                    // player holding a balance the treasury has settled. The server ledger would
+                    // still refuse the second claim — it is authoritative, and that is what bounds
+                    // the loss — but a refusal the player cannot explain is a worse outcome than
+                    // one synchronous write.
+                    const now = accountOf(game.current.ship)
+                    saveAccount(store, now)
+                    saved.current = now
                   }}
                 />
               )}

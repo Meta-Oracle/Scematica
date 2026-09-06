@@ -178,7 +178,7 @@ cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.dashboard        
 cd alchem-link ; pyinstaller alchem-link.spec ; pyinstaller alchem-link-ui.spec       # standalone binaries
 
 # scema-lean — the invariants as machine-checked proofs (Lean 4, own toolchain, no Mathlib)
-cd scema-lean ; lake build          # discharges every proof; failure = an invariant broke
+cd scema-lean ; lake build          # discharges every proof in BOTH libraries (Scema + Audit)
 cd scema-lean ; lake exe formalize  # the decidable ones re-run as computations (15 checks)
 # `lake build` IS the test. `formalize` exists so a reader who does not read Lean still gets
 # an answer, and so a `decide` weakened into a vacuous truth shows up as a failing check.
@@ -325,6 +325,24 @@ scema-lean/             **Lean 4 package, not a cargo crate.** The handful of in
                         `decide`/`simp`/`omega`, which keeps a cold build near a minute and
                         forces the invariants to stay elementary). No network.
                         `cd scema-lean ; lake build ; lake exe formalize` (15 checks).
+                        **Two libraries in one package.** `Scema` is the above; `Audit`
+                        (`Audit.lean` + `Audit/{Escrow,Vault,Swap,X402,Access,Effect}.lean`)
+                        is the companion to `SECURITY-AUDIT.md` at the repo root — every
+                        finding in that report is a theorem, a defect *exhibited* by a
+                        `finding_*` witness and each proposed fix modelled beside it so the
+                        post-condition is stated rather than described. A second `lean_lib`
+                        rather than a second package **on purpose**: it arrived as a root
+                        package carrying its own `lean-toolchain` (4.28.0) and Mathlib, which
+                        would have meant two toolchains, two build commands and a cold build
+                        in tens of minutes for a package whose selling point is that it
+                        checks in a minute offline. It fits here because every module under
+                        `Audit/` imports nothing at all — not even `Scema` — so the no-Mathlib
+                        rule covers it unchanged. Backporting cost exactly one lemma:
+                        `Nat.div_le_div_right` has no such name on 4.18.0, so `Audit/Escrow`
+                        proves it from `Nat.le_div_iff_mul_le` + `Nat.div_mul_le_self`.
+                        No `formalize` target for `Audit/` — its statements are about
+                        lifecycles and account sets, not bytes, so there is nothing to
+                        recompute that reading the theorem does not already say.
                         Two traps if you extend it: a `partial def` does not reduce in the
                         kernel, so `decide` silently gets *stuck* rather than failing — split
                         normalisation from serialisation to keep recursion structural; and a
@@ -820,7 +838,7 @@ identical request. An unreadable ledger is the precise case `readLedger` throws 
 swallowing it on the one path that tells a player what they are owed reintroduced the failure it
 exists to prevent.
 
-Rules the 130 checks carry, each paid for:
+Rules the 298 checks carry, each paid for:
 
 - **The tick is a pure function** (`lib/scemaworld/game.ts`). It was inline in the frame loop,
   and the draw list was uploaded *once* outside it while `view.ts` had no projectile handling at
@@ -962,7 +980,47 @@ Rules the 130 checks carry, each paid for:
 - **Enlarging `EXTENT` does not spread a fractal out.** The trunk gets longer and the twigs stay as
   close together, so the sector gains empty margin and the part you fly through is unchanged.
   `MIN_NODE_GAP` — a floor between *any* two nodes, enforced with a spatial index during growth —
-  is what actually did it; `MIN_BRANCH` only bounds a node against its own parent.
+  is what actually did it; `MIN_BRANCH` only bounds a node against its own parent. Sharpened since:
+  **`EXTENT` is a pure unit and changing it changes nothing anybody can see**, because every length
+  in `scale.ts` is a fraction of it. `TRUNK` is the only lever that makes the sector bigger, and
+  what a pilot reads as space is **the gap as a multiple of `R_NODE_MAX`**, not the gap. Measured at
+  1.93× — two structures nearly touching — with the whole nearest-neighbour distribution pinned flat
+  against the floor, because the fractal wants its tips far closer and every survivor lands at
+  whatever the floor is. *The floor was the layout.* Now 7.8×, pinned as a ratio so raising a node's
+  radius without raising the gap fails instead of quietly re-clustering the sector.
+- **A far plane must cover the sector's DIAMETER, never its radius.** It was set to `1.9 · EXTENT`
+  against a measurement of how far the fractal reaches *from the origin* (1.55), which looks like
+  margin and is not — the camera is not at the origin, and what has to fit is the distance between
+  the two furthest things on screen together. The sector was 2.36 extents across, so the constant
+  fell 19% short and a player at one edge could not see the other: exactly the wall of fog the
+  constant had been introduced to remove, surviving because the comment was checked against the
+  radius and no test read the claim. Pinned now against the generated bounding box.
+- **Anything scattered "through the volume" must be scattered through `SECTOR_REACH`, and that
+  constant may never be measured off the generated tree.** Both halves are load-bearing. Raiders,
+  the patrol and the capital garrison were placed in a ±1 `EXTENT` box, which covered the sector
+  until `TRUNK` grew and then silently meant "the middle of the map" — the patrol sat in a small
+  central cube while the raiders it exists to hunt spread over fifty times the volume, so the
+  ambient war stopped and three checks failed at once. And the constant is derived from `TRUNK`
+  rather than from the nodes a record happened to generate, because a record reporting a larger
+  extent grows a larger tree, so scattering across the *measured* volume would sell a producer a
+  thinner, safer sector for claiming a bigger world — the `raiders.ts` defect again, inverted.
+- **A hunter's reach is a fraction of the sector, not a multiple of its own guns.** `MARSHAL_REACH`
+  and `CAPITAL_REACH` were multiples of `aggro`, a weapons figure, which happened to cover the
+  sector at one size and stopped the moment it changed. Floored at `SECTOR_REACH` now. A raider's
+  reach is deliberately *not* floored: it is here for the player, and that asymmetry is what keeps
+  the ambient violence from becoming the whole sector.
+- **Earning has to survive the tab** (`wallet.ts`). `newGame` builds from `newShip()`, so salvage
+  and SCEMA reset on every page load and every record dropped — which made the withdrawal path,
+  whose minimum is ten SCEMA, unreachable for most players however long they flew. The account
+  keeps what you *own* (both balances, the hull, the component levels) and deliberately rebuilds
+  what is *state* (fuel, hull, shields, jump charges, the stripped-derelict list), or a reload
+  becomes a way out of a fight and a scavenged-node list gets carried into a world where those ids
+  mean something else. **One account, not one per world** — every world pays identically, so a
+  balance is not a claim about any record, and keying by world would hand a player a reason to
+  hoard the one they earned in. It is restored exactly once, onto the ship `newGame` just built,
+  never patched onto a ship already flying: that would let a reload resurrect spent money. None of
+  this makes a balance trustworthy and it does not pretend to — the bound is still the capped
+  faucet in `claim.ts`, enforced server-side against a ledger the browser cannot reach.
 - **Nodes are open wireframe structures you fly through, one silhouette per kind** (`meshes.ts`).
   They were shaded spheres, so a market and a rift were the same ball in different colours and the
   record's vocabulary arrived as a *palette* — the failure mode colour-only distinctions always

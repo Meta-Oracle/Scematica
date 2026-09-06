@@ -88,6 +88,7 @@ import { newGame, tick, useService, purchase, dynamicOf, DOCK_RANGE } from '../l
 import { servicesOf } from '../lib/scemaworld/generate.ts'
 import * as SCALE from '../lib/scemaworld/scale.ts'
 import { raidersOf, raiderWing, RAIDER_FLOOR, RAIDER_STRENGTH } from '../lib/scemaworld/raiders.ts'
+import * as Wallet from '../lib/scemaworld/wallet.ts'
 import * as Respawn from '../lib/scemaworld/respawn.ts'
 import * as Arrivals from '../lib/scemaworld/arrivals.ts'
 import {
@@ -3117,12 +3118,71 @@ check('nodes are not clustered', () => {
     }
   }
   assert(closest >= MIN_NODE_GAP * 0.999, `two nodes are ${Math.round(closest / 1e6)}M apart`)
+
+  // **The ratio, not the absolute number.** The sector was reported as still too clustered after
+  // the last enlargement, and the measurement said exactly why: nearest-neighbour distances sat at
+  // 0.026 / 0.031 / 0.047 of an extent at the 10th, 50th and 90th percentile — a distribution
+  // pinned flat against the floor, because the fractal wants its tips far closer than this and
+  // almost every survivor ends up at whatever the floor happens to be. *The floor was the layout.*
+  // And the floor was 1.93 times the largest node's radius, so a typical pair of neighbours were
+  // two structures nearly touching. What a pilot reads as space is how much emptiness there is
+  // per unit of structure, which is this number and not the gap on its own.
+  const gaps = s.nodes.map((n) => {
+    let best = Infinity
+    for (const o of s.nodes) {
+      if (o.id === n.id) continue
+      best = Math.min(best, Math.hypot(n.at.x - o.at.x, n.at.y - o.at.y, n.at.z - o.at.z))
+    }
+    return best
+  }).sort((a, b) => a - b)
+  const median = gaps[Math.floor(gaps.length / 2)]
+  const roominess = median / R_NODE_MAX
+  assert(roominess > 5, `a typical neighbour is ${roominess.toFixed(2)} node-radii away, not >5`)
+
+  // Raising a node's radius without raising the gap re-clusters the sector, which is the silent
+  // half of this: the gap can stay where it is and the sector still closes back up.
+  assert(MIN_NODE_GAP > R_NODE_MAX * 4, 'the floor no longer clears the largest node comfortably')
   // Against an ordinary station rather than the single largest node. There is exactly one
   // origin per sector, so demanding twice *its* radius costs hundreds of nodes to guard a case
   // that cannot arise — and a sector with four markets in five thousand million units is spread
   // out in the way an empty room is.
   assert(MIN_NODE_GAP > R_STATION * 2, 'the floor is smaller than the things it separates')
   assert(s.nodes.filter((n) => n.kind === 'market').length > 5, 'too few markets to plan around')
+})
+
+check('the far plane covers the sector, not its radius', () => {
+  // The defect this pins, which shipped and survived a rewrite of the comment above it. The
+  // constant was chosen against how far the fractal reaches **from the origin** — 1.55 extents,
+  // so `1.9 · EXTENT` looked like it cleared the sector with margin. It did not, because *the
+  // camera is not at the origin*: what a far plane has to cover is the distance between the two
+  // furthest things that can be on screen together, which is the **diameter**. Measured, that was
+  // 2.36 extents against a 1.90 far plane — a 19% shortfall, which is precisely the wall of fog
+  // the constant had been introduced to remove, surviving in the arithmetic because the comment
+  // was checked against the radius and no test read the claim.
+  const s = generate(world, digest)
+  const lo = { x: Infinity, y: Infinity, z: Infinity }
+  const hi = { x: -Infinity, y: -Infinity, z: -Infinity }
+  for (const n of s.nodes) {
+    for (const a of ['x', 'y', 'z']) {
+      lo[a] = Math.min(lo[a], n.at[a])
+      hi[a] = Math.max(hi[a], n.at[a])
+    }
+  }
+  const diameter = Math.hypot(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)
+  assert(
+    FAR_PLANE >= diameter,
+    `the far plane is ${(FAR_PLANE / EXTENT).toFixed(2)} extents and the sector is ` +
+      `${(diameter / EXTENT).toFixed(2)} across — a player at one edge cannot see the other`,
+  )
+
+  // And the scatter volume has to be the same volume the nodes are in, or the sector's hostiles
+  // sit in a box in the middle of a map they no longer cover. That was three simultaneous check
+  // failures — all of them about marshals killing raiders with nobody watching — because the
+  // patrol was placed within one extent of the origin while the raiders spread over six.
+  assert(
+    SCALE.SECTOR_REACH * 2 >= diameter * 0.9,
+    'the scatter volume no longer covers the sector the fractal generates',
+  )
 })
 
 check('sensors reach far beyond engagement', () => {
@@ -4066,8 +4126,12 @@ check('every figure the scale table quotes about itself is true', () => {
   // The general form of D-1. A figure in a comment is a claim, and a claim with no test is a
   // claim that will be wrong eventually. These are the ones `scale.ts` states in prose.
   const claims = [
-    ['stock engine crosses the sector in eleven seconds', EXTENT / topSpeed(0), 10.4, 11.6],
-    ['the depth ratio is about 2000:1', FAR_PLANE / NEAR_PLANE, 1600, 2400],
+    ['a stock engine covers an extent every seven and a half seconds', EXTENT / topSpeed(0), 7.1, 7.9],
+    // Up from 2000:1, deliberately: the far plane had to grow to cover the sector's *diameter*
+    // (see below), and holding the old ratio would have meant a near plane further out than the
+    // player's own hull. Z-fighting needs two surfaces at nearly the same depth, which does not
+    // happen between wireframe structures scattered through a volume.
+    ['the depth ratio is about 5000:1', FAR_PLANE / NEAR_PLANE, 4400, 5600],
     ['a photon is slower than a laser', SPEED_LASER / SPEED_PHOTON, 1.01, 99],
     ['enemy fire is faster than any ship', SPEED_ENEMY_SHOT / topSpeed(4), 1.01, 99],
   ]
@@ -4561,6 +4625,120 @@ check('the strength table is the roster, not a second copy of it', () => {
   for (const t of Factions.TRAFFIC) {
     assert(Factions.strengthOf(t.faction, t.klass) > 0, `${t.faction} is topped up toward zero`)
   }
+})
+
+/**
+ * An in-memory `Wallet.Store`. The seam exists precisely so this file needs no browser — the same
+ * split as `claim.ts` (pure policy) against `treasury.ts` (chain).
+ */
+function fakeStore() {
+  const map = new Map()
+  return {
+    get: (k) => (map.has(k) ? map.get(k) : null),
+    set: (k, v) => { map.set(k, v) },
+  }
+}
+
+// ── the account survives the tab ─────────────────────────────────────────────
+//
+// Earning had no memory. `newGame` builds a ship from `newShip()`, so salvage and SCEMA went back
+// to zero on every page load and on every record dropped — which made the withdrawal path, whose
+// minimum is ten SCEMA, unreachable for most players however long they played. See `wallet.ts`.
+
+check('an account round-trips through storage', () => {
+  const store = fakeStore()
+  const account = { ...Wallet.newAccount(), salvage: 91, scema: 40, frame: 'lancer' }
+  Wallet.save(store, account)
+  const back = Wallet.load(store)
+  assert(back.salvage === 91 && back.scema === 40, `came back ${back.salvage}/${back.scema}`)
+  assert(back.frame === 'lancer', `came back flying a ${back.frame}`)
+})
+
+check('a missing, unreadable or corrupt account is zero rather than a crash', () => {
+  // Storage genuinely fails: a private window, blocked site data, a full quota, an embedded
+  // webview. A game that will not start because it could not read a balance is worse than one
+  // that starts having forgotten it.
+  assert(Wallet.load(null).scema === 0, 'a null store should be a fresh account')
+  assert(Wallet.load(fakeStore()).scema === 0, 'an empty store should be a fresh account')
+
+  const broken = fakeStore()
+  broken.set(Wallet.WALLET_KEY, '{not json')
+  assert(Wallet.load(broken).scema === 0, 'unparseable JSON should be a fresh account')
+
+  const throws = { get: () => { throw new Error('SecurityError') }, set: () => {} }
+  assert(Wallet.load(throws).scema === 0, 'a throwing store should be a fresh account')
+})
+
+check('a hand-edited account cannot produce a nonsense balance', () => {
+  // Not a tamper defence — a player editing their own storage has given themselves salvage, and
+  // the faucet caps are what bound that. It is that a malformed value must never reach the game
+  // *as a number*: NaN propagates through every sum in `economy.ts` and renders as `NaN SCEMA` on
+  // a panel making claims about money, and a negative balance would let `exchange` mint.
+  const bad = Wallet.sanitise({
+    salvage: NaN, scema: -500, frame: 'not-a-hull', levels: { engine: 99, hull: -3 },
+  })
+  assert(bad.salvage === 0, `NaN salvage became ${bad.salvage}`)
+  assert(bad.scema === 0, `a negative balance became ${bad.scema}`)
+  assert(bad.frame === 'skiff', `an unknown hull became ${bad.frame}`)
+  assert(bad.levels.engine <= 4, `engine level ${bad.levels.engine} exceeds the maximum`)
+  assert(bad.levels.hull === 0, `a negative level became ${bad.levels.hull}`)
+  assert(Wallet.sanitise(null).scema === 0, 'null should sanitise to a fresh account')
+  assert(Wallet.sanitise('nonsense').scema === 0, 'a string should sanitise to a fresh account')
+})
+
+check('restoring gives back what was bought, and nothing that was spent', () => {
+  // The split the module is built on: balances and purchases are *property* and come back; fuel,
+  // hull, shields, jump charges and the stripped-derelict list are *state* and are rebuilt. A
+  // player who could reload out of a fight, or carry a scavenged-node list into a world where
+  // those ids mean something else, would be duplicating value rather than keeping it.
+  const s = generate(world, digest)
+  const fresh = newGame(s)
+  const account = {
+    ...Wallet.newAccount(),
+    salvage: 300,
+    scema: 120,
+    frame: 'marauder',
+    levels: { ...Wallet.newAccount().levels, tanks: 3, hull: 2 },
+  }
+  const ship = Wallet.restore(fresh.ship, account)
+
+  assert(ship.salvage === 300 && ship.scema === 120, 'the balances did not come back')
+  assert(ship.frame === 'marauder', 'the hull that was paid for did not come back')
+  assert(ship.levels.tanks === 3, 'the upgrades that were paid for did not come back')
+
+  // Consumables are recomputed against the restored level AND the restored hull. Recomputing a
+  // marauder's tank against a skiff hands a returning player a fraction of what they bought.
+  assert(ship.fuel === fuelCapacity(3, 'marauder'), `refuelled to ${ship.fuel}`)
+  assert(ship.hull === hullMax(2, 'marauder'), `hull restored to ${ship.hull}`)
+  assert(ship.scavenged.length === 0, 'a stripped-derelict list came back with the account')
+  assert(ship.docked === null, 'a restored ship started already docked')
+})
+
+check('the account is not keyed by the record', () => {
+  // Every world pays identically — that is what `raiders.ts` and `economy.ts` exist to protect —
+  // so a balance is not a claim about any record. Keying by world would punish a player for
+  // opening a second one and hand them a reason to hoard the first, which is the closest thing to
+  // "a record is worth money" this design refuses to build.
+  assert(!/seed|digest|commitment|space/i.test(Wallet.WALLET_KEY), 'the key names a world')
+  const src = codeOf(join(here, '..', 'lib', 'scemaworld', 'wallet.ts'))
+  const body = src.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  for (const field of ['blind_spots', 'signals', 'extent', 'magnitude', 'seed', 'legibility']) {
+    assert(!body.includes(field), `wallet.ts reads \`${field}\` — a reward path must not`)
+  }
+})
+
+check('a saved account is only written when it changes', () => {
+  // The frame loop runs at 60 Hz and a `localStorage` write is synchronous. Without this the game
+  // stutters continuously against the main thread for no reason: salvage moves when you kill
+  // something, not every frame.
+  const a = Wallet.newAccount()
+  assert(!Wallet.changed(a, Wallet.newAccount()), 'two fresh accounts compared as different')
+  assert(Wallet.changed(a, { ...a, salvage: 1 }), 'a salvage change was not noticed')
+  assert(Wallet.changed(a, { ...a, frame: 'lancer' }), 'a hull change was not noticed')
+  assert(
+    Wallet.changed(a, { ...a, levels: { ...a.levels, laser: 1 } }),
+    'an upgrade was not noticed',
+  )
 })
 
 await Promise.all(pending)

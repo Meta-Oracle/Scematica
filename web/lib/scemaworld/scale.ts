@@ -27,11 +27,18 @@
 export const UNIT = 1000
 
 /**
- * Half-width of a generated sector.
+ * The unit every other distance in this file is a fraction of.
  *
- * The fractal's trunk is `EXTENT / 2` and its branches carry outward, so a real sector spans
- * appreciably more than this in its longest axis — around 1.5×. Treat `EXTENT` as the scale of
- * the place, not as its bounding box.
+ * **It is not the size of the sector and changing it does not resize anything.** That is worth
+ * saying plainly because it was tried: every length here is written as a fraction of `EXTENT`,
+ * so doubling it doubles the nodes, the stations, the gaps, the weapon ranges and the speeds
+ * together, and the result is a sector that is identical in every way a player can perceive.
+ * What sets the size of the place is `TRUNK` — how far the fractal reaches relative to
+ * everything standing in it.
+ *
+ * A real sector spans about `3.1 × TRUNK` from the origin along its longest axis, so with the
+ * current trunk it runs to roughly six extents and about nine corner to corner. `SECTOR_REACH`
+ * below carries that figure for the things that need it.
  */
 export const EXTENT = 3_200_000 * UNIT
 
@@ -117,6 +124,40 @@ export const ENGAGE_RANGE = Math.round(EXTENT * 0.014)
 export const SENSOR_MULTIPLIER = 3.4
 
 /**
+ * Length of the fractal's first branch, and therefore the scale of the whole tree.
+ *
+ * It lived in `generate.ts` as a bare `EXTENT / 2`, which is the one world distance that had
+ * escaped this file. That mattered more than tidiness: **the trunk is the only lever that makes
+ * the sector bigger.** Every other length here is a fraction of `EXTENT`, so `EXTENT` is a pure
+ * unit — doubling it doubles the nodes, the stations, the gaps and the speeds together and
+ * changes nothing anybody can see. The tree's reach *relative to* everything in it is what
+ * "expansive" means, and this is the number that sets it.
+ *
+ * Raised from `EXTENT / 2` to nearly four times that. Branch lengths decay geometrically from
+ * here, so this lengthens every level at once: measured on the parity record, the generated space
+ * went from 2.36 extents corner to corner to 8.90, and the node count came back to exactly the
+ * 424 it was before — the extra room is what pays for the much larger `MIN_NODE_GAP` below
+ * without costing the map any of its content.
+ */
+export const TRUNK = Math.round(EXTENT * 1.9)
+
+/**
+ * How far the sector reaches from the origin — a **constant**, not a measurement of the tree.
+ *
+ * Used by anything that has to scatter something through the whole volume. It is deliberately
+ * derived from `TRUNK` rather than from the nodes a particular record generated, and that is the
+ * load-bearing part: a record that reports a larger extent grows a larger tree, so scattering
+ * hostiles across the *measured* volume would hand a producer a thinner, safer sector in exchange
+ * for claiming a bigger world. That is the same defect `raiders.ts` already documents having
+ * shipped once, arriving from the opposite direction.
+ *
+ * The factor is the geometric sum of the branch decay, rounded down a little. A given world may
+ * reach slightly past it; nothing depends on the bound being tight, only on it being the same for
+ * every world.
+ */
+export const SECTOR_REACH = Math.round(TRUNK * 3.1)
+
+/**
  * Nearest a fractal branch may place two nodes.
  *
  * Raised hard, and it is the number that decides whether a sector reads as *expansive* or as a
@@ -125,7 +166,7 @@ export const SENSOR_MULTIPLIER = 3.4
  * the part you actually fly through is as cluttered as it was. Cutting the recursion earlier is
  * what puts distance *between the things*.
  */
-export const MIN_BRANCH = Math.round(EXTENT * 0.014)
+export const MIN_BRANCH = Math.round(EXTENT * 0.03)
 
 /**
  * Smallest gap the generator will tolerate between any two nodes.
@@ -134,21 +175,41 @@ export const MIN_BRANCH = Math.round(EXTENT * 0.014)
  * near each other however conservative the recursion is, and two stations a few hundred thousand
  * units apart in a sector three thousand million across is the specific thing that reads as
  * clustering.
+ *
+ * ## Why this is stated against `R_NODE_MAX` and not just raised
+ *
+ * The complaint was that the map was *still* too clustered after the last enlargement, and the
+ * measurement said exactly why. Nearest-neighbour distances were 0.026 / 0.031 / 0.047 of a
+ * sector at the 10th, 50th and 90th percentile — a distribution pinned flat against the floor,
+ * because the fractal wants to place its tips far closer than this and almost every survivor
+ * ends up sitting at whatever the floor happens to be. **The floor was the layout.** And the
+ * floor was 1.93 times the radius of the largest node, so a typical pair of neighbours were two
+ * structures nearly touching.
+ *
+ * That ratio, not the absolute number, is what a pilot reads as space. `check:scemaworld` pins
+ * it, so raising a station's radius without raising the gap fails rather than quietly
+ * re-clustering the sector.
  */
-export const MIN_NODE_GAP = Math.round(EXTENT * 0.025)
+export const MIN_NODE_GAP = Math.round(EXTENT * 0.105)
 
 // ── speeds, as sector crossings ──────────────────────────────────────────────
 
 /**
- * Top speed of a stock engine: a sector width in eleven seconds.
+ * Top speed of a stock engine: an extent every seven and a half seconds.
  *
- * Roughly four times what it was, on a sector nearly twice as large. The volume stopped being
- * too small and started being too *slow* — the distance was right and crossing it was a chore,
- * which is the same complaint arriving from the other side. Long hauls are the jump drive's
- * job now (`hyper.ts`); the main drive is for closing, and for getting out of a fight.
+ * Up by half again, and the figure that matters is not this one but what it buys against the
+ * distances above. **A hop to the next node went from 0.34 seconds to 0.94.** The first of those
+ * is not travel — you arrive before you have finished looking at where you left — and it is the
+ * other half of why the sector read as cluttered: things were close together *and* nothing took
+ * any time to reach, so the map had no sense of distance to lose.
+ *
+ * Crossing the whole sector at full burn now takes about a minute. That is deliberate and it is
+ * what the jump drive is for (`hyper.ts`): the main drive is for closing, for getting out of a
+ * fight, and for the hop between two neighbours. A ship that can cross the map on the main engine
+ * makes the jump drive decoration.
  */
-export const SPEED_SHIP = Math.round(EXTENT / 11)
-export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 30)
+export const SPEED_SHIP = Math.round(EXTENT / 7.5)
+export const SPEED_SHIP_PER_LEVEL = Math.round(EXTENT / 20.4)
 
 /**
  * Lateral and vertical thrusters.
@@ -194,7 +255,7 @@ export const SPIN_DAMP = 5.0
  * Roughly two and a half seconds from rest to cruise on a stock hull, which is short enough that
  * the throttle still reads as a throttle and long enough that the ship has obvious mass.
  */
-export const ACCEL_MAIN = Math.round(EXTENT / 26)
+export const ACCEL_MAIN = Math.round(EXTENT / 18.7)
 
 /**
  * Flight assist: how fast velocity is dragged onto the nose, per second.
@@ -250,8 +311,15 @@ export const LIFE_LASER = 0.45
 export const SPEED_PHOTON = Math.round(EXTENT / 6)
 export const LIFE_PHOTON = 2.0
 
-/** Enemy fire. Faster than any ship, so closing does not make you safe. */
-export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 3.4)
+/**
+ * Enemy fire. Faster than any ship, so closing does not make you safe.
+ *
+ * "Any ship" includes a **fully upgraded** player, which is what pins this number: four engine
+ * levels put the hull at `EXTENT / 3.05`, so a round at the old `EXTENT / 3.4` would have been
+ * outrunnable by exactly the pilot most likely to try it. Raised with the engines, in the same
+ * edit, for the same reason `SPEED_CRAFT` was.
+ */
+export const SPEED_ENEMY_SHOT = Math.round(EXTENT / 2.6)
 /**
  * Raised with `LIFE_LASER` and for the same reason: everything now detects and engages half again
  * as far, and a round that expired before it covered the new engagement band would mean craft
@@ -275,32 +343,51 @@ export const LIFE_ENEMY_SHOT_MAX = 5.0
  * Deliberately below `SPEED_SHIP`, even at the top tier: **disengaging must always be possible.**
  * A game where the only answer to a fight you are losing is to die is a game that punishes
  * exploration, and exploring is the whole activity here.
+ *
+ * Raised by the same factor as `SPEED_SHIP` and in the same edit, which is the only way that
+ * guarantee survives a tuning pass: the margin a top-tier craft leaves against a stock hull is
+ * unchanged at about a ninth. Raising the player alone would have kept the test green and quietly
+ * turned every pursuit into a formality.
  */
-export const SPEED_CRAFT = Math.round(EXTENT / 20)
-export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 120)
+export const SPEED_CRAFT = Math.round(EXTENT / 14)
+export const SPEED_CRAFT_PER_TIER = Math.round(EXTENT / 85)
 
 // ── the camera ───────────────────────────────────────────────────────────────
 
 /**
- * Near plane. Far is the sensor range, up to about `1.15 * EXTENT`, which puts the depth ratio
- * near 2000:1 — inside what a 24-bit depth buffer holds without visible fighting between two
- * stations at the far edge.
+ * Near plane.
+ *
+ * Raised along with the far plane to hold the depth ratio down. It stays well inside the
+ * player's own hull radius, so nothing you can be next to is clipped by it.
  */
-export const NEAR_PLANE = Math.round(EXTENT * 0.0009)
+export const NEAR_PLANE = Math.round(EXTENT * 0.0026)
 
 /**
  * The far plane, always. **Draw distance is no longer a function of sensor range.**
  *
  * Sensor range used to gate it, and the result was a wall of fog at the edge of a volume the
- * whole design is about the size of — you could not see the sector you were flying in. Now the
- * far plane covers the entire generated space (the fractal reaches roughly 1.6 extents along
- * its longest axis, so this clears it) and legibility expresses itself where it belongs: in
- * what the record *knows*, not in how far the window sees.
+ * whole design is about the size of — you could not see the sector you were flying in. So it
+ * became a constant covering the generated space, and legibility moved to where it belongs: what
+ * the record *knows*, not how far the window sees.
  *
- * The depth ratio against `NEAR_PLANE` is about 2000:1, inside what a 24-bit depth buffer
- * holds without two distant stations fighting over the same pixel.
+ * ## It was still covering the wrong distance, and by a lot
+ *
+ * The constant was `1.9 · EXTENT`, chosen against a measurement of how far the fractal reaches
+ * **from the origin** — 1.55 extents, so 1.9 looked like it cleared the sector with margin. It
+ * does not, because *the camera is not at the origin*. What the far plane has to cover is the
+ * distance between the two furthest things that can be on screen together, which is the sector's
+ * **diameter**: 2.36 extents on the old tuning, so the old far plane fell short by 19% and a
+ * player at one edge could not see the other edge. Precisely the wall of fog the constant was
+ * introduced to remove, surviving in the arithmetic because the comment was checked against the
+ * radius and no test read the claim.
+ *
+ * Stated against `SECTOR_REACH` now, with the factor over 2 being the diameter and the remainder
+ * margin for a world whose branches run longer than typical. The depth ratio this costs is about
+ * 5000:1 rather than 2000:1 — real, and the right trade: z-fighting needs two surfaces at nearly
+ * the same depth, which is a thing that does not happen between wireframe structures scattered
+ * through a volume, whereas not being able to see the sector happens every frame.
  */
-export const FAR_PLANE = Math.round(EXTENT * 1.9)
+export const FAR_PLANE = Math.round(SECTOR_REACH * 2.2)
 
 // ── projectiles as objects rather than points ────────────────────────────────
 
@@ -331,6 +418,28 @@ export const BOLT_LENGTH = 34
  * thin streak pointing back at whoever fired it rather than a ball that grows as it recedes.
  */
 export const BOLT_MIN_PX = 3
+
+/**
+ * The smallest a **body** may appear, in pixels of screen height.
+ *
+ * The other half of "the far plane no longer clips the sector". Clearing the geometry only helps
+ * if what is out there rasterises to something: a craft is `R_CONTACT`-sized, and across a sector
+ * nine extents wide it projects to well under a pixel long before it reaches the far plane. So the
+ * whole outer sector was drawn, correctly, and looked empty.
+ *
+ * Lower than `BOLT_MIN_PX` on purpose, and the difference is the argument for it. A tracer is a
+ * *light source*, and flooring one is honest — a light does not shrink out of existence, which is
+ * why every renderer floors distant stars and running lights. A hull is a solid, so a floor is a
+ * small lie, and it is worth telling only at the point where the truthful answer is "nothing at
+ * all". Two pixels rescues what would vanish and is invisible everywhere else: a body only reaches
+ * this floor when its honest size is already sub-pixel.
+ *
+ * **This is a screen-space affordance and never a world radius.** The rule that a hit test uses
+ * the radius the renderer draws is about `R_*` above — the one table both the mesh and the hitbox
+ * read. Nothing here changes a world size, so a distant craft is not easier to hit for being
+ * visible; it is simply not invisible.
+ */
+export const BODY_MIN_PX = 2
 /**
  * The additive halo, as a multiple of the core radius. Glow, drawn as geometry.
  *

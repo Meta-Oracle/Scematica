@@ -39,7 +39,15 @@ export interface Ship {
    * teaches people not to change.
    */
   frame: HullId
-  /** Placeholder currency. See `economy.ts` — it is a number in a tab, not a token. */
+  /**
+   * SCEMA. **A real balance now** — see `economy.ts`, and `claim.ts` for what bounds it.
+   *
+   * This said "placeholder currency … a number in a tab, not a token", which stopped being true
+   * when the withdrawal path landed and stayed on the field for a while afterwards. It is a
+   * number in a tab *and* redeemable for $SCEMA from a fixed treasury, and it now survives the
+   * tab closing (`wallet.ts`) — which is the whole reason the withdrawal path is reachable at
+   * all, since the minimum claim is more than most single sessions used to bank.
+   */
   scema: number
   /** Litres, abstract. Runs down with thrust; refuelled at a depot or dock. */
   fuel: number

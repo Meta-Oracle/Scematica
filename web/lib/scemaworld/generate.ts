@@ -44,7 +44,7 @@ import { growthOf, plannedCuts, Rng, type Growth } from '../omni/fractal.ts'
 import { raidersOf } from './raiders.ts'
 import type { WorldState } from '../omni/types.ts'
 
-import { EXTENT, MIN_BRANCH, MIN_NODE_GAP } from './scale.ts'
+import { EXTENT, MIN_BRANCH, MIN_NODE_GAP, TRUNK } from './scale.ts'
 
 /**
  * Scale of the whole volume, re-exported because it is what most callers want from here.
@@ -320,7 +320,10 @@ export function generate(world: WorldState, digest: string): Space {
   // A long trunk and a slow taper: the tree has to reach the edges of a volume this size or
   // the sector is a dense knot with emptiness around it, which reads as smaller than a map
   // half the size that fills its space.
-  const trunk = Math.trunc(EXTENT / 2)
+  //
+  // The length itself lives in `scale.ts` with every other world distance. It was the one that
+  // had escaped, and it is the only lever that actually makes the sector bigger — see `TRUNK`.
+  const trunk = TRUNK
 
   /**
    * A coarse spatial index of placed nodes, so the gap check below is not quadratic.

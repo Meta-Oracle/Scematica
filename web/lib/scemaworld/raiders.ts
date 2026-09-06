@@ -44,7 +44,7 @@
 import type { Contact, Vec3 } from './generate.ts'
 import { Rng } from '../omni/fractal.ts'
 import type { ClassId } from './classes.ts'
-import { AGGRO_RANGE, EXTENT } from './scale.ts'
+import { AGGRO_RANGE, SECTOR_REACH } from './scale.ts'
 
 /** The spawn point, which is what a generated wing is held clear of. */
 const ORIGIN: Vec3 = { x: 0, y: 0, z: 0 }
@@ -62,6 +62,29 @@ const ORIGIN: Vec3 = { x: 0, y: 0, z: 0 }
  * It is also the better fight. Four craft of mixed classes arrive with different turn rates and
  * different standoffs, so the engagement has a shape: the interceptors are on you first and the
  * gunship arrives late and hits far harder.
+ *
+ * ## It did not move when the sector grew, and that is a measurement rather than an oversight
+ *
+ * `TRUNK` grew the volume by a factor of about fifty-five, which drops the density of a fixed
+ * roster through the floor, so raising this looks obviously right. It was tried at 28 and then at
+ * 22, and the per-tick cost is what settled it:
+ *
+ * | wings | craft in the swarm | ms per tick |
+ * |---|---|---|
+ * | 28 | ~190 | (suite timed out) |
+ * | 22 | 164 | 5.59 |
+ * | 18 | 148 | 3.74 |
+ *
+ * The bar in `check:scemaworld` is 4 ms against a 16.7 ms frame, and it exists because this same
+ * arithmetic already produced a 0.68 → 5.17 ms regression once. Craft interact pairwise, so the
+ * cost climbs faster than the roster does.
+ *
+ * **What makes 18 safe is that density is not the number a player experiences.** `respawn.ts`
+ * raises reinforcements *relative to where the player is*, on a timer, so how often you meet
+ * something is set by that timer and not by how thinly the opening roster is spread over the
+ * volume. What the enlarged sector genuinely broke was not the count but the *placement* — the
+ * roster was scattered across one `EXTENT` while the nodes ran to six, which is fixed below by
+ * scattering across `SECTOR_REACH`.
  */
 export const WINGS = 18
 export const PER_WING = 4
@@ -111,11 +134,17 @@ export function raiderWing(
   const out: Contact[] = []
   // A cube rather than a sphere: the fractal fills a boxy volume, so a sphere would leave the
   // corners — where the longest branches end — unpopulated.
-  const span = EXTENT * 2
+  //
+  // Sized by `SECTOR_REACH`, not by `EXTENT`. The box used to be one extent either side, which
+  // covered the sector when the fractal reached 1.55 of them and stopped covering it the moment
+  // the trunk grew: the nodes sprawled to six extents and the entire opening roster stayed
+  // hunched in the middle, leaving nine tenths of the map with nothing in it. `SECTOR_REACH` is
+  // still a constant — see its note on why this may not be measured off the generated tree.
+  const span = SECTOR_REACH * 2
   let anchor = {
-    x: rng.below(span) - EXTENT,
-    y: Math.trunc((rng.below(span) - EXTENT) * 0.7),
-    z: rng.below(span) - EXTENT,
+    x: rng.below(span) - SECTOR_REACH,
+    y: Math.trunc((rng.below(span) - SECTOR_REACH) * 0.7),
+    z: rng.below(span) - SECTOR_REACH,
   }
   // Never within sensor range of the player. At generation that is the spawn point — opening the
   // game already inside an engagement reads as the game being broken before you have touched a
@@ -179,12 +208,12 @@ export function raidersOf(seed: string): Contact[] {
 
   // The garrison, on its own stream so adding or removing a capital cannot shuffle the wings.
   const rng = new Rng(seed.slice(4, 12) || seed.slice(8, 16) || seed)
-  const span = EXTENT * 2
+  const span = SECTOR_REACH * 2
   GARRISON.forEach((klass, i) => {
     let at = {
-      x: rng.below(span) - EXTENT,
-      y: Math.trunc((rng.below(span) - EXTENT) * 0.7),
-      z: rng.below(span) - EXTENT,
+      x: rng.below(span) - SECTOR_REACH,
+      y: Math.trunc((rng.below(span) - SECTOR_REACH) * 0.7),
+      z: rng.below(span) - SECTOR_REACH,
     }
     let guard = 0
     // A capital's own aggro range reaches a third of the sector, so it is held much further from

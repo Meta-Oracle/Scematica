@@ -24,7 +24,7 @@
  */
 
 import type { Mat4 } from './camera.ts'
-import { BOLT_GLOW, BOLT_LENGTH, BOLT_MIN_PX } from './scale.ts'
+import { BODY_MIN_PX, BOLT_GLOW, BOLT_LENGTH, BOLT_MIN_PX } from './scale.ts'
 import * as Mesh from './meshes.ts'
 import { PALETTE, shapeOf, type Body, type DrawList, type Segment } from './view.ts'
 import type { Shape } from './classes.ts'
@@ -54,6 +54,7 @@ in float aScale;
 in vec3 aColor;
 in float aSolid;
 uniform mat4 uViewProj;
+uniform float uBodyMin;
 out vec3 vColor;
 out float vSolid;
 out vec3 vNormal;
@@ -61,7 +62,14 @@ void main() {
   vColor = aColor;
   vSolid = aSolid;
   vNormal = normalize(aPos);
-  gl_Position = uViewProj * vec4(aPos * aScale + aOffset, 1.0);
+  // A floor on the projected radius, exactly as the bolt shader has — see BODY_MIN_PX. Clearing
+  // the far plane to cover the sector only helps if what is out there rasterises to something,
+  // and a craft across a nine-extent volume is sub-pixel long before it reaches the far plane.
+  // The floor is in *clip w*, which is the view-space depth: a world size proportional to w
+  // survives the perspective divide as a constant screen size.
+  vec4 centre = uViewProj * vec4(aOffset, 1.0);
+  float s = max(aScale, max(centre.w, 0.0) * uBodyMin);
+  gl_Position = uViewProj * vec4(aPos * s + aOffset, 1.0);
 }`
 
 const FRAG_BODY = `#version 300 es
@@ -489,6 +497,8 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
    * re-derived from a field of view this module does not own.
    */
   let minScale = 0
+  /** The same floor for solid bodies, at its own (smaller) pixel target. See BODY_MIN_PX. */
+  let bodyMinScale = 0
 
   function drawGroup(prog: WebGLProgram, g: Group, viewProj: Mat4) {
     if (g.count === 0) return
@@ -497,6 +507,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     // Harmless on the programs that do not declare it: `getUniformLocation` returns null and the
     // call is a no-op, which is cheaper than branching per program.
     gl.uniform1f(gl.getUniformLocation(prog, 'uMinScale'), minScale)
+    gl.uniform1f(gl.getUniformLocation(prog, 'uBodyMin'), bodyMinScale)
     gl.bindVertexArray(g.vao)
     gl.drawArraysInstanced(g.mode, 0, g.verts, g.count)
     gl.bindVertexArray(null)
@@ -514,6 +525,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     // translation, and the fourth column would contaminate the same reading.
     const p11 = Math.hypot(viewProjRot[1], viewProjRot[5], viewProjRot[9]) || 1
     minScale = (2 * BOLT_MIN_PX) / (p11 * Math.max(1, height))
+    bodyMinScale = (2 * BODY_MIN_PX) / (p11 * Math.max(1, height))
     // Very slightly blue-black rather than pure black: a pure-black ground makes the faintest
     // stars vanish into it, and the faint ones are most of the sky.
     gl.clearColor(0.008, 0.007, 0.016, 1)

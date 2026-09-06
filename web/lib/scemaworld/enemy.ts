@@ -46,7 +46,7 @@ import { civilian, hostileTo, nextStop, routeNodes, type Civilian, type Faction 
 import type { Node, Space } from './generate.ts'
 import { separate, steerAround, type Grid } from './collide.ts'
 import {
-  AGGRO_RANGE, ENGAGE_RANGE, LIFE_ENEMY_SHOT, R_PLAYER, SPEED_ENEMY_SHOT,
+  AGGRO_RANGE, ENGAGE_RANGE, LIFE_ENEMY_SHOT, R_PLAYER, SECTOR_REACH, SPEED_ENEMY_SHOT,
 } from './scale.ts'
 
 export { AGGRO_RANGE, ENGAGE_RANGE }
@@ -518,6 +518,29 @@ function nearestAlly(swarm: Swarm, c: Craft): Craft | null {
 const MARSHAL_REACH = 2.5
 
 /**
+ * The floor under a hunter's search radius: it can find a fight anywhere in the sector.
+ *
+ * ## Why a fraction of the sector rather than a multiple of its own guns
+ *
+ * Both hunter reaches were written as multiples of the craft's `aggro`, which is a weapons figure.
+ * That worked while the sector happened to be about the size those multiples covered, and it
+ * stopped working the instant `TRUNK` grew: a marshal's reach was 0.25 of an extent in a sector
+ * spanning nearly nine of them, so the patrol simply never met a raider. The check caught it —
+ * "raiders went 94 → 94 with nobody hunting them" — and the mechanic it protects is the one that
+ * makes the place feel inhabited rather than staged.
+ *
+ * The lesson is the same one `scale.ts` keeps paying for: a constant that has to track the size of
+ * the world must be *written against* the size of the world. A patrol's job is to find raiders, so
+ * its acquisition range is the sector — which is also the better fiction, since a patrol with a
+ * sector-wide picture is what distinguishes it from a wandering gunship. The same applies to a
+ * capital, already noted below as "the largest sensor platform in the volume".
+ *
+ * A raider's reach is deliberately **not** floored: it is here for the player, and the asymmetry
+ * is what stops the ambient war from becoming the whole sector.
+ */
+const HUNT_REACH = SECTOR_REACH
+
+/**
  * How far a raider will look for a marshal to fight back against.
  *
  * Deliberately tighter than the marshal's reach. A raider is here for the player and turns on the
@@ -625,9 +648,13 @@ function focusOf(
   // took exactly zero damage over ten minutes of sector time. They are the largest sensor
   // platforms in the volume; behaving as though they see less than an interceptor was the
   // accident.
-  const reach =
-    c.spec.aggro *
-    (c.spec.capital ? CAPITAL_REACH : c.faction === 'marshal' ? MARSHAL_REACH : RAIDER_REACH)
+  const hunts = c.spec.capital || c.faction === 'marshal'
+  const reach = hunts
+    ? Math.max(
+        c.spec.aggro * (c.spec.capital ? CAPITAL_REACH : MARSHAL_REACH),
+        HUNT_REACH,
+      )
+    : c.spec.aggro * RAIDER_REACH
 
   // Hold the current quarry while it is alive and still in reach. This is the commitment half of
   // `RETARGET_MS`: a craft does not drop a target simply because another drifted a little nearer.

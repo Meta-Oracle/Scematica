@@ -388,6 +388,25 @@ export function bulwark(): Wire {
     [10, 3], [10, 4], [10, 7], [10, 8],
   ]
   let n = p.length
+
+  // ## The hangar mouth
+  //
+  // A rectangular opening in the bow you can see *through* — the identifying feature, and the one
+  // thing in the sector that says "this ship carries other ships". At the range a capital is first
+  // seen, an outline with a hole in it is a different object from an outline without one, which is
+  // more information than any amount of surface detail buys.
+  const mouth = n
+  p.push(
+    [-0.3, 0.1, 1.15], [0.3, 0.1, 1.15], [0.3, -0.14, 1.15], [-0.3, -0.14, 1.15],
+    [-0.24, 0.06, 0.6], [0.24, 0.06, 0.6], [0.24, -0.1, 0.6], [-0.24, -0.1, 0.6],
+  )
+  e.push(
+    [mouth, mouth + 1], [mouth + 1, mouth + 2], [mouth + 2, mouth + 3], [mouth + 3, mouth],
+    [mouth + 4, mouth + 5], [mouth + 5, mouth + 6], [mouth + 6, mouth + 7], [mouth + 7, mouth + 4],
+    [mouth, mouth + 4], [mouth + 1, mouth + 5], [mouth + 2, mouth + 6], [mouth + 3, mouth + 7],
+  )
+  n = p.length
+
   // Shoulder blocks: armour boxes either side of the prow, and the feature that reads first at
   // the range a capital is usually seen from.
   for (const s of [-1, 1]) {
@@ -398,10 +417,11 @@ export function bulwark(): Wire {
     e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3], [n + 1, s < 0 ? 5 : 6])
     n += 4
   }
+
   // Transverse ribs: hoops around the beam, spaced along the hull, each with a dorsal and a
   // ventral spur. A wall rather than a spine.
-  for (let i = 1; i <= 6; i += 1) {
-    const t = i / 7
+  for (let i = 1; i <= 8; i += 1) {
+    const t = i / 9
     const z = 0.55 - t * 1.7
     const w = 0.62 + 0.24 * t
     const top = 0.2 + 0.02 * t
@@ -416,11 +436,32 @@ export function bulwark(): Wire {
     )
     n += 6
   }
-  // Engine bank: four wide nozzles across the stern.
+
+  // Flank batteries: blisters down each side, at the ribs. A wall that is only a wall has nothing
+  // to shoot with, and at this size the eye goes looking for the guns.
+  for (const s of [-1, 1]) {
+    for (const z of [0.25, -0.25, -0.75]) {
+      p.push([s * 0.9, 0.06, z + 0.12], [s * 1.02, 0.06, z], [s * 0.9, 0.06, z - 0.12], [s * 0.9, -0.1, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
+  }
+
+  // Stepped superstructure aft of the bridge, so the dorsal line is not one flat run.
+  p.push([-0.2, 0.58, -0.5], [0.2, 0.58, -0.5], [0.2, 0.58, -0.9], [-0.2, 0.58, -0.9])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, 9], [n + 1, 9])
+  n += 4
+
+  // Engine bank: four wide nozzles across the stern, each a short box rather than a line.
   for (const x of [-0.6, -0.2, 0.2, 0.6]) {
-    p.push([x, -0.02, -1.15], [x, -0.02, -1.5])
-    e.push([n, n + 1])
-    n += 2
+    p.push([x - 0.1, 0.06, -1.15], [x + 0.1, 0.06, -1.15], [x + 0.1, -0.1, -1.15], [x - 0.1, -0.1, -1.15])
+    p.push([x - 0.1, 0.06, -1.5], [x + 0.1, 0.06, -1.5], [x + 0.1, -0.1, -1.5], [x - 0.1, -0.1, -1.5])
+    e.push(
+      [n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n],
+      [n + 4, n + 5], [n + 5, n + 6], [n + 6, n + 7], [n + 7, n + 4],
+      [n, n + 4], [n + 1, n + 5], [n + 2, n + 6], [n + 3, n + 7],
+    )
+    n += 8
   }
   return wire(p, e)
 }
@@ -454,51 +495,64 @@ export function sovereign(): Wire {
   ]
   let n = p.length
 
+  // A ram at the prow: three collars stepping back from the point. A spinal ship's bow is the part
+  // most often seen first, and a bare vertex is the one place a wireframe looks unfinished.
+  for (const [z, r] of [[1.85, 0.1], [1.6, 0.2], [1.3, 0.3]] as [number, number][]) {
+    const first = ring(p, 8, r, z, 'xy')
+    e.push(...loop(first, 8))
+    e.push([first, 0], [first + 2, 0], [first + 4, 0], [first + 6, 0])
+  }
+  n = p.length
+
   // Command tower, forward and tall. On a hull too long to see both ends of at once, the bridge
   // is the thing a pilot orients by.
-  p.push([0, 0.24, 0.9], [0, 0.86, 0.5], [-0.2, 0.62, 0.35], [0.2, 0.62, 0.35], [0, 0.3, 0.1])
+  p.push([0, 0.24, 0.9], [0, 0.86, 0.5], [-0.24, 0.7, 0.6], [0.24, 0.7, 0.6], [0, 0.3, 0.1])
   e.push([n, n + 1], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 4], [n + 3, n + 4], [n + 1, n + 4])
   n += 5
+  // Antenna masts off the tower, so the tallest point is a mast rather than a block.
+  p.push([0, 1.25, 0.5], [-0.12, 1.05, 0.35], [0.12, 1.05, 0.35])
+  e.push([n, n - 4], [n + 1, n - 4], [n + 2, n - 4])
+  n += 3
 
-  // Three rib clusters rather than one continuous run.
+  // Three rib clusters rather than one continuous run: a bow, a waist and a stern.
   for (const z0 of [0.85, -0.15, -1.0]) {
-    for (let i = 0; i < 3; i += 1) {
-      const z = z0 - i * 0.2
+    for (let i = 0; i < 4; i += 1) {
+      const z = z0 - i * 0.16
       const t = (2.0 - z) / 3.35
       const w = 0.36 + 0.36 * t
       const top = 0.15 + 0.06 * t
       const bot = -0.18 - 0.09 * t
       p.push([-w, top, z], [w, top, z], [w, bot, z], [-w, bot, z])
       e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+      // Every second rib carries a dorsal fin, which breaks the top edge along the whole hull.
+      if (i % 2 === 0) {
+        p.push([0, top + 0.3, z])
+        e.push([n + 4, n], [n + 4, n + 1])
+        n += 1
+      }
       n += 4
     }
   }
 
-  // Flank galleries: what a spinal ship carries instead of turrets on a superstructure.
+  // Flank galleries: long weapon runs down each side, with muzzle ports.
   for (const s of [-1, 1]) {
-    p.push(
-      [s * 0.98, 0.02, 0.5], [s * 0.98, 0.02, -1.0],
-      [s * 0.72, 0.14, 0.5], [s * 0.72, 0.14, -1.0],
-    )
-    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
+    const g = n
+    p.push([s * 0.98, 0.02, 0.5], [s * 0.98, 0.02, -1.0], [s * 0.72, 0.14, 0.5], [s * 0.72, 0.14, -1.0])
+    e.push([g, g + 1], [g + 2, g + 3], [g, g + 2], [g + 1, g + 3])
     n += 4
+    for (const z of [0.35, 0.0, -0.35, -0.7]) {
+      p.push([s * 1.1, 0.02, z], [s * 0.98, 0.02, z])
+      e.push([n, n + 1])
+      n += 2
+    }
   }
 
-  // The engine cage: six pylons in a ring behind the stern, braced fore and aft.
-  const cage = n
-  const R = 0.52
-  for (let i = 0; i < 6; i += 1) {
-    const a = (i / 6) * Math.PI * 2
-    p.push(
-      [Math.cos(a) * R, Math.sin(a) * R * 0.7, -1.35],
-      [Math.cos(a) * R, Math.sin(a) * R * 0.7, -1.95],
-    )
-  }
-  for (let i = 0; i < 6; i += 1) {
-    const j = (i + 1) % 6
-    e.push([cage + i * 2, cage + i * 2 + 1])
-    e.push([cage + i * 2, cage + j * 2])
-    e.push([cage + i * 2 + 1, cage + j * 2 + 1])
+  // Two engine cages, a large ring and a smaller one inside it, braced fore and aft.
+  for (const [r, count] of [[0.52, 6], [0.28, 4]] as [number, number][]) {
+    const front = ring(p, count, r, -1.35, 'xy')
+    const back = ring(p, count, r, -1.95, 'xy')
+    e.push(...loop(front, count), ...loop(back, count))
+    for (let i = 0; i < count; i += 1) e.push([front + i, back + i])
   }
   return wire(p, e)
 }
@@ -918,19 +972,35 @@ export function starfield(seed: string, count = 1400): Float32Array {
  * interesting on purpose.
  */
 export function skiff(): Wire {
-  const p = [
+  const p: number[][] = [
     [0, 0, 1.0],
     [-0.55, -0.08, -0.6], [0.55, -0.08, -0.6],
     [0, 0.1, -0.5],
     [0, 0.5, -0.7],
     [-0.18, -0.02, -0.75], [0.18, -0.02, -0.75],
   ]
-  return wire(p, [
+  const e: [number, number][] = [
     [0, 1], [0, 2], [0, 3],
     [1, 3], [2, 3], [1, 2],
     [3, 4], [4, 5], [4, 6], [5, 6],
     [1, 5], [2, 6],
-  ])
+  ]
+  let n = p.length
+  // Plain is not the same as sparse. The starter should look like something you will replace, and
+  // it was reading as something that had not been finished — twelve segments against a light
+  // tier that runs to thirty-four. What it gets is *ordinary* detail: a cockpit, a pair of
+  // exhausts and a keel, none of which is a feature anything else lacks.
+  p.push([0, 0.16, 0.35], [-0.1, 0.06, 0.5], [0.1, 0.06, 0.5], [0, 0.02, 0.15])
+  e.push([n, n + 1], [n, n + 2], [n + 1, n + 3], [n + 2, n + 3], [n, 3], [n + 3, 0])
+  n += 4
+  for (const s of [-1, 1]) {
+    p.push([s * 0.16, -0.02, -0.75], [s * 0.16, -0.02, -0.95], [s * 0.24, 0.04, -0.85])
+    e.push([n, n + 1], [n, n + 2], [n + 1, n + 2])
+    n += 3
+  }
+  p.push([0, -0.22, -0.2], [0, -0.22, -0.7])
+  e.push([n, n + 1], [n, 1], [n, 2], [n + 1, 5], [n + 1, 6])
+  return wire(p, e)
 }
 
 /**
@@ -945,9 +1015,7 @@ export function dart(): Wire {
     [0, 0, 1.9],
     [-0.1, 0.05, 0.6], [0.1, 0.05, 0.6], [0, -0.08, 0.6],
     [-0.12, 0.05, -1.0], [0.12, 0.05, -1.0], [0, -0.1, -1.0],
-    // Canards, forward and small.
     [-0.62, 0.02, 0.75], [0.62, 0.02, 0.75],
-    // One nacelle, trailing.
     [0, -0.02, -1.35],
   ]
   const e: [number, number][] = [
@@ -958,6 +1026,27 @@ export function dart(): Wire {
     [7, 1], [7, 3], [8, 2], [8, 3],
     [9, 4], [9, 5], [9, 6],
   ]
+  let n = p.length
+  // Bands down the needle. A shape this thin has almost no outline to read, so the length has to
+  // be legible some other way — the bands are the only cue for how long it is, and therefore for
+  // how fast it is going when it crosses your view.
+  for (const t of [0.2, 0.45, 0.7]) {
+    const z = 0.6 - t * 1.6
+    const first = ring(p, 5, 0.11, z, 'xy')
+    e.push(...loop(first, 5))
+    n = p.length
+  }
+  // Canard tips swept back to the body, so the canards read as surfaces rather than as spikes.
+  e.push([7, 4], [8, 5])
+  p.push([-0.5, 0.02, 0.35], [0.5, 0.02, 0.35])
+  e.push([n, 7], [n, 1], [n + 1, 8], [n + 1, 2])
+  n += 2
+  // A single trailing nacelle with a nozzle, because the whole hull is one engine and a bare
+  // vertex at the stern is the one place a needle looks unfinished.
+  const bell = ring(p, 5, 0.09, -1.2, 'xy')
+  const flare = ring(p, 5, 0.13, -1.45, 'xy')
+  e.push(...loop(bell, 5), ...loop(flare, 5))
+  for (let i = 0; i < 5; i += 1) e.push([bell + i, flare + i])
   return wire(p, e)
 }
 
@@ -970,11 +1059,10 @@ export function dart(): Wire {
  */
 export function lance(): Wire {
   const p: number[][] = [
-    [0, 0, 1.75], // the spike
+    [0, 0, 1.75],
     [0, 0, 0.55],
     [-0.36, 0.2, 0.35], [0.36, 0.2, 0.35], [-0.36, -0.2, 0.35], [0.36, -0.2, 0.35],
     [-0.4, 0.18, -0.85], [0.4, 0.18, -0.85], [-0.4, -0.18, -0.85], [0.4, -0.18, -0.85],
-    // Gun pods, ventral.
     [-0.5, -0.42, 0.1], [-0.5, -0.42, -0.7],
     [0.5, -0.42, 0.1], [0.5, -0.42, -0.7],
   ]
@@ -986,6 +1074,27 @@ export function lance(): Wire {
     [6, 7], [8, 9], [6, 8], [7, 9],
     [10, 11], [12, 13], [10, 4], [11, 8], [12, 5], [13, 9],
   ]
+  let n = p.length
+  // Collars where the spike enters the hull. A spike is the whole identity of this ship and it was
+  // a bare line — the join is exactly where a naive model looks glued on rather than mounted.
+  for (const [z, r] of [[1.4, 0.07], [1.1, 0.11], [0.8, 0.15]] as [number, number][]) {
+    const first = ring(p, 6, r, z, 'xy')
+    e.push(...loop(first, 6))
+    e.push([first, 0], [first + 3, 0])
+    n = p.length
+  }
+  // Muzzles on the gun pods, so the pods read as guns and not as fuel.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.5, -0.42, 0.34], [s * 0.42, -0.36, 0.16], [s * 0.58, -0.36, 0.16])
+    e.push([n, n + 1], [n, n + 2], [n + 1, n + 2], [n, s < 0 ? 10 : 12])
+    n += 3
+  }
+  // Two exhausts, offset, so the stern is not a flat quad.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.2, 0, -0.85], [s * 0.2, 0, -1.1], [s * 0.3, 0.08, -0.98], [s * 0.1, 0.08, -0.98])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 3], [n, n + 2], [n, n + 3])
+    n += 4
+  }
   return wire(p, e)
 }
 
@@ -1104,6 +1213,7 @@ export function aegis(): Wire {
   ]
   const e: [number, number][] = []
   let n = p.length
+  const tips: number[] = []
   for (let i = 0; i < 3; i += 1) {
     const a = (i / 3) * Math.PI * 2
     const cx = Math.cos(a)
@@ -1113,10 +1223,24 @@ export function aegis(): Wire {
     p.push([cx * 0.78, cy * 0.78, -0.1])
     p.push([cx * 0.62, cy * 0.62, -0.85])
     e.push([0, n], [n, n + 1], [n + 1, n + 2], [n + 2, 1], [n, 1])
-    n += 3
+    // Each vane is a *panel*, not a spar: an inner edge running parallel to the outer one, so the
+    // ship reads as three surfaces rather than three wires. The shields are the whole hull, and a
+    // wire frame cannot carry that claim.
+    p.push([cx * 0.4, cy * 0.4, 0.15], [cx * 0.52, cy * 0.52, -0.5])
+    e.push([n + 3, n], [n + 3, n + 1], [n + 4, n + 1], [n + 4, n + 2], [n + 3, n + 4])
+    tips.push(n + 1)
+    n += 5
   }
   // Tie the vane tips together, so the ship reads as a frame rather than three separate fins.
-  e.push([2 + 1, 5 + 1], [5 + 1, 8 + 1], [8 + 1, 2 + 1])
+  e.push([tips[0], tips[1]], [tips[1], tips[2]], [tips[2], tips[0]])
+  // A core between the vanes: two rings around the axis, which is what the vanes are protecting
+  // and the only part of this hull that can be destroyed.
+  for (const z of [0.3, -0.4]) {
+    const first = ring(p, 6, 0.18, z, 'xy')
+    e.push(...loop(first, 6))
+    e.push([first, 0], [first + 3, 1])
+    n = p.length
+  }
   return wire(p, e)
 }
 
@@ -1163,28 +1287,81 @@ export function monitor(): Wire {
   const p: number[][] = [
     [-0.6, 0.3, -0.2], [0.6, 0.3, -0.2], [0.6, -0.3, -0.2], [-0.6, -0.3, -0.2],
     [-0.72, 0.34, -1.4], [0.72, 0.34, -1.4], [0.72, -0.34, -1.4], [-0.72, -0.34, -1.4],
-    [0, 0.62, -0.7],
   ]
   const e: [number, number][] = [
     [0, 1], [1, 2], [2, 3], [3, 0],
     [4, 5], [5, 6], [6, 7], [7, 4],
     [0, 4], [1, 5], [2, 6], [3, 7],
-    [8, 0], [8, 1], [8, 4], [8, 5],
   ]
   let n = p.length
-  // The barrel: a long square section on the axis, with three reinforcing bands.
-  const barrel = [0.26, 2.0, -0.2]
-  for (const [dx, dy] of [[-1, 1], [1, 1], [1, -1], [-1, -1]] as [number, number][]) {
-    p.push([dx * barrel[0], dy * barrel[0], barrel[1]], [dx * barrel[0], dy * barrel[0], barrel[2]])
+
+  // ## The recoil housing
+  //
+  // Three concentric collars where the barrel enters the hull, stepping outward as they go aft.
+  // A gun this size has to visibly *absorb* something, and the collars are what tell a viewer the
+  // barrel is mounted rather than glued on — the join is where a naive model looks wrong.
+  for (const [z, r] of [[0.1, 0.44], [-0.25, 0.56], [-0.6, 0.66]] as [number, number][]) {
+    const first = ring(p, 10, r, z, 'xy')
+    e.push(...loop(first, 10))
+    if (n > p.length - 10) { /* unreachable; keeps `n` honest below */ }
+    n = p.length
   }
-  e.push([n, n + 1], [n + 2, n + 3], [n + 4, n + 5], [n + 6, n + 7])
-  n = p.length
-  for (const z of [1.9, 1.0, 0.2]) {
-    const first = ring(p, 8, 0.36, z, 'xy')
+
+  // The barrel: a long square section on the axis with reinforcing bands, and a vented muzzle.
+  const bx = 0.26
+  const barrelFront = 2.15
+  const barrelBack = -0.2
+  const corners: [number, number][] = [[-1, 1], [1, 1], [1, -1], [-1, -1]]
+  const bFirst = p.length
+  for (const [dx, dy] of corners) {
+    p.push([dx * bx, dy * bx, barrelFront], [dx * bx, dy * bx, barrelBack])
+  }
+  for (let i = 0; i < 4; i += 1) {
+    e.push([bFirst + i * 2, bFirst + i * 2 + 1])
+    const j = (i + 1) % 4
+    e.push([bFirst + i * 2, bFirst + j * 2], [bFirst + i * 2 + 1, bFirst + j * 2 + 1])
+  }
+  for (const z of [2.0, 1.45, 0.9, 0.35]) {
+    const first = ring(p, 8, 0.34, z, 'xy')
     e.push(...loop(first, 8))
   }
-  // Mount the barrel on the hull.
-  e.push([n - 8, 0], [n - 6, 1], [n - 4, 2], [n - 2, 3])
+  // Muzzle brake: four vanes standing off the bore at the mouth.
+  n = p.length
+  for (const [dx, dy] of corners) {
+    p.push([dx * 0.3, dy * 0.3, barrelFront], [dx * 0.52, dy * 0.52, barrelFront - 0.22])
+    e.push([n, n + 1])
+    n += 2
+  }
+
+  // Stabiliser fins in a cross at the stern. A hull that cannot turn still has to look like it is
+  // *trying* to hold an axis, and four fins say that from any roll.
+  for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]] as [number, number][]) {
+    p.push(
+      [dx * 0.7, dy * 0.36, -1.0], [dx * 1.25, dy * 0.7, -1.45],
+      [dx * 1.25, dy * 0.7, -1.9], [dx * 0.7, dy * 0.36, -1.55],
+    )
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+
+  // The bridge, tucked under the barrel rather than on top of it — the one place on this hull a
+  // crew could see anything from.
+  p.push([-0.22, -0.42, -0.35], [0.22, -0.42, -0.35], [0.22, -0.42, -0.8], [-0.22, -0.42, -0.8], [0, -0.3, -0.55])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n], [n + 4, n + 1], [n + 4, n + 2], [n + 4, n + 3])
+  n += 5
+
+  // Twin engines, offset below the axis so the thrust line reads as being under the gun.
+  for (const s of [-1, 1]) {
+    const first = ring(p, 6, 0.2, -1.4, 'xy')
+    for (let i = 0; i < 6; i += 1) p[first + i][0] += s * 0.34
+    for (let i = 0; i < 6; i += 1) p[first + i][1] -= 0.12
+    e.push(...loop(first, 6))
+    const back = ring(p, 6, 0.2, -1.85, 'xy')
+    for (let i = 0; i < 6; i += 1) p[back + i][0] += s * 0.34
+    for (let i = 0; i < 6; i += 1) p[back + i][1] -= 0.12
+    e.push(...loop(back, 6))
+    for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
+  }
   return wire(p, e)
 }
 
@@ -1197,28 +1374,66 @@ export function monitor(): Wire {
  */
 export function vanguard(): Wire {
   const p: number[][] = [
-    [0, 0, 1.5],
+    [0, 0, 1.6],
     [-0.34, 0.22, 0.5], [0.34, 0.22, 0.5], [-0.34, -0.22, 0.5], [0.34, -0.22, 0.5],
     [-0.42, 0.2, -1.0], [0.42, 0.2, -1.0], [-0.42, -0.2, -1.0], [0.42, -0.2, -1.0],
-    // Forward-swept: the tip is *ahead* of the root.
-    [-1.1, 0.06, 0.95], [1.1, 0.06, 0.95],
-    [-0.86, 0.04, -0.45], [0.86, 0.04, -0.45],
-    [0, 0.5, -0.3],
   ]
   const e: [number, number][] = [
     [0, 1], [0, 2], [0, 3], [0, 4],
     [1, 2], [3, 4], [1, 3], [2, 4],
     [1, 5], [2, 6], [3, 7], [4, 8],
     [5, 6], [7, 8], [5, 7], [6, 8],
-    [9, 11], [10, 12], [9, 1], [10, 2], [11, 5], [12, 6],
-    [9, 3], [10, 4],
-    [13, 1], [13, 2], [13, 5], [13, 6],
   ]
   let n = p.length
-  for (const [dx, dy] of [[-0.3, 0.3], [0.3, 0.3], [0.3, -0.3], [-0.3, -0.3]] as [number, number][]) {
-    p.push([dx, dy, -1.0], [dx, dy, -1.5])
-    e.push([n, n + 1])
-    n += 2
+
+  // ## Forward-swept wings, with a nacelle on each tip
+  //
+  // The only wings in the game that rake the *wrong* way, and the reason this hull reads as going
+  // somewhere while the two siege capitals at its weight read as being parked. A tip nacelle is
+  // what stops a forward sweep looking like a mistake: it gives the wing a reason to reach forward.
+  for (const s of [-1, 1]) {
+    const root = n
+    p.push(
+      [s * 0.36, 0.06, 0.35], [s * 0.36, 0.06, -0.7],
+      [s * 1.25, 0.06, 0.95], [s * 1.25, 0.06, -0.35],
+    )
+    e.push([root, root + 2], [root + 1, root + 3], [root + 2, root + 3], [root, root + 1])
+    n += 4
+    // The nacelle: a box running fore-and-aft on the tip.
+    const nac = n
+    p.push(
+      [s * 1.14, 0.14, 1.1], [s * 1.36, 0.14, 1.1], [s * 1.36, -0.06, 1.1], [s * 1.14, -0.06, 1.1],
+      [s * 1.14, 0.14, -0.5], [s * 1.36, 0.14, -0.5], [s * 1.36, -0.06, -0.5], [s * 1.14, -0.06, -0.5],
+    )
+    e.push(
+      [nac, nac + 1], [nac + 1, nac + 2], [nac + 2, nac + 3], [nac + 3, nac],
+      [nac + 4, nac + 5], [nac + 5, nac + 6], [nac + 6, nac + 7], [nac + 7, nac + 4],
+      [nac, nac + 4], [nac + 1, nac + 5], [nac + 2, nac + 6], [nac + 3, nac + 7],
+    )
+    n += 8
+    // Radiator vanes along the flank: the ship is all drive, and it has to look like it sheds heat.
+    for (const z of [0.1, -0.3, -0.7]) {
+      p.push([s * 0.44, 0.24, z], [s * 0.7, 0.42, z], [s * 0.7, 0.42, z - 0.16], [s * 0.44, 0.24, z - 0.16])
+      e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+      n += 4
+    }
+  }
+
+  // Dorsal spine, running most of the length above the hull.
+  const spine = n
+  p.push([0, 0.36, 0.8], [0, 0.56, 0.1], [0, 0.58, -0.6], [0, 0.4, -1.0])
+  e.push([spine, spine + 1], [spine + 1, spine + 2], [spine + 2, spine + 3], [spine + 1, 1], [spine + 1, 2], [spine + 2, 5], [spine + 2, 6])
+  n += 4
+
+  // Four engines in a diamond, each a proper bell rather than a line.
+  for (const [dx, dy] of [[0, 0.42], [0.42, 0], [0, -0.42], [-0.42, 0]] as [number, number][]) {
+    const first = ring(p, 6, 0.17, -1.0, 'xy')
+    for (let i = 0; i < 6; i += 1) { p[first + i][0] += dx; p[first + i][1] += dy }
+    const back = ring(p, 6, 0.23, -1.55, 'xy')
+    for (let i = 0; i < 6; i += 1) { p[back + i][0] += dx; p[back + i][1] += dy }
+    e.push(...loop(first, 6), ...loop(back, 6))
+    for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
+    n = p.length
   }
   return wire(p, e)
 }
@@ -1233,7 +1448,7 @@ export function vanguard(): Wire {
 export function suzerain(): Wire {
   const p: number[][] = []
   const e: [number, number][] = []
-  // The two hulls.
+  // The two hulls, each ribbed along its own length.
   for (const s of [-1, 1]) {
     const b = p.length
     p.push(
@@ -1249,16 +1464,56 @@ export function suzerain(): Wire {
       [b + 5, b + 6], [b + 6, b + 7], [b + 7, b + 8], [b + 8, b + 5],
       [b + 5, b + 9], [b + 6, b + 9], [b + 7, b + 9], [b + 8, b + 9],
     )
+    let n = p.length
+    for (let i = 1; i <= 5; i += 1) {
+      const t = i / 6
+      const z = 0.9 - t * 2.3
+      const w = 0.21 + 0.03 * t
+      const h = 0.2 + 0.04 * t
+      p.push([s * 0.62 - w, h, z], [s * 0.62 + w, h, z], [s * 0.62 + w, -h, z], [s * 0.62 - w, -h, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+      n += 4
+    }
+    // Outboard sponsons: guns on the *outside* faces, which is the only place a catamaran has
+    // clear arcs.
+    for (const z of [0.5, -0.2, -0.9]) {
+      p.push([s * 1.02, 0.06, z + 0.12], [s * 1.14, 0.06, z], [s * 1.02, 0.06, z - 0.12], [s * 1.02, -0.08, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
   }
-  // Cross-braces, and the bridge between them.
+
   let n = p.length
-  for (const z of [0.9, 0.0, -0.9]) {
-    p.push([-0.42, 0.1, z], [0.42, 0.1, z], [-0.42, -0.1, z], [0.42, -0.1, z])
-    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
+  // Cross-braces between the hulls, five of them, so the gap reads as *structure* rather than as
+  // two ships flying in formation — which is what three braces looked like.
+  for (const z of [1.1, 0.5, -0.1, -0.7, -1.3]) {
+    p.push([-0.42, 0.12, z], [0.42, 0.12, z], [-0.42, -0.12, z], [0.42, -0.12, z])
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3], [n, n + 3], [n + 1, n + 2])
     n += 4
   }
-  p.push([0, 0.46, 0.3], [0, 0.46, -0.5], [0, 0.16, -0.1])
-  e.push([n, n + 1], [n, n + 2], [n + 1, n + 2])
+
+  // ## The spinal weapon, slung between the hulls
+  //
+  // The identifying feature and the reason the catamaran exists: a gun too long to mount on either
+  // hull, carried in the gap. Nothing else in the game has anything *between* two structures, so
+  // this reads at any range where the two hulls are separable.
+  const gun = n
+  p.push([0, 0.02, 2.1], [0, 0.02, -1.2])
+  e.push([gun, gun + 1])
+  n += 2
+  for (const z of [1.9, 1.2, 0.5, -0.2, -0.9]) {
+    const first = ring(p, 6, 0.16, z, 'xy')
+    e.push(...loop(first, 6))
+    e.push([first, gun], [first + 3, gun])
+    n = p.length
+  }
+
+  // Twin bridges, one on each hull, so neither is the ship's single head.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.62, 0.44, 0.3], [s * 0.62, 0.44, -0.4], [s * 0.5, 0.24, -0.05], [s * 0.74, 0.24, -0.05])
+    e.push([n, n + 1], [n, n + 2], [n, n + 3], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 3])
+    n += 4
+  }
   return wire(p, e)
 }
 
@@ -1303,38 +1558,73 @@ export function dominion(): Wire {
     [5, 9], [6, 9], [7, 9], [8, 9],
   ]
 
-  // The ring: the identifying feature, and the reason this hull is legible as a dot.
-  const outer = ring(p, 16, 1.0, -0.1, 'xy')
-  e.push(...loop(outer, 16))
-  const inner = ring(p, 16, 0.82, -0.1, 'xy')
-  e.push(...loop(inner, 16))
-  for (let i = 0; i < 16; i += 1) e.push([outer + i, inner + i])
+  // ## Two rings, and the second one is canted
+  //
+  // The outer ring is the silhouette — the only annular ship in the sector, so at the range where
+  // a hull is a handful of pixels this is the one with a hole in it. The **inner ring is tilted**,
+  // which is what stops the pair reading as a single thick band: two circles on one plane are one
+  // circle, and two at an angle are unmistakably a structure. It also gives the hull a readable
+  // orientation from head-on, where a ring alone is identical in every roll.
+  const outer = ring(p, 20, 1.0, -0.1, 'xy')
+  e.push(...loop(outer, 20))
+  const outerBack = ring(p, 20, 1.0, -0.34, 'xy')
+  e.push(...loop(outerBack, 20))
+  for (let i = 0; i < 20; i += 1) e.push([outer + i, outerBack + i])
 
-  // Four outriggers bracing the ring to the core, on the diagonals so they do not hide the
-  // silhouette's own symmetry.
-  for (const i of [2, 6, 10, 14]) {
-    e.push([inner + i, i % 4 === 2 ? 1 : 3])
-    e.push([inner + i, i % 4 === 2 ? 6 : 8])
+  const inner = ring(p, 16, 0.74, 0, 'xy')
+  // Cant it: shear z with x, so the ring tips about the vertical axis.
+  for (let i = 0; i < 16; i += 1) p[inner + i][2] += p[inner + i][0] * 0.42 - 0.1
+  e.push(...loop(inner, 16))
+  for (let i = 0; i < 16; i += 4) e.push([inner + i, outer + i + (i % 5)])
+
+  // Four radial pylons carrying the ring off the core, each a braced tower rather than a strut —
+  // a line from a ring to a spine reads as a wire holding a hoop.
+  let n = p.length
+  for (const [dx, dy] of [[0, 1], [1, 0], [0, -1], [-1, 0]] as [number, number][]) {
+    const base = n
+    p.push(
+      [dx * 0.24, dy * 0.24, 0.1], [dx * 0.24, dy * 0.24, -0.4],
+      [dx * 0.92, dy * 0.92, 0.05], [dx * 0.92, dy * 0.92, -0.4],
+      [dx * 0.58, dy * 0.58, 0.35], [dx * 0.58, dy * 0.58, -0.65],
+    )
+    e.push(
+      [base, base + 2], [base + 1, base + 3], [base, base + 1], [base + 2, base + 3],
+      [base + 4, base], [base + 4, base + 2], [base + 5, base + 1], [base + 5, base + 3],
+    )
+    n += 6
   }
 
-  // A command tower forward of the ring, so the hull has an orientation a ring alone would not
-  // give it — an annular ship viewed head-on is otherwise the same in every roll.
-  let n = p.length
-  p.push([0, 0.42, 1.3], [0, 0.95, 0.85], [-0.24, 0.7, 0.6], [0.24, 0.7, 0.6], [0, 0.3, 0.35])
-  e.push([n, n + 1], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 4], [n + 3, n + 4], [n + 1, n + 4])
-  n += 5
+  // A lance at the prow: the ship's own axial weapon, banded, reaching past the nose.
+  const lanceTip = n
+  p.push([0, 0, 2.75])
+  e.push([lanceTip, 0])
+  n += 1
+  for (const z of [2.6, 2.35, 2.1]) {
+    const first = ring(p, 6, 0.1 + (2.6 - z) * 0.18, z, 'xy')
+    e.push(...loop(first, 6))
+    e.push([first, lanceTip], [first + 3, lanceTip])
+    n = p.length
+  }
 
-  // Engine cluster at the stern: six bells in a ring, so the drive matches the hull's own geometry.
+  // Two command towers, fore and aft of the ring, so the hull is not symmetric end to end.
+  for (const [z, h] of [[1.3, 0.95], [-1.1, 0.7]] as [number, number][]) {
+    p.push([0, 0.42, z], [0, h, z - 0.35], [-0.24, h * 0.75, z - 0.5], [0.24, h * 0.75, z - 0.5], [0, 0.3, z - 0.7])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 4], [n + 3, n + 4], [n + 1, n + 4])
+    n += 5
+  }
+
+  // Engine cluster at the stern: six bells in a ring, matching the hull's own geometry, each with
+  // a nozzle collar.
   const bells = ring(p, 6, 0.5, -1.6, 'xy')
-  const nozz = ring(p, 6, 0.5, -2.1, 'xy')
-  for (let i = 0; i < 6; i += 1) e.push([bells + i, nozz + i])
-  e.push(...loop(bells, 6))
-  e.push(...loop(nozz, 6))
+  const nozz = ring(p, 6, 0.58, -2.1, 'xy')
+  const flare = ring(p, 6, 0.66, -2.35, 'xy')
+  for (let i = 0; i < 6; i += 1) e.push([bells + i, nozz + i], [nozz + i, flare + i])
+  e.push(...loop(bells, 6), ...loop(nozz, 6), ...loop(flare, 6))
 
   // Ribs along the core. At this size the eye is close enough to notice their absence.
   n = p.length
-  for (let i = 1; i <= 8; i += 1) {
-    const t = i / 9
+  for (let i = 1; i <= 10; i += 1) {
+    const t = i / 11
     const z = 1.1 - t * 2.6
     const w = 0.2 + 0.08 * t
     p.push([-w, w, z], [w, w, z], [w, -w, z], [-w, -w, z])

@@ -99,13 +99,15 @@ export const RAIDER_INTERVAL_MS = 9_000
  * the whole reason the count is a play decision at all — at three, reinforcement was something you
  * inferred from the sector not going quiet; at ten it is an event you turn toward or away from.
  *
- * It is bounded by two things and neither is taste. `WARP_STAGGER_MS` spaces the entries, so ten
- * hulls take a couple of seconds to resolve and read as a formation rather than as the sector
- * gaining ten ships on one frame. And the wing is still counted against `RAIDER_STRENGTH` before
- * it is ordered, so a bigger wave makes reinforcement *rarer* rather than making the sector
- * denser — the population is the roster's business, and this is only how it arrives.
+ * It is bounded by two things and neither is taste. `WARP_STAGGER_MS` spaces the entries, and the
+ * two constants are **one decision**: what has to stay under a beat is the *total* spread, not the
+ * gap between two ships, so sixteen hulls at seventy milliseconds finish in about the same time
+ * four used to take at two hundred and twenty. And the wing is still counted against
+ * `RAIDER_STRENGTH` before it is ordered, so a bigger wave makes reinforcement *rarer* rather than
+ * making the sector denser — the population is the roster's business, and this is only how it
+ * arrives. Below the floor, `SURGE_WINGS` of them arrive together.
  */
-const WARP_WING = 10
+const WARP_WING = 16
 
 /**
  * How far apart, in milliseconds, the ships of one wing finish their entry.
@@ -123,7 +125,24 @@ const WARP_WING = 10
  * very nearly two seconds to finish arriving, which is long enough that the last of it reads as a
  * second event. The two constants are one decision and `check:scemaworld` measures the product.
  */
-const WARP_STAGGER_MS = 110
+const WARP_STAGGER_MS = 70
+
+/**
+ * How many wings arrive together when the sector is below `RAIDER_FLOOR`.
+ *
+ * ## Why a *count* and not just a shorter interval
+ *
+ * Both make a gutted sector recover faster and they do not feel the same. A shorter interval is a
+ * faster trickle — the same encounter, more often — and past a point it stops reading as urgency
+ * and starts reading as a spawner. Two wings on one bearing at one moment is a *counter-attack*:
+ * thirty-two hulls dropping out of hyperspace together, which is a thing that happens to you
+ * rather than a rate you infer.
+ *
+ * It fires **only below the floor**, so the ordinary sector is unchanged. That is the whole point
+ * of the floor being a trigger rather than a target (`raiders.ts::RAIDER_STRENGTH`): above it the
+ * sector trickles and clearing a region buys you time, below it the sector answers.
+ */
+export const SURGE_WINGS = 2
 
 /**
  * Milliseconds between raider wings when the sector is **contested** — below `RAIDER_FLOOR`.
@@ -134,7 +153,7 @@ const WARP_STAGGER_MS = 110
  * deficit close at a pace somebody actually sees, while the ordinary trickle above it keeps a
  * cleared region cleared for long enough to be worth having cleared.
  */
-export const RAIDER_SURGE_MS = 3_500
+export const RAIDER_SURGE_MS = 2_200
 
 /** Milliseconds between marshal replacements. Shorter: they arrive singly, not four at a time. */
 export const MARSHAL_INTERVAL_MS = 13_000
@@ -438,24 +457,61 @@ export function replenish(
   // decides the *pace* instead — below it the sector is contested and reinforcement surges.
   const shortRaiders = countOf(swarm, 'raider', false) + pending('raider')
   if (nowMs >= nextRaiderMs && shortRaiders < RAIDER_STRENGTH) {
-    const dir = bearing(seed, ':raider-entry:', raiders)
     // A wing arrives as a wing: several entries at once along one bearing, so what the player sees
     // is a formation dropping out of hyperspace rather than a ship appearing.
+    //
+    // **Below the floor, more than one wing at a time.** A contested sector answering with a
+    // single formation is the same encounter arriving more often; two on separate bearings at one
+    // moment is a counter-attack, which is a thing that happens *to* you rather than a rate you
+    // work out afterwards. Each wing keeps its own bearing, or thirty-two hulls on one vector read
+    // as one enormous wing rather than as two.
+    const contested = shortRaiders < RAIDER_FLOOR
+    const count = contested ? SURGE_WINGS : 1
+    // ## The wave is clamped to the room the roster actually has
+    //
+    // A wing is ordered *whole*, and at sixteen hulls that is a problem the smaller wings did not
+    // have: a sector three raiders short would send sixteen and settle above its own strength.
+    // Measured at 97 against a cap of 88 — a population decided by the wave size, which is exactly
+    // the thing `RAIDER_STRENGTH` exists to decide and the thing the wave size is documented as
+    // *not* deciding.
+    //
+    // So the wave fills the room and no more. A thin sector still gets a formation, because that is
+    // when the room is large; a nearly-full one gets the two or three it is missing, which is the
+    // trickle the ordinary interval is for. Nothing needs a floor: a wave of three when three are
+    // missing is the correct answer, and a floor would be the overshoot again with a smaller number
+    // on it.
+    const room = Math.max(0, RAIDER_STRENGTH - shortRaiders)
+    const total = Math.min(room, count * WARP_WING)
     const wing: Arrival[] = []
-    for (let i = 0; i < WARP_WING; i += 1) {
-      const jitter = bearing(seed, ':raider-spread:', raiders * 8 + i)
+    for (let k = 0; k < total; k += 1) {
+      // Round-robin across the wings, so two bearings fill evenly rather than the first taking a
+      // full sixteen and the second whatever is left.
+      const w = k % count
+      const seat = Math.floor(k / count)
+      const index = raiders + w
+      const dir = bearing(seed, ':raider-entry:', index)
+      const jitter = bearing(seed, ':raider-spread:', index * 32 + seat)
       wing.push({
-        id: `raider:warp:${raiders}:${i}`,
+        id: `raider:warp:${index}:${seat}`,
         faction: 'raider',
         at: arrivalPoint(playerAt, playerFacing, jitter, ARRIVAL_SPREAD),
         dir,
-        dueMs: nowMs + ARRIVAL_MS + i * WARP_STAGGER_MS,
+        // **Each hull gets its own frame**, across wings as well as within one. Two wings sharing
+        // a stagger schedule put ship `i` of each on the same tick — measured at thirty-two ships
+        // over sixteen arrival times — which is the failure `WARP_STAGGER_MS` exists to prevent,
+        // arriving through a door it did not cover. Offsetting each wing by a fraction of a step
+        // interleaves them, so what resolves is one continuous stream from two bearings.
+        dueMs: nowMs + ARRIVAL_MS + seat * WARP_STAGGER_MS + (w * WARP_STAGGER_MS) / count,
       })
     }
+    // `total` is at least one whenever this branch runs: the guard above is
+    // `shortRaiders < RAIDER_STRENGTH`, which is exactly `room > 0`.
     arriving = [...arriving, ...wing]
-    raiders += 1
-    nextRaiderMs = nowMs + (shortRaiders < RAIDER_FLOOR ? RAIDER_SURGE_MS : RAIDER_INTERVAL_MS)
-    notice = 'hyperspace signature — raider wing inbound'
+    raiders += count
+    nextRaiderMs = nowMs + (contested ? RAIDER_SURGE_MS : RAIDER_INTERVAL_MS)
+    notice = contested
+      ? 'multiple hyperspace signatures — raider wings inbound'
+      : 'hyperspace signature — raider wing inbound'
   }
 
   if (

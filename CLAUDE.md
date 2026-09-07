@@ -1116,6 +1116,26 @@ Rules the 298 checks carry, each paid for:
   hiding works only for the other side; impact cost is closing speed at the point of contact, so
   a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
   collision system becomes flypaper.
+- **A capital carries structure, and that is pinned as a relationship** (`meshes.ts`). Detail is a
+  function of how a hull is *seen*, not of how big it is: a fighter is a shape at a distance, a
+  capital fills the frame for minutes and the eye is close enough that missing features read as a
+  lack of detail rather than as distance. It was not true — the `vanguard` carried 32 segments
+  against a medium `carrack`'s 56, so the most expensive tier was the least drawn. Every capital
+  now carries more than *any* lighter hull (150–239 against a light/medium max of 67), and the
+  largest hull is the most drawn. Each has one identifying feature rather than more of the same
+  detail: the bulwark has an open hangar mouth you see *through*, the monitor a recoil housing and
+  a muzzle brake, the vanguard tip nacelles on forward-swept wings, the sovereign a double engine
+  cage, the suzerain a spinal gun slung *between* its two hulls, and the dominion a canted second
+  ring — two circles on one plane are one circle, two at an angle are unmistakably a structure.
+- **A wave is clamped to the room the roster has.** Sixteen hulls per wing and `SURGE_WINGS` of
+  them below the floor, which is a counter-attack rather than a faster trickle — but a wing ordered
+  *whole* against a three-ship deficit settles the sector above its own strength (measured at 97
+  against a cap of 88), which is a population decided by the wave size and is exactly what
+  `RAIDER_STRENGTH` exists to decide. No floor on the clamp: a wave of three when three are missing
+  is the correct answer, and a floor is the same overshoot with a smaller number on it. Two wings
+  also had to stop sharing a stagger schedule — ship `i` of each landed on the same tick, 32 ships
+  over 16 arrival times, which is the failure `WARP_STAGGER_MS` exists to prevent arriving through
+  a door it did not cover.
 - **Every player hull has its own silhouette, and the endgame hull outgrows the sector.**
   Seventeen hulls shared seven shapes, so a skiff and a scout were the same dart and three capitals
   were one spinal ship at three sizes — a shipyard where two entries differ only by a number is a

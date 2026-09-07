@@ -3179,17 +3179,43 @@ check('a wing arrives as a wing, not as three ships on one frame', () => {
     if (wing.length > 1) out = wing
   }
   assert(out, 'no raider wing ever arrived')
+  // **Every hull gets its own frame**, across wings as well as within one. A contested sector
+  // sends `SURGE_WINGS` formations at once, and the first version of that gave both the same
+  // stagger schedule — so ship `i` of each landed on the same tick, thirty-two ships over sixteen
+  // arrival times. That is the exact failure `WARP_STAGGER_MS` exists to prevent, arriving through
+  // a door it did not cover.
   const dues = [...new Set(out.map((a) => a.dueMs))]
   assert(dues.length === out.length, `${out.length} ships share ${dues.length} arrival times`)
 
-  // One wing, though: they come in on one bearing and land within a beat of each other. What has
-  // to stay bounded is the **total** spread rather than the gap between two ships, which is why
-  // `WARP_WING` and `WARP_STAGGER_MS` are one decision — a ten-hull wing at the old 220ms gap took
-  // nearly two seconds to finish, and the tail of it read as a second event.
+  // What has to stay bounded is the **total** spread rather than the gap between two ships, which
+  // is why `WARP_WING` and `WARP_STAGGER_MS` are one decision — a sixteen-hull wing at the old
+  // 220ms gap would take three and a half seconds to finish, and the tail of it reads as a second
+  // event rather than as the end of the first.
   const spread = Math.max(...dues) - Math.min(...dues)
-  assert(spread > 0 && spread < 1400, `a wing spread over ${spread}ms is not a wing`)
-  const bearings = new Set(out.map((a) => `${a.dir.x},${a.dir.y},${a.dir.z}`))
-  assert(bearings.size === 1, 'a wing arrived from several directions')
+  assert(spread > 0 && spread < 1600, `a wing spread over ${spread}ms is not a wing`)
+
+  // ## Bearings: a wing has one, and a *surge* has at most `SURGE_WINGS`
+  //
+  // This used to assert one bearing across every arrival in the air, which was right while only
+  // one wing was ever ordered. Below the floor the sector answers with several — deliberately on
+  // *separate* vectors, because thirty-two hulls on one bearing read as a single enormous wing
+  // rather than as a counter-attack from two directions. So what is pinned is per wing: each
+  // bearing carries a formation, and the number of them is bounded.
+  const byBearing = new Map()
+  for (const a of out) {
+    const k = `${a.dir.x},${a.dir.y},${a.dir.z}`
+    byBearing.set(k, [...(byBearing.get(k) ?? []), a])
+  }
+  assert(
+    byBearing.size >= 1 && byBearing.size <= Respawn.SURGE_WINGS,
+    `${byBearing.size} bearings, against at most ${Respawn.SURGE_WINGS} wings`,
+  )
+  for (const [k, group] of byBearing) {
+    assert(group.length > 1, `the wing on bearing ${k} is a single ship`)
+    const gd = group.map((a) => a.dueMs)
+    const gs = Math.max(...gd) - Math.min(...gd)
+    assert(gs < 1600, `the wing on bearing ${k} spread over ${gs}ms`)
+  }
 })
 
 check('an entry bundle is stable whichever way it comes in', () => {
@@ -4681,6 +4707,34 @@ check('a silhouette is different geometry, not a different name', () => {
   }
 })
 
+check('a capital carries structure, not a fighter drawn large', () => {
+  // ## Detail is a function of how the hull is *seen*, not of how big it is
+  //
+  // A fighter is a shape at a distance and can carry a dozen lines. A capital fills the frame for
+  // whole minutes, and at that size the eye is close enough to individual features that their
+  // absence reads as a lack of detail rather than as distance — the argument `dreadnought` already
+  // makes, applied to the hulls a player owns.
+  //
+  // It was not true: the `vanguard` carried 32 segments against a medium `carrack`'s 56, so the
+  // most expensive tier in the game was also the least drawn. Every capital now carries more
+  // structure than *any* lighter hull, which is the relationship rather than a floor somebody has
+  // to remember to raise.
+  const segs = (h) => Meshes[HULLS[h].shape]().length / 6
+  const capitals = hullsOf('capital').map((h) => segs(h.id))
+  const lighter = [...hullsOf('light'), ...hullsOf('medium')].map((h) => segs(h.id))
+  assert(
+    Math.min(...capitals) > Math.max(...lighter),
+    `the thinnest capital has ${Math.min(...capitals)} segments against a lighter hull's ${Math.max(...lighter)}`,
+  )
+  // And they are not the same detail repeated: the endgame hull is the densest thing in the game,
+  // because it is the one a player looks at after buying everything else.
+  const top = HULL_IDS.reduce((a, b) => (HULLS[a].size >= HULLS[b].size ? a : b))
+  assert(
+    segs(top) >= Math.max(...capitals),
+    `the largest hull is not the most drawn (${segs(top)} against ${Math.max(...capitals)})`,
+  )
+})
+
 check('a wave is a formation, and the roster still decides the population', () => {
   // "Much greater waves" is about how reinforcement *arrives*, not about how many craft the sector
   // holds — and the distinction is the whole reason a bigger wave is safe. A wing is counted
@@ -4713,6 +4767,10 @@ check('a wave is a formation, and the roster still decides the population', () =
     thinned.swarm, s, s.seed, thinned.waves,
     { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 0,
   )
+  // The sector was emptied of raider fighters above, so the roster has room for a whole wing. That
+  // matters: a wave is clamped to the room the roster has (`respawn.ts`), because a wing ordered
+  // whole against a three-ship deficit settles the sector *above* its own strength — which is a
+  // population decided by the wave size rather than by the roster.
   const wing = r.waves.arriving.filter((a) => a.faction === 'raider')
   assert(wing.length >= 8, `a wing arrives ${wing.length} strong`)
   // Staggered, or ten hulls appear on one frame — which reads as the sector gaining ten ships

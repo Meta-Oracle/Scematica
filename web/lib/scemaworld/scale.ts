@@ -356,7 +356,32 @@ export const ASSIST = 1.5
  * that will be wrong eventually; the only question is when somebody notices. Found by an
  * external audit rather than by this repository, which is the point.
  */
-export const SPEED_LASER = Math.round(EXTENT / 1.05)
+/**
+ * How fast a laser bolt travels. **An extent every 0.3 seconds — three and a half times what it
+ * was.**
+ *
+ * ## Why it moved
+ *
+ * The reach was fixed first (see `LIFE_LASER`): a bolt now crosses the sector rather than dying
+ * a fifth of the way to a capital's standoff. That made the weapon *able* to reach, and left it
+ * feeling like it did not — at the old speed the far side of the sector was twelve seconds of
+ * flight, so firing at anything distant was an act of faith with no feedback for most of a
+ * breath. A bolt you cannot follow is a bolt that does not read as having been fired.
+ *
+ * ## What it costs, stated because it is a real trade and not a free win
+ *
+ * Flight time is what stops long range being a free kill, and a faster bolt is less of it. At the
+ * old speed a fighter drifted seventy of its own widths while a shot crossed half the sector; it
+ * now drifts about twenty, which is still an enormous lead and no longer an absurd one. Capitals
+ * are unmoved either way — a leviathan drifts a hundredth of its own width, which is the whole
+ * reason the reach exists. The assertion in `check:scemaworld` was lowered deliberately and says
+ * so; it was not quietly relaxed to make a number pass.
+ *
+ * The cheap consequence is the good one: a faster bolt spends less time alive, so a stock ship
+ * holding the trigger carries **fewer** rounds in flight than before, and the projectile loop got
+ * cheaper rather than dearer.
+ */
+export const SPEED_LASER = Math.round(EXTENT / 0.3)
 
 /**
  * How long a laser bolt lives — **long enough to cross the whole sector**.
@@ -389,7 +414,26 @@ export const SPEED_LASER = Math.round(EXTENT / 1.05)
  * which is precisely what a capital does and precisely what a fighter never does. The weapon
  * became an anti-capital weapon by being allowed to reach one.
  */
-export const LIFE_LASER = Math.round((((SECTOR_REACH * 2) / SPEED_LASER) + 0.5) * 100) / 100
+export const LIFE_LASER =
+  Math.round(((SECTOR_REACH * 4) / SPEED_LASER + 0.5) * 100) / 100
+
+/**
+ * How far from the origin a bolt may travel before it stops existing.
+ *
+ * **This is what expires a laser now, not the clock.** The request was that a shot should not
+ * disappear until it leaves the galaxy, and a lifetime cannot express that: a bolt fired outward
+ * from the far edge and a bolt fired inward from the same place have wildly different amounts of
+ * sector left in front of them, and one timer treats them identically. So the timer became a
+ * backstop that is not reachable inside the volume — `LIFE_LASER` covers **four** sector reaches,
+ * which is more than the longest line anybody can draw through the playable space — and the thing
+ * that actually removes a round is crossing this boundary.
+ *
+ * Twice `SECTOR_REACH`, which is past everything the sector places and past the far plane. Beyond
+ * it a bolt is outside the drawn world, cannot strike anything, and is a cost with no effect —
+ * culling it there is the literal reading of "until it reaches the end of the galaxy" and is also
+ * the cheaper of the two behaviours.
+ */
+export const LASER_BOUNDS = SECTOR_REACH * 2
 
 /** A photon missile is slower and lives far longer, so it reaches — and it tracks. */
 export const SPEED_PHOTON = Math.round(EXTENT / 2.6)

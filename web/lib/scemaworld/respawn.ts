@@ -140,15 +140,34 @@ export const MARSHAL_INTERVAL_MS = 13_000
 export const TRAFFIC_INTERVAL_MS = 7_000
 
 /**
- * Milliseconds between capital replacements, **across both sides**.
+ * Milliseconds between capital replacements.
  *
- * Two and a half minutes, and the figure is the whole of what keeps the old *never replaced* rule's
- * intent alive. A capital kill is minutes of work and it has to buy something; what it buys is a
- * quieter sector for a while, rather than a permanently smaller one. One shared timer rather than
- * one per faction, so the war classes stay genuinely rare: a full wipe of one side's four capitals
- * takes ten minutes to come back, and a wipe of both takes twenty.
+ * ## It was 150,000 and one shared slot, and that was measurably wrong
+ *
+ * Reported as capitals "still not respawning properly", and running the real tick rather than
+ * `replenish` alone showed exactly what that meant: they *were* coming back, at one hull per two
+ * and a half minutes shared between both factions, so a full wipe took **twenty minutes**. Nobody
+ * plays long enough to see that as a mechanic; they see a sector that lost its capitals.
+ *
+ * Two things were wrong and only one of them was the number.
+ *
+ * **The slot was shared between the factions.** In a measured ten-minute run the raider capitals
+ * waited five minutes behind the marshal ones, because the patrol's larger deficit won every slot.
+ * One side's losses should not delay the other's recovery — they are separate rosters and the
+ * whole point of both having war classes is that a distant capital is a *question*.
+ *
+ * **And the pick was by largest deficit**, which starves every singleton forever. The garrison
+ * holds two dreadnoughts and one each of leviathan and titan; the patrol holds three wardens and
+ * one bastion. Deficit ordering therefore replaces dreadnoughts and wardens repeatedly and only
+ * reaches the titan, the leviathan and the bastion at the very end — the three most interesting
+ * hulls in the sector, always last. Measured: after ten minutes, none of them had returned.
+ *
+ * Sixty seconds, one hull **per side**, and the class chosen by round-robin (see `replenish`). A
+ * full wipe of both rosters is now four minutes rather than twenty, and every *class* is
+ * represented within five slots instead of eighth. A kill still buys a minute of a thinner sector,
+ * which was the point of the interval; twenty minutes was not a pace, it was an absence.
  */
-export const CAPITAL_INTERVAL_MS = 150_000
+export const CAPITAL_INTERVAL_MS = 60_000
 
 /**
  * Milliseconds between cluster reinforcements.
@@ -592,29 +611,62 @@ export function replenish(
   //    entry effect finished. So a capital is placed the way the opening roster is: far outside
   //    sensor range, where nothing appears on a board with no cause.
   if (nowMs >= nextCapitalMs) {
-    // The **larger deficit goes first**, across both factions, exactly as the traffic block picks
-    // the faction furthest below strength. A fixed order spends the slot on a side that is one
-    // short while the other is wiped out, and the wiped-out one is the one you can see is missing.
-    let worst: { faction: 'raider' | 'marshal'; klass: ClassId; deficit: number } | null = null
-    // **Cluster craft excluded**, the same exclusion `countOf` makes and for a sharper reason
-    // here. Each cluster carries a `warden`, so three of them field three wardens between them —
-    // exactly the patrol's roster strength. Counting those against the roster reported the
-    // capitals as complete, and the three *scattered* wardens a player had killed were never
-    // replaced: measured at 0 back of 3, with nothing saying so. A counter measuring a different
-    // population from the one it is used to decide about is the shape of defect this file has now
-    // produced twice.
-    const consider = (faction: 'raider' | 'marshal', klass: ClassId, want: number) => {
-      const have = swarm.craft.filter(
-        (c) => c.alive && c.faction === faction && c.spec.id === klass && clusterOf(c.id) === null,
-      ).length
-      const deficit = want - have
-      if (deficit > 0 && (!worst || deficit > worst.deficit)) worst = { faction, klass, deficit }
+    // ## One hull per side, and the class picked by round-robin
+    //
+    // Both halves are corrections to a measured failure — see `CAPITAL_INTERVAL_MS`.
+    //
+    // **Per side**, because a shared slot let the patrol's larger deficit delay every raider
+    // capital for five minutes: two rosters, two recoveries, and one side's losses are not a
+    // reason the other stays thin.
+    //
+    // **Round-robin over the classes**, by how many replacements each has already had, because
+    // largest-deficit ordering starves every singleton permanently. The garrison holds two
+    // dreadnoughts against one leviathan and one titan, so a deficit sort reaches the titan last,
+    // every time, forever — and the titan is the hull the sector is most obviously missing.
+    // Ties fall back to the larger deficit and then to the class name, so the sequence is
+    // deterministic: two players holding one record see the same rebuild.
+    const pickFor = (
+      faction: 'raider' | 'marshal',
+      counters: Record<string, number>,
+      roster: { klass: ClassId; want: number }[],
+    ): ClassId | null => {
+      let best: { klass: ClassId; waves: number; deficit: number } | null = null
+      for (const { klass, want } of roster) {
+        const have = swarm.craft.filter(
+          (c) => c.alive && c.faction === faction && c.spec.id === klass && clusterOf(c.id) === null,
+        ).length
+        const deficit = want - have
+        if (deficit <= 0) continue
+        const waves = counters[klass] ?? 0
+        if (
+          !best ||
+          waves < best.waves ||
+          (waves === best.waves && deficit > best.deficit) ||
+          (waves === best.waves && deficit === best.deficit && klass < best.klass)
+        ) {
+          best = { klass, waves, deficit }
+        }
+      }
+      return best ? best.klass : null
     }
-    for (const klass of new Set(GARRISON)) consider('raider', klass, garrisonStrength(klass))
-    for (const c of MARSHAL_CAPITALS) consider('marshal', c.klass, c.count)
 
-    if (worst) {
-      const { faction, klass } = worst as { faction: 'raider' | 'marshal'; klass: ClassId }
+
+    const raiderPick = pickFor(
+      'raider',
+      raiderCapitals,
+      [...new Set(GARRISON)].map((klass) => ({ klass, want: garrisonStrength(klass) })),
+    )
+    const marshalPick = pickFor(
+      'marshal',
+      marshalCapitals,
+      MARSHAL_CAPITALS.map((c) => ({ klass: c.klass, want: c.count })),
+    )
+
+    for (const [faction, klass] of [
+      ['raider', raiderPick],
+      ['marshal', marshalPick],
+    ] as const) {
+      if (!klass) continue
       const counters = faction === 'raider' ? raiderCapitals : marshalCapitals
       const n = counters[klass] ?? 0
       // Derived from the largest capital's own awareness rather than written down, so adding a
@@ -630,19 +682,23 @@ export function replenish(
         out = Enemy.reinforce(out, Enemy.withTraffic({ craft: [], shots: [] }, [civ]).craft)
         marshalCapitals = { ...marshalCapitals, [klass]: n + 1 }
       }
-      nextCapitalMs = nowMs + CAPITAL_INTERVAL_MS
       // **The headline, when it fires.** It outranks the wing and the patrol because it is the
       // rarest event the sector produces and the one most worth changing a plan over — and because
       // it is the only reinforcement the player cannot see arrive, so the line is the entire cue.
       // It says *distant* rather than implying a contact: the ship is beyond sensor range and the
       // board will not show it for a while, and a notice that read like a resolved contact would
       // be the game claiming a reading it has not taken.
-      notice = `long-range signature — ${CLASSES[klass].label} under way, far outside sensor range`
-    } else {
-      // Nothing missing. Re-check on the ordinary cadence rather than every frame; the scan is two
-      // passes over the swarm and there is no reason to pay for it sixty times a second.
-      nextCapitalMs = nowMs + CAPITAL_INTERVAL_MS
+      //
+      // A raider arrival wins the line when both sides replace on one slot: "something large is
+      // coming" and "something large is coming *for you*" are different facts, and only one of
+      // them changes a plan.
+      if (faction === 'raider' || !notice?.startsWith('long-range')) {
+        notice = `long-range signature — ${CLASSES[klass].label} under way, far outside sensor range`
+      }
     }
+    // Re-armed whether or not anything was replaced. The scan is two passes over the swarm and
+    // there is no reason to pay for it sixty times a second on a full roster.
+    nextCapitalMs = nowMs + CAPITAL_INTERVAL_MS
   }
 
   return {

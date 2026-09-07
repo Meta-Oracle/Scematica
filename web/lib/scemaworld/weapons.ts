@@ -31,7 +31,7 @@ import { HULLS, type HullId } from './hulls.ts'
 import { capsuleOf, strikes } from './hitbox.ts'
 import type { Shape } from './classes.ts'
 import {
-  LIFE_LASER, LIFE_PHOTON, R_CONTACT, R_CONTACT_SPAN, SPEED_LASER, SPEED_PHOTON,
+  LASER_BOUNDS, LIFE_LASER, LIFE_PHOTON, R_CONTACT, R_CONTACT_SPAN, SPEED_LASER, SPEED_PHOTON,
 } from './scale.ts'
 
 export type WeaponKind = 'laser' | 'photon'
@@ -501,7 +501,20 @@ export function step(
       }
     }
 
-    if (!consumed && life > 0) alive.push({ ...p, at, dir, life })
+    // ## A bolt ends by leaving, not by timing out
+    //
+    // `life` is still decremented and still bounds the loop, but at `LIFE_LASER` it covers four
+    // sector reaches — longer than any line through the playable volume — so inside the sector it
+    // never fires. What removes a round is crossing `LASER_BOUNDS`, which is the honest expression
+    // of "it flies until it leaves": a shot fired outward from the far edge and one fired inward
+    // from the same place have completely different amounts of sector ahead of them, and a single
+    // timer treats them identically.
+    //
+    // Squared, so this costs three multiplies and no square root on every projectile every frame.
+    const r2 = at.x * at.x + at.y * at.y + at.z * at.z
+    if (!consumed && life > 0 && r2 <= LASER_BOUNDS * LASER_BOUNDS) {
+      alive.push({ ...p, at, dir, life })
+    }
   }
 
   return {

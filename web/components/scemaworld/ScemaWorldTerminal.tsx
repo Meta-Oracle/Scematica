@@ -1312,6 +1312,26 @@ export function ScemaWorldTerminal() {
                 </button>
               </div>
               {/*
+                ## The body scrolls; the bar does not
+
+                Reported as "the ships menu is cut off", and it was: the panel is anchored to the
+                bottom of the viewport with no height cap, so seventeen hulls in a grid grew
+                straight off the top of the screen — with the *top* of the list, which is where the
+                cheap hulls a new player can afford live, being the part that disappeared.
+                Contracts and the treasury tab have the same problem waiting in them the moment
+                either grows.
+
+                A cap plus `overflow-y-auto` on the **body only**, so the header bar — the tabs,
+                the balances, the exchange, rearm and close — stays put. A panel whose close button
+                scrolls away is worse than one that overflows, because at least an overflowing
+                panel can still be dismissed.
+
+                `60vh` rather than a pixel height: the thing being fitted into is the window, and
+                the panel already sits `bottom-16` above the bottom of it. `overscroll-contain`
+                stops a flick at the end of the list scrolling the page underneath the canvas.
+              */}
+              <div className="max-h-[60vh] overflow-y-auto overscroll-contain pr-1">
+              {/*
                 Why a button is disabled, said once at the top rather than implied by greying.
                 Starting salvage is zero, so on a first visit every button is grey and the panel
                 reads as broken — which is what it was reported as.
@@ -1560,6 +1580,7 @@ export function ScemaWorldTerminal() {
                 project's whole argument is about not letting a number imply more than it is.
               */}
               <div className="mt-1 text-omni-muted">{SCEMA_NOTE}</div>
+              </div>
             </div>
           )}
 
@@ -1573,7 +1594,14 @@ export function ScemaWorldTerminal() {
           */}
           {paused && hud && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/80 font-mono">
-              <div className="w-full max-w-xl rounded border border-omni-border-hi bg-black/95 p-6 text-xs">
+              {/*
+                Capped and scrollable for the same reason the market panel is. This card holds
+                nineteen bindings and grows every time one is added — and a card centred in the
+                viewport does not overflow *downward*, it overflows in both directions at once, so
+                the first thing to disappear is the top. `overscroll-contain` keeps a flick at the
+                end of the list from scrolling the page under the canvas.
+              */}
+              <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto overscroll-contain rounded border border-omni-border-hi bg-black/95 p-6 text-xs">
                 <div className="mb-4 flex items-baseline gap-3">
                   <b className="text-lg text-omni-accent">PAUSED</b>
                   <span className="text-omni-dim">{loaded.name}</span>

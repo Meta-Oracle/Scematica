@@ -2887,8 +2887,20 @@ check('a friendly capital is yellow, not the hostile bronze', () => {
   const wardens = bodies.filter((b) => (b.label ?? '').startsWith('WARDEN'))
   assert(wardens.length > 0, 'no warden drawn at all')
   assert(wardens.every((b) => b.role === 'marshal'), 'a warden drew in the hostile capital colour')
-  // The silhouette still carries the weight, which is why dropping the colour costs nothing.
-  assert(wardens.every((b) => b.shape === 'dreadnought'), 'a warden is not a dreadnought on screen')
+  // The silhouette still carries the weight, which is why dropping the colour costs nothing — and
+  // it now carries *more* of it. This asserted `shape === 'dreadnought'`, which was the strongest
+  // statement available while the patrol borrowed the hostile war hull; a warden has its own now,
+  // so what is pinned is that it is a war-class silhouette and **not** the raider one. Two ships
+  // that differ only in hue are two ships a player cannot tell apart at the range that matters.
+  assert(wardens.every((b) => b.shape === CLASSES.warden.shape), 'a warden drew as something else')
+  assert(
+    CLASSES.warden.shape !== CLASSES.dreadnought.shape,
+    'the patrol and the raiders still fly the same war hull',
+  )
+  assert(
+    Meshes[CLASSES.warden.shape]().length >= Meshes[CLASSES.gunship.shape]().length,
+    'a war class is drawn no better than a fighter',
+  )
 })
 
 check('a marshal round is drawn, and cannot touch the player', () => {
@@ -4686,6 +4698,35 @@ check('a capital turns visibly more slowly than a fighter, in the tick itself', 
   assert(light > 0, 'the stock hull did not roll at all')
   assert(heavy > 0, 'the largest hull cannot roll, which is not the same as turning slowly')
   assert(heavy < light * 0.25, `a dominion rolls at ${heavy} against a skiff's ${light}`)
+})
+
+check('no two classes in the sector share a silhouette', () => {
+  // ## Colour was carrying the whole distinction, and colour is never the message
+  //
+  // Fifteen classes shared four shapes: a **courier**, a **marshal** and a raider **interceptor**
+  // were the same dart, and a leviathan, a titan, a warden and a bastion were one war hull at four
+  // sizes. This project states the rule everywhere else it appears — `view.ts` picks a tone in one
+  // place, `theme.rs` is the only file with a hex in it, `alchem_link.theme` fails the build on a
+  // hardcoded colour in a renderer — and it is at its most load-bearing here. The question a
+  // silhouette answers is *is that coming for me*, and it is answered from the corner of an eye at
+  // a range where hue is two pixels and unreliable.
+  //
+  // Compared by **geometry**, not by shape name, for the same reason the player hulls are: fifteen
+  // names pointing at copy-pasted vertex data passes the weaker check and fails the player.
+  const seen = new Map()
+  for (const id of ALL_CLASS_IDS) {
+    const shape = CLASSES[id].shape
+    const key = Array.from(Meshes[shape]()).join(',')
+    const prior = seen.get(key)
+    assert(!prior, `${id} draws exactly the same geometry as ${prior}`)
+    seen.set(key, id)
+    assert(Meshes[shape]().length >= 24, `${shape} has almost no geometry`)
+    assert(HITBOX[shape], `${shape} has no hitbox`)
+  }
+  // The three classes a player most needs to tell apart at a glance are the three that used to be
+  // identical: neutral traffic, the patrol, and the thing hunting them.
+  const distinct = new Set(['courier', 'marshal', 'interceptor'].map((id) => CLASSES[id].shape))
+  assert(distinct.size === 3, 'a courier, a marshal and a raider still share a silhouette')
 })
 
 check('a silhouette is different geometry, not a different name', () => {

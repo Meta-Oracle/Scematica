@@ -71,7 +71,7 @@ function wire(points: number[][], edges: [number, number][]): Wire {
  * an opponent's roll, which is what tells you which way it is about to break.
  */
 export function interceptor(): Wire {
-  const p = [
+  const p: number[][] = [
     [0, 0, 1.35], // 0 nose
     [-0.85, -0.12, -0.7], // 1 port wingtip
     [0.85, -0.12, -0.7], // 2 starboard wingtip
@@ -81,12 +81,43 @@ export function interceptor(): Wire {
     [-0.3, -0.05, -0.8], // 6 port engine
     [0.3, -0.05, -0.8], // 7 starboard engine
   ]
-  return wire(p, [
+  const e: [number, number][] = [
     [0, 1], [0, 2], [0, 3], [0, 4],
     [1, 3], [2, 3], [1, 4], [2, 4],
     [1, 6], [2, 7], [6, 7],
     [3, 5], [5, 6], [5, 7],
-  ])
+  ]
+  let n = p.length
+  // ## The raider signature: nothing lines up
+  //
+  // This and `gunship` are the two oldest meshes in the file and were the two thinnest — fourteen
+  // and twenty-three segments against a family that now runs to sixty. What they gain is not detail
+  // for its own sake but the thing every other class now says about itself: **who built it**. An
+  // engine on one side larger than the other, a plate bolted over one wing root, an aerial welded
+  // to the fin. A freehold hull was not built as a set, and the patrol's hulls are regular
+  // precisely so that irregularity reads as a faction rather than as a modelling slip.
+  const big = ring(p, 6, 0.17, -0.8, 'xy')
+  for (let i = 0; i < 6; i += 1) { p[big + i][0] -= 0.3; p[big + i][1] -= 0.05 }
+  const bigEnd = ring(p, 6, 0.2, -1.15, 'xy')
+  for (let i = 0; i < 6; i += 1) { p[bigEnd + i][0] -= 0.3; p[bigEnd + i][1] -= 0.05 }
+  e.push(...loop(big, 6), ...loop(bigEnd, 6))
+  for (let i = 0; i < 6; i += 1) e.push([big + i, bigEnd + i])
+  n = p.length
+  const small = ring(p, 5, 0.11, -0.8, 'xy')
+  for (let i = 0; i < 5; i += 1) { p[small + i][0] += 0.3; p[small + i][1] -= 0.05 }
+  const smallEnd = ring(p, 5, 0.13, -1.0, 'xy')
+  for (let i = 0; i < 5; i += 1) { p[smallEnd + i][0] += 0.3; p[smallEnd + i][1] -= 0.05 }
+  e.push(...loop(small, 5), ...loop(smallEnd, 5))
+  for (let i = 0; i < 5; i += 1) e.push([small + i, smallEnd + i])
+  n = p.length
+  // A patch plate over the port wing root, and an aerial off the fin.
+  p.push([-0.5, -0.02, -0.35], [-0.2, 0.04, -0.3], [-0.24, -0.08, -0.62], [-0.54, -0.14, -0.66])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, n + 2])
+  n += 4
+  p.push([0.06, 0.9, -0.8], [0, 0.62, -0.85])
+  e.push([n, n + 1], [n + 1, 5])
+  n += 2
+  return wire(p, e)
 }
 
 /**
@@ -97,28 +128,45 @@ export function interceptor(): Wire {
  * when one is far away and the other is close.
  */
 export function gunship(): Wire {
-  const p = [
+  const p: number[][] = [
     [0, 0, 1.0], // 0 prow
-    [-0.55, 0.3, 0.2], // 1
-    [0.55, 0.3, 0.2], // 2
-    [-0.55, -0.3, 0.2], // 3
-    [0.55, -0.3, 0.2], // 4
-    [-0.5, 0.25, -0.9], // 5
-    [0.5, 0.25, -0.9], // 6
-    [-0.5, -0.25, -0.9], // 7
-    [0.5, -0.25, -0.9], // 8
-    [-1.0, 0, 0.55], // 9 port boom
-    [1.0, 0, 0.55], // 10 starboard boom
-    [-1.0, 0, -0.5], // 11
-    [1.0, 0, -0.5], // 12
+    [-0.55, 0.3, 0.2], [0.55, 0.3, 0.2], [-0.55, -0.3, 0.2], [0.55, -0.3, 0.2],
+    [-0.5, 0.25, -0.9], [0.5, 0.25, -0.9], [-0.5, -0.25, -0.9], [0.5, -0.25, -0.9],
+    [-1.0, 0, 0.55], [1.0, 0, 0.55], [-1.0, 0, -0.5], [1.0, 0, -0.5],
   ]
-  return wire(p, [
+  const e: [number, number][] = [
     [0, 1], [0, 2], [0, 3], [0, 4],
     [1, 2], [3, 4], [1, 3], [2, 4],
     [1, 5], [2, 6], [3, 7], [4, 8],
     [5, 6], [7, 8], [5, 7], [6, 8],
-    [9, 10], [9, 11], [10, 12], [9, 1], [10, 2], [11, 5], [12, 6],
-  ])
+    [9, 11], [10, 12], [9, 1], [10, 2], [11, 5], [12, 6], [9, 3], [10, 4],
+  ]
+  let n = p.length
+  // The raider heavy fighter, given the same signature as the rest of its family: mismatched
+  // engines, one outboard tank rather than a matched pair, and armour patched on off-centre.
+  for (const [s, r, back] of [[-1, 0.2, -1.1], [1, 0.15, -0.9]] as [number, number, number][]) {
+    const b = ring(p, 6, r, -0.9, 'xy')
+    for (let i = 0; i < 6; i += 1) p[b + i][0] += s * 0.28
+    const f = ring(p, 6, r * 1.2, back - 0.3, 'xy')
+    for (let i = 0; i < 6; i += 1) p[f + i][0] += s * 0.28
+    e.push(...loop(b, 6), ...loop(f, 6))
+    for (let i = 0; i < 6; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  const t0 = ring(p, 5, 0.16, 0.3, 'xy')
+  for (let i = 0; i < 5; i += 1) { p[t0 + i][0] -= 0.78; p[t0 + i][1] -= 0.18 }
+  const t1 = ring(p, 5, 0.16, -0.55, 'xy')
+  for (let i = 0; i < 5; i += 1) { p[t1 + i][0] -= 0.78; p[t1 + i][1] -= 0.18 }
+  e.push(...loop(t0, 5), ...loop(t1, 5))
+  for (let i = 0; i < 5; i += 1) e.push([t0 + i, t1 + i])
+  n = p.length
+  p.push([-0.78, -0.18, -0.1], [-0.5, -0.06, -0.1])
+  e.push([n, n + 1])
+  n += 2
+  p.push([-0.3, 0.3, 0.55], [0.16, 0.32, 0.6], [0.2, 0.06, 0.42], [-0.26, 0.04, 0.38])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, n + 2])
+  n += 4
+  return wire(p, e)
 }
 
 /**
@@ -189,12 +237,46 @@ export function corvette(): Wire {
     [9, 1], [9, 2], [9, 5], [9, 6],
     [10, 12], [11, 13], [10, 1], [11, 2], [12, 5], [13, 6],
   ]
-  // Four nacelles at the stern, which is what reads as "engine" at any distance.
   let n = p.length
-  for (const [x, y] of [[-0.28, 0.1], [0.28, 0.1], [-0.28, -0.1], [0.28, -0.1]]) {
-    p.push([x, y, -0.75], [x, y, -1.05])
-    e.push([n, n + 1])
+
+  // ## The identity: a wing fence on each side
+  //
+  // The all-rounder's problem is that having no speciality also means having no feature, and the
+  // first version leaned on that — a plain box with four nacelles, which is what every "generic
+  // ship" looks like. A **fence** standing off each wing gives it a profile from directly above and
+  // below, which is the angle a ship in a turning fight is most often seen from, and costs it
+  // nothing in character: a fence is what you put on a wing that has to work at every speed.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.6, 0, -0.25], [s * 0.6, 0.3, -0.35], [s * 0.6, 0.3, -0.62], [s * 0.6, 0, -0.62])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+    p.push([s * 0.6, -0.24, -0.35], [s * 0.6, -0.24, -0.62])
+    e.push([n, n - 4], [n + 1, n - 1], [n, n + 1])
     n += 2
+  }
+
+  // A canopy, forward of the spine. It is the only hull in the light tier with somewhere to sit
+  // that reads as a place rather than as a vertex.
+  p.push([-0.14, 0.24, 0.55], [0.14, 0.24, 0.55], [0.12, 0.3, 0.1], [-0.12, 0.3, 0.1])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, 1], [n + 1, 2], [n + 2, 9], [n + 3, 9])
+  n += 4
+
+  // Belly hardpoints: two short pylons under the hull, so the underside is not a flat panel.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.2, -0.2, 0.1], [s * 0.2, -0.34, 0.15], [s * 0.2, -0.34, -0.3], [s * 0.2, -0.2, -0.35])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+
+  // Four nacelles at the stern, each a short box with a nozzle ring rather than a bare line.
+  for (const [x, y] of [[-0.28, 0.1], [0.28, 0.1], [-0.28, -0.1], [0.28, -0.1]] as [number, number][]) {
+    const first = ring(p, 5, 0.09, -0.75, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[first + i][0] += x; p[first + i][1] += y }
+    const back = ring(p, 5, 0.11, -1.05, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[back + i][0] += x; p[back + i][1] += y }
+    e.push(...loop(first, 5), ...loop(back, 5))
+    for (let i = 0; i < 5; i += 1) e.push([first + i, back + i])
+    n = p.length
   }
   return wire(p, e)
 }
@@ -222,16 +304,54 @@ export function marauder(): Wire {
     [10, 3], [10, 4], [10, 7], [10, 8],
     [11, 1], [11, 3], [11, 5], [12, 2], [12, 4], [12, 6],
   ]
-  // Ribs across the dorsal surface: the same distance cue the capitals use, at a scale where the
-  // player can actually see it.
   let n = p.length
-  for (let i = 1; i <= 4; i += 1) {
-    const t = i / 5
+
+  // ## The identity: outboard armour slabs
+  //
+  // It is meant to read as *mass* and it was doing so with four ribs, which is the same cue every
+  // capital uses and half as many of them. Two slabs standing proud of the flanks — plate carried
+  // outside the hull rather than as part of it — is a feature nothing else here has, and it is the
+  // honest picture of a ship whose whole argument is that it can be hit.
+  for (const s of [-1, 1]) {
+    const b = n
+    p.push(
+      [s * 0.78, 0.34, 0.2], [s * 0.96, 0.3, 0.0], [s * 0.96, 0.3, -0.8], [s * 0.78, 0.34, -0.95],
+      [s * 0.78, -0.34, 0.2], [s * 0.96, -0.3, 0.0], [s * 0.96, -0.3, -0.8], [s * 0.78, -0.34, -0.95],
+    )
+    e.push(
+      [b, b + 1], [b + 1, b + 2], [b + 2, b + 3],
+      [b + 4, b + 5], [b + 5, b + 6], [b + 6, b + 7],
+      [b, b + 4], [b + 1, b + 5], [b + 2, b + 6], [b + 3, b + 7],
+      [b, 1], [b + 3, 5], [b + 4, 3], [b + 7, 7],
+    )
+    n += 8
+  }
+
+  // Ribs across the dorsal surface, and now the ventral one too — a slab-sided hull that is ribbed
+  // on one face only reads as having a top and no bottom.
+  for (let i = 1; i <= 5; i += 1) {
+    const t = i / 6
     const z = 0.3 - t * 1.25
     const w = 0.55 + 0.15 * t
-    p.push([-w, 0.28, z], [w, 0.28, z])
-    e.push([n, n + 1])
-    n += 2
+    p.push([-w, 0.28, z], [w, 0.28, z], [-w, -0.28, z], [w, -0.28, z])
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
+    n += 4
+  }
+
+  // A blunt prow plate: the nose is a *face*, not a point, on the one light hull built to ram.
+  p.push([-0.22, 0.14, 1.2], [0.22, 0.14, 1.2], [0.22, -0.14, 1.2], [-0.22, -0.14, 1.2])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, 0], [n + 1, 0], [n + 2, 0], [n + 3, 0])
+  n += 4
+
+  // Twin heavy exhausts.
+  for (const s of [-1, 1]) {
+    const first = ring(p, 6, 0.2, -0.95, 'xy')
+    for (let i = 0; i < 6; i += 1) p[first + i][0] += s * 0.34
+    const back = ring(p, 6, 0.24, -1.3, 'xy')
+    for (let i = 0; i < 6; i += 1) p[back + i][0] += s * 0.34
+    e.push(...loop(first, 6), ...loop(back, 6))
+    for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
+    n = p.length
   }
   return wire(p, e)
 }
@@ -327,35 +447,42 @@ export function cruiser(): Wire {
     [9, 1], [9, 2], [9, 5], [9, 6],
     [10, 7], [10, 8], [10, 3], [10, 4],
   ]
-  // The outriggers: a boom out from the flank, then a nacelle running fore-and-aft on the end of
-  // it. This is the feature that says "medium" from any angle and at any distance.
   let n = p.length
+  // The outriggers, with the nacelles now round and banded — this is the top of the medium tier
+  // and the last hull that is still a ship, so it should be the best-drawn of them.
   for (const s of [-1, 1]) {
-    p.push(
-      [s * 0.3, 0.02, -0.2],
-      [s * 0.92, 0.02, -0.2],
-      [s * 0.92, 0.1, 0.5],
-      [s * 0.92, 0.1, -0.95],
-      [s * 0.92, -0.06, 0.5],
-      [s * 0.92, -0.06, -0.95],
-    )
-    e.push(
-      [n, n + 1],
-      [n + 2, n + 3], [n + 4, n + 5], [n + 2, n + 4], [n + 3, n + 5],
-      [n + 1, n + 2], [n + 1, n + 3],
-    )
-    n += 6
+    p.push([s * 0.3, 0.02, -0.2], [s * 0.92, 0.02, -0.2])
+    e.push([n, n + 1])
+    n += 2
+    for (const z of [0.5, 0.05, -0.45, -0.95]) {
+      const r = ring(p, 6, 0.13, z, 'xy')
+      for (let i = 0; i < 6; i += 1) p[r + i][0] += s * 0.92
+      e.push(...loop(r, 6))
+      n = p.length
+    }
+    for (const [dx, dy] of [[0.13, 0], [-0.13, 0], [0, 0.13], [0, -0.13]] as [number, number][]) {
+      p.push([s * 0.92 + dx, dy, 0.5], [s * 0.92 + dx, dy, -0.95])
+      e.push([n, n + 1])
+      n += 2
+    }
+    // A pylon fairing where the boom meets the nacelle.
+    p.push([s * 0.72, 0.1, -0.05], [s * 0.72, 0.1, -0.4], [s * 0.72, -0.08, -0.05], [s * 0.72, -0.08, -0.4])
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
+    n += 4
   }
-  // Ribs across the beam. Three only: enough to give the hull a scale cue without turning it
-  // into a small capital.
-  for (let i = 1; i <= 3; i += 1) {
-    const t = i / 4
+  // Beam ribs.
+  for (let i = 1; i <= 4; i += 1) {
+    const t = i / 5
     const z = 0.55 - t * 1.6
     const w = 0.26 + 0.06 * t
     p.push([-w, 0.17, z], [w, 0.17, z], [w, -0.15, z], [-w, -0.15, z])
     e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
     n += 4
   }
+  // The tower gets a mast and a bridge box, so the tallest point is not a single vertex.
+  p.push([-0.12, 0.44, 0.3], [0.12, 0.44, 0.3], [0.12, 0.44, -0.15], [-0.12, 0.44, -0.15], [0, 0.72, 0.05])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n], [n + 4, n + 1], [n + 4, n + 2], [n + 4, n + 3], [n + 4, 9])
+  n += 5
   return wire(p, e)
 }
 
@@ -463,6 +590,26 @@ export function bulwark(): Wire {
     )
     n += 8
   }
+  // Launch rails along the dorsal surface, feeding the hangar. The mouth is the identity and it
+  // was a mouth with nothing behind it.
+  for (const s of [-1, 1]) {
+    const rail = n
+    p.push([s * 0.2, 0.34, 0.5], [s * 0.2, 0.34, -0.9], [s * 0.34, 0.28, 0.5], [s * 0.34, 0.28, -0.9])
+    e.push([rail, rail + 1], [rail + 2, rail + 3], [rail, rail + 2], [rail + 1, rail + 3])
+    n += 4
+    for (const z of [0.2, -0.2, -0.6]) {
+      p.push([s * 0.27, 0.42, z], [s * 0.2, 0.34, z], [s * 0.34, 0.28, z])
+      e.push([n, n + 1], [n, n + 2], [n + 1, n + 2])
+      n += 3
+    }
+  }
+  // Ventral armour belt, stepped along the keel.
+  for (const z of [0.2, -0.3, -0.8]) {
+    p.push([-0.5, -0.4, z], [0.5, -0.4, z], [0.34, -0.56, z], [-0.34, -0.56, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+
   return wire(p, e)
 }
 
@@ -554,6 +701,34 @@ export function sovereign(): Wire {
     e.push(...loop(front, count), ...loop(back, count))
     for (let i = 0; i < count; i += 1) e.push([front + i, back + i])
   }
+  // Hangar bays down each flank: three openings a fighter could leave through, which is what a
+  // fleet's spine is *for* and the one thing the hull did not say about itself.
+  for (const s of [-1, 1]) {
+    for (const z of [0.5, -0.2, -0.9]) {
+      const b = n
+      p.push(
+        [s * 0.74, 0.06, z + 0.18], [s * 0.74, 0.06, z - 0.18],
+        [s * 0.74, -0.14, z - 0.18], [s * 0.74, -0.14, z + 0.18],
+        [s * 0.56, 0.02, z + 0.12], [s * 0.56, 0.02, z - 0.12],
+        [s * 0.56, -0.1, z - 0.12], [s * 0.56, -0.1, z + 0.12],
+      )
+      e.push(
+        [b, b + 1], [b + 1, b + 2], [b + 2, b + 3], [b + 3, b],
+        [b + 4, b + 5], [b + 5, b + 6], [b + 6, b + 7], [b + 7, b + 4],
+        [b, b + 4], [b + 1, b + 5], [b + 2, b + 6], [b + 3, b + 7],
+      )
+      n += 8
+    }
+  }
+  // Dorsal turret barbettes: four rings along the spine, so the top of the hull carries weapons
+  // rather than only a line.
+  for (const z of [0.9, 0.2, -0.5, -1.1]) {
+    const t = ring(p, 6, 0.11, z, 'xy')
+    for (let i = 0; i < 6; i += 1) p[t + i][1] += 0.3
+    e.push(...loop(t, 6))
+    n = p.length
+  }
+
   return wire(p, e)
 }
 
@@ -1000,6 +1175,27 @@ export function skiff(): Wire {
   }
   p.push([0, -0.22, -0.2], [0, -0.22, -0.7])
   e.push([n, n + 1], [n, 1], [n, 2], [n + 1, 5], [n + 1, 6])
+  // Panel lines. Plain is the design; sparse was the defect. Three frames and a pair of strakes
+  // give the starter the same *kind* of surface every other hull has, without giving it a feature
+  // any of them lack — which is the whole point of the ship you are meant to replace.
+  for (let i = 1; i <= 3; i += 1) {
+    const t = i / 4
+    const z = 0.7 - t * 1.2
+    const w = 0.2 + 0.28 * t
+    p.push([-w, 0.06, z], [w, 0.06, z], [w * 0.8, -0.06, z], [-w * 0.8, -0.06, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const s of [-1, 1]) {
+    p.push([s * 0.16, 0.04, 0.75], [s * 0.42, 0, -0.55])
+    e.push([n, n + 1])
+    n += 2
+    // Wingtip lights, which is the cheapest thing that makes a small hull read as *maintained*.
+    p.push([s * 0.55, -0.08, -0.6], [s * 0.62, -0.04, -0.5])
+    e.push([n, n + 1])
+    n += 2
+  }
+
   return wire(p, e)
 }
 
@@ -1111,7 +1307,6 @@ export function prowler(): Wire {
     [-0.28, 0.18, 0.35], [0.28, 0.18, 0.35], [-0.28, -0.1, 0.35], [0.28, -0.1, 0.35],
     [-0.34, 0.16, -0.95], [0.34, 0.16, -0.95], [-0.34, -0.14, -0.95], [0.34, -0.14, -0.95],
     [0, 0.44, -0.2],
-    // The boom.
     [0, -0.62, 1.55], [0, -0.5, 0.2], [0, -0.46, -0.7],
     [-0.7, 0.02, -0.5], [0.7, 0.02, -0.5],
   ]
@@ -1124,6 +1319,49 @@ export function prowler(): Wire {
     [10, 11], [11, 12], [11, 3], [11, 4], [12, 7], [12, 8], [10, 0],
     [13, 5], [13, 7], [14, 6], [14, 8],
   ]
+  let n = p.length
+
+  // The boom is the identity, so it gets the detail: a dish at the tip and three collars along it.
+  // A bare line hanging under a hull reads as a mistake; a line with instruments on it reads as
+  // the reason the ship is shaped that way.
+  const dish = ring(p, 8, 0.22, 1.5, 'xy')
+  for (let i = 0; i < 8; i += 1) { p[dish + i][1] -= 0.6; p[dish + i][2] += 0.05 }
+  e.push(...loop(dish, 8))
+  for (let i = 0; i < 8; i += 2) e.push([dish + i, 10])
+  n = p.length
+  for (const [z, r] of [[1.0, 0.09], [0.5, 0.1], [-0.2, 0.11]] as [number, number][]) {
+    const first = ring(p, 5, r, z, 'xy')
+    for (let i = 0; i < 5; i += 1) p[first + i][1] -= 0.5
+    e.push(...loop(first, 5))
+    n = p.length
+  }
+
+  // Swept dorsal fins either side of the spine, angled back — the ship reads as *listening* from
+  // above and *fast* from the side, which is the medium the tier opens with.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.12, 0.42, -0.1], [s * 0.34, 0.66, -0.5], [s * 0.34, 0.66, -0.85], [s * 0.12, 0.36, -0.7])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+
+  // Hull ribs, and a pair of exhausts.
+  for (let i = 1; i <= 4; i += 1) {
+    const t = i / 5
+    const z = 0.35 - t * 1.3
+    const w = 0.28 + 0.06 * t
+    p.push([-w, 0.17, z], [w, 0.17, z], [w, -0.12, z], [-w, -0.12, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const s of [-1, 1]) {
+    const first = ring(p, 5, 0.12, -0.95, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[first + i][0] += s * 0.18; p[first + i][1] += 0.02 }
+    const back = ring(p, 5, 0.14, -1.25, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[back + i][0] += s * 0.18; p[back + i][1] += 0.02 }
+    e.push(...loop(first, 5), ...loop(back, 5))
+    for (let i = 0; i < 5; i += 1) e.push([first + i, back + i])
+    n = p.length
+  }
   return wire(p, e)
 }
 
@@ -1145,21 +1383,50 @@ export function halberd(): Wire {
     [1, 5], [2, 6], [3, 7], [4, 8],
     [5, 6], [7, 8], [5, 7], [6, 8],
   ]
-  // The barrels: a square section running well past the nose, one each side.
   let n = p.length
+  // The barrels, now round sections with bands rather than square tubes — a gun platform's guns
+  // should be the best-drawn thing on it.
   for (const s of [-1, 1]) {
-    for (const [dy, dz] of [[0.12, 0], [-0.12, 0]] as [number, number][]) {
-      p.push([s * 0.52 - s * 0.1, dy, 1.7 + dz], [s * 0.52 - s * 0.1, dy, -0.5 + dz])
-      p.push([s * 0.52 + s * 0.1, dy, 1.7 + dz], [s * 0.52 + s * 0.1, dy, -0.5 + dz])
-      e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
-      n += 4
+    for (const z of [1.7, 1.15, 0.6, 0.05, -0.5]) {
+      const first = ring(p, 7, 0.15, z, 'xy')
+      for (let i = 0; i < 7; i += 1) p[first + i][0] += s * 0.52
+      e.push(...loop(first, 7))
+      n = p.length
     }
-    // A muzzle ring, so the barrel ends in something rather than stopping.
-    p.push([s * 0.42, 0.16, 1.7], [s * 0.62, 0.16, 1.7], [s * 0.62, -0.16, 1.7], [s * 0.42, -0.16, 1.7])
-    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
-    n += 4
-    // And a mount joining it to the hull.
-    e.push([n - 8, 1], [n - 7, 5])
+    // Four rails running the length of each barrel, so it reads as a tube and not as a stack.
+    for (const [dx, dy] of [[0.15, 0], [-0.15, 0], [0, 0.15], [0, -0.15]] as [number, number][]) {
+      p.push([s * 0.52 + dx, dy, 1.7], [s * 0.52 + dx, dy, -0.5])
+      e.push([n, n + 1])
+      n += 2
+    }
+    // A muzzle flare and a breech block, which is where a barrel meets a ship.
+    const flare = ring(p, 7, 0.24, 1.7, 'xy')
+    for (let i = 0; i < 7; i += 1) p[flare + i][0] += s * 0.52
+    e.push(...loop(flare, 7))
+    for (let i = 0; i < 7; i += 1) e.push([flare + i, flare - 7 + i])
+    n = p.length
+    p.push([s * 0.34, 0.2, -0.35], [s * 0.7, 0.2, -0.35], [s * 0.7, -0.2, -0.35], [s * 0.34, -0.2, -0.35])
+    p.push([s * 0.34, 0.2, -0.85], [s * 0.7, 0.2, -0.85], [s * 0.7, -0.2, -0.85], [s * 0.34, -0.2, -0.85])
+    e.push(
+      [n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n],
+      [n + 4, n + 5], [n + 5, n + 6], [n + 6, n + 7], [n + 7, n + 4],
+      [n, n + 4], [n + 1, n + 5], [n + 2, n + 6], [n + 3, n + 7],
+      [n, 1], [n + 3, 3],
+    )
+    n += 8
+  }
+  // A small bridge slung under the hull between the guns, and a stern block.
+  p.push([-0.16, -0.3, -0.2], [0.16, -0.3, -0.2], [0.16, -0.3, -0.6], [-0.16, -0.3, -0.6], [0, -0.16, -0.4])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n], [n + 4, n + 1], [n + 4, n + 2], [n + 4, n + 3])
+  n += 5
+  for (const x of [-0.14, 0.14]) {
+    const first = ring(p, 5, 0.12, -0.95, 'xy')
+    for (let i = 0; i < 5; i += 1) p[first + i][0] += x
+    const back = ring(p, 5, 0.14, -1.25, 'xy')
+    for (let i = 0; i < 5; i += 1) p[back + i][0] += x
+    e.push(...loop(first, 5), ...loop(back, 5))
+    for (let i = 0; i < 5; i += 1) e.push([first + i, back + i])
+    n = p.length
   }
   return wire(p, e)
 }
@@ -1173,9 +1440,7 @@ export function halberd(): Wire {
  */
 export function rampart(): Wire {
   const p: number[][] = [
-    // The plate.
     [-0.72, 0.4, 0.8], [0.72, 0.4, 0.8], [0.72, -0.4, 0.8], [-0.72, -0.4, 0.8],
-    // The body.
     [-0.5, 0.3, 0.2], [0.5, 0.3, 0.2], [0.5, -0.3, 0.2], [-0.5, -0.3, 0.2],
     [-0.56, 0.28, -1.0], [0.56, 0.28, -1.0], [0.56, -0.28, -1.0], [-0.56, -0.28, -1.0],
   ]
@@ -1185,15 +1450,58 @@ export function rampart(): Wire {
     [4, 5], [5, 6], [6, 7], [7, 4],
     [4, 8], [5, 9], [6, 10], [7, 11],
     [8, 9], [9, 10], [10, 11], [11, 8],
-    // Diagonals across the plate: it should read as braced, not as a hole.
     [0, 2], [1, 3],
   ]
-  // Shoulder blocks either side of the plate.
   let n = p.length
+
+  // ## The plate is the ship, so the plate carries the detail
+  //
+  // A ram plate braced by two diagonals is a *panel*; what it has to read as is armour. Three
+  // horizontal ribs and a vertical keel across the face give it thickness at any angle, and the
+  // corner bosses give it something to catch light on — the whole hull is a claim about being hit,
+  // and a flat quad does not make it.
+  for (const t of [0.3, 0.5, 0.7]) {
+    const y = 0.4 - t * 0.8
+    p.push([-0.72, y, 0.8], [0.72, y, 0.8])
+    e.push([n, n + 1])
+    n += 2
+  }
+  p.push([0, 0.4, 0.8], [0, -0.4, 0.8])
+  e.push([n, n + 1])
+  n += 2
+  for (const [sx, sy] of [[-1, 1], [1, 1], [1, -1], [-1, -1]] as [number, number][]) {
+    p.push([sx * 0.72, sy * 0.4, 0.8], [sx * 0.86, sy * 0.48, 0.62], [sx * 0.86, sy * 0.48, 0.2])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, sx < 0 ? (sy > 0 ? 4 : 7) : (sy > 0 ? 5 : 6)])
+    n += 3
+  }
+
+  // Shoulder blocks either side, now boxed rather than four lines.
   for (const s of [-1, 1]) {
-    p.push([s * 0.86, 0.24, 0.6], [s * 0.86, -0.24, 0.6], [s * 0.86, 0.24, -0.6], [s * 0.86, -0.24, -0.6])
-    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3])
-    n += 4
+    const b = n
+    p.push(
+      [s * 0.86, 0.24, 0.6], [s * 0.86, -0.24, 0.6], [s * 0.86, 0.24, -0.6], [s * 0.86, -0.24, -0.6],
+      [s * 0.6, 0.28, 0.6], [s * 0.6, -0.28, 0.6], [s * 0.6, 0.28, -0.6], [s * 0.6, -0.28, -0.6],
+    )
+    e.push(
+      [b, b + 1], [b + 2, b + 3], [b, b + 2], [b + 1, b + 3],
+      [b + 4, b], [b + 5, b + 1], [b + 6, b + 2], [b + 7, b + 3],
+      [b + 4, b + 6], [b + 5, b + 7],
+    )
+    n += 8
+  }
+
+  // Dorsal spine and a stern engine block: a slab needs a top edge that is not a straight line.
+  p.push([0, 0.42, 0.1], [0, 0.42, -0.5], [-0.18, 0.3, -0.2], [0.18, 0.3, -0.2])
+  e.push([n, n + 1], [n, n + 2], [n, n + 3], [n + 1, n + 2], [n + 1, n + 3])
+  n += 4
+  for (const x of [-0.3, 0.0, 0.3]) {
+    const first = ring(p, 5, 0.13, -1.0, 'xy')
+    for (let i = 0; i < 5; i += 1) p[first + i][0] += x
+    const back = ring(p, 5, 0.15, -1.28, 'xy')
+    for (let i = 0; i < 5; i += 1) p[back + i][0] += x
+    e.push(...loop(first, 5), ...loop(back, 5))
+    for (let i = 0; i < 5; i += 1) e.push([first + i, back + i])
+    n = p.length
   }
   return wire(p, e)
 }
@@ -1241,6 +1549,35 @@ export function aegis(): Wire {
     e.push([first, 0], [first + 3, 1])
     n = p.length
   }
+  // Emitter heads at each vane tip, and a brace ring binding the three of them. The hull's whole
+  // claim is that the shields are the ship, and three bare spars do not make it — an emitter is
+  // the part a shield would come *from*, and the ring is what stops the vanes reading as separate.
+  for (let i = 0; i < 3; i += 1) {
+    const a = (i / 3) * Math.PI * 2
+    const cx = Math.cos(a)
+    const cy = Math.sin(a)
+    const head = n
+    p.push(
+      [cx * 0.72, cy * 0.72, 0.05], [cx * 0.9, cy * 0.9, -0.15],
+      [cx * 0.72, cy * 0.72, -0.35], [cx * 0.62, cy * 0.62, -0.15],
+    )
+    e.push([head, head + 1], [head + 1, head + 2], [head + 2, head + 3], [head + 3, head],
+           [head, head + 2], [head + 1, head + 3])
+    n += 4
+  }
+  const brace = ring(p, 9, 0.66, -0.2, 'xy')
+  e.push(...loop(brace, 9))
+  n = p.length
+  // A nose ring and a stern nozzle, so the axis has ends rather than points.
+  const nose = ring(p, 6, 0.13, 0.75, 'xy')
+  e.push(...loop(nose, 6))
+  for (let i = 0; i < 6; i += 1) e.push([nose + i, 0])
+  const bell = ring(p, 6, 0.16, -0.9, 'xy')
+  const flare = ring(p, 6, 0.2, -1.15, 'xy')
+  e.push(...loop(bell, 6), ...loop(flare, 6))
+  for (let i = 0; i < 6; i += 1) e.push([bell + i, flare + i], [bell + i, 1])
+  n = p.length
+
   return wire(p, e)
 }
 
@@ -1263,16 +1600,31 @@ export function carrack(): Wire {
     [2, 1], [3, 1], [4, 1], [5, 1],
   ]
   let n = p.length
-  for (const z of [0.6, -0.1, -0.8]) {
-    const first = ring(p, 8, 0.72, z, 'xy')
-    e.push(...loop(first, 8))
-    // Spokes to the spine, on the four cardinals only — eight would be a wheel.
-    for (const i of [0, 2, 4, 6]) e.push([first + i, i % 4 === 0 ? 0 : 1])
+  // Four rails down the spine, so the ship you can see through still has a *ship* in the middle.
+  for (const [dx, dy] of [[0.09, 0.09], [-0.09, 0.09], [0.09, -0.09], [-0.09, -0.09]] as [number, number][]) {
+    p.push([dx, dy, 1.1], [dx, dy, -1.2])
+    e.push([n, n + 1])
+    n += 2
+  }
+  // Cargo rings, now paired — each hold is two hoops with longitudinals between them, which is
+  // what makes it read as a *volume* being carried rather than as a hoop threaded on a stick.
+  for (const z of [0.7, -0.05, -0.8]) {
+    const front = ring(p, 10, 0.72, z + 0.16, 'xy')
+    const back = ring(p, 10, 0.72, z - 0.16, 'xy')
+    e.push(...loop(front, 10), ...loop(back, 10))
+    for (let i = 0; i < 10; i += 1) e.push([front + i, back + i])
+    for (const i of [0, 2, 5, 7]) e.push([front + i, 0], [back + i, 1])
     n = p.length
   }
-  // Engine bell.
-  p.push([-0.24, 0, -1.25], [0.24, 0, -1.25], [0, 0.24, -1.25], [0, -0.24, -1.25], [0, 0, -1.65])
-  e.push([n, n + 4], [n + 1, n + 4], [n + 2, n + 4], [n + 3, n + 4], [n, n + 2], [n + 2, n + 1], [n + 1, n + 3], [n + 3, n])
+  // A bridge forward of the first hold: the only part of the hull with a crew in it.
+  p.push([-0.16, 0.3, 1.25], [0.16, 0.3, 1.25], [0.16, 0.3, 0.95], [-0.16, 0.3, 0.95], [0, 0.16, 1.1])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n], [n + 4, n + 1], [n + 4, n + 2], [n + 4, n + 3])
+  n += 5
+  // Engine bell, with a flare.
+  const bell = ring(p, 8, 0.24, -1.25, 'xy')
+  const flare = ring(p, 8, 0.34, -1.65, 'xy')
+  e.push(...loop(bell, 8), ...loop(flare, 8))
+  for (let i = 0; i < 8; i += 1) e.push([bell + i, flare + i], [bell + i, 1])
   return wire(p, e)
 }
 
@@ -1362,6 +1714,54 @@ export function monitor(): Wire {
     e.push(...loop(back, 6))
     for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
   }
+  // Ammunition handling: two feed rails running from the stern up to the breech, with hoists. The
+  // hull's whole argument is that it carries one enormous gun, and a gun with no visible way of
+  // being loaded is a prop. It is also what lifts the least-drawn capital clear of the mediums —
+  // a tier that fills the frame must out-detail the tier that does not.
+  for (const s of [-1, 1]) {
+    const rail = n
+    p.push([s * 0.42, 0.34, -0.3], [s * 0.42, 0.34, -1.35], [s * 0.5, 0.22, -0.3], [s * 0.5, 0.22, -1.35])
+    e.push([rail, rail + 1], [rail + 2, rail + 3], [rail, rail + 2], [rail + 1, rail + 3])
+    n += 4
+    for (const z of [-0.5, -0.8, -1.1]) {
+      p.push([s * 0.42, 0.34, z], [s * 0.5, 0.22, z], [s * 0.46, 0.44, z])
+      e.push([n, n + 1], [n, n + 2], [n + 1, n + 2])
+      n += 3
+    }
+  }
+  // Armour belt along the flanks, stepped, so the hull under the gun has a profile of its own.
+  for (const s of [-1, 1]) {
+    for (const z of [-0.35, -0.7, -1.05]) {
+      p.push([s * 0.64, 0.18, z], [s * 0.78, 0.1, z], [s * 0.78, -0.1, z], [s * 0.64, -0.18, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3])
+      n += 4
+    }
+  }
+  // Point-defence turrets on the dorsal surface: three small rings, because a siege hull that
+  // cannot turn needs something that can.
+  for (const z of [-0.4, -0.75, -1.1]) {
+    const t = ring(p, 5, 0.09, z, 'xy')
+    for (let i = 0; i < 5; i += 1) p[t + i][1] += 0.36
+    e.push(...loop(t, 5))
+    n = p.length
+  }
+
+  // Blast shielding around the muzzle: two standoff hoops on struts, ahead of the brake. A gun
+  // this size vents somewhere, and this is also what lifts the least-drawn capital clear of the
+  // busiest light hull — the tier that fills the frame must out-detail the tier that does not, and
+  // that is pinned rather than assumed.
+  for (const [z, r] of [[2.45, 0.42], [2.75, 0.5]] as [number, number][]) {
+    const hoop = ring(p, 8, r, z, 'xy')
+    e.push(...loop(hoop, 8))
+    for (let i = 0; i < 8; i += 2) e.push([hoop + i, hoop + ((i + 1) % 8)])
+    n = p.length
+  }
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+    p.push([dx * 0.34, dy * 0.34, 2.15], [dx * 0.46, dy * 0.46, 2.45], [dx * 0.5, dy * 0.5, 2.75])
+    e.push([n, n + 1], [n + 1, n + 2])
+    n += 3
+  }
+
   return wire(p, e)
 }
 
@@ -1435,6 +1835,38 @@ export function vanguard(): Wire {
     for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
     n = p.length
   }
+  // Hull plating: four longitudinal strakes and a set of frames, so the body between the wings is
+  // not a bare box. This is the tier that fills the frame, and it was the least-drawn hull in it.
+  for (let i = 1; i <= 5; i += 1) {
+    const t = i / 6
+    const z = 0.5 - t * 1.5
+    const w = 0.34 + 0.08 * t
+    const h = 0.22 - 0.02 * t
+    p.push([-w, h, z], [w, h, z], [w, -h, z], [-w, -h, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const [dx, dy] of [[0.34, 0.2], [-0.34, 0.2], [0.34, -0.2], [-0.34, -0.2]] as [number, number][]) {
+    p.push([dx, dy, 0.5], [dx * 1.2, dy, -1.0])
+    e.push([n, n + 1])
+    n += 2
+  }
+  // Intakes at the shoulders: this hull is all drive, and a drive with nothing feeding it is a
+  // silhouette that stops making sense the moment you look for the reason it is shaped that way.
+  for (const s of [-1, 1]) {
+    const first = ring(p, 6, 0.14, 0.55, 'xy')
+    for (let i = 0; i < 6; i += 1) { p[first + i][0] += s * 0.3; p[first + i][1] += 0.16 }
+    const back = ring(p, 6, 0.11, 0.15, 'xy')
+    for (let i = 0; i < 6; i += 1) { p[back + i][0] += s * 0.3; p[back + i][1] += 0.16 }
+    e.push(...loop(first, 6), ...loop(back, 6))
+    for (let i = 0; i < 6; i += 1) e.push([first + i, back + i])
+    n = p.length
+  }
+  // A ventral fin, so the hull is not symmetric top to bottom and roll stays readable.
+  p.push([0, -0.26, -0.3], [0, -0.62, -0.75], [0, -0.62, -1.0], [0, -0.24, -0.95])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+  n += 4
+
   return wire(p, e)
 }
 
@@ -1514,6 +1946,30 @@ export function suzerain(): Wire {
     e.push([n, n + 1], [n, n + 2], [n, n + 3], [n + 1, n + 2], [n + 1, n + 3], [n + 2, n + 3])
     n += 4
   }
+  // Rail gantries along the inner faces of both hulls, carrying the spinal gun's feed. A weapon
+  // slung between two ships has to be *held* by them, and two hulls flanking a floating tube is
+  // the version of this shape that looks unfinished.
+  for (const s of [-1, 1]) {
+    const g = n
+    p.push([s * 0.34, 0.16, 1.5], [s * 0.34, 0.16, -1.0], [s * 0.34, -0.16, 1.5], [s * 0.34, -0.16, -1.0])
+    e.push([g, g + 1], [g + 2, g + 3], [g, g + 2], [g + 1, g + 3])
+    n += 4
+    for (const z of [1.2, 0.4, -0.4]) {
+      p.push([s * 0.34, 0.16, z], [s * 0.12, 0.04, z], [s * 0.34, -0.16, z])
+      e.push([n, n + 1], [n + 1, n + 2])
+      n += 3
+    }
+  }
+  // Dorsal turrets on each hull, so both halves are armed independently of the spinal gun.
+  for (const s of [-1, 1]) {
+    for (const z of [0.6, -0.6]) {
+      const t = ring(p, 5, 0.1, z, 'xy')
+      for (let i = 0; i < 5; i += 1) { p[t + i][0] += s * 0.62; p[t + i][1] += 0.3 }
+      e.push(...loop(t, 5))
+      n = p.length
+    }
+  }
+
   return wire(p, e)
 }
 
@@ -1631,6 +2087,573 @@ export function dominion(): Wire {
     e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
     n += 4
   }
+  // ## The endgame hull is the most drawn thing in the game, and that is a rule
+  //
+  // A ladder whose top rung is not visibly the top has no top. It briefly was not — the
+  // `sovereign` overtook it once hangar bays were added — which is the ordinary way a "biggest and
+  // best" claim rots: everything else gets a pass and the flagship does not. `check:scemaworld`
+  // pins it now.
+  //
+  // A ring of hangar mouths around the inner face of the torus: the ship carries a fleet, and the
+  // only surface it could launch one from is the one facing its own axis.
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2 + 0.26
+    const cx = Math.cos(a)
+    const cy = Math.sin(a)
+    const b = n
+    p.push(
+      [cx * 0.86, cy * 0.86, 0.02], [cx * 0.86, cy * 0.86, -0.24],
+      [cx * 0.7, cy * 0.7, -0.24], [cx * 0.7, cy * 0.7, 0.02],
+    )
+    e.push([b, b + 1], [b + 1, b + 2], [b + 2, b + 3], [b + 3, b], [b, b + 2])
+    n += 4
+  }
+  // Turret barbettes along the core, above and below, so the spine is armed along its whole run.
+  for (const z of [1.0, 0.4, -0.6, -1.2]) {
+    for (const s of [1, -1]) {
+      const t = ring(p, 6, 0.1, z, 'xy')
+      for (let i = 0; i < 6; i += 1) p[t + i][1] += s * 0.3
+      e.push(...loop(t, 6))
+      n = p.length
+    }
+  }
+  // Radiator fins between the pylons, on the diagonals: a hull this size sheds heat somewhere.
+  for (const [dx, dy] of [[0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]] as [number, number][]) {
+    p.push([dx * 0.42, dy * 0.42, -0.5], [dx * 0.95, dy * 0.95, -0.85],
+           [dx * 0.95, dy * 0.95, -1.25], [dx * 0.42, dy * 0.42, -1.0])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, n + 2])
+    n += 4
+  }
+
   return wire(p, e)
 }
 
+/**
+ * ## The hostile and civilian classes get their own silhouettes too
+ *
+ * Fifteen classes shared four shapes. A courier, a marshal and a raider interceptor were the *same
+ * dart*; a leviathan, a titan, a warden and a bastion were the same war hull at four sizes. Colour
+ * was doing all the work, and this project's own rule — stated in `view.ts`, in `theme.rs`, in
+ * `alchem_link.theme` — is that **colour is decoration and never the message**. It is at its most
+ * load-bearing here, because the question a silhouette has to answer is *is that coming for me*,
+ * and the answer arrives from the corner of an eye at a range where hue is unreliable.
+ *
+ * Each family reads as its faction before it reads as its class:
+ *
+ * - **Raiders** are asymmetric and over-engined. Nothing on them lines up, because nothing about a
+ *   freehold hull was built as a set.
+ * - **The patrol** is blocky, symmetrical and institutional, and every one of them carries the
+ *   same blade fin — a marshal is recognisable as a marshal before you can tell which marshal.
+ * - **Civilians** carry visible cargo and no guns, so a courier reads as *not a threat* at a range
+ *   where its colour is a couple of pixels.
+ */
+
+/** A raider skiff: scrap, with an engine far too large for it. */
+export function raiderSkiff(): Wire {
+  const p: number[][] = [
+    [0, 0.04, 1.0], [-0.4, 0.14, 0.1], [0.34, -0.1, 0.15], [-0.3, -0.16, -0.2], [0.42, 0.18, -0.3],
+    [0, 0, -0.5],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 3], [2, 4], [1, 4], [2, 3],
+    [1, 5], [2, 5], [3, 5], [4, 5],
+  ]
+  let n = p.length
+  const bell = ring(p, 6, 0.3, -0.55, 'xy')
+  const flare = ring(p, 6, 0.38, -0.95, 'xy')
+  e.push(...loop(bell, 6), ...loop(flare, 6))
+  for (let i = 0; i < 6; i += 1) e.push([bell + i, flare + i], [bell + i, 5])
+  n = p.length
+  // One fin, on one side. A hull with a feature it has only half of is the cheapest way to read
+  // "put together out of what was available".
+  p.push([-0.42, 0.5, -0.35], [-0.2, 0.16, -0.1], [-0.5, 0.2, -0.6])
+  e.push([n, n + 1], [n, n + 2], [n + 1, n + 2], [n + 1, 1])
+  return wire(p, e)
+}
+
+/** A raider lancer: a long standoff hull built around a nose gun. */
+export function raiderLancer(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.5], [0, 0, 0.35],
+    [-0.2, 0.16, 0.2], [0.2, 0.16, 0.2], [0.2, -0.16, 0.2], [-0.2, -0.16, 0.2],
+    [-0.26, 0.14, -0.9], [0.26, 0.14, -0.9], [0.26, -0.14, -0.9], [-0.26, -0.14, -0.9],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [1, 2], [1, 3], [1, 4], [1, 5],
+    [2, 3], [3, 4], [4, 5], [5, 2],
+    [2, 6], [3, 7], [4, 8], [5, 9],
+    [6, 7], [7, 8], [8, 9], [9, 6],
+  ]
+  let n = p.length
+  for (const z of [1.2, 0.85]) {
+    const r = ring(p, 5, 0.1, z, 'xy')
+    e.push(...loop(r, 5))
+    e.push([r, 0], [r + 2, 0])
+    n = p.length
+  }
+  // Twin outboard tanks on struts, mismatched lengths — the raider signature.
+  for (const [s, back] of [[-1, -0.95], [1, -0.75]] as [number, number][]) {
+    p.push([s * 0.28, -0.06, -0.2], [s * 0.6, -0.14, -0.2])
+    e.push([n, n + 1])
+    n += 2
+    const a = ring(p, 5, 0.12, 0.1, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[a + i][0] += s * 0.6; p[a + i][1] -= 0.14 }
+    const b = ring(p, 5, 0.12, back, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[b + i][0] += s * 0.6; p[b + i][1] -= 0.14 }
+    e.push(...loop(a, 5), ...loop(b, 5))
+    for (let i = 0; i < 5; i += 1) e.push([a + i, b + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A frigate: the smallest capital. A blunt wedge with a dorsal gun deck. */
+export function frigate(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.3],
+    [-0.44, 0.2, 0.35], [0.44, 0.2, 0.35], [-0.44, -0.22, 0.35], [0.44, -0.22, 0.35],
+    [-0.54, 0.2, -1.0], [0.54, 0.2, -1.0], [-0.54, -0.22, -1.0], [0.54, -0.22, -1.0],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+  // A gun deck: a raised platform along the spine with three turret rings on it.
+  p.push([-0.28, 0.3, 0.2], [0.28, 0.3, 0.2], [0.28, 0.3, -0.8], [-0.28, 0.3, -0.8])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, 1], [n + 1, 2], [n + 2, 6], [n + 3, 5])
+  n += 4
+  for (const z of [0.05, -0.3, -0.65]) {
+    const t = ring(p, 5, 0.09, z, 'xy')
+    for (let i = 0; i < 5; i += 1) p[t + i][1] += 0.36
+    e.push(...loop(t, 5))
+    n = p.length
+  }
+  for (let i = 1; i <= 3; i += 1) {
+    const t = i / 4
+    const z = 0.35 - t * 1.35
+    const w = 0.44 + 0.1 * t
+    p.push([-w, 0.2, z], [w, 0.2, z], [w, -0.22, z], [-w, -0.22, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const x of [-0.26, 0.26]) {
+    const b = ring(p, 5, 0.14, -1.0, 'xy')
+    for (let i = 0; i < 5; i += 1) p[b + i][0] += x
+    const f = ring(p, 5, 0.17, -1.3, 'xy')
+    for (let i = 0; i < 5; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 5), ...loop(f, 5))
+    for (let i = 0; i < 5; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A destroyer: a long slab, all broadside. */
+export function destroyer(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.7],
+    [-0.4, 0.2, 0.7], [0.4, 0.2, 0.7], [-0.4, -0.22, 0.7], [0.4, -0.22, 0.7],
+    [-0.5, 0.22, -1.5], [0.5, 0.22, -1.5], [-0.5, -0.24, -1.5], [0.5, -0.24, -1.5],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+  // Broadside casemates: a row of gun ports down each flank, which is the whole of what a
+  // destroyer is and the thing a wedge alone does not say.
+  for (const s of [-1, 1]) {
+    for (const z of [0.4, 0.0, -0.4, -0.8, -1.2]) {
+      p.push([s * 0.48, 0.06, z + 0.12], [s * 0.62, 0.06, z], [s * 0.48, 0.06, z - 0.12], [s * 0.48, -0.1, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
+  }
+  for (let i = 1; i <= 5; i += 1) {
+    const t = i / 6
+    const z = 0.7 - t * 2.2
+    const w = 0.4 + 0.1 * t
+    p.push([-w, 0.21, z], [w, 0.21, z], [w, -0.23, z], [-w, -0.23, z], [0, 0.36, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n], [n + 4, n + 1])
+    n += 5
+  }
+  for (const x of [-0.3, 0, 0.3]) {
+    const b = ring(p, 5, 0.14, -1.5, 'xy')
+    for (let i = 0; i < 5; i += 1) p[b + i][0] += x
+    const f = ring(p, 5, 0.17, -1.85, 'xy')
+    for (let i = 0; i < 5; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 5), ...loop(f, 5))
+    for (let i = 0; i < 5; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A warfighter: the medium war hull. A broad arrowhead with under-slung pods. */
+export function warfighter(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.5],
+    [-0.85, 0.1, -0.5], [0.85, 0.1, -0.5],
+    [-0.4, 0.24, -0.1], [0.4, 0.24, -0.1],
+    [-0.4, -0.2, -0.1], [0.4, -0.2, -0.1],
+    [-0.5, 0.2, -1.15], [0.5, 0.2, -1.15], [-0.5, -0.18, -1.15], [0.5, -0.18, -1.15],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
+    [1, 3], [2, 4], [1, 5], [2, 6],
+    [3, 4], [5, 6], [3, 5], [4, 6],
+    [3, 7], [4, 8], [5, 9], [6, 10],
+    [7, 8], [9, 10], [7, 9], [8, 10],
+    [1, 7], [2, 8],
+  ]
+  let n = p.length
+  // Under-slung weapon pods on the swept edges, and a dorsal blister.
+  for (const s of [-1, 1]) {
+    p.push([s * 0.6, -0.14, 0.1], [s * 0.6, -0.14, -0.75], [s * 0.72, -0.06, -0.3])
+    e.push([n, n + 1], [n, n + 2], [n + 1, n + 2], [n, s < 0 ? 5 : 6], [n + 1, s < 0 ? 9 : 10])
+    n += 3
+  }
+  p.push([0, 0.38, 0.2], [-0.18, 0.3, -0.3], [0.18, 0.3, -0.3], [0, 0.3, -0.6])
+  e.push([n, n + 1], [n, n + 2], [n + 1, n + 3], [n + 2, n + 3], [n, 0])
+  n += 4
+  for (const x of [-0.24, 0.24]) {
+    const b = ring(p, 5, 0.13, -1.15, 'xy')
+    for (let i = 0; i < 5; i += 1) p[b + i][0] += x
+    const f = ring(p, 5, 0.16, -1.45, 'xy')
+    for (let i = 0; i < 5; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 5), ...loop(f, 5))
+    for (let i = 0; i < 5; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A leviathan: twin spines joined by a spine bridge. Bigger than a dreadnought and not it. */
+export function leviathan(): Wire {
+  const p: number[][] = []
+  const e: [number, number][] = []
+  for (const s of [-1, 1]) {
+    const b = p.length
+    p.push(
+      [s * 0.4, 0, 2.0],
+      [s * 0.24, 0.24, 1.1], [s * 0.58, 0.24, 1.1], [s * 0.58, -0.24, 1.1], [s * 0.24, -0.24, 1.1],
+      [s * 0.24, 0.3, -1.6], [s * 0.64, 0.3, -1.6], [s * 0.64, -0.3, -1.6], [s * 0.24, -0.3, -1.6],
+    )
+    e.push(
+      [b, b + 1], [b, b + 2], [b, b + 3], [b, b + 4],
+      [b + 1, b + 2], [b + 2, b + 3], [b + 3, b + 4], [b + 4, b + 1],
+      [b + 1, b + 5], [b + 2, b + 6], [b + 3, b + 7], [b + 4, b + 8],
+      [b + 5, b + 6], [b + 6, b + 7], [b + 7, b + 8], [b + 8, b + 5],
+    )
+    let n = p.length
+    for (let i = 1; i <= 7; i += 1) {
+      const t = i / 8
+      const z = 1.1 - t * 2.7
+      const w = 0.17 + 0.04 * t
+      const h = 0.24 + 0.06 * t
+      p.push([s * 0.41 - w, h, z], [s * 0.41 + w, h, z], [s * 0.41 + w, -h, z], [s * 0.41 - w, -h, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+      n += 4
+    }
+    for (const x of [-0.14, 0.14]) {
+      const bb = ring(p, 5, 0.14, -1.6, 'xy')
+      for (let i = 0; i < 5; i += 1) p[bb + i][0] += s * 0.41 + x
+      const ff = ring(p, 5, 0.17, -2.0, 'xy')
+      for (let i = 0; i < 5; i += 1) p[ff + i][0] += s * 0.41 + x
+      e.push(...loop(bb, 5), ...loop(ff, 5))
+      for (let i = 0; i < 5; i += 1) e.push([bb + i, ff + i])
+    }
+  }
+  let n = p.length
+  // The bridge between the spines, and a spinal weapon slung under it.
+  for (const z of [0.9, 0.1, -0.7, -1.4]) {
+    p.push([-0.24, 0.2, z], [0.24, 0.2, z], [-0.24, -0.2, z], [0.24, -0.2, z])
+    e.push([n, n + 1], [n + 2, n + 3], [n, n + 2], [n + 1, n + 3], [n, n + 3])
+    n += 4
+  }
+  p.push([0, 0.46, 0.4], [0, 0.46, -0.5], [0, 0.2, -0.05])
+  e.push([n, n + 1], [n, n + 2], [n + 1, n + 2])
+  n += 3
+  p.push([0, -0.3, 1.5], [0, -0.3, -1.0])
+  e.push([n, n + 1])
+  return wire(p, e)
+}
+
+/** A titan: a wedge-city. The largest hostile in the sector. */
+export function titan(): Wire {
+  const p: number[][] = [
+    [0, 0, 2.2],
+    [-0.75, 0.3, 0.6], [0.75, 0.3, 0.6], [-0.75, -0.34, 0.6], [0.75, -0.34, 0.6],
+    [-0.95, 0.34, -1.7], [0.95, 0.34, -1.7], [-0.95, -0.38, -1.7], [0.95, -0.38, -1.7],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+  // The city: five towers of different heights along the spine. It is the one hostile that should
+  // read as *inhabited* rather than as a machine, and a skyline is how a silhouette says so.
+  for (const [z, h, w] of [[0.4, 0.72, 0.16], [-0.1, 0.95, 0.2], [-0.6, 0.66, 0.14], [-1.05, 0.86, 0.18], [-1.45, 0.5, 0.12]] as [number, number, number][]) {
+    p.push([-w, 0.3, z + w], [w, 0.3, z + w], [w, 0.3, z - w], [-w, 0.3, z - w])
+    p.push([-w * 0.7, h, z + w * 0.7], [w * 0.7, h, z + w * 0.7], [w * 0.7, h, z - w * 0.7], [-w * 0.7, h, z - w * 0.7])
+    e.push(
+      [n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n],
+      [n + 4, n + 5], [n + 5, n + 6], [n + 6, n + 7], [n + 7, n + 4],
+      [n, n + 4], [n + 1, n + 5], [n + 2, n + 6], [n + 3, n + 7],
+    )
+    n += 8
+  }
+  for (let i = 1; i <= 7; i += 1) {
+    const t = i / 8
+    const z = 0.6 - t * 2.3
+    const w = 0.75 + 0.2 * t
+    p.push([-w, 0.31, z], [w, 0.31, z], [w, -0.35, z], [-w, -0.35, z], [0, -0.52, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n + 4, n + 2], [n + 4, n + 3])
+    n += 5
+  }
+  for (const s of [-1, 1]) {
+    for (const z of [0.2, -0.4, -1.0]) {
+      p.push([s * 0.88, 0.02, z + 0.16], [s * 1.06, 0.02, z], [s * 0.88, 0.02, z - 0.16], [s * 0.88, -0.16, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
+  }
+  for (const x of [-0.55, -0.18, 0.18, 0.55]) {
+    const b = ring(p, 6, 0.17, -1.7, 'xy')
+    for (let i = 0; i < 6; i += 1) p[b + i][0] += x
+    const f = ring(p, 6, 0.21, -2.15, 'xy')
+    for (let i = 0; i < 6; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 6), ...loop(f, 6))
+    for (let i = 0; i < 6; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A courier: a pod with a canister slung under it. Visibly carrying, visibly unarmed. */
+export function courier(): Wire {
+  const p: number[][] = [
+    [0, 0.06, 1.0],
+    [-0.2, 0.18, 0.2], [0.2, 0.18, 0.2], [-0.2, -0.06, 0.2], [0.2, -0.06, 0.2],
+    [-0.2, 0.16, -0.6], [0.2, 0.16, -0.6], [-0.2, -0.06, -0.6], [0.2, -0.06, -0.6],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+  // The canister. A civilian hull has to read as *carrying something* at the range where its
+  // colour is two pixels, and a cylinder under the belly is the only thing that does it.
+  const a = ring(p, 6, 0.15, 0.45, 'xy')
+  for (let i = 0; i < 6; i += 1) p[a + i][1] -= 0.3
+  const b = ring(p, 6, 0.15, -0.5, 'xy')
+  for (let i = 0; i < 6; i += 1) p[b + i][1] -= 0.3
+  e.push(...loop(a, 6), ...loop(b, 6))
+  for (let i = 0; i < 6; i += 1) e.push([a + i, b + i])
+  n = p.length
+  p.push([-0.12, -0.06, 0.1], [-0.12, -0.16, 0.1], [0.12, -0.06, 0.1], [0.12, -0.16, 0.1])
+  e.push([n, n + 1], [n + 2, n + 3])
+  n += 4
+  const bell = ring(p, 5, 0.11, -0.6, 'xy')
+  const flare = ring(p, 5, 0.13, -0.85, 'xy')
+  e.push(...loop(bell, 5), ...loop(flare, 5))
+  for (let i = 0; i < 5; i += 1) e.push([bell + i, flare + i])
+  return wire(p, e)
+}
+
+/** A freighter: a spine with containers racked along it. */
+export function freighter(): Wire {
+  const p: number[][] = [
+    [0, 0.1, 1.2],
+    [-0.22, 0.24, 0.7], [0.22, 0.24, 0.7], [-0.22, -0.02, 0.7], [0.22, -0.02, 0.7],
+    [-0.22, 0.22, -1.2], [0.22, 0.22, -1.2], [-0.22, -0.02, -1.2], [0.22, -0.02, -1.2],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  let n = p.length
+  // Containers: six boxes racked either side of the spine. The cue is *count* — a hauler is a
+  // ship you can see the cargo on, and a hauler with none is riding empty.
+  for (const s of [-1, 1]) {
+    for (const z of [0.4, -0.1, -0.6]) {
+      const b = n
+      p.push(
+        [s * 0.26, 0.2, z + 0.22], [s * 0.62, 0.2, z + 0.22], [s * 0.62, -0.08, z + 0.22], [s * 0.26, -0.08, z + 0.22],
+        [s * 0.26, 0.2, z - 0.22], [s * 0.62, 0.2, z - 0.22], [s * 0.62, -0.08, z - 0.22], [s * 0.26, -0.08, z - 0.22],
+      )
+      e.push(
+        [b, b + 1], [b + 1, b + 2], [b + 2, b + 3], [b + 3, b],
+        [b + 4, b + 5], [b + 5, b + 6], [b + 6, b + 7], [b + 7, b + 4],
+        [b, b + 4], [b + 1, b + 5], [b + 2, b + 6], [b + 3, b + 7],
+      )
+      n += 8
+    }
+  }
+  p.push([-0.14, 0.36, 0.9], [0.14, 0.36, 0.9], [0.14, 0.36, 0.55], [-0.14, 0.36, 0.55])
+  e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n], [n, 1], [n + 1, 2])
+  n += 4
+  for (const x of [-0.14, 0.14]) {
+    const b = ring(p, 5, 0.12, -1.2, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[b + i][0] += x; p[b + i][1] += 0.1 }
+    const f = ring(p, 5, 0.15, -1.5, 'xy')
+    for (let i = 0; i < 5; i += 1) { p[f + i][0] += x; p[f + i][1] += 0.1 }
+    e.push(...loop(b, 5), ...loop(f, 5))
+    for (let i = 0; i < 5; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/**
+ * The blade fin every patrol hull carries, appended to an existing point list.
+ *
+ * One shared feature across the three marshal classes, at three scales. A marshal has to be
+ * recognisable *as a marshal* before you can tell which marshal — that is what an institution
+ * looks like from a distance, and it is the half of the job a per-class silhouette cannot do.
+ */
+function bladeFin(p: number[][], e: [number, number][], scale: number, z: number): void {
+  const n = p.length
+  p.push(
+    [0, 0.2 * scale, z + 0.1 * scale],
+    [0, 0.85 * scale, z - 0.1 * scale],
+    [0, 0.85 * scale, z - 0.45 * scale],
+    [0, 0.2 * scale, z - 0.55 * scale],
+    [-0.1 * scale, 0.5 * scale, z - 0.25 * scale],
+    [0.1 * scale, 0.5 * scale, z - 0.25 * scale],
+  )
+  e.push(
+    [n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n],
+    [n + 4, n + 1], [n + 4, n + 3], [n + 5, n + 1], [n + 5, n + 3], [n + 4, n + 5],
+  )
+}
+
+/** A marshal interceptor: institutional, symmetrical, and finned. */
+export function marshal(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.2],
+    [-0.24, 0.12, 0.3], [0.24, 0.12, 0.3], [-0.24, -0.12, 0.3], [0.24, -0.12, 0.3],
+    [-0.28, 0.12, -0.7], [0.28, 0.12, -0.7], [-0.28, -0.12, -0.7], [0.28, -0.12, -0.7],
+    [-0.7, 0, -0.2], [0.7, 0, -0.2], [-0.62, 0, -0.65], [0.62, 0, -0.65],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+    [9, 11], [10, 12], [9, 1], [10, 2], [11, 5], [12, 6], [9, 3], [10, 4],
+  ]
+  bladeFin(p, e, 0.6, -0.1)
+  let n = p.length
+  for (const x of [-0.14, 0.14]) {
+    const b = ring(p, 5, 0.1, -0.7, 'xy')
+    for (let i = 0; i < 5; i += 1) p[b + i][0] += x
+    const f = ring(p, 5, 0.12, -0.95, 'xy')
+    for (let i = 0; i < 5; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 5), ...loop(f, 5))
+    for (let i = 0; i < 5; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A warden: the patrol's dreadnought. Boxy, symmetrical, and finned. */
+export function warden(): Wire {
+  const p: number[][] = [
+    [0, 0, 1.9],
+    [-0.5, 0.28, 0.8], [0.5, 0.28, 0.8], [-0.5, -0.28, 0.8], [0.5, -0.28, 0.8],
+    [-0.6, 0.3, -1.5], [0.6, 0.3, -1.5], [-0.6, -0.3, -1.5], [0.6, -0.3, -1.5],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  bladeFin(p, e, 1.0, 0.2)
+  let n = p.length
+  // Boxed frames, evenly spaced. The patrol's hulls are *regular* where a raider's are not, and
+  // even spacing is the cheapest way to say built as a class rather than assembled.
+  for (let i = 1; i <= 6; i += 1) {
+    const t = i / 7
+    const z = 0.8 - t * 2.3
+    p.push([-0.55, 0.29, z], [0.55, 0.29, z], [0.55, -0.29, z], [-0.55, -0.29, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const s of [-1, 1]) {
+    for (const z of [0.3, -0.4, -1.1]) {
+      p.push([s * 0.56, 0.06, z + 0.14], [s * 0.72, 0.06, z], [s * 0.56, 0.06, z - 0.14], [s * 0.56, -0.1, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
+  }
+  for (const x of [-0.32, 0, 0.32]) {
+    const b = ring(p, 6, 0.16, -1.5, 'xy')
+    for (let i = 0; i < 6; i += 1) p[b + i][0] += x
+    const f = ring(p, 6, 0.19, -1.9, 'xy')
+    for (let i = 0; i < 6; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 6), ...loop(f, 6))
+    for (let i = 0; i < 6; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}
+
+/** A bastion: the patrol's titan. The warden's geometry, carried much further. */
+export function bastion(): Wire {
+  const p: number[][] = [
+    [0, 0, 2.2],
+    [-0.72, 0.36, 0.9], [0.72, 0.36, 0.9], [-0.72, -0.36, 0.9], [0.72, -0.36, 0.9],
+    [-0.9, 0.4, -1.7], [0.9, 0.4, -1.7], [-0.9, -0.4, -1.7], [0.9, -0.4, -1.7],
+  ]
+  const e: [number, number][] = [
+    [0, 1], [0, 2], [0, 3], [0, 4],
+    [1, 2], [3, 4], [1, 3], [2, 4],
+    [1, 5], [2, 6], [3, 7], [4, 8],
+    [5, 6], [7, 8], [5, 7], [6, 8],
+  ]
+  bladeFin(p, e, 1.5, 0.3)
+  let n = p.length
+  // A second, smaller fin aft: the class marking repeated is what a flagship of a fleet does.
+  bladeFin(p, e, 0.8, -1.0)
+  n = p.length
+  for (let i = 1; i <= 8; i += 1) {
+    const t = i / 9
+    const z = 0.9 - t * 2.6
+    const w = 0.72 + 0.18 * t
+    const h = 0.36 + 0.04 * t
+    p.push([-w, h, z], [w, h, z], [w, -h, z], [-w, -h, z])
+    e.push([n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n])
+    n += 4
+  }
+  for (const s of [-1, 1]) {
+    for (const z of [0.4, -0.3, -1.0, -1.5]) {
+      p.push([s * 0.84, 0.06, z + 0.16], [s * 1.02, 0.06, z], [s * 0.84, 0.06, z - 0.16], [s * 0.84, -0.12, z])
+      e.push([n, n + 1], [n + 1, n + 2], [n, n + 3], [n + 2, n + 3], [n + 1, n + 3])
+      n += 4
+    }
+  }
+  for (const x of [-0.5, -0.17, 0.17, 0.5]) {
+    const b = ring(p, 6, 0.18, -1.7, 'xy')
+    for (let i = 0; i < 6; i += 1) p[b + i][0] += x
+    const f = ring(p, 6, 0.22, -2.15, 'xy')
+    for (let i = 0; i < 6; i += 1) p[f + i][0] += x
+    e.push(...loop(b, 6), ...loop(f, 6))
+    for (let i = 0; i < 6; i += 1) e.push([b + i, f + i])
+    n = p.length
+  }
+  return wire(p, e)
+}

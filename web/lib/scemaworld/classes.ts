@@ -79,6 +79,28 @@ export type Shape =
   | 'bulwark'
   | 'sovereign'
   /**
+   * One silhouette per **hostile and civilian** class as well.
+   *
+   * Fifteen classes shared four shapes: a courier, a marshal and a raider interceptor were the
+   * same dart, and a leviathan, a titan, a warden and a bastion were one war hull at four sizes.
+   * Colour was carrying the whole distinction, and this project's rule everywhere else is that
+   * **colour is decoration and never the message** — a rule at its most load-bearing here,
+   * because the question a silhouette answers is *is that coming for me* and the answer arrives
+   * from the corner of an eye at a range where hue is unreliable.
+   */
+  | 'raiderSkiff'
+  | 'raiderLancer'
+  | 'frigate'
+  | 'destroyer'
+  | 'warfighter'
+  | 'leviathan'
+  | 'titan'
+  | 'courier'
+  | 'freighter'
+  | 'marshal'
+  | 'warden'
+  | 'bastion'
+  /**
    * One silhouette per player hull, all seventeen of them.
    *
    * Seventeen hulls previously shared seven shapes — a skiff and a scout were the same dart,
@@ -271,7 +293,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // new player has something to win against — a game whose first encounter is unwinnable
   // teaches the wrong lesson about every later one.
   skiff: {
-    id: 'skiff', label: 'SKIFF', shape: 'interceptor',
+    id: 'skiff', label: 'SKIFF', shape: 'raiderSkiff',
     radius: S(0.0022), hull: 42, shield: 0, shieldRegen: 0,
     speed: S(1 / 20), turn: 1.5, aggro: S(0.075), standoff: S(0.012),
     damage: 4, cooldownMs: 1400, burst: 1, bounty: 15, capital: false,
@@ -286,7 +308,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   },
   // Fast and fragile, fights at a distance. Punishes sitting still.
   lancer: {
-    id: 'lancer', label: 'LANCER', shape: 'interceptor',
+    id: 'lancer', label: 'LANCER', shape: 'raiderLancer',
     radius: S(0.0032), hull: 60, shield: 66, shieldRegen: 18,
     speed: S(1 / 14), turn: 1.8, aggro: S(0.15), standoff: S(0.028),
     damage: 11, cooldownMs: 1500, burst: 1, bounty: 45, capital: false,
@@ -301,14 +323,14 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   },
   // The smallest capital. It does not chase and it does not need to.
   frigate: {
-    id: 'frigate', label: 'FRIGATE', shape: 'capital',
+    id: 'frigate', label: 'FRIGATE', shape: 'frigate',
     radius: S(0.028), hull: 840, shield: 540, shieldRegen: 36,
     speed: S(1 / 90), turn: 0.22, aggro: S(0.225), standoff: S(0.055),
     damage: 16, cooldownMs: 1100, burst: 4, bounty: 350, capital: true,
   },
   // Star-destroyer class: four times a station across, and visible from most of the sector.
   destroyer: {
-    id: 'destroyer', label: 'DESTROYER', shape: 'capital',
+    id: 'destroyer', label: 'DESTROYER', shape: 'destroyer',
     radius: S(0.075), hull: 1380, shield: 900, shieldRegen: 60,
     speed: S(1 / 150), turn: 0.09, aggro: S(0.30), standoff: S(0.1),
     damage: 24, cooldownMs: 800, burst: 6, bounty: 1200, capital: true,
@@ -327,7 +349,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
    * and "a capital is placed, a fighter is rolled" survives untouched.
    */
   warfighter: {
-    id: 'warfighter', label: 'WARFIGHTER', shape: 'capital',
+    id: 'warfighter', label: 'WARFIGHTER', shape: 'warfighter',
     radius: S(0.045), hull: 1740, shield: 1140, shieldRegen: 54,
     // Aggro sits **below** a laser's reach (0.20 extents) and below `MIN_ARRIVAL`, which are the
     // two lines every non-capital has to stay under: a fighter you cannot engage from outside its
@@ -359,7 +381,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // Beating one takes minutes of sustained fire and constant lateral movement. That is the
   // intent: perseverance and a manoeuvre, not a bigger number.
   leviathan: {
-    id: 'leviathan', label: 'LEVIATHAN', shape: 'dreadnought',
+    id: 'leviathan', label: 'LEVIATHAN', shape: 'leviathan',
     radius: S(0.24), hull: 3030, shield: 2010, shieldRegen: 78,
     speed: S(1 / 420), turn: 0.028, aggro: S(0.51), standoff: S(0.26),
     damage: 21, cooldownMs: 800, burst: 10, bounty: 14000, capital: true,
@@ -376,7 +398,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // fire and the time you must survive inside it, not a number that deletes you — a one-shot is
   // not difficulty, it is a coin toss with extra steps.
   titan: {
-    id: 'titan', label: 'TITAN', shape: 'dreadnought',
+    id: 'titan', label: 'TITAN', shape: 'titan',
     radius: S(0.4), hull: 3450, shield: 2310, shieldRegen: 90,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,
@@ -390,7 +412,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // Neon blue. Small, quick, and everywhere; the commonest thing in the sector and the reason
   // the markets look like they are for something.
   courier: {
-    id: 'courier', label: 'COURIER', shape: 'interceptor',
+    id: 'courier', label: 'COURIER', shape: 'courier',
     radius: S(0.0024), hull: 42, shield: 24, shieldRegen: 9,
     speed: S(1 / 13), turn: 2.0, aggro: S(0.09), standoff: S(0.01),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
@@ -399,7 +421,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // most of its job: a sector where the only distant silhouettes are threats is a tense one for
   // the wrong reason.
   freighter: {
-    id: 'freighter', label: 'FREIGHTER', shape: 'gunship',
+    id: 'freighter', label: 'FREIGHTER', shape: 'freighter',
     radius: S(0.009), hull: 450, shield: 300, shieldRegen: 18,
     speed: S(1 / 42), turn: 0.6, aggro: S(0.09), standoff: S(0.014),
     damage: 0, cooldownMs: 9_999, burst: 0, bounty: 0, capital: false,
@@ -408,7 +430,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // anyone is watching. Deliberately a match for an interceptor rather than an overmatch — a
   // patrol that always wins makes the sector safe, which is not the point of having one.
   marshal: {
-    id: 'marshal', label: 'MARSHAL', shape: 'interceptor',
+    id: 'marshal', label: 'MARSHAL', shape: 'marshal',
     radius: S(0.0032), hull: 78, shield: 60, shieldRegen: 18,
     speed: S(1 / 14), turn: 2.2, aggro: S(0.165), standoff: S(0.012),
     damage: 8, cooldownMs: 700, burst: 2, bounty: 0, capital: false,
@@ -434,7 +456,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
 
   // The marshal dreadnought. What answers a raider capital.
   warden: {
-    id: 'warden', label: 'WARDEN', shape: 'dreadnought',
+    id: 'warden', label: 'WARDEN', shape: 'warden',
     radius: S(0.135), hull: 2580, shield: 1740, shieldRegen: 66,
     speed: S(1 / 260), turn: 0.05, aggro: S(0.39), standoff: S(0.16),
     damage: 15, cooldownMs: 900, burst: 8, bounty: 4000, capital: true,
@@ -443,7 +465,7 @@ export const CLASSES: Record<ClassId, ClassSpec> = {
   // take seriously. Finding the two of them already engaged is the sight this whole faction
   // exists to produce.
   bastion: {
-    id: 'bastion', label: 'BASTION', shape: 'dreadnought',
+    id: 'bastion', label: 'BASTION', shape: 'bastion',
     radius: S(0.4), hull: 3450, shield: 2310, shieldRegen: 90,
     speed: S(1 / 700), turn: 0.014, aggro: S(0.60), standoff: S(0.4),
     damage: 18, cooldownMs: 500, burst: 14, bounty: 45000, capital: true,

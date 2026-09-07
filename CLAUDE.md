@@ -1116,6 +1116,17 @@ Rules the 298 checks carry, each paid for:
   hiding works only for the other side; impact cost is closing speed at the point of contact, so
   a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
   collision system becomes flypaper.
+- **Thirty-two silhouettes: every hull and every class has its own** (`meshes.ts`). The *classes*
+  were the bigger gap — fifteen of them shared four shapes, so a courier, a marshal and a raider
+  interceptor were the same dart, and a leviathan, a titan, a warden and a bastion were one war hull
+  at four sizes. **Colour was carrying the whole distinction**, which is the one thing this project
+  refuses everywhere else it appears (`view.ts::toneFor`, `theme.rs`, `alchem_link.theme`), and it
+  is at its most load-bearing here: the question a silhouette answers is *is that coming for me*,
+  from the corner of an eye, at a range where hue is two pixels. Each family reads as its faction
+  before its class — raiders are asymmetric and over-engined, the patrol is blocky and carries a
+  shared blade fin, civilians carry visible cargo and no guns. Compared by **geometry**, not shape
+  name: fifteen names pointing at copy-pasted vertex data passes the weaker check and fails the
+  player.
 - **A capital carries structure, and that is pinned as a relationship** (`meshes.ts`). Detail is a
   function of how a hull is *seen*, not of how big it is: a fighter is a shape at a distance, a
   capital fills the frame for minutes and the eye is close enough that missing features read as a

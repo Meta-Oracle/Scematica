@@ -45,10 +45,18 @@
  * cornered by a fighter would make the largest purchase in the game the one that takes your
  * options away.
  *
- * **And it never becomes the largest thing in the sector.** The biggest flyable hull is exactly a
- * hostile `dreadnought` across (`check:scemaworld` pins the equality), which leaves the leviathan
- * and the titan larger than anything you can buy. A game where the top purchase makes you the
- * apex object has nothing left to point at.
+ * **The top of the ladder now outgrows the sector**, which reverses an earlier rule of this file
+ * and is written up on `dominion` itself rather than quietly changed. The endgame hull is larger
+ * than a titan; what stops that being a win button is that size and threat are different axes, and
+ * this table pays for every metre of it in `agility`.
+ *
+ * ## Every hull has its own silhouette
+ *
+ * All seventeen. It was seven shapes across seventeen hulls, so a skiff and a scout were the same
+ * dart and three capitals were one spinal ship at three sizes — and a shipyard where two entries
+ * differ only by a number is a spreadsheet rather than a choice between ships. `check:scemaworld`
+ * asserts the shapes are distinct, that each has a mesh and a hitbox, and that no player hull
+ * borrows a hostile silhouette.
  */
 
 import type { Shape } from './classes.ts'
@@ -172,14 +180,14 @@ export const HULLS: Record<HullId, HullSpec> = {
   // that the shipyard is optional.
   skiff: {
     id: 'skiff', label: 'SKIFF', tier: 'light', note: 'the hull you arrived in',
-    shape: 'interceptor', size: 0.0022, agility: 1, chaseBack: 7.5, chaseUp: 2.2,
+    shape: 'skiff', size: 0.0022, agility: 1, chaseBack: 7.5, chaseUp: 2.2,
     armour: 1, shields: 1, speed: 1, tanks: 1, guns: 1, tubes: 8, jump: 0, price: 0,
   },
   // Fast and fragile. The exploration hull: it will not survive a wing, and it will reach the
   // far side of the sector on one tank and be gone before anything closes.
   scout: {
     id: 'scout', label: 'SCOUT', tier: 'light', note: 'fast, long-legged, and made of paper',
-    shape: 'interceptor', size: 0.0019, agility: 1.2, chaseBack: 7.5, chaseUp: 2.2,
+    shape: 'dart', size: 0.0019, agility: 1.2, chaseBack: 7.5, chaseUp: 2.2,
     armour: 0.7, shields: 0.9, speed: 1.5, tanks: 1.8, guns: 0.9, tubes: 8, jump: 2, price: 400,
   },
   // The all-rounder, and the one most people should buy first.
@@ -192,7 +200,7 @@ export const HULLS: Record<HullId, HullSpec> = {
   // in this, so you pick the ones you intend to finish.
   lancer: {
     id: 'lancer', label: 'LANCER', tier: 'light', note: 'guns and shields, at the cost of running away',
-    shape: 'gunship', size: 0.0046, agility: 0.85, chaseBack: 7.5, chaseUp: 2.2,
+    shape: 'lance', size: 0.0046, agility: 0.85, chaseBack: 7.5, chaseUp: 2.2,
     armour: 2.2, shields: 2.6, speed: 0.92, tanks: 1, guns: 1.7, tubes: 16, jump: 1, price: 2200,
   },
   // What a titan is fought in, at the light tier. Enormous for a fighter and small for a warship,
@@ -214,19 +222,19 @@ export const HULLS: Record<HullId, HullSpec> = {
   // that still explores rather than one that only fights.
   prowler: {
     id: 'prowler', label: 'PROWLER', tier: 'medium', note: 'a medium that still runs and still explores',
-    shape: 'cruiser', size: 0.011, agility: 0.62, chaseBack: 5.6, chaseUp: 1.7,
+    shape: 'prowler', size: 0.011, agility: 0.62, chaseBack: 5.6, chaseUp: 1.7,
     armour: 2.4, shields: 2.2, speed: 1.25, tanks: 2.0, guns: 1.3, tubes: 16, jump: 2, price: 12_000,
   },
   // The gun platform. Fires nearly twice as fast as anything below it and turns like a barn.
   halberd: {
     id: 'halberd', label: 'HALBERD', tier: 'medium', note: 'a gun platform that happens to fly',
-    shape: 'gunship', size: 0.014, agility: 0.55, chaseBack: 5.6, chaseUp: 1.7,
+    shape: 'halberd', size: 0.014, agility: 0.55, chaseBack: 5.6, chaseUp: 1.7,
     armour: 3.2, shields: 3.0, speed: 0.95, tanks: 1.2, guns: 2.4, tubes: 22, jump: 1, price: 18_000,
   },
   // The brawler. Armour first: built to be inside a capital's envelope and stay there.
   rampart: {
     id: 'rampart', label: 'RAMPART', tier: 'medium', note: 'armour first — made to be hit',
-    shape: 'marauder', size: 0.018, agility: 0.50, chaseBack: 5.6, chaseUp: 1.7,
+    shape: 'rampart', size: 0.018, agility: 0.50, chaseBack: 5.6, chaseUp: 1.7,
     armour: 5.5, shields: 4.6, speed: 0.86, tanks: 1.4, guns: 1.8, tubes: 18, jump: 1, price: 26_000,
   },
   // Shields, and an absurd amount of them. Regenerating capacity is a different resource from
@@ -234,14 +242,14 @@ export const HULLS: Record<HullId, HullSpec> = {
   // loses any single exchange.
   aegis: {
     id: 'aegis', label: 'AEGIS', tier: 'medium', note: 'shields that come back, armour that does not',
-    shape: 'cruiser', size: 0.023, agility: 0.47, chaseBack: 5.6, chaseUp: 1.7,
+    shape: 'aegis', size: 0.023, agility: 0.47, chaseBack: 5.6, chaseUp: 1.7,
     armour: 4.2, shields: 8.0, speed: 0.90, tanks: 1.6, guns: 1.5, tubes: 20, jump: 2, price: 38_000,
   },
   // The long-range hull: fuel and jump charges rather than guns. The one that crosses a sector
   // nobody has scouted and comes back.
   carrack: {
     id: 'carrack', label: 'CARRACK', tier: 'medium', note: 'range, fuel and jumps — the deep hull',
-    shape: 'corvette', size: 0.030, agility: 0.44, chaseBack: 5.6, chaseUp: 1.7,
+    shape: 'carrack', size: 0.030, agility: 0.44, chaseBack: 5.6, chaseUp: 1.7,
     armour: 4.8, shields: 4.4, speed: 1.05, tanks: 3.2, guns: 1.4, tubes: 24, jump: 4, price: 55_000,
   },
   // The top of the tier and the last hull that is unambiguously a ship. If you are going to fight
@@ -274,14 +282,14 @@ export const HULLS: Record<HullId, HullSpec> = {
   // for its price: a siege ship, pointed at something before it starts and not re-pointed after.
   monitor: {
     id: 'monitor', label: 'MONITOR', tier: 'capital', note: 'a siege hull — aim it before you commit',
-    shape: 'bulwark', size: 0.062, agility: 0.25, chaseBack: 3.6, chaseUp: 1.05,
+    shape: 'monitor', size: 0.062, agility: 0.25, chaseBack: 3.6, chaseUp: 1.05,
     armour: 12, shields: 9, speed: 0.72, tanks: 1.8, guns: 3.4, tubes: 34, jump: 1, price: 175_000,
   },
   // The mobile capital: shields, fuel and three extra jump charges, at the cost of armour. The
   // hull for somebody who intends to keep leaving.
   vanguard: {
     id: 'vanguard', label: 'VANGUARD', tier: 'capital', note: 'a capital that can still leave',
-    shape: 'bulwark', size: 0.080, agility: 0.28, chaseBack: 3.6, chaseUp: 1.05,
+    shape: 'vanguard', size: 0.080, agility: 0.28, chaseBack: 3.6, chaseUp: 1.05,
     armour: 11, shields: 13, speed: 0.95, tanks: 2.4, guns: 2.8, tubes: 30, jump: 3, price: 260_000,
   },
   // The first of the spinal hulls, and where the tier stops pretending to be a ship. It does not
@@ -295,15 +303,29 @@ export const HULLS: Record<HullId, HullSpec> = {
   // in a leviathan's broadside and answers it.
   suzerain: {
     id: 'suzerain', label: 'SUZERAIN', tier: 'capital', note: 'stands in a leviathan’s fire and answers it',
-    shape: 'sovereign', size: 0.118, agility: 0.17, chaseBack: 3.6, chaseUp: 1.05,
+    shape: 'suzerain', size: 0.118, agility: 0.17, chaseBack: 3.6, chaseUp: 1.05,
     armour: 21, shields: 19, speed: 0.66, tanks: 2.6, guns: 3.6, tubes: 40, jump: 3, price: 550_000,
   },
-  // The largest hull anyone can own — exactly a hostile dreadnought across, and deliberately no
-  // larger. The leviathan and the titan stay bigger than anything you can buy, because a game
-  // whose top purchase makes you the apex object in the sector has nothing left to point at.
+  // ## The endgame hull, and the rule it deliberately reverses
+  //
+  // This shipped at exactly a hostile dreadnought's radius under a stated rule — *you never become
+  // the biggest thing out here* — on the reasoning that a game whose top purchase makes you the
+  // apex object has nothing left to point at. That is overruled, on purpose, and the cost is named
+  // rather than hidden: the dominion is **larger than a titan**, so the sector no longer contains
+  // anything bigger than you and a silhouette on the horizon stops being a question.
+  //
+  // What it buys is the thing the old rule refused — an *ending*. A ladder whose top rung is
+  // visibly another rung has no top, and the largest purchase in the game should look like the
+  // largest purchase in the game.
+  //
+  // What survives of the old argument is the part that was actually load-bearing: **size and threat
+  // were never the same axis.** A titan is still the hardest thing in the sector to kill, still
+  // eight warheads, still turns a broadside onto you if you fly straight. Being bigger than one is
+  // not being better than one, and the agility figure here is the lowest in the game by a wide
+  // margin — this hull cannot follow anything, and everything it fights can leave.
   dominion: {
-    id: 'dominion', label: 'DOMINION', tier: 'capital', note: 'a dreadnought of your own — and still not the biggest thing out here',
-    shape: 'sovereign', size: 0.135, agility: 0.13, chaseBack: 3.6, chaseUp: 1.05,
+    id: 'dominion', label: 'DOMINION', tier: 'capital', note: 'larger than a titan, and slower than everything',
+    shape: 'dominion', size: 0.46, agility: 0.09, chaseBack: 2.6, chaseUp: 0.8,
     armour: 26, shields: 24, speed: 0.62, tanks: 3.0, guns: 4.0, tubes: 44, jump: 3, price: 800_000,
   },
 }

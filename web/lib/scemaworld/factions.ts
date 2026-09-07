@@ -69,7 +69,12 @@ export function civilian(f: Faction): boolean {
 const ROSTER: { faction: Exclude<Faction, 'raider'>; klass: ClassId; count: number }[] = [
   { faction: 'courier', klass: 'courier', count: 34 },
   { faction: 'freighter', klass: 'freighter', count: 14 },
-  { faction: 'marshal', klass: 'marshal', count: 18 },
+  // Raised with `WINGS` in the same edit, and that pairing is the point rather than a coincidence.
+  // The raider roster went from 72 fighters to 88 when waves got bigger; leaving the patrol at 18
+  // would have quietly moved the ambient war from four-to-one to nearly five-to-one, and the
+  // marshals losing by default is exactly the failure `respawn.ts` was written to prevent — the
+  // difference being that this time nothing would ever fire, because both floors would be met.
+  { faction: 'marshal', klass: 'marshal', count: 22 },
   { faction: 'marshal', klass: 'warden', count: 3 },
   { faction: 'marshal', klass: 'bastion', count: 1 },
 ]

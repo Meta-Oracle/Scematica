@@ -91,17 +91,21 @@ export const RAIDER_INTERVAL_MS = 9_000
 /**
  * How many craft drop out of hyperspace together.
  *
- * Fewer than a generated wing carries, because these arrive *near* the player rather than
- * somewhere in the volume. Four hostiles materialising inside engagement range is an ambush the
- * player had no way to avoid; a wing announced by a visible entry is an encounter they can
- * decline.
+ * ## Ten, and the number is only safe because the arrivals are *seen*
  *
- * Four now rather than three, and the reason the number could move at all is that the arrivals are
- * genuinely *visible*: the cone was 72 degrees wide against a 66-degree field of view, so a wing
- * that was supposed to announce itself often materialised off-screen. With the entries where the
- * player is looking, a larger wing reads as a formation rather than as an ambush.
+ * It went three, then four, then ten, and each step was allowed by the same thing: an entry is a
+ * visible event with a duration and a bearing (`arrivals.ts::streak`), so a formation dropping in
+ * is an encounter a player can **decline** rather than an ambush they had no way to avoid. That is
+ * the whole reason the count is a play decision at all — at three, reinforcement was something you
+ * inferred from the sector not going quiet; at ten it is an event you turn toward or away from.
+ *
+ * It is bounded by two things and neither is taste. `WARP_STAGGER_MS` spaces the entries, so ten
+ * hulls take a couple of seconds to resolve and read as a formation rather than as the sector
+ * gaining ten ships on one frame. And the wing is still counted against `RAIDER_STRENGTH` before
+ * it is ordered, so a bigger wave makes reinforcement *rarer* rather than making the sector
+ * denser — the population is the roster's business, and this is only how it arrives.
  */
-const WARP_WING = 4
+const WARP_WING = 10
 
 /**
  * How far apart, in milliseconds, the ships of one wing finish their entry.
@@ -111,10 +115,15 @@ const WARP_WING = 4
  * it makes the entry an *event with a duration*: the streaks resolve one after another and the eye
  * gets to follow them.
  *
- * Small enough that the wing is unmistakably one wing. A longer stagger and it becomes three
+ * Small enough that the wing is unmistakably one wing. A longer stagger and it becomes several
  * separate arrivals that happen to share a bearing, which is a different and less useful reading.
+ *
+ * **Halved when `WARP_WING` went from four to ten**, and the pairing is the point: what has to stay
+ * under a beat is the *total* spread, not the gap between two ships. At 220ms a ten-hull wing took
+ * very nearly two seconds to finish arriving, which is long enough that the last of it reads as a
+ * second event. The two constants are one decision and `check:scemaworld` measures the product.
  */
-const WARP_STAGGER_MS = 220
+const WARP_STAGGER_MS = 110
 
 /**
  * Milliseconds between raider wings when the sector is **contested** — below `RAIDER_FLOOR`.

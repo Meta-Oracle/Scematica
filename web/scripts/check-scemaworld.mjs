@@ -597,10 +597,19 @@ check('a bolt lives long enough to cross the sector, and no longer', () => {
   // reach one*, and nothing errored. Third time this shape of bug has been found here; `shotLifeOf`
   // documents the enemy-fire version, where two capital fleets shot at each other for minutes and
   // never connected.
+  // ## The clock is a backstop; leaving the sector is what ends a bolt
+  //
+  // A lifetime cannot express "until it reaches the end of the galaxy": a shot fired outward from
+  // the far edge and one fired inward from the same place have completely different amounts of
+  // sector in front of them, and one timer treats them identically. So `LIFE_LASER` covers **four**
+  // sector reaches — longer than any line through the playable volume, so it never fires inside it
+  // — and `LASER_BOUNDS` is what actually removes a round.
   const reach = SPEED_LASER * LIFE_LASER
-  assert(reach >= SCALE.SECTOR_REACH * 2, 'a laser cannot cross the sector it is fired in')
-  // Not unbounded either. A bolt that never expires is a leak with a long fuse.
-  assert(reach < SCALE.SECTOR_REACH * 3, 'the reach overshoots the sector by more than half again')
+  assert(reach > SCALE.LASER_BOUNDS * 2, 'the lifetime can expire a bolt that is still in the sector')
+  // Not unbounded either. A bolt with no bound at all is a leak with a long fuse, and the bound is
+  // the boundary rather than the clock.
+  assert(SCALE.LASER_BOUNDS >= SCALE.SECTOR_REACH * 2, 'a bolt dies before it has left the sector')
+  assert(SCALE.LASER_BOUNDS < SCALE.SECTOR_REACH * 4, 'the boundary is so far out it bounds nothing')
   // The line that actually matters: every class can be engaged at the range it chooses to fight
   // from. That is the invariant the old "outranges every fighter and no capital" line was a proxy
   // for, and the proxy is what broke.
@@ -3173,9 +3182,12 @@ check('a wing arrives as a wing, not as three ships on one frame', () => {
   const dues = [...new Set(out.map((a) => a.dueMs))]
   assert(dues.length === out.length, `${out.length} ships share ${dues.length} arrival times`)
 
-  // One wing, though: they come in on one bearing and land within a beat of each other.
+  // One wing, though: they come in on one bearing and land within a beat of each other. What has
+  // to stay bounded is the **total** spread rather than the gap between two ships, which is why
+  // `WARP_WING` and `WARP_STAGGER_MS` are one decision — a ten-hull wing at the old 220ms gap took
+  // nearly two seconds to finish, and the tail of it read as a second event.
   const spread = Math.max(...dues) - Math.min(...dues)
-  assert(spread > 0 && spread < 1000, `a wing spread over ${spread}ms is not a wing`)
+  assert(spread > 0 && spread < 1400, `a wing spread over ${spread}ms is not a wing`)
   const bearings = new Set(out.map((a) => `${a.dir.x},${a.dir.y},${a.dir.z}`))
   assert(bearings.size === 1, 'a wing arrived from several directions')
 })
@@ -4564,18 +4576,35 @@ check('mass is agility, never top speed — every hull still outruns every hosti
   assert(fastestCapitalTurn < slowestLightTurn, 'a capital turns as well as a fighter')
 })
 
-check('the biggest hull you can fly is not the biggest thing in the sector', () => {
-  // A game whose top purchase makes you the apex object has nothing left to point at. The largest
-  // flyable hull is exactly a hostile dreadnought across — an equality rather than an inequality,
-  // because "about the same size" is the sort of claim that drifts on the next tuning pass — and
-  // the leviathan and the titan stay larger than anything the shipyard sells.
+check('the endgame hull outgrows the sector, and pays for it in agility', () => {
+  // ## This reverses a rule, deliberately, and the reversal is the assertion
+  //
+  // It used to pin the largest flyable hull to *exactly* a hostile dreadnought's radius under the
+  // rule "you never become the biggest thing out here" — a game whose top purchase makes you the
+  // apex object has nothing left to point at. That is overruled: the ladder's top rung should
+  // look like a top rung, and one that is visibly another rung is not an ending.
+  //
+  // What is checked instead is the thing that makes it survivable. Size and threat are different
+  // axes, so the hull that outgrows a titan must be the least agile thing in the game by a clear
+  // margin — it cannot follow anything, and everything it fights can leave.
   const biggest = Math.max(...HULL_IDS.map((h) => HULLS[h].size))
+  assert(EXTENT * biggest > CLASSES.titan.radius, 'the endgame hull is not larger than a titan')
+  const top = HULL_IDS.map((h) => HULLS[h]).find((h) => h.size === biggest)
+  const others = HULL_IDS.map((h) => HULLS[h]).filter((h) => h.id !== top.id)
   assert(
-    Math.round(EXTENT * biggest) === CLASSES.dreadnought.radius,
-    `the largest hull is ${Math.round(EXTENT * biggest)} against a dreadnought's ${CLASSES.dreadnought.radius}`,
+    others.every((h) => h.agility > top.agility),
+    `${top.id} is not the least agile hull in the game`,
   )
-  assert(EXTENT * biggest < CLASSES.leviathan.radius, 'you can buy your way past a leviathan')
-  assert(EXTENT * biggest < CLASSES.titan.radius, 'you can buy your way past a titan')
+  assert(
+    top.agility < Math.min(...hullsOf('light').map((h) => h.agility)) / 5,
+    'the largest hull turns within a fifth of a fighter',
+  )
+  // And the titan is still the hardest thing to *kill*, which is the half of the old rule that was
+  // actually load-bearing. Being bigger than one is not being better than one.
+  assert(
+    CLASSES_MOD.PHOTONS_TO_KILL.titan >= Math.max(...CLASS_IDS.map((id) => CLASSES_MOD.PHOTONS_TO_KILL[id])),
+    'the titan stopped being the hardest hull in the sector to destroy',
+  )
 })
 
 check('a hull is hit at the size it is drawn, with a floor under the smallest', () => {
@@ -4633,6 +4662,65 @@ check('a capital turns visibly more slowly than a fighter, in the tick itself', 
   assert(heavy < light * 0.25, `a dominion rolls at ${heavy} against a skiff's ${light}`)
 })
 
+check('a silhouette is different geometry, not a different name', () => {
+  // The weaker check — distinct `shape` strings — passes on seventeen names pointing at seventeen
+  // copy-pasted meshes. What a player sees is vertices, so that is what is compared: any two hulls
+  // whose mesh data is identical are the same ship wearing two labels, whatever the table says.
+  const seen = new Map()
+  for (const h of HULL_IDS) {
+    const shape = HULLS[h].shape
+    const key = Array.from(Meshes[shape]()).join(',')
+    const prior = seen.get(key)
+    assert(!prior, `${h} draws exactly the same geometry as ${prior}`)
+    seen.set(key, h)
+    // And nothing degenerate: a mesh that builds empty draws nothing and fails silently, which is
+    // the one way a missing hull looks like a working one.
+    assert(Meshes[shape]().length >= 24, `${shape} has almost no geometry`)
+    const b = HITBOX[shape]
+    assert(b.ahead > 0.4 && b.cross > 0.3, `${shape} has a degenerate bound`)
+  }
+})
+
+check('a wave is a formation, and the roster still decides the population', () => {
+  // "Much greater waves" is about how reinforcement *arrives*, not about how many craft the sector
+  // holds — and the distinction is the whole reason a bigger wave is safe. A wing is counted
+  // against `RAIDER_STRENGTH` before it is ordered, so raising the wave size makes reinforcement
+  // rarer rather than making the sector denser. The population is the roster's business.
+  const s = generate(world, digest)
+  const g = newGame(s)
+  const roster = Enemy.of(g.swarm, 'raider').filter((c) => !c.spec.capital && clusterOf(c.id) === null)
+  // `>=`, not `==`: `Enemy.of(swarm, 'raider')` counts the record's own hostile *contacts*
+  // alongside the sector's wings, and those are a property of the world rather than of the roster.
+  // Asserting equality would make this check fail on any record that reported a hostile signal,
+  // which is most of them.
+  assert(
+    roster.length >= RAIDER_STRENGTH,
+    `${roster.length} raiders against a strength of ${RAIDER_STRENGTH}`,
+  )
+  // A wave is a formation rather than a trickle: several hulls, staggered, so it reads as
+  // something arriving together instead of the sector gaining ships one at a time.
+  const start = newGame(s)
+  const thinned = {
+    ...start,
+    swarm: {
+      ...start.swarm,
+      craft: start.swarm.craft.map((c) =>
+        c.faction === 'raider' && !c.spec.capital ? { ...c, alive: false } : c,
+      ),
+    },
+  }
+  const r = Respawn.replenish(
+    thinned.swarm, s, s.seed, thinned.waves,
+    { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, 0,
+  )
+  const wing = r.waves.arriving.filter((a) => a.faction === 'raider')
+  assert(wing.length >= 8, `a wing arrives ${wing.length} strong`)
+  // Staggered, or ten hulls appear on one frame — which reads as the sector gaining ten ships
+  // rather than as a formation dropping out of hyperspace.
+  const dues = new Set(wing.map((a) => a.dueMs))
+  assert(dues.size === wing.length, 'a whole wing resolves on the same frame')
+})
+
 check('the heavy tiers do not borrow a hostile silhouette', () => {
   // In third person you look at yours for a whole session, and the argument gets *stronger* as
   // the hulls get bigger: a capital is on screen constantly, and in a sector where every other
@@ -4675,8 +4763,16 @@ check('a hull is bought with money and never with a prerequisite', () => {
 check('each player hull has its own silhouette where it matters', () => {
   // In third person you look at yours for the whole session, and a ship indistinguishable from
   // the thing shooting at you is a poor thing to identify with.
+  // **Every hull, not most of them.** Seventeen hulls shared seven shapes, so a skiff and a scout
+  // were the same dart and three capitals were one spinal ship at three sizes. Scale is not a
+  // silhouette — the argument the heavy tiers make about borrowing an *enemy* shape is exactly as
+  // strong between two hulls a player can own, and a shipyard where two entries differ only by a
+  // number is a spreadsheet rather than a choice between ships.
   const shapes = new Set(HULL_IDS.map((h) => HULLS[h].shape))
-  assert(shapes.size >= 7, `only ${shapes.size} distinct player silhouettes`)
+  assert(
+    shapes.size === HULL_IDS.length,
+    `${shapes.size} silhouettes across ${HULL_IDS.length} hulls — some hull is wearing another's shape`,
+  )
   for (const shape of shapes) {
     assert(typeof Meshes[shape] === 'function', `${shape} has no mesh`)
     assert(Meshes[shape]().length > 0, `${shape} builds an empty mesh`)
@@ -4804,6 +4900,24 @@ check('the component only dispatches; the table lives where it is tested', () =>
 
 // ── the claims the scale table makes about itself ────────────────────────────
 
+check('a bolt is culled when it leaves the sector, not when a clock runs out', () => {
+  // The behaviour, not the constants. Fired outward from well inside the volume, a round must
+  // still be flying at the point the old lifetime would have expired it, and must be gone once it
+  // is past the boundary.
+  let c = newCombat()
+  c = fire(c, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, 0, [])
+  assert(c.projectiles.length === 1)
+  const stepFor = (seconds) => {
+    for (let t = 0; t < seconds; t += 1 / 30) c = step(c, 1 / 30, [], 'seed').combat
+  }
+  // Halfway to the boundary: still in the air.
+  stepFor((SCALE.LASER_BOUNDS * 0.5) / SPEED_LASER)
+  assert(c.projectiles.length === 1, 'a bolt expired halfway across the sector')
+  // Past it: gone, and gone because of where it is rather than how old it is.
+  stepFor((SCALE.LASER_BOUNDS * 0.7) / SPEED_LASER)
+  assert(c.projectiles.length === 0, 'a bolt that left the sector is still being stepped')
+})
+
 check('the laser reach comment is the reach the constants give', () => {
   // D-1 from the external audit, and the reason it is pinned rather than merely corrected: the
   // sentence said the reach was "a bit over a third of AGGRO_RANGE" and it was 1.8 *times* it.
@@ -4821,9 +4935,12 @@ check('the laser reach comment is the reach the constants give', () => {
   const reach = SPEED_LASER * LIFE_LASER
   assert(reach > SENSOR_BASE, 'the reach no longer exceeds the aggro range the comment cites')
   const asReach = reach / SCALE.SECTOR_REACH
-  assert(asReach > 2 && asReach < 3, `reach is ${asReach.toFixed(2)}x SECTOR_REACH, not the stated diameter-plus-margin`)
+  assert(asReach > 4, `the lifetime is only ${asReach.toFixed(2)}x SECTOR_REACH — it can expire a bolt in flight`)
+  // The crossing time the speed comment quotes. It moved from ~1.05s to ~0.30s in the same edit
+  // that raised `SPEED_LASER`, and this is the line that has to move with it — the discipline being
+  // that the numbers may change and the *stated relationship* may not change silently.
   const crossing = EXTENT / SPEED_LASER
-  assert(crossing > 0.9 && crossing < 1.2, `a laser crosses an extent in ${crossing.toFixed(2)}s, not ~1.05`)
+  assert(crossing > 0.25 && crossing < 0.36, `a laser crosses an extent in ${crossing.toFixed(2)}s, not ~0.30`)
 })
 
 check('range is not what balances the laser — flight time is', () => {
@@ -4860,8 +4977,14 @@ check('range is not what balances the laser — flight time is', () => {
     // about the classes that sit between the two behaviours would be a line drawn for the sake of
     // having drawn one.
     const widths = c.speed / c.radius
+    //
+    // The threshold came down from 15 with the speed change, and it was lowered **deliberately
+    // rather than to make a number pass**: a bolt three and a half times faster is three and a
+    // half times less flight time, and that is exactly the margin being traded for a weapon a
+    // player can watch arrive. Five of its own widths is still a real lead — a fighter is not
+    // sitting where you aimed — and the capitals it exists to reach are unmoved either way.
     if (widths > 3) {
-      assert(drift > 15, `a nimble ${id} drifts only ${drift.toFixed(1)} of its own width in a bolt's flight`)
+      assert(drift > 5, `a nimble ${id} drifts only ${drift.toFixed(1)} of its own width in a bolt's flight`)
     } else if (widths < 1) {
       // And a **capital** must not be able to. It is the target the range exists for: it holds
       // station at its standoff, and a hull that turns at a fiftieth of a radian per second is
@@ -5397,9 +5520,69 @@ check('a capital kill buys minutes, not a permanently smaller sector', () => {
 
   // And the arrival is announced, because it is the one reinforcement the player cannot see
   // arrive — the line is the entire cue, and it must say *distant* rather than implying a contact.
+  // One line per slot, not per hull: both sides can replace on the same tick and a raider arrival
+  // wins the line, because "something large is coming" and "something large is coming *for you*"
+  // are different facts and only one changes a plan. So the count is at least half the arrivals.
   const said = later.notices.filter((n) => /long-range signature/.test(n))
-  assert(said.length >= want, `${said.length} capital notices for ${want} arrivals`)
+  assert(said.length * 2 >= want, `${said.length} capital notices for ${want} arrivals`)
   assert(said.every((n) => /outside sensor range/.test(n)), said[0])
+})
+
+check('capitals come back through the real tick, not only through replenish', () => {
+  // **The check that was missing, and its absence is why this shipped twice.** Every capital test
+  // drove `replenish` directly, which is precise and fast and does not exercise the thing a player
+  // uses. Reported as "still not respawning properly"; running the actual tick showed they were
+  // coming back at one hull per two and a half minutes shared between both factions — a
+  // twenty-minute rebuild, which reads as broken because nobody watches for twenty minutes.
+  //
+  // The clock starts at 30s rather than 0, because in play it is `performance.now()` and the
+  // player has been on the opening page: a test starting at zero would not notice a timer keyed to
+  // absolute time rather than to elapsed time.
+  const s = generate(world, digest)
+  let g = newGame(s)
+  const roster = (st) =>
+    st.swarm.craft.filter((c) => c.alive && c.spec.capital && clusterOf(c.id) === null)
+  const want = roster(g).length
+  assert(want > 0, 'no capitals to begin with')
+  g = {
+    ...g,
+    swarm: {
+      ...g.swarm,
+      craft: g.swarm.craft.map((c) =>
+        c.spec.capital && clusterOf(c.id) === null ? { ...c, alive: false } : c,
+      ),
+    },
+  }
+  const dt = 1 / 10
+  const t0 = 30_000
+  for (let f = 1; f <= 6 * 60 * 10; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt, nowMs: t0 + f * dt * 1000 })
+    // The probe pilot cannot die, or `tick` returns early and every counter stops — the failure
+    // that cost a diagnosis once already (`observe`).
+    g = { ...g, lost: false, ship: { ...g.ship, hull: 9e9, shield: 9e9 } }
+  }
+  assert(roster(g).length >= want, `${roster(g).length} capitals back of ${want} after six minutes`)
+  // Every *class*, not just the count. Deficit ordering replaced dreadnoughts and wardens
+  // repeatedly and reached the titan, the leviathan and the bastion last — measured at none of
+  // them back after ten minutes — which is the one failure a total is blind to.
+  const classes = new Set(roster(g).map((c) => `${c.faction}:${c.spec.id}`))
+  for (const key of ['raider:titan', 'raider:leviathan', 'marshal:bastion']) {
+    assert(classes.has(key), `${key} never came back: ${[...classes].join(', ')}`)
+  }
+})
+
+check('neither side waits on the other to rebuild', () => {
+  // A single shared slot let the patrol's larger deficit delay every raider capital: measured at
+  // five minutes before the first one arrived. Two rosters, two recoveries.
+  const s = generate(world, digest)
+  const start = newGame(s)
+  const later = replenishFor(s, killCapitals(start), (Respawn.CAPITAL_INTERVAL_MS / 1000) * 2.5)
+  const side = (f) =>
+    later.swarm.craft.filter(
+      (c) => c.alive && c.spec.capital && c.faction === f && clusterOf(c.id) === null,
+    ).length
+  assert(side('raider') > 0, 'no raider capital inside two intervals')
+  assert(side('marshal') > 0, 'no patrol capital inside two intervals')
 })
 
 check('the class that is missing is the class that comes back', () => {
@@ -5447,10 +5630,19 @@ check('a replacement capital never arrives near the player', () => {
 })
 
 check('capitals are replaced far more slowly than anything else', () => {
-  // One shared timer across both sides, so the war classes stay rare. A per-faction timer would
-  // double the rate, and the sector would silently fill with capitals over a long session.
-  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.RAIDER_INTERVAL_MS * 10, 'capitals come back like fighters')
-  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.MARSHAL_INTERVAL_MS * 5, 'capitals come back like marshals')
+  // Still far slower than a wing or a patrol replacement, and no longer *so* slow that the mechanic
+  // is indistinguishable from not having one. It was 150s shared between both factions, which is a
+  // twenty-minute rebuild — a pace nobody plays long enough to observe. See `CAPITAL_INTERVAL_MS`.
+  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.RAIDER_INTERVAL_MS * 5, 'capitals come back like fighters')
+  assert(Respawn.CAPITAL_INTERVAL_MS > Respawn.MARSHAL_INTERVAL_MS * 4, 'capitals come back like marshals')
+  // And a full rebuild is minutes rather than a session. The bound is what makes it a *mechanic*
+  // rather than an absence, and it is asserted because the failure has no other symptom: the
+  // sector simply stays thin and nothing anywhere says why.
+  const hulls = 8
+  assert(
+    (Respawn.CAPITAL_INTERVAL_MS * hulls) / 2 < 6 * 60_000,
+    'a total wipe takes longer than six minutes to come back',
+  )
   // And a full roster is left alone rather than topped up forever.
   const s = generate(world, digest)
   const start = newGame(s)
@@ -5687,17 +5879,49 @@ check('the sector sends enough wings to be busy', () => {
   // "Not enough enemies are spawning in" — measured rather than tuned by feel. At the sector's
   // current size a crossing takes about half a minute, and the interval was 22 seconds, so a
   // player could fly a long way to meet nothing.
+  //
+  // ## It counts entries queued, not a net headcount
+  //
+  // It used to count frames where the raider *total* went up, and that stopped measuring anything
+  // once waves got bigger: the patrol is killing raiders throughout, so a wing landing while three
+  // die nets out to nothing and the sector looks idle when ten ships have just arrived. Counting
+  // the entries themselves is both the honest measure and the one the check is named after — a
+  // wing that was ordered is a wing that arrived, and `arrivals.ts` guarantees it is drawn.
+  //
+  // ## What "busy" means once the roster is bigger than the patrol can thin
+  //
+  // The first version ran an idle player against a full sector and counted arrivals. That measured
+  // something real when the raider roster was 72 and the patrol could grind it below strength;
+  // with 88 raiders against 22 marshals it measures **zero**, and correctly — a sector already at
+  // its cap should not be sending reinforcements, and one that did would be a sector with no cap.
+  //
+  // So what is checked is the property the name is actually about: reinforcement is *responsive*
+  // and arrives in **strength**. Thin the sector, and within a short window a wing's worth of
+  // entries is in the air. That is the thing a player experiences as busy, and it is the thing a
+  // regression would break.
   const s = generate(world, digest)
   let g = newGame(s)
-  let raised = 0
-  let last = Enemy.of(g.swarm, 'raider').length
-  for (let f = 0; f < 60 * 120; f += 1) {
-    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
-    const now = Enemy.of(g.swarm, 'raider').length
-    if (now > last) raised += 1
-    last = now
+  g = {
+    ...g,
+    swarm: {
+      ...g.swarm,
+      craft: g.swarm.craft.map((c) =>
+        c.faction === 'raider' && !c.spec.capital && clusterOf(c.id) === null
+          ? { ...c, alive: false }
+          : c,
+      ),
+    },
   }
-  assert(raised >= 4, `only ${raised} wings arrived in two minutes`)
+  const seen = new Set()
+  for (let f = 0; f < 60 * 60; f += 1) {
+    g = tick(g, s, { keys: new Set(), firing: false, dt: 1 / 60, nowMs: (f * 1000) / 60 })
+    g = { ...g, lost: false, ship: { ...g.ship, hull: 9e9, shield: 9e9 } }
+    for (const a of g.waves.arriving ?? []) if (a.faction === 'raider') seen.add(a.id)
+  }
+  // A minute of a contested sector should put several wings' worth of hulls in the air, not a
+  // trickle — the surge interval exists precisely so a gutted sector recovers at a pace somebody
+  // watches rather than one they infer.
+  assert(seen.size >= 30, `only ${seen.size} hostile entries in a minute of a gutted sector`)
 })
 
 check('a role decides who shoots at you, and there is one implementation of it', () => {

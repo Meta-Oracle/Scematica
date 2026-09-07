@@ -78,6 +78,27 @@ export type Shape =
   | 'cruiser'
   | 'bulwark'
   | 'sovereign'
+  /**
+   * One silhouette per player hull, all seventeen of them.
+   *
+   * Seventeen hulls previously shared seven shapes — a skiff and a scout were the same dart,
+   * three capitals were one spinal ship at three sizes. Scale is not a silhouette, which the
+   * note on `cruiser` already argues about borrowing an *enemy* shape and which is exactly as
+   * true between two hulls a player can own: a shipyard where two entries differ only by a
+   * number is a spreadsheet, not a choice between ships.
+   */
+  | 'skiff'
+  | 'dart'
+  | 'lance'
+  | 'prowler'
+  | 'halberd'
+  | 'rampart'
+  | 'aegis'
+  | 'carrack'
+  | 'monitor'
+  | 'vanguard'
+  | 'suzerain'
+  | 'dominion'
   | 'station'
   | 'market'
   | 'dock'

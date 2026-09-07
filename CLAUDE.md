@@ -1116,6 +1116,44 @@ Rules the 298 checks carry, each paid for:
   hiding works only for the other side; impact cost is closing speed at the point of contact, so
   a graze is not a crash; and a resolved body ends a whisker *outside* the surface, or the
   collision system becomes flypaper.
+- **Every player hull has its own silhouette, and the endgame hull outgrows the sector.**
+  Seventeen hulls shared seven shapes, so a skiff and a scout were the same dart and three capitals
+  were one spinal ship at three sizes — a shipyard where two entries differ only by a number is a
+  spreadsheet, not a choice between ships. Seventeen meshes now, asserted distinct **by geometry**
+  rather than by name (the weaker check passes on copy-pasted meshes). The `dominion` is larger
+  than a titan, which **reverses** the earlier "you never become the biggest thing out here" rule
+  and the equality that pinned it; the reversal is written up on the hull itself. What survives of
+  the old argument is the load-bearing half — size and threat are different axes — so the largest
+  hull is also the least agile in the game by a factor of five, and the titan is still the hardest
+  thing in the sector to kill.
+- **A bolt ends by leaving, not by timing out** (`scale.ts::LASER_BOUNDS`). A lifetime cannot
+  express "until it reaches the end of the galaxy": a shot fired outward from the far edge and one
+  fired inward from the same place have completely different amounts of sector ahead of them, and
+  one timer treats them identically. `LIFE_LASER` now covers four sector reaches — longer than any
+  line through the volume, so it never fires inside it — and crossing the boundary is what removes
+  a round. `SPEED_LASER` is 3.5x faster (an extent every 0.3s), and the cost is stated rather than
+  hidden: flight time is what stops long range being a free kill, so the drift assertion came down
+  from 15 own-widths to 5 **deliberately**, not to make a number pass.
+- **Waves are ten hulls, and `WARP_WING` and `WARP_STAGGER_MS` are one decision** — what must stay
+  under a beat is the *total* spread, not the gap between two ships, so a ten-hull wing at the old
+  220ms gap took two seconds to finish and its tail read as a second event. The raider roster went
+  to 88 and the patrol to 22 in the same edit, because leaving the patrol at 18 moves the ambient
+  war to five-to-one and the marshals losing by default is what `respawn.ts` exists to prevent.
+  A saturated sector correctly sends **nothing** to an idle player, so the "busy" check measures
+  responsiveness after thinning rather than arrivals from a full roster.
+- **Capitals: 60s, one per side, class picked round-robin.** It was 150s and one slot shared
+  between the factions, which is a twenty-minute rebuild — they *were* respawning and nobody plays
+  long enough to see it. Two separate failures: a shared slot let the patrol's larger deficit delay
+  every raider capital by five minutes, and largest-deficit ordering starves every singleton
+  forever (the garrison holds two dreadnoughts against one leviathan and one titan, so a deficit
+  sort reaches the titan last, every time — measured at none of the three back after ten minutes).
+  **The check that was missing is why this shipped twice**: every capital test drove `replenish`
+  directly, which is precise and does not exercise what a player uses. There is now one that runs
+  the real tick, with a clock starting at 30s because in play it is `performance.now()`.
+- **Overlay panels scroll** (`max-h` + `overflow-y-auto` on the body, never the header bar). The
+  market panel is anchored to the bottom with no height cap, so seventeen hulls grew off the top of
+  the screen — and the part that disappeared was the *cheap* end of the list. A panel whose close
+  button scrolls away is worse than one that overflows.
 - **The laser could not reach a capital at all, and that was a constant rather than a balance
   problem.** `LIFE_LASER` gave a reach of 0.20 extents against a titan's 0.40 standoff, so every
   bolt fired at one evaporated less than halfway there — the third time this shape has been found

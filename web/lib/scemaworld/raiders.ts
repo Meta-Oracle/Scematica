@@ -206,7 +206,7 @@ export const SPAWN_STANDOFF = Math.round(AGGRO_RANGE * 4)
  * roster was scattered across one `EXTENT` while the nodes ran to six, which is fixed below by
  * scattering across `SECTOR_REACH`.
  */
-export const WINGS = 18
+export const WINGS = 22
 export const PER_WING = 4
 
 /**

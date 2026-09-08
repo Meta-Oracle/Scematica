@@ -48,6 +48,7 @@ import {
   tokenVaultPda as sharedTokenVaultPda,
   associatedTokenAddress,
   vaultPda as sharedVaultPda,
+  createAtaInstruction,
   withdrawInstruction,
 } from '../lib/escrow/instructions.ts';
 import { decodePosition } from '../lib/escrow/program.ts';
@@ -140,9 +141,12 @@ const ixExtendLock = ({ depositor, tokenMint, backingMint, nonce, newUnlockUnix 
 // `position` key rather than hand-rolling the list keeps the ORDER authoritative, which
 // is the part that drifts; slot 2 is asserted below so a reordering cannot silently make
 // this overwrite something else.
-function ixWithdraw({ depositor, positionOwner, tokenMint, backingMint, nonce }) {
+function ixWithdraw({ depositor, positionOwner, tokenMint, backingMint, nonce, tokenProgram, backingProgram }) {
   const ix = withdrawInstruction({
-    programId: PROGRAM_ID, depositor, tokenMint, backingMint, ...LEGS, nonce: BigInt(nonce),
+    programId: PROGRAM_ID, depositor, tokenMint, backingMint,
+    tokenProgram: tokenProgram ?? LEGS.tokenProgram,
+    backingProgram: backingProgram ?? LEGS.backingProgram,
+    nonce: BigInt(nonce),
   });
   if (positionOwner && !positionOwner.equals(depositor)) {
     const vault = vaultPda(tokenMint, backingMint);
@@ -251,16 +255,17 @@ async function expectErr(conn, label, wantCode, ixs, signers) {
  * so that case prints the remaining time and exits 0. Reporting it as a failed check
  * would train whoever runs this to ignore a red line.
  */
-async function withdrawMode(conn, payer, tokenMint, backingMint) {
+async function withdrawMode(conn, payer, tokenMint, backingMint, nonce = 1) {
   const vault = vaultPda(tokenMint, backingMint);
   const tokenVault = tokenVaultPda(vault);
   const backingVault = backingVaultPda(vault);
-  const position = positionPda(vault, payer.publicKey, 1);
+  const position = positionPda(vault, payer.publicKey, nonce);
 
   const pAcc = await conn.getAccountInfo(position);
   if (!pAcc) {
     console.error(`No position at ${position.toBase58()} for ${payer.publicKey.toBase58()}.`);
-    console.error('Run the script with no arguments first; it leaves one behind at nonce 1.');
+    console.error(`Run the script with no arguments first; it leaves one behind at nonce 1.`);
+    console.error('Or pass the nonce as a fourth argument — /api/escrow/positions lists them.');
     process.exit(2);
   }
   const p = decodePosition(pAcc.data);
@@ -281,27 +286,50 @@ Still locked for ${d}d ${h}h — that is the program working, not a fault.`);
     process.exit(0);
   }
 
+  // Each leg's token program comes off its MINT, never assumed. The main run creates
+  // legacy-SPL mints, but this mode re-attaches to any vault -- including one opened
+  // through /escrow against a Token-2022 token -- and the ATA seeds include the token
+  // program, so assuming the wrong one derives a valid address nobody controls.
+  const [tokenMintInfo, backingMintInfo] =
+    await conn.getMultipleAccountsInfo([tokenMint, backingMint]);
+  const legs = { tokenProgram: tokenMintInfo.owner, backingProgram: backingMintInfo.owner };
+
   // Balances before, so #8 can assert the EXACT amounts rather than "it did not throw".
   const vBefore = decodeVault((await conn.getAccountInfo(vault)).data);
-  const myToken = associatedTokenAddress(tokenMint, payer.publicKey, TOKEN_PROGRAM_ID);
-  const myBacking = associatedTokenAddress(backingMint, payer.publicKey, TOKEN_PROGRAM_ID);
-  const tBefore = (await getAccount(conn, myToken)).amount;
-  const bBefore = (await getAccount(conn, myBacking)).amount;
-  const tvBefore = (await getAccount(conn, tokenVault)).amount;
-  const bvBefore = (await getAccount(conn, backingVault)).amount;
+  const myToken = associatedTokenAddress(tokenMint, payer.publicKey, legs.tokenProgram);
+  const myBacking = associatedTokenAddress(backingMint, payer.publicKey, legs.backingProgram);
+
+  // The receiving accounts must exist before the program transfers into them. Usually
+  // they do -- they funded the deposit -- but an ATA can be closed at zero balance, and
+  // this run found exactly that: a matured position whose depositor no longer had a
+  // token account. Left alone it fails on chain with an error naming neither the account
+  // nor the fix, which is why /api/escrow/withdraw prepends the same two instructions.
+  const setup = [];
+  const [tInfo, bInfo] = await conn.getMultipleAccountsInfo([myToken, myBacking]);
+  if (!tInfo) setup.push(createAtaInstruction(payer.publicKey, payer.publicKey, tokenMint, legs.tokenProgram));
+  if (!bInfo) setup.push(createAtaInstruction(payer.publicKey, payer.publicKey, backingMint, legs.backingProgram));
+  if (setup.length) {
+    console.log(`  (creating ${setup.length} missing receiving account(s) first)`);
+    await send(conn, setup, [payer]);
+  }
+
+  const tBefore = (await getAccount(conn, myToken, 'confirmed', legs.tokenProgram)).amount;
+  const bBefore = (await getAccount(conn, myBacking, 'confirmed', legs.backingProgram)).amount;
+  const tvBefore = (await getAccount(conn, tokenVault, 'confirmed', legs.tokenProgram)).amount;
+  const bvBefore = (await getAccount(conn, backingVault, 'confirmed', legs.backingProgram)).amount;
 
   console.log('');
   console.log('--- DEPLOY.md section 3, tests 8 and 9 ---');
 
-  const base = { depositor: payer.publicKey, tokenMint, backingMint };
+  const base = { depositor: payer.publicKey, tokenMint, backingMint, ...legs };
   const ok = await expectOk(conn, '8  withdraw after unlock, correct depositor',
-    [ixWithdraw({ ...base, nonce: 1 })], [payer]);
+    [ixWithdraw({ ...base, nonce })], [payer]);
 
   if (ok) {
     // The amounts must be the ones RECORDED at deposit, not the vault's balance. That is
     // what stops one position reaching another's funds, so it is asserted exactly.
-    const tAfter = (await getAccount(conn, myToken)).amount;
-    const bAfter = (await getAccount(conn, myBacking)).amount;
+    const tAfter = (await getAccount(conn, myToken, 'confirmed', legs.tokenProgram)).amount;
+    const bAfter = (await getAccount(conn, myBacking, 'confirmed', legs.backingProgram)).amount;
     const exact = tAfter - tBefore === BigInt(p.tokenAmount)
       && bAfter - bBefore === BigInt(p.backingAmount);
     record('8a both legs returned exactly the recorded amounts', exact,
@@ -319,8 +347,8 @@ Still locked for ${d}d ${h}h — that is the program working, not a fault.`);
       `token=${vAfter.totalTokenLocked} backing=${vAfter.totalBackingLocked} open=${vAfter.positionsOpen}`);
 
     // Test 10 from the other side: the second depositor's funds must be untouched.
-    const tvAfter = (await getAccount(conn, tokenVault)).amount;
-    const bvAfter = (await getAccount(conn, backingVault)).amount;
+    const tvAfter = (await getAccount(conn, tokenVault, 'confirmed', legs.tokenProgram)).amount;
+    const bvAfter = (await getAccount(conn, backingVault, 'confirmed', legs.backingProgram)).amount;
     const isolated = tvAfter >= vAfter.totalTokenLocked && bvAfter >= vAfter.totalBackingLocked
       && tvBefore - tvAfter === BigInt(p.tokenAmount)
       && bvBefore - bvAfter === BigInt(p.backingAmount);
@@ -330,7 +358,7 @@ Still locked for ${d}d ${h}h — that is the program working, not a fault.`);
     // 9. Replay. The position account no longer exists, so account validation rejects it
     // before any handler runs — an Anchor framework error rather than one of ours.
     await expectErr(conn, '9  replay the same withdraw', 3012,
-      [ixWithdraw({ ...base, nonce: 1 })], [payer]);
+      [ixWithdraw({ ...base, nonce })], [payer]);
   }
 
   const passed = results.filter((r) => r.ok).length;
@@ -362,10 +390,12 @@ async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === '--withdraw') {
     if (argv.length < 3) {
-      console.error('usage: node scripts/verify-vault.mjs --withdraw <TOKEN_MINT> <BACKING_MINT>');
+      console.error('usage: node scripts/verify-vault.mjs --withdraw <TOKEN_MINT> <BACKING_MINT> [NONCE]');
       process.exit(2);
     }
-    return withdrawMode(conn, payer, new PublicKey(argv[1]), new PublicKey(argv[2]));
+    // The nonce is optional and defaults to the one the main run leaves behind. A vault
+    // opened through /escrow uses a timestamp nonce, which /api/escrow/positions lists.
+    return withdrawMode(conn, payer, new PublicKey(argv[1]), new PublicKey(argv[2]), argv[3] ?? 1);
   }
 
   console.log('--- setup: two throwaway SPL mints ---');

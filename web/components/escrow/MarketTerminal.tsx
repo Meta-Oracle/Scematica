@@ -13,6 +13,7 @@ import {
 } from '@/lib/market/commitment'
 import { useLocks } from '@/lib/market/useLocks'
 import { useMarket, useNow, type MarketPayload } from '@/lib/market/useMarket'
+import { PositionsPanel } from './PositionsPanel'
 import { VaultBuilder, type Choice } from './VaultBuilder'
 import { DEX_LABEL, formatUnits, type Dex, type MarketRow } from '@/lib/market/types'
 
@@ -121,6 +122,11 @@ export function MarketTerminal() {
               onCreated={refresh}
             />
           </div>
+
+          {/* Directly under the builder, because depositing and withdrawing are the two
+              halves of one decision and separating them is how a page ends up offering
+              only the first. */}
+          <PositionsPanel />
 
           <CommitmentLadder rows={data?.rows ?? []} locks={locks} />
           <DexTabs rows={data?.rows ?? []} tab={tab} onTab={setTab} />

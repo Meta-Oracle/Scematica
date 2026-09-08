@@ -388,10 +388,10 @@ tools/
 programs/
   scematica-swap/       Anchor on-chain program (NOT in cargo workspace).
                         Devnet deploy: programs/scematica-swap/DEPLOY_DEVNET.md
-  scemadex-escrow/      Optimistic bond escrow for Conviction Routing. Has a deliberate
+  scematica-escrow/     Optimistic bond escrow for Conviction Routing. Has a deliberate
                         `authority` (the facilitator that adjudicates disputes) — correct
                         for a performance bond, and exactly wrong for the vault below.
-  scemadex-vault/       The Escrow Market vault: time-locked, non-custodial backing of
+  scematica-vault/      The Escrow Market vault: time-locked, non-custodial backing of
                         any SPL token by a reserve asset. **No privileged role exists** —
                         four instructions (initialize_vault/deposit/extend_lock/withdraw)
                         and no admin path, by design. Uses `token_interface`, not legacy
@@ -575,7 +575,7 @@ touching any of those modules.
 **`/escrow` is the fifth product on the same site** — the Scema Escrow Market proof-of-
 reserve console (`components/escrow/`, `lib/escrow/`, `app/api/escrow/`) with its own
 teal palette (`escrow-*` tokens + `.escrow-root`). It reads the on-chain vault written by
-`programs/scemadex-vault`. Five constraints:
+`programs/scematica-vault`. Five constraints:
 
 - **No simulation branch, ever** — the same rule as `/alchem-link` and for a sharper
   reason: the page exists to answer "is the money actually there?", so a fabricated
@@ -625,7 +625,38 @@ teal palette (`escrow-*` tokens + `.escrow-root`). It reads the on-chain vault w
   rows are controls: selection lives in `MarketTerminal`, so clicking any row loads that
   mint into the builder.
 
-The `Vault` byte layout in `lib/escrow/program.ts` mirrors `programs/scemadex-vault/src/
+- **A lock needs an exit, and the page shipped without one.** `instructions.ts` had
+  `initialize_vault` and `deposit` and no way back out, while the builder's own copy said
+  "only you can withdraw" — funds locked through /escrow were recoverable solely by
+  hand-crafting a transaction. `withdrawInstruction` / `extendLockInstruction`,
+  `GET /api/escrow/positions` and `PositionsPanel` are the missing half, and they sit
+  together under the builder because depositing and withdrawing are two halves of one
+  decision; separating them is how a page ends up offering only the first. The listing is
+  not a convenience: `withdraw` is keyed by `(token_mint, backing_mint, nonce)`, the nonce
+  is chosen at deposit time and stored nowhere the depositor can see. Withdraw is its own
+  route rather than a mode on `/api/escrow/build`, or the difference between paying money
+  in and taking it out becomes a string field. Maturity is judged by the **chain's** clock
+  — a browser minutes fast offers a button that costs a signature and fails `StillLocked`
+  — and the receiving ATAs are created if absent, because an ATA can be closed at zero
+  balance and a withdraw into a closed account fails naming neither the account nor the
+  fix. That is not hypothetical: it is what the first real withdraw hit.
+- **Anchor matches accounts POSITIONALLY, so the order is pinned against the Rust
+  itself.** `check:escrow` parses each `#[derive(Accounts)]` struct out of
+  `programs/scematica-vault/src/lib.rs` and asserts every builder slot by slot, with a
+  deliberately MIXED fixture pair (Token-2022 token, legacy-SPL reserve) — the only shape
+  in which one shared token program is distinguishable from two per-leg ones. Both sides
+  of that comparison used to be hand-written TypeScript, which is why the drift was
+  invisible: `verify-vault.mjs` carried private builders written before the per-leg split,
+  passed one token program where the program wants two, and reported **0/12 against a
+  completely healthy program** — the System program had landed in the
+  `backing_token_program` slot and every check failed `3008 InvalidProgramId`. **Never
+  give a script its own copy of the account order.** A drifted verifier does not merely
+  miss bugs, it invents them, and it sends somebody hunting a fault in a custody program
+  that does not have one. `verify-vault.mjs` now imports the same builders the page hands
+  to a wallet, and runs DEPLOY.md §3 1–10 live; `--withdraw` finishes #8/#9 a week later,
+  since `MIN_LOCK_SECS` is 7 days and there is no early exit.
+
+The `Vault` byte layout in `lib/escrow/program.ts` mirrors `programs/scematica-vault/src/
 lib.rs`; **Rust is authoritative**. A field added there must be added here in the same
 order or every number the page prints is silently wrong — `VAULT_LEN` is the tripwire,
 and a decode against an unexpected size is rejected rather than guessed at.

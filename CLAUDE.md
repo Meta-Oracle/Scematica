@@ -773,6 +773,59 @@ constraints, and the first is stronger than anywhere else on the site:
   default, so the two files are one file), on demand — 3 MB and ~250 ms is cheap when asked
   for and a stutter on every drop if eager.
 
+**`/zero` is the eighth product on the same site** — Scematica Zero, the loop in a browser
+tab (`components/zero/`, `lib/zero/`, design in `docs/SCEMATICA-ZERO.md`) with its own
+cold-cyan palette (`zero-*` tokens + `.zero-root`), deliberately the coldest on the site
+because Zero is the only surface that can spend money unattended. No local API, no custody,
+no install: the user's own RPC key, their own wallet, and a capped session key for autonomy.
+
+- **It is NOT the sniper and must never be sold as one.** A browser event loop plus an
+  internet RPC plus Jupiter's router loses the first-block race every time; shipping it as
+  a sniper is simulated performance wearing a live badge, which is the failure
+  `X-Scematica-Source` exists to prevent. `lib/swap.ts` already wrote this down. Zero's edge
+  is selectivity and provable discipline — it is the sixth `scema.world/1` producer and the
+  first that can *act*, so the decision record and the money are the same event.
+- **Z-1: no timer may decide money.** Chrome throttles `setInterval` in a hidden tab to
+  ~1/min and does not announce it, so a polled stop-loss keeps holding a position and stops
+  checking it. Every money-touching evaluation is driven by a WebSocket arrival
+  (`accountSubscribe` on both vaults), because a message handler is delivered where a timer
+  is not. `check:zero` feeds 2000 ticks to the reducer in every reachable state and asserts
+  no swap ever comes out. The time-based exit is *"on arrival, if 30s have passed"*, never
+  *"fire after 30s"*.
+- **Z-2: a quiet socket is DEGRADED and says so.** An exit rule that could not be evaluated
+  is not one that said "hold". It halts entries and **never** exits — a degraded feed must
+  not stop you closing risk.
+- **`lib/zero/` is PURE** — no DOM, no React, no `chrome.*`, no `fetch`, no storage,
+  asserted by source scan — so the phase-3 extension is a new shell rather than a rewrite,
+  the same split as `scema-tui`/`scema-omnid`/`scema-mcp` over one `scema-agent`. `engine.ts`
+  is a reducer `(state, ZeroEvent) -> (state, Effect[])`, which is the only reason a
+  stop-loss firing and a cap refusing are testable without spending money on mainnet.
+- **The session key bounds loss, not secrecy**, and says so on screen (`claim.ts`'s rule).
+  `authorise()` is the entire critical section and **must contain no `await`** — a cap
+  checked against a snapshot and enforced after one is not a cap; a source scan pins it. An
+  unobserved fill KEEPS its reservation (releasing it is how a paid trade gets paid twice)
+  and is surfaced rather than retried.
+- **Multi-tab is a Web Locks election** (`lease.ts`). A `localStorage` flag is not a lock and
+  a crashed leader wedges it forever. A **missing** API is not treated as leadership, since
+  that lets every tab trade against one budget.
+- **The policy is pinned and never trains** (`policy.ts`). A per-tab net is one nobody can
+  reproduce, and a record citing weights that exist nowhere destroys the point of the record.
+  `NEUTRAL` and the feature order are read out of `crates/scematica-nn/src/state.rs` at check
+  time, so a feature added in Rust fails here rather than silently shifting every index into
+  a neural net — the Anchor account-order hazard with a net on the other end.
+- **Raydium's leg orientation is read, never assumed** (`host/parse.ts`). A pool may be
+  created with SOL as base or quote; assuming inverts the price on half of all pools, which
+  is not obviously wrong to look at and makes every exit rule fire backwards.
+- **The kill switch halts entries and destroys the key material — it does not liquidate.** A
+  control that dumps at market is a different and far more dangerous thing, and conflating
+  the two means nobody can stop new entries without also being forced to sell.
+- **The token gate is a default, not a boundary**, and `gatekeep.ts` says so in the file:
+  reading and attended swaps are ungated, arming is gated, and Zero has no server that could
+  enforce any of it. An unreadable balance is `unknown`, never `insufficient` — the vault
+  service's 503-not-403 rule.
+
+`npm run check:zero` pins all of the above (166 checks).
+
 `lib/omni/view.ts::cell` is the TS copy of the one render rule — an unmeasured term prints
 `—`, never `0.00`. Three implementations exist (Rust `scema_policy::render`, the extension
 HUD, this), each tested; the *rule* is shared, not the code, and a copy that drifts is worse

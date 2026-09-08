@@ -5,7 +5,7 @@
 // reason `lib/alchem/endpoint.ts` is split from `networks.ts` — this module gets
 // imported by client components, so nothing that reads an env secret may live here.
 //
-// The layout below mirrors `programs/scemadex-vault/src/lib.rs` exactly. The Rust
+// The layout below mirrors `programs/scematica-vault/src/lib.rs` exactly. The Rust
 // program is authoritative; if `Vault` gains a field there, it must be added here in
 // the same order or every number this file produces is silently wrong. `VAULT_LEN` is
 // the tripwire — a decode against an account of unexpected size is rejected rather

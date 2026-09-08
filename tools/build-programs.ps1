@@ -15,10 +15,11 @@
 #
 # Requires solana-cli 1.18.26 on PATH (see programs/scematica-vault/DEPLOY.md).
 
-# These are DIRECTORY names under programs/. They stopped matching the package names in
-# commit 8cb5ab6, which renamed the directories to `scematica-*` while leaving the
-# packages as `scemadex-vault` / `scemadex-escrow` — hence `.so` files still named
-# `scemadex_vault.so`. Keep the two straight when editing.
+# DIRECTORY names under programs/, which now match the package names and therefore the
+# `.so` names: scematica-vault -> scematica_vault.so. They diverged for a while after
+# commit 8cb5ab6 renamed the directories and not the packages, and DEPLOY.md went on
+# naming `scemadex_vault.so` long after nothing produced it — a deploy doc that names a
+# file the build does not emit fails at the one step nobody can rehearse.
 param(
     [string[]]$Programs = @('scematica-swap', 'scematica-escrow', 'scematica-vault')
 )

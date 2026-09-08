@@ -1,4 +1,4 @@
-// Live lifecycle verification for `scemadex-vault` (programs/scemadex-vault).
+// Live lifecycle verification for `scematica-vault` (programs/scematica-vault).
 //
 // Runs the DEPLOY.md section 3 table against a DEPLOYED program, on whatever cluster
 // RPC_ENDPOINT points at. It creates two throwaway SPL mints, so it needs no wBTC and no

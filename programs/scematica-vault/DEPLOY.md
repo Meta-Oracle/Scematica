@@ -42,7 +42,7 @@ path` because Windows sets `USERPROFILE` rather than `HOME`.
 ## 1. Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scemadex-vault
+powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scematica-vault
 ```
 
 Use that script rather than calling `cargo-build-sbf` yourself. It checks one thing the
@@ -65,7 +65,7 @@ Already assigned: **`A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW`**, declared i
 `src/lib.rs` and registered in `Anchor.toml`. It replaced `Fg6PaFpo…`, the stock Anchor
 example key, which on mainnet is an occupied non-program account.
 
-The keypair is at `target/deploy/scemadex_vault-keypair.json`, gitignored via
+The keypair is at `target/deploy/scematica_vault-keypair.json`, gitignored via
 `programs/*/target/`. **Back it up.** Until step 5 it is the upgrade authority; lose it
 before then and the program can never be fixed, publish it and anyone can rewrite it.
 
@@ -100,7 +100,54 @@ Test 10 is the one that catches the worst class of bug: `withdraw` transfers the
 *recorded* amounts, never the vault balance, precisely so one position cannot reach
 another's funds. Verify the balances rather than trusting the return code.
 
-Tests 11 and 12 are automated — `web/scripts/devnet-vault-lifecycle.mjs` drives the real
+**Tests 1-10 are automated.** `web/scripts/verify-vault.mjs` creates two throwaway SPL
+mints and runs the table against a deployed program on whatever `RPC_ENDPOINT` points at,
+for well under 0.05 SOL:
+
+```powershell
+cd web
+$env:RPC_ENDPOINT="<devnet rpc>"
+node scripts/verify-vault.mjs
+```
+
+It asserts the specific Anchor error **number** on every negative test. Asserting only
+"it failed" would pass on a typo'd account list, which is the exact bug the script exists
+to catch — and did not, for a while: it carried its own copy of the instruction builders,
+written before the token programs were split per leg, so it passed one where the program
+wants two, Anchor matched positionally, the System program landed in the
+`backing_token_program` slot, and all twelve checks failed with `3008 InvalidProgramId`
+against a program that was completely healthy. It now imports the builders from
+`web/lib/escrow/instructions.ts` — the same ones the /escrow page hands to a wallet — so
+there is one account order rather than two. **Do not give this script private builders
+again.** A drifted verifier does not merely miss bugs, it invents them, and it will send
+somebody looking for a fault in a custody program that does not have one.
+
+Tests **8 and 9 cannot run in the same pass**: `MIN_LOCK_SECS` is 7 days against the
+chain clock and there is no early exit, so a successful withdraw is observable a week
+after the deposit that creates it. The script prints the command to finish the table and
+exits 0 in the meantime — a position that has not matured is the program working, not a
+failed check.
+
+```powershell
+node scripts/verify-vault.mjs --withdraw <TOKEN_MINT> <BACKING_MINT> [NONCE]
+```
+
+The nonce defaults to the one the main run leaves behind. For a vault opened through
+/escrow the nonce is a timestamp, and `GET /api/escrow/positions?owner=<wallet>` lists it.
+
+Two things that pass only because the harness now does what the web route does, both
+found by running this for real rather than by reading it:
+
+- **The depositor's receiving ATA may not exist.** It normally does — it funded the
+  deposit — but an ATA can be closed at zero balance, and a withdraw into a closed
+  account fails on chain with an error naming neither the account nor the fix. Both the
+  script and `/api/escrow/withdraw` prepend the creation.
+- **Each leg's token program comes off its own mint, never assumed.** The ATA seeds
+  include the token program, so assuming legacy SPL for a Token-2022 leg derives a valid
+  address nobody controls.
+
+Tests 11 and 12 need two pre-made mints, one per token program, so they live in a
+second script — `web/scripts/devnet-vault-lifecycle.mjs` drives the same real
 instruction builders from `web/lib/escrow/instructions.ts`, so an account-order drift
 between the Rust structs and the web client fails there rather than in front of a user
 holding a signature prompt:
@@ -132,14 +179,14 @@ program.
 
 ```powershell
 solana config set --url <your-rpc>
-powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1 -Programs scemadex-vault
+powershell -ExecutionPolicy Bypass -File tools/deploy-programs.ps1 -Programs scematica-vault
 ```
 
 which runs, with `--max-len` set to the exact `.so` length:
 
 ```bash
-solana program deploy target/deploy/scemadex_vault.so \
-  --program-id target/deploy/scemadex_vault-keypair.json \
+solana program deploy target/deploy/scematica_vault.so \
+  --program-id target/deploy/scematica_vault-keypair.json \
   --max-len <exact .so byte length>
 ```
 
@@ -240,7 +287,7 @@ Publish this list; it is the actual product. None of it requires trusting the op
    Without this, nothing below matters.
 
 2. **The bytecode matches this source.**
-   `tools/build-programs.ps1 -Programs scemadex-vault` from this commit prints a
+   `tools/build-programs.ps1 -Programs scematica-vault` from this commit prints a
    sha256; compare it against the deployed program. Reproducing it requires the same
    inputs — solana-cli **1.18.26** (platform-tools v1.41), the committed `Cargo.lock`,
    and `opt-level = 2`. A different optimisation level produces a different binary, and

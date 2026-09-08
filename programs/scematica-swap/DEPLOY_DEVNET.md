@@ -18,7 +18,7 @@ powershell -ExecutionPolicy Bypass -File tools/build-programs.ps1 -Programs scem
 
 The script exists because `cargo-build-sbf` reports an SBF stack-frame overflow and then
 exits 0 anyway, emitting a `.so` that deploys fine and fails at runtime. It greps for
-that and fails the build. See `programs/scemadex-vault/Cargo.toml` for a program that
+that and fails the build. See `programs/scematica-vault/Cargo.toml` for a program that
 actually hit this.
 
 Pick one path. **Path A needs nothing installed locally** and matches testing on

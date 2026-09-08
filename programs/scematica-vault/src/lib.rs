@@ -3,7 +3,7 @@ use anchor_spl::token_interface::{
     self, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
-// The real program ID. Its keypair lives at target/deploy/scemadex_vault-keypair.json
+// The real program ID. Its keypair lives at target/deploy/scematica_vault-keypair.json
 // (gitignored via `programs/*/target/`) and is the deploy + upgrade authority until
 // `set-upgrade-authority --final` is run. See DEPLOY.md §2 and §5.
 declare_id!("A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW");
@@ -69,7 +69,7 @@ declare_id!("A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW");
 /// - **No early exit, for anyone, ever.** A lock that can be cut short is not a lock,
 ///   and the signal it sends is worth exactly nothing.
 #[program]
-pub mod scemadex_vault {
+pub mod scematica_vault {
     use super::*;
 
     /// Open the canonical vault for a `(token_mint, backing_mint)` pair.

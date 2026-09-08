@@ -25,13 +25,41 @@ import {
   programKind,
   toBaseUnits,
 } from '../lib/escrow/mintinfo.ts'
-import { decodeVault, formatAmount, solvency, VAULT_LEN } from '../lib/escrow/program.ts'
+import {
+  decodePosition,
+  decodeVault,
+  derivePositionPda,
+  formatAmount,
+  isUnlocked,
+  POSITION_LEN,
+  solvency,
+  VAULT_LEN,
+} from '../lib/escrow/program.ts'
+import {
+  associatedTokenAddress,
+  backingVaultPda,
+  depositInstruction,
+  extendLockInstruction,
+  initializeVaultInstruction,
+  positionPda,
+  tokenVaultPda,
+  vaultPda,
+  withdrawInstruction,
+} from '../lib/escrow/instructions.ts'
+import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 let failed = 0
 const check = (name, ok) => {
   if (!ok) failed++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)
 }
+
+// A stand-in program id. Only its consistency matters here: every PDA below is derived
+// from it, so a builder using a different one would fail every order pin.
+const PROG = new PublicKey('A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW')
 
 // Real mainnet account data, base64, captured from getAccountInfo.
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
@@ -181,6 +209,146 @@ check('a deficit is the alarm', solvency('100', '99') === 'SHORTFALL')
 check('u64-scale comparison does not go through a float', solvency('18446744073709551615', '18446744073709551614') === 'SHORTFALL')
 check('formatAmount places the point on the string', formatAmount('123456789', 6) === '123.456789')
 check('trailing zeros are trimmed', formatAmount('1000000', 6) === '1')
+
+console.log('\n-- position decoding -----------------------------------')
+
+// A Position laid out exactly as programs/scematica-vault/src/lib.rs declares it: the
+// pure-reserve deposit the lifecycle script leaves at nonce 1 (token=0, backing=2000000),
+// with its lock extended. Built field by field so a layout change here is deliberate.
+const u64le = (v) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b }
+const i64le = (v) => { const b = Buffer.alloc(8); b.writeBigInt64LE(v); return b }
+const POSITION_DATA = Buffer.concat([
+  Buffer.from([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11]),
+  new PublicKey('48QFnbCwqvKwPTsraheS6qLqDpqGvJqLKPBLTMEqBGXt').toBuffer(),
+  new PublicKey('BFnj2t3vUdBiccnk8URSecc88HkypE5tt9S5DMVRLuZ7').toBuffer(),
+  u64le(0n),
+  u64le(2000000n),
+  i64le(1788872193n),
+  i64le(1791464193n),
+  u64le(1n),
+  Buffer.from([254]),
+])
+
+check('Position::LEN matches the Rust field list', POSITION_LEN === 113 && POSITION_DATA.length === POSITION_LEN)
+const pos = decodePosition(POSITION_DATA)
+check('a position decodes to its recorded amounts', pos?.backingAmount === '2000000')
+// A pure-reserve deposit is legal, so its token leg is a MEASURED zero and must decode as
+// '0' rather than as anything absent. This is the amount somebody gets back.
+check('a zero token leg is a real amount, not a missing one', pos?.tokenAmount === '0')
+check('a position decodes its unlock instant', pos?.unlockUnix === '1791464193' && pos?.nonce === '1')
+// i64, not u64. Read unsigned, any negative timestamp becomes ~1.8e19 and would compare
+// as locked until the heat death of the universe.
+const negative = Buffer.from(POSITION_DATA)
+negative.writeBigInt64LE(-86400n, 8 + 32 + 32 + 8 + 8)
+check('timestamps are read as signed', decodePosition(negative)?.createdUnix === '-86400')
+check('a position decode against an unexpected size is refused', decodePosition(new Uint8Array(POSITION_LEN - 1)) === null)
+check('the unlock comparison matches the program: now >= unlock', isUnlocked(pos, 1791464193) && !isUnlocked(pos, 1791464192))
+check('the position PDA agrees with the instruction builders',
+  derivePositionPda(new PublicKey(pos.vault), new PublicKey(pos.depositor), 1n, PROG)
+    .equals(positionPda(PROG, new PublicKey(pos.vault), new PublicKey(pos.depositor), 1n)))
+
+console.log('\n-- account order vs the Rust structs -------------------')
+
+// The strongest pin in this file. Anchor matches accounts POSITIONALLY, so a field added
+// or moved in lib.rs silently repoints every account after it -- which is exactly what
+// happened once: token_token_program / backing_token_program were split per leg and a
+// builder kept passing one, so the System program landed in a token-program slot and
+// every instruction failed with 3008 InvalidProgramId against a healthy program.
+//
+// The expected order is therefore READ FROM lib.rs rather than restated here. A Rust
+// change fails this check instead of surfacing later as a confusing constraint error --
+// or, worse, as the right account in the wrong slot.
+const RUST = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'programs', 'scematica-vault', 'src', 'lib.rs'),
+  'utf8',
+)
+
+function rustAccountFields(struct) {
+  const m = RUST.match(new RegExp('pub struct ' + struct + "<'info> \\{([\\s\\S]*?)\\n\\}"))
+  if (!m) return null
+  return [...m[1].matchAll(/^ {4}pub (\w+):/gm)].map((x) => x[1])
+}
+
+// Distinct, recognisable inputs, so a swapped pair cannot pass by coincidence.
+const TOKEN_MINT = new PublicKey('HcsHqEJ9suf4oHJ8mb52M7AVKjhYhnTaeHgTmde7pump')
+const BACKING_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+const WHO = new PublicKey('BFnj2t3vUdBiccnk8URSecc88HkypE5tt9S5DMVRLuZ7')
+const T22 = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+const SPL = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+const V = vaultPda(PROG, TOKEN_MINT, BACKING_MINT)
+
+// A DELIBERATELY MIXED pair -- Token-2022 token, legacy-SPL reserve. That is the product's
+// central case, and the only shape in which one shared token program is distinguishable
+// from two per-leg ones. Passing the same program twice would make this check vacuous.
+const legs = { tokenProgram: T22, backingProgram: SPL }
+const expected = {
+  payer: WHO,
+  depositor: WHO,
+  token_mint: TOKEN_MINT,
+  backing_mint: BACKING_MINT,
+  vault: V,
+  token_vault: tokenVaultPda(PROG, V),
+  backing_vault: backingVaultPda(PROG, V),
+  position: positionPda(PROG, V, WHO, 7n),
+  depositor_token: associatedTokenAddress(TOKEN_MINT, WHO, T22),
+  depositor_backing: associatedTokenAddress(BACKING_MINT, WHO, SPL),
+  token_token_program: T22,
+  backing_token_program: SPL,
+  system_program: SystemProgram.programId,
+  rent: SYSVAR_RENT_PUBKEY,
+}
+
+function pinOrder(label, struct, ix) {
+  const fields = rustAccountFields(struct)
+  if (!fields) {
+    check(label + ': the Rust struct ' + struct + ' was found', false)
+    return
+  }
+  check(label + ': key count matches ' + struct + "'s " + fields.length + ' fields', ix.keys.length === fields.length)
+  const wrong = fields
+    .map((f, i) => {
+      const want = expected[f]
+      if (!want) return f + ' (no expectation declared -- a new Rust field)'
+      if (!ix.keys[i]) return f + ' (missing at slot ' + i + ')'
+      return want.equals(ix.keys[i].pubkey) ? null : 'slot ' + i + ' should be ' + f
+    })
+    .filter(Boolean)
+  check(label + ': every slot holds the account ' + struct + ' names' + (wrong.length ? ' -- ' + wrong.join(', ') : ''), wrong.length === 0)
+}
+
+const ixInit = initializeVaultInstruction({ programId: PROG, payer: WHO, tokenMint: TOKEN_MINT, backingMint: BACKING_MINT, ...legs })
+const ixDep = depositInstruction({ programId: PROG, depositor: WHO, tokenMint: TOKEN_MINT, backingMint: BACKING_MINT, ...legs, nonce: 7n, tokenAmount: 1n, backingAmount: 1n, lockSecs: 604800n })
+const ixWit = withdrawInstruction({ programId: PROG, depositor: WHO, tokenMint: TOKEN_MINT, backingMint: BACKING_MINT, ...legs, nonce: 7n })
+const ixExt = extendLockInstruction({ programId: PROG, depositor: WHO, tokenMint: TOKEN_MINT, backingMint: BACKING_MINT, nonce: 7n, newUnlockUnix: 1n })
+
+pinOrder('initialize_vault', 'InitializeVault', ixInit)
+pinOrder('deposit', 'Deposit', ixDep)
+pinOrder('withdraw', 'Withdraw', ixWit)
+pinOrder('extend_lock', 'ExtendLock', ixExt)
+
+// The per-leg split, stated as its own claim rather than left implicit in the order pin.
+check('a mixed pair carries two DIFFERENT token programs', !ixDep.keys[9].pubkey.equals(ixDep.keys[10].pubkey))
+// The ATA seeds include the token program, so deriving a leg with the other leg's program
+// yields a valid address the depositor does not own and has no balance at.
+check('each leg ATA is derived with its own program',
+  ixDep.keys[7].pubkey.equals(associatedTokenAddress(TOKEN_MINT, WHO, T22))
+  && ixDep.keys[8].pubkey.equals(associatedTokenAddress(BACKING_MINT, WHO, SPL))
+  && !ixDep.keys[8].pubkey.equals(associatedTokenAddress(BACKING_MINT, WHO, T22)))
+// Withdraw creates nothing, so it carries neither the system program nor the rent sysvar.
+// Copying Deposit's tail would leave two accounts past the end of the list.
+check('withdraw carries no system program and no rent sysvar',
+  !ixWit.keys.some((k) => k.pubkey.equals(SystemProgram.programId) || k.pubkey.equals(SYSVAR_RENT_PUBKEY)))
+// The signer pays no rent and receives nothing here, so it is not writable.
+check('extend_lock signs but writes only the position', ixExt.keys[0].isSigner && !ixExt.keys[0].isWritable && ixExt.keys[1].isWritable)
+// Discriminators are computed from the instruction name, so a rename in Rust cannot leave
+// a stale constant here quietly calling a different handler.
+check('the four instructions have four distinct discriminators',
+  new Set([ixInit, ixDep, ixWit, ixExt].map((i) => i.data.subarray(0, 8).toString('hex'))).size === 4)
+// Withdraw pays position.depositor and nobody else. The builder must never be able to
+// aim a payout at a third party -- the receiving ATAs are derived from the signer.
+check('withdraw pays the signer, not an arbitrary account',
+  ixWit.keys[7].pubkey.equals(associatedTokenAddress(TOKEN_MINT, WHO, T22))
+  && ixWit.keys[8].pubkey.equals(associatedTokenAddress(BACKING_MINT, WHO, SPL)))
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)
 process.exit(failed === 0 ? 0 : 1)

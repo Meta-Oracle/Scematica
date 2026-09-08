@@ -204,3 +204,73 @@ export function depositInstruction(a: DepositArgs): TransactionInstruction {
     ],
   })
 }
+
+export interface WithdrawArgs {
+  programId: PublicKey
+  /** Signs, receives both legs, and is refunded the position's rent. */
+  depositor: PublicKey
+  tokenMint: PublicKey
+  backingMint: PublicKey
+  /** Owner of `tokenMint`. Also derives the depositor's token-leg ATA. */
+  tokenProgram: PublicKey
+  /** Owner of `backingMint`. Also derives the depositor's backing-leg ATA. */
+  backingProgram: PublicKey
+  nonce: bigint
+}
+
+/** Account order mirrors `Withdraw`. Three slots differ from `Deposit` and each is a
+ *  place the obvious copy-paste is wrong:
+ *  - NO system program and NO rent sysvar. `Withdraw` creates nothing — it closes the
+ *    position — so both are absent from the struct, and carrying them over from
+ *    `Deposit` would leave two accounts past the end of the list.
+ *  - The two token programs are still per-leg and still last.
+ *
+ *  The program pays `position.depositor` and transfers the amounts recorded at deposit,
+ *  never the vault balance, so this builder cannot reach another position's funds even
+ *  if handed the wrong nonce — it simply fails `has_one`. */
+export function withdrawInstruction(a: WithdrawArgs): TransactionInstruction {
+  const vault = vaultPda(a.programId, a.tokenMint, a.backingMint)
+  return new TransactionInstruction({
+    programId: a.programId,
+    data: Buffer.from(disc('withdraw')),
+    keys: [
+      meta(a.depositor, true, true),
+      meta(vault, false, true),
+      meta(positionPda(a.programId, vault, a.depositor, a.nonce), false, true),
+      meta(tokenVaultPda(a.programId, vault), false, true),
+      meta(backingVaultPda(a.programId, vault), false, true),
+      meta(a.tokenMint, false, false),
+      meta(a.backingMint, false, false),
+      meta(associatedTokenAddress(a.tokenMint, a.depositor, a.tokenProgram), false, true),
+      meta(associatedTokenAddress(a.backingMint, a.depositor, a.backingProgram), false, true),
+      meta(a.tokenProgram, false, false),
+      meta(a.backingProgram, false, false),
+    ],
+  })
+}
+
+export interface ExtendLockArgs {
+  programId: PublicKey
+  depositor: PublicKey
+  tokenMint: PublicKey
+  backingMint: PublicKey
+  nonce: bigint
+  /** Absolute unix seconds. The program requires this to be STRICTLY LATER than the
+   *  position's current unlock — a lock may be strengthened and never weakened. */
+  newUnlockUnix: bigint
+}
+
+/** Account order mirrors `ExtendLock`, which is two accounts and no token programs:
+ *  nothing moves, so no mint, no vault and no token program appears. The depositor is
+ *  a signer but NOT writable here — it pays no rent and receives nothing. */
+export function extendLockInstruction(a: ExtendLockArgs): TransactionInstruction {
+  const vault = vaultPda(a.programId, a.tokenMint, a.backingMint)
+  return new TransactionInstruction({
+    programId: a.programId,
+    data: Buffer.concat([disc('extend_lock'), i64(a.newUnlockUnix)]),
+    keys: [
+      meta(a.depositor, true, false),
+      meta(positionPda(a.programId, vault, a.depositor, a.nonce), false, true),
+    ],
+  })
+}

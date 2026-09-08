@@ -22,15 +22,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {
   Connection,
   Keypair,
   PublicKey,
   SystemProgram,
   Transaction,
-  TransactionInstruction,
-  SYSVAR_RENT_PUBKEY,
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
@@ -41,6 +38,19 @@ import {
   mintTo,
   getAccount,
 } from '@solana/spl-token';
+
+import {
+  backingVaultPda as sharedBackingVaultPda,
+  depositInstruction,
+  extendLockInstruction,
+  initializeVaultInstruction,
+  positionPda as sharedPositionPda,
+  tokenVaultPda as sharedTokenVaultPda,
+  associatedTokenAddress,
+  vaultPda as sharedVaultPda,
+  withdrawInstruction,
+} from '../lib/escrow/instructions.ts';
+import { decodePosition } from '../lib/escrow/program.ts';
 
 const PROGRAM_ID = new PublicKey(
   process.env.VAULT_PROGRAM_ID ?? 'A7h6khtKFJEu46By7C4hREdMQKkgvnuBCbVyusZRu4YW',
@@ -57,24 +67,14 @@ const ERR = {
   6007: 'MathOverflow',
   6008: 'AccountingUnderflow',
   6009: 'SameMint',
+  // An Anchor framework code, not one of ours — the replay check expects it.
+  3012: 'AccountNotInitialized',
 };
 
 const DECIMALS = 6;
 const ONE = 1_000_000n;
 const WEEK = 7 * 24 * 60 * 60;
 
-const disc = (name) =>
-  crypto.createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
-const u64 = (n) => {
-  const b = Buffer.alloc(8);
-  b.writeBigUInt64LE(BigInt(n));
-  return b;
-};
-const i64 = (n) => {
-  const b = Buffer.alloc(8);
-  b.writeBigInt64LE(BigInt(n));
-  return b;
-};
 
 function readEnvRpc() {
   if (process.env.RPC_ENDPOINT) return process.env.RPC_ENDPOINT;
@@ -94,94 +94,65 @@ function loadKeypair() {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, 'utf8'))));
 }
 
-const pda = (seeds) => PublicKey.findProgramAddressSync(seeds, PROGRAM_ID)[0];
-const vaultPda = (t, b) => pda([Buffer.from('vault'), t.toBuffer(), b.toBuffer()]);
-const tokenVaultPda = (v) => pda([Buffer.from('token_vault'), v.toBuffer()]);
-const backingVaultPda = (v) => pda([Buffer.from('backing_vault'), v.toBuffer()]);
-const positionPda = (v, d, nonce) =>
-  pda([Buffer.from('position'), v.toBuffer(), d.toBuffer(), u64(nonce)]);
+// The account lists are NOT rebuilt here. They come from lib/escrow/instructions.ts —
+// the same builders the /escrow page hands to a user's wallet — because a verification
+// script with its own copy of the account order verifies its own copy and nothing else.
+//
+// This file learned that the hard way. It carried a private set of builders written
+// before `token_token_program` / `backing_token_program` were split per leg, so it kept
+// passing ONE token program where the program wants two. Anchor reads accounts
+// positionally, so the System program landed in the `backing_token_program` slot and
+// every single check failed with 3008 InvalidProgramId — against a program that was
+// completely healthy. A drifted verifier does not merely miss bugs, it invents them.
+const vaultPda = (t, b) => sharedVaultPda(PROGRAM_ID, t, b);
+const tokenVaultPda = (v) => sharedTokenVaultPda(PROGRAM_ID, v);
+const backingVaultPda = (v) => sharedBackingVaultPda(PROGRAM_ID, v);
+const positionPda = (v, d, nonce) => sharedPositionPda(PROGRAM_ID, v, d, BigInt(nonce));
 
-const meta = (pubkey, isSigner, isWritable) => ({ pubkey, isSigner, isWritable });
+// These mints are created by `createMint`, which is legacy SPL, so both legs are
+// TOKEN_PROGRAM_ID. The mixed Token-2022 pairing is covered by
+// scripts/devnet-vault-lifecycle.mjs, which needs two pre-made mints to exercise it.
+const LEGS = { tokenProgram: TOKEN_PROGRAM_ID, backingProgram: TOKEN_PROGRAM_ID };
 
-// Account order MUST match the field order of the #[derive(Accounts)] struct in lib.rs.
-function ixInitializeVault({ payer, tokenMint, backingMint }) {
-  const vault = vaultPda(tokenMint, backingMint);
-  return new TransactionInstruction({
-    programId: PROGRAM_ID,
-    data: disc('initialize_vault'),
-    keys: [
-      meta(payer, true, true),
-      meta(tokenMint, false, false),
-      meta(backingMint, false, false),
-      meta(vault, false, true),
-      meta(tokenVaultPda(vault), false, true),
-      meta(backingVaultPda(vault), false, true),
-      meta(TOKEN_PROGRAM_ID, false, false),
-      meta(SystemProgram.programId, false, false),
-      // no rent sysvar — removed from InitializeVault to fit the SBF stack frame
-    ],
+const ixInitializeVault = ({ payer, tokenMint, backingMint }) =>
+  initializeVaultInstruction({ programId: PROGRAM_ID, payer, tokenMint, backingMint, ...LEGS });
+
+const ixDeposit = ({
+  depositor, tokenMint, backingMint, nonce, tokenAmount, backingAmount, lockSecs,
+}) =>
+  depositInstruction({
+    programId: PROGRAM_ID, depositor, tokenMint, backingMint, ...LEGS,
+    nonce: BigInt(nonce),
+    tokenAmount: BigInt(tokenAmount),
+    backingAmount: BigInt(backingAmount),
+    lockSecs: BigInt(lockSecs),
   });
-}
 
-function ixDeposit({
-  depositor, tokenMint, backingMint, depositorToken, depositorBacking,
-  nonce, tokenAmount, backingAmount, lockSecs,
-}) {
-  const vault = vaultPda(tokenMint, backingMint);
-  return new TransactionInstruction({
-    programId: PROGRAM_ID,
-    data: Buffer.concat([
-      disc('deposit'),
-      u64(nonce),
-      u64(tokenAmount),
-      u64(backingAmount),
-      i64(lockSecs),
-    ]),
-    keys: [
-      meta(depositor, true, true),
-      meta(vault, false, true),
-      meta(positionPda(vault, depositor, nonce), false, true),
-      meta(tokenVaultPda(vault), false, true),
-      meta(backingVaultPda(vault), false, true),
-      meta(tokenMint, false, false),
-      meta(backingMint, false, false),
-      meta(depositorToken, false, true),
-      meta(depositorBacking, false, true),
-      meta(TOKEN_PROGRAM_ID, false, false),
-      meta(SystemProgram.programId, false, false),
-      meta(SYSVAR_RENT_PUBKEY, false, false),
-    ],
+const ixExtendLock = ({ depositor, tokenMint, backingMint, nonce, newUnlockUnix }) =>
+  extendLockInstruction({
+    programId: PROGRAM_ID, depositor, tokenMint, backingMint,
+    nonce: BigInt(nonce), newUnlockUnix: BigInt(newUnlockUnix),
   });
-}
 
-function ixExtendLock({ depositor, position, newUnlockUnix }) {
-  return new TransactionInstruction({
-    programId: PROGRAM_ID,
-    data: Buffer.concat([disc('extend_lock'), i64(newUnlockUnix)]),
-    keys: [meta(depositor, true, false), meta(position, false, true)],
+// `positionOwner` exists only for negative test 6, where Bob signs against Alice's
+// position. The shared builder derives the position from the signer — correct for every
+// real caller, and the one thing that check needs to violate. Overriding the single
+// `position` key rather than hand-rolling the list keeps the ORDER authoritative, which
+// is the part that drifts; slot 2 is asserted below so a reordering cannot silently make
+// this overwrite something else.
+function ixWithdraw({ depositor, positionOwner, tokenMint, backingMint, nonce }) {
+  const ix = withdrawInstruction({
+    programId: PROGRAM_ID, depositor, tokenMint, backingMint, ...LEGS, nonce: BigInt(nonce),
   });
-}
-
-function ixWithdraw({
-  depositor, positionOwner, tokenMint, backingMint, depositorToken, depositorBacking, nonce,
-}) {
-  const vault = vaultPda(tokenMint, backingMint);
-  return new TransactionInstruction({
-    programId: PROGRAM_ID,
-    data: disc('withdraw'),
-    keys: [
-      meta(depositor, true, true),
-      meta(vault, false, true),
-      meta(positionPda(vault, positionOwner, nonce), false, true),
-      meta(tokenVaultPda(vault), false, true),
-      meta(backingVaultPda(vault), false, true),
-      meta(tokenMint, false, false),
-      meta(backingMint, false, false),
-      meta(depositorToken, false, true),
-      meta(depositorBacking, false, true),
-      meta(TOKEN_PROGRAM_ID, false, false),
-    ],
-  });
+  if (positionOwner && !positionOwner.equals(depositor)) {
+    const vault = vaultPda(tokenMint, backingMint);
+    const mine = positionPda(vault, depositor, nonce);
+    if (!ix.keys[2].pubkey.equals(mine)) {
+      throw new Error('Withdraw account order changed — slot 2 is no longer `position`.');
+    }
+    ix.keys[2] = { pubkey: positionPda(vault, positionOwner, nonce), isSigner: false, isWritable: true };
+  }
+  return ix;
 }
 
 function decodeVault(data) {
@@ -266,6 +237,108 @@ async function expectErr(conn, label, wantCode, ixs, signers) {
   }
 }
 
+/**
+ * DEPLOY.md #8 and #9 — the two checks the main run cannot reach.
+ *
+ * `MIN_LOCK_SECS` is 7 days against the chain clock and there is no early exit by
+ * design, so a successful withdraw is only observable a week after the deposit that
+ * created it. This mode re-attaches to a vault the main run left behind and finishes
+ * the table.
+ *
+ *   node scripts/verify-vault.mjs --withdraw <TOKEN_MINT> <BACKING_MINT>
+ *
+ * A position that has not matured yet is NOT a failure — it is the program working —
+ * so that case prints the remaining time and exits 0. Reporting it as a failed check
+ * would train whoever runs this to ignore a red line.
+ */
+async function withdrawMode(conn, payer, tokenMint, backingMint) {
+  const vault = vaultPda(tokenMint, backingMint);
+  const tokenVault = tokenVaultPda(vault);
+  const backingVault = backingVaultPda(vault);
+  const position = positionPda(vault, payer.publicKey, 1);
+
+  const pAcc = await conn.getAccountInfo(position);
+  if (!pAcc) {
+    console.error(`No position at ${position.toBase58()} for ${payer.publicKey.toBase58()}.`);
+    console.error('Run the script with no arguments first; it leaves one behind at nonce 1.');
+    process.exit(2);
+  }
+  const p = decodePosition(pAcc.data);
+  if (!p) {
+    console.error(`Account at ${position.toBase58()} is ${pAcc.data.length} bytes, not a Position.`);
+    process.exit(2);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  console.log(`position : ${position.toBase58()}`);
+  console.log(`  token=${p.tokenAmount} backing=${p.backingAmount} unlock=${p.unlockUnix}`);
+  if (BigInt(now) < BigInt(p.unlockUnix)) {
+    const left = Number(BigInt(p.unlockUnix) - BigInt(now));
+    const d = Math.floor(left / 86400), h = Math.floor((left % 86400) / 3600);
+    console.log(`
+Still locked for ${d}d ${h}h — that is the program working, not a fault.`);
+    console.log('Re-run once it matures to finish DEPLOY.md #8 and #9.');
+    process.exit(0);
+  }
+
+  // Balances before, so #8 can assert the EXACT amounts rather than "it did not throw".
+  const vBefore = decodeVault((await conn.getAccountInfo(vault)).data);
+  const myToken = associatedTokenAddress(tokenMint, payer.publicKey, TOKEN_PROGRAM_ID);
+  const myBacking = associatedTokenAddress(backingMint, payer.publicKey, TOKEN_PROGRAM_ID);
+  const tBefore = (await getAccount(conn, myToken)).amount;
+  const bBefore = (await getAccount(conn, myBacking)).amount;
+  const tvBefore = (await getAccount(conn, tokenVault)).amount;
+  const bvBefore = (await getAccount(conn, backingVault)).amount;
+
+  console.log('');
+  console.log('--- DEPLOY.md section 3, tests 8 and 9 ---');
+
+  const base = { depositor: payer.publicKey, tokenMint, backingMint };
+  const ok = await expectOk(conn, '8  withdraw after unlock, correct depositor',
+    [ixWithdraw({ ...base, nonce: 1 })], [payer]);
+
+  if (ok) {
+    // The amounts must be the ones RECORDED at deposit, not the vault's balance. That is
+    // what stops one position reaching another's funds, so it is asserted exactly.
+    const tAfter = (await getAccount(conn, myToken)).amount;
+    const bAfter = (await getAccount(conn, myBacking)).amount;
+    const exact = tAfter - tBefore === BigInt(p.tokenAmount)
+      && bAfter - bBefore === BigInt(p.backingAmount);
+    record('8a both legs returned exactly the recorded amounts', exact,
+      `token +${tAfter - tBefore}/${p.tokenAmount}, backing +${bAfter - bBefore}/${p.backingAmount}`);
+
+    const closed = (await conn.getAccountInfo(position)) === null;
+    record('8b position account closed and rent refunded', closed,
+      closed ? 'account gone' : 'position still exists');
+
+    const vAfter = decodeVault((await conn.getAccountInfo(vault)).data);
+    const totals = vAfter.totalTokenLocked === vBefore.totalTokenLocked - BigInt(p.tokenAmount)
+      && vAfter.totalBackingLocked === vBefore.totalBackingLocked - BigInt(p.backingAmount)
+      && vAfter.positionsOpen === vBefore.positionsOpen - 1n;
+    record('8c vault totals decremented by exactly this position', totals,
+      `token=${vAfter.totalTokenLocked} backing=${vAfter.totalBackingLocked} open=${vAfter.positionsOpen}`);
+
+    // Test 10 from the other side: the second depositor's funds must be untouched.
+    const tvAfter = (await getAccount(conn, tokenVault)).amount;
+    const bvAfter = (await getAccount(conn, backingVault)).amount;
+    const isolated = tvAfter >= vAfter.totalTokenLocked && bvAfter >= vAfter.totalBackingLocked
+      && tvBefore - tvAfter === BigInt(p.tokenAmount)
+      && bvBefore - bvAfter === BigInt(p.backingAmount);
+    record("10c the other depositor's funds were not touched", isolated,
+      `vault token ${tvAfter}/${vAfter.totalTokenLocked}, backing ${bvAfter}/${vAfter.totalBackingLocked}`);
+
+    // 9. Replay. The position account no longer exists, so account validation rejects it
+    // before any handler runs — an Anchor framework error rather than one of ours.
+    await expectErr(conn, '9  replay the same withdraw', 3012,
+      [ixWithdraw({ ...base, nonce: 1 })], [payer]);
+  }
+
+  const passed = results.filter((r) => r.ok).length;
+  console.log('');
+  console.log(`==== ${passed}/${results.length} checks passed ====`);
+  if (passed !== results.length) process.exit(1);
+}
+
 async function main() {
   const rpc = readEnvRpc();
   const conn = new Connection(rpc, 'confirmed');
@@ -286,6 +359,14 @@ async function main() {
   }
   const bal = await conn.getBalance(payer.publicKey);
   console.log(`balance : ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL\n`);
+  const argv = process.argv.slice(2);
+  if (argv[0] === '--withdraw') {
+    if (argv.length < 3) {
+      console.error('usage: node scripts/verify-vault.mjs --withdraw <TOKEN_MINT> <BACKING_MINT>');
+      process.exit(2);
+    }
+    return withdrawMode(conn, payer, new PublicKey(argv[1]), new PublicKey(argv[2]));
+  }
 
   console.log('--- setup: two throwaway SPL mints ---');
   const tokenMint = await createMint(conn, payer, payer.publicKey, null, DECIMALS);
@@ -341,7 +422,7 @@ async function main() {
   await expectErr(conn, '1c initialize_vault with token == backing', 6009,
     [ixInitializeVault({ payer: payer.publicKey, tokenMint, backingMint: tokenMint })], [payer]);
 
-  const base = { depositor: payer.publicKey, tokenMint, backingMint, depositorToken: aToken, depositorBacking: aBacking };
+  const base = { depositor: payer.publicKey, tokenMint, backingMint };
 
   await expectErr(conn, '2  deposit with backing_amount = 0', 6000,
     [ixDeposit({ ...base, nonce: 1, tokenAmount: ONE, backingAmount: 0n, lockSecs: WEEK })], [payer]);
@@ -359,24 +440,21 @@ async function main() {
   // validation, before the handler's StillLocked check ever runs.
   await expectErr(conn, '6  withdraw signed by a different wallet', 6004,
     [ixWithdraw({
-      depositor: bob.publicKey, positionOwner: payer.publicKey, tokenMint, backingMint,
-      depositorToken: bToken, depositorBacking: bBacking, nonce: 1,
+      depositor: bob.publicKey, positionOwner: payer.publicKey, tokenMint, backingMint, nonce: 1,
     })], [bob]);
 
-  const posA = positionPda(vault, payer.publicKey, 1);
   await expectErr(conn, '7  extend_lock to an earlier time', 6003,
-    [ixExtendLock({ depositor: payer.publicKey, position: posA, newUnlockUnix: 1 })], [payer]);
+    [ixExtendLock({ depositor: payer.publicKey, ...base, nonce: 1, newUnlockUnix: 1 })], [payer]);
 
   const later = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
   await expectOk(conn, '7a extend_lock to a later time succeeds',
-    [ixExtendLock({ depositor: payer.publicKey, position: posA, newUnlockUnix: later })], [payer]);
+    [ixExtendLock({ depositor: payer.publicKey, ...base, nonce: 1, newUnlockUnix: later })], [payer]);
 
   // 10 (deposit half). Two depositors, one vault.
   await expectOk(conn, '10 second depositor opens an independent position',
     [ixDeposit({
-      depositor: bob.publicKey, tokenMint, backingMint, depositorToken: bToken,
-      depositorBacking: bBacking, nonce: 1, tokenAmount: 3n * ONE, backingAmount: 4n * ONE,
-      lockSecs: WEEK,
+      depositor: bob.publicKey, tokenMint, backingMint, nonce: 1,
+      tokenAmount: 3n * ONE, backingAmount: 4n * ONE, lockSecs: WEEK,
     })], [bob]);
 
   // Accounting: the invariant the /escrow page reports on.

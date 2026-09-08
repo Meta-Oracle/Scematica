@@ -150,3 +150,79 @@ export function solvency(recorded: string, balance: string): SolvencyVerdict {
   if (b > r) return 'donated'
   return 'backed'
 }
+
+/** `Position` account size: 8 discriminator + 2 pubkeys + 3 u64 + 2 i64 + bump.
+ *
+ * Mirrors `Position::LEN` in programs/scematica-vault/src/lib.rs, and is the same
+ * tripwire `VAULT_LEN` is: a decode against an unexpected size is refused rather than
+ * guessed at, because every field past a layout change would be read out of the wrong
+ * bytes and still render as a plausible number. */
+export const POSITION_LEN = 8 + 32 * 2 + 8 * 3 + 8 * 2 + 1
+
+export interface PositionState {
+  vault: string
+  depositor: string
+  /** u64 base units, as decimal strings — same reasoning as `VaultState`. */
+  tokenAmount: string
+  backingAmount: string
+  /** i64 unix seconds. Signed: the program stores a raw `Clock` timestamp. */
+  createdUnix: string
+  unlockUnix: string
+  nonce: string
+  bump: number
+}
+
+export function derivePositionPda(
+  vault: PublicKey,
+  depositor: PublicKey,
+  nonce: bigint,
+  programId: PublicKey,
+): PublicKey {
+  const n = Buffer.alloc(8)
+  n.writeBigUInt64LE(nonce)
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('position'), vault.toBuffer(), depositor.toBuffer(), n],
+    programId,
+  )[0]
+}
+
+/** Byte offset of `Position.depositor`, for a `getProgramAccounts` memcmp filter.
+ *  8 discriminator + 32 for the `vault` pubkey that precedes it. */
+export const POSITION_DEPOSITOR_OFFSET = 8 + 32
+
+/**
+ * Decode a `Position`. Returns `null` for anything that is not one.
+ *
+ * `createdUnix` / `unlockUnix` are read as SIGNED. Reading an i64 as unsigned turns any
+ * negative timestamp into ~1.8e19, which would render as a lock expiring 584 billion
+ * years out — and, worse, would compare as still-locked forever.
+ */
+export function decodePosition(data: Uint8Array): PositionState | null {
+  if (data.length !== POSITION_LEN) return null
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  const pk = (offset: number) => new PublicKey(data.slice(offset, offset + 32)).toBase58()
+
+  let o = 8 // skip the Anchor discriminator
+  const vault = pk(o); o += 32
+  const depositor = pk(o); o += 32
+  const tokenAmount = readU64(view, o); o += 8
+  const backingAmount = readU64(view, o); o += 8
+  const createdUnix = view.getBigInt64(o, true).toString(); o += 8
+  const unlockUnix = view.getBigInt64(o, true).toString(); o += 8
+  const nonce = readU64(view, o); o += 8
+  const bump = data[o]
+
+  return { vault, depositor, tokenAmount, backingAmount, createdUnix, unlockUnix, nonce, bump }
+}
+
+/**
+ * Whether a position may be withdrawn at `nowUnix`.
+ *
+ * The comparison is `now >= unlock`, matching the program's `require!` exactly. A
+ * stricter check here would show a matured position as locked; a looser one would offer
+ * a button that costs a signature and then fails with `StillLocked`.
+ */
+export function isUnlocked(position: PositionState, nowUnix: number): boolean {
+  return BigInt(Math.floor(nowUnix)) >= BigInt(position.unlockUnix)
+}

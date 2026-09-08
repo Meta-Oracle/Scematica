@@ -185,9 +185,35 @@ function decodeVault(data) {
 }
 
 const results = [];
-function record(name, ok, detail) {
-  results.push({ name, ok, detail });
-  console.log(`${ok ? '  PASS' : '  FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+
+/**
+ * Three verdicts, not two. `?` is a check that could not be RUN — the same distinction
+ * `scema doctor` makes, and it matters most here: "the program refused this" and "the
+ * RPC would not answer" are different claims and only one is an accusation against a
+ * custody program.
+ *
+ * Without it this suite reported 3 FAILs on a healthy program because a rate-limited
+ * endpoint served a stale blockhash. A red line nobody should act on is exactly how a
+ * suite teaches people to skim past its output — which is the failure mode that let the
+ * drifted account builders sit here unnoticed in the first place.
+ */
+function record(name, ok, detail, verdict = ok ? 'pass' : 'fail') {
+  results.push({ name, ok, detail, verdict });
+  const tag = { pass: '  PASS', fail: '  FAIL', unknown: '  ?   ' }[verdict];
+  console.log(`${tag}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+/**
+ * Is this the transport failing rather than the program answering?
+ *
+ * Deliberately narrow. Anything that could be the program's own refusal must fall
+ * through to a real verdict — an over-broad match here would launder a genuine defect
+ * into "could not be read", which is far worse than a flaky FAIL.
+ */
+function isTransportFailure(e) {
+  const m = String(e?.message ?? '');
+  if (/custom program error|Error Number:/i.test(m)) return false;
+  return /Blockhash not found|block height exceeded|429|Too Many Requests|ETIMEDOUT|ECONNRESET|socket hang up|fetch failed|502|503|504/i.test(m);
 }
 
 async function errCodeOf(conn, e) {
@@ -204,12 +230,21 @@ async function errCodeOf(conn, e) {
   return null;
 }
 
+// Retried once on a transport failure, because a blockhash goes stale on a rate-limited
+// endpoint and `sendAndConfirmTransaction` fetches its own — so a second attempt gets a
+// fresh one. Only once: a loop would turn a genuinely unreachable cluster into a hang.
 async function send(conn, ixs, signers) {
-  const tx = new Transaction().add(...ixs);
-  return sendAndConfirmTransaction(conn, tx, signers, {
-    commitment: 'confirmed',
-    skipPreflight: false,
-  });
+  const attempt = () =>
+    sendAndConfirmTransaction(conn, new Transaction().add(...ixs), signers, {
+      commitment: 'confirmed',
+      skipPreflight: false,
+    });
+  try {
+    return await attempt();
+  } catch (e) {
+    if (!isTransportFailure(e)) throw e;
+    return attempt();
+  }
 }
 
 async function expectOk(conn, label, ixs, signers) {
@@ -218,6 +253,10 @@ async function expectOk(conn, label, ixs, signers) {
     record(label, true, sig.slice(0, 16) + '…');
     return true;
   } catch (e) {
+    if (isTransportFailure(e)) {
+      record(label, false, `could not be run — ${String(e?.message).split('\n')[0].slice(0, 90)}`, 'unknown');
+      return false;
+    }
     const code = await errCodeOf(conn, e);
     record(label, false, code ? `unexpected ${code} ${ERR[code] ?? ''}` : String(e?.message).slice(0, 160));
     return false;
@@ -230,6 +269,13 @@ async function expectErr(conn, label, wantCode, ixs, signers) {
     record(label, false, `expected ${wantCode} ${ERR[wantCode]}, but it SUCCEEDED`);
     return false;
   } catch (e) {
+    // A transport failure is not the program refusing. Crediting it as a passing negative
+    // test would be the worst reading available: the suite would go green precisely when
+    // it had checked nothing.
+    if (isTransportFailure(e)) {
+      record(label, false, `could not be run — ${String(e?.message).split('\n')[0].slice(0, 90)}`, 'unknown');
+      return false;
+    }
     const code = await errCodeOf(conn, e);
     const ok = code === wantCode;
     record(
@@ -239,6 +285,24 @@ async function expectErr(conn, label, wantCode, ixs, signers) {
     );
     return ok;
   }
+}
+
+/** One summary for both modes: passed / failed / could-not-be-run, and an exit code that
+ *  keeps the last of those distinct from a real defect. */
+function summarise() {
+  const pass = results.filter((r) => r.verdict === 'pass').length;
+  const fail = results.filter((r) => r.verdict === 'fail').length;
+  const unknown = results.filter((r) => r.verdict === 'unknown').length;
+  console.log('');
+  console.log(`==== ${pass}/${results.length} checks passed${unknown ? `, ${unknown} could not be run` : ''} ====`);
+  if (unknown) {
+    console.log('A check that could not be run is not a finding about the program. It is');
+    console.log('almost always a rate-limited endpoint; re-run, ideally against a keyed RPC.');
+  }
+  // 1 = a real defect. 2 = nothing failed but coverage is incomplete. Distinct so a
+  // caller cannot read "the cluster was busy" as "the vault is broken", or the reverse.
+  if (fail) process.exit(1);
+  if (unknown) process.exit(2);
 }
 
 /**
@@ -361,10 +425,7 @@ Still locked for ${d}d ${h}h — that is the program working, not a fault.`);
       [ixWithdraw({ ...base, nonce })], [payer]);
   }
 
-  const passed = results.filter((r) => r.ok).length;
-  console.log('');
-  console.log(`==== ${passed}/${results.length} checks passed ====`);
-  if (passed !== results.length) process.exit(1);
+  summarise();
 }
 
 async function main() {
@@ -501,13 +562,11 @@ async function main() {
       `token ${tv.amount}/${v.totalTokenLocked}, backing ${bv.amount}/${v.totalBackingLocked}`);
   }
 
-  const passed = results.filter((r) => r.ok).length;
-  console.log(`\n==== ${passed}/${results.length} checks passed ====`);
+  console.log('');
   console.log('NOT COVERED: a successful withdraw, and the replay of one (DEPLOY.md #8/#9).');
   console.log('MIN_LOCK_SECS is 7 days against the chain clock, so neither can run today.');
   console.log(`To finish coverage later:  node scripts/verify-vault.mjs --withdraw ${tokenMint.toBase58()} ${backingMint.toBase58()}`);
-
-  if (passed !== results.length) process.exit(1);
+  summarise();
 }
 
 main().catch((e) => {

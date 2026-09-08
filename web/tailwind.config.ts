@@ -110,6 +110,31 @@ const config: Config = {
         'mesh-absent':      '#3a4266',
         'mesh-veto':        '#ff5d7d',
 
+        // ── zero ────────────────────────────────────────────────────────────
+        // Eighth product, eighth identity: cold cyan-on-slate, against the
+        // sniper's red, alchem's blue, scylar's violet, botchain's and omni's
+        // ambers, escrow's teal and the mesh's indigo. It is the coldest palette
+        // on the site on purpose — Zero is the only surface that can spend money
+        // unattended, and an operator with several tabs open must be able to tell
+        // at a glance which one is armed.
+        //
+        // `zero-dim` doubles as the colour of an unmeasured gauge and sits close
+        // to the surface, for the same reason `mesh-absent` and `omni-unmeasured`
+        // do: a quantity nobody measured must not draw the eye like one somebody
+        // did.
+        'zero-black':       '#04080a',
+        'zero-surface':     '#081217',
+        'zero-hi':          '#0e1e26',
+        'zero-border':      '#173039',
+        'zero-border-hi':   '#28505e',
+        'zero-text':        '#d6eef5',
+        'zero-muted':       '#7fa3b0',
+        'zero-dim':         '#4a6672',
+        'zero-accent':      '#3fd8e8',
+        'zero-ok':          '#3ddc97',
+        'zero-warn':        '#f5b544',
+        'zero-alarm':       '#ff5d7d',
+
         // ── omni ────────────────────────────────────────────────────────────
         // Seventh product, seventh identity: warm amber on near-black, against
         // the sniper's red, alchem's blue, scylar's violet, botchain's amber,

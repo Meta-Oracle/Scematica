@@ -930,6 +930,25 @@ body:has(.escrow-root)::after {
   min-height: 100vh;
 }
 
+/* Scematica Zero — the coldest palette on the site, deliberately. Zero is the only
+   surface that can spend money unattended, so an operator with several consoles open
+   must be able to tell at a glance which tab is armed. Mirrors the `zero-*` tokens in
+   tailwind.config.ts; a change moves both. */
+.zero-root {
+  --z-black:     #04080a;
+  --z-surface:   #081217;
+  --z-hi:        #0e1e26;
+  --z-border:    #173039;
+  --z-text:      #d6eef5;
+  --z-dim:       #4a6672;
+  --z-accent:    #3fd8e8;
+  --z-ok:        #3ddc97;
+  --z-warn:      #f5b544;
+  --z-alarm:     #ff5d7d;
+  background: var(--z-black);
+  color: var(--z-text);
+}
+
 .mesh-root {
   --m-black:     #050711;
   --m-surface:   #0a0e1f;

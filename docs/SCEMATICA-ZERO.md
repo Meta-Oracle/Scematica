@@ -4,9 +4,14 @@
 decide, gate, execute, seal — running entirely inside a browser tab against real Solana
 mainnet, with no Rust process anywhere and no key on our servers.
 
-Status: **design**. Nothing here is built yet. This document exists so the load-bearing
-decisions are argued once, in writing, before any of them get made accidentally by an
-implementation.
+Status: **phase 0 and 1 built.** The pure core (`web/lib/zero/`), the browser host
+(`web/lib/zero/host/`) and the `/zero` page exist, with 166 checks in
+`npm run check:zero`. Phase 2 (arming against mainnet end to end) and phase 3 (the
+extension) are not.
+
+This document was written before any of it, so the load-bearing decisions were argued
+once rather than made accidentally by an implementation. Where building changed an
+answer, the change is recorded here rather than left in a commit message.
 
 ---
 
@@ -265,16 +270,36 @@ by which a simulated figure reaches a decision (Z-5).
 
 ## 6. Phases
 
-**Phase 0 — the core, no money.** `lib/zero/` reducer, types, gate, decide, seal.
-`check:zero` pins Z-1 (a source scan: no `setInterval` in the money path), Z-5, Z-6, Z-7.
-Nothing signs.
+**Phase 0 — the core, no money. DONE.** `lib/zero/` reducer, types, gate, decide, seal.
+Z-1 is pinned *behaviourally* as well as by source scan: 2000 ticks fed to the reducer in
+every reachable state — including one holding a position past its stop, its target, its
+pullback and its timeout — produce no swap, and the same position exits on the first real
+chain arrival.
 
-**Phase 1 — `/zero`, attended.** BYO key, live socket, real scoring, real records,
-wallet-prompt execution. Zero is a decision engine you execute by hand. Shippable and
-genuinely useful, with no new custody risk anywhere.
+**Phase 1 — `/zero`. DONE.** BYO endpoint, `accountSubscribe` on both vaults, the Raydium
+AMM V4 layout read rather than assumed, Jupiter routing, `getSignatureStatuses` polling
+with `Unknown` as a real outcome, the Web Locks election, and the readout. Two things
+building it changed:
 
-**Phase 2 — the session key.** Arming flow, caps, expiry, ledger, sweep, kill switch.
-Zero becomes a bot. This is the phase that needs the most careful review and the loudest UI.
+- **The layout orientation is read, not assumed.** Raydium does not guarantee which leg
+  is SOL, and assuming inverts the price on half of all pools — which is not obviously
+  wrong to look at, it just makes every exit rule fire backwards.
+- **The pure decoding moved out of the action layer** (`host/parse.ts`), because
+  `lib/swap.ts` uses a TypeScript parameter property that Node's strip-only loader
+  refuses, so anything importing it is untestable. The layout offsets are exactly the
+  code that must be tested — a wrong offset yields a valid-looking pubkey and does not
+  throw — so they belong on the pure side.
+
+**Phase 2 — the session key. PARTLY BUILT.** The caps, ledger, expiry, arming and kill
+switch exist and are tested; what is *not* done is an end-to-end armed run against
+mainnet, a funding/sweep flow, and the balance read behind the token gate. Nothing here
+should be armed with real money until that pass happens.
+
+The kill switch deliberately does **not** liquidate. A control that dumps at market is a
+different and far more dangerous thing, and conflating the two means nobody can stop new
+entries without also being forced to sell. It halts entries and destroys the key
+material — so "disarmed" means the same thing to a reader of `localStorage` as it does to
+the UI.
 
 **Phase 3 — the extension.** Same core, offscreen document, persistent socket, cross-site
 perception on pump.fun / DexScreener / Raydium. Lifts the §3 limitation rather than working
@@ -289,16 +314,37 @@ record at `/omni` — the calibration story, with declines counted rather than s
 
 Deliberately unanswered, for the next pass:
 
-1. **Strategy set.** Which entries beyond "scored post-launch"? Pullback, momentum
-   continuation, and an arb-lite mode are all latency-tolerant enough to be honest here.
-2. **Exit ladder.** How much of the Rust exit machinery (TP escalation, velocity decay,
-   peak stagnation, dead-pool) survives as arrival-driven predicates.
-3. **Does Zero train?** A browser-side DQ* can learn from its own fills. Tempting, and it
-   risks a per-tab policy nobody can reproduce. Probably: run a pinned checkpoint, log
-   transitions, train nowhere.
-4. **Multi-tab.** Two tabs sharing one session key double every cap. `Web Locks` gives a
-   single-writer election; this is the `reserve()` problem again, in a browser.
-5. **What Zero shows about itself.** The mesh/sigil idiom: Ψ, coverage, socket liveness and
-   session-key headroom as an honest readout.
-6. **Token gate.** Whether Zero sits behind the 250k SCEMA gate, or whether a public
-   verifiable track record is worth more than gating it.
+All six are answered and built. What they settled:
+
+1. **Strategy set** — `scored-entry`, `pullback`, `continuation` (`strategy.ts`), each
+   chosen for latency tolerance rather than for coverage. Continuation demands a majority
+   of up-steps and not merely a net rise: a mint that doubled and halved and doubled has
+   the same two-minute change as one that climbed steadily, and only the second is a trend.
+2. **Exit ladder** — the whole thing as arrival-driven predicates (`exits.ts`). Writing
+   the test found the pullback rule's real firing region: take-profit is evaluated first,
+   so pullback only ever catches a position that has fallen back *through* the target. The
+   `configProblem` assertion is what keeps that region non-empty.
+3. **Does Zero train?** No. Pinned checkpoint, transitions logged, training nowhere
+   (`policy.ts`). A per-tab policy is one nobody can reproduce, and a record citing
+   weights that exist nowhere destroys the only thing Zero is for. `NEUTRAL` and the
+   feature order are read out of `state.rs` at check time.
+4. **Multi-tab** — Web Locks single-writer election (`lease.ts`). A `localStorage` flag is
+   not a lock and a crashed leader wedges it forever; the browser releases a Web Lock when
+   the tab dies. A **missing** API is not treated as leadership, since that would let every
+   tab trade against one budget.
+5. **What Zero shows about itself** — `readout.ts`. An unmeasured gauge draws a dashed full
+   sweep and an em dash; a measured zero draws nothing and prints `0.00`. The headline
+   answers the only question whose wrong answer costs money silently.
+6. **Token gate** — reading and attended swaps ungated, arming gated (`gatekeep.ts`), and
+   the file says plainly that a client-side check with no server behind it is a **default,
+   not a boundary**. An unreadable balance is `unknown`, never `insufficient`.
+
+What is genuinely still open:
+
+- **Funding and sweeping the session key**, and the SCEMA balance read behind the gate.
+- **The extension** (phase 3), the only thing that lifts §3's limitation rather than
+  reporting it.
+- **`readOutAmount`** in `runtime.ts` returns 0 pending a token-account read. Until it is
+  written, an observed buy records no entry price, and `exits.ts` correctly refuses to
+  price the position rather than inventing one — so Zero is safe armed, not yet useful
+  armed.

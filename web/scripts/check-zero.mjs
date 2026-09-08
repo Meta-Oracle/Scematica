@@ -27,6 +27,11 @@ import { seal, verify, calibrate, COMMITTED_FIELDS } from '../lib/zero/seal.ts'
 import { evaluateGate, REQUIRED_BASE_UNITS } from '../lib/zero/gatekeep.ts'
 import { initialState, step, run, decideEntry } from '../lib/zero/engine.ts'
 import { buildReadout, coverageMeter } from '../lib/zero/readout.ts'
+import {
+  isNewPool, decodeTokenAmount, priceFromVaults, vaultEvent, observePool,
+  AMM_V4, vaultsFromPool, base58ToBytes, bytesToBase58,
+} from '../lib/zero/host/parse.ts'
+
 
 let failed = 0
 const check = (name, ok) => {
@@ -622,6 +627,93 @@ section('core purity')
   // is imported from lib/sim/dqstar, which is arithmetic; lib/sim/engine is the fabricator.
   const simmed = files.filter(f => /sim\/engine/.test(src[f]))
   check(`the core never imports the simulation engine${simmed.length ? ` — ${simmed.join(', ')}` : ''}`, simmed.length === 0)
+}
+
+
+section('host: parsing an arrival')
+
+{
+  const tokenAccount = amount => {
+    const b = new Uint8Array(165)
+    new DataView(b.buffer).setBigUint64(64, BigInt(amount), true)
+    return b
+  }
+
+  check('a token amount decodes from offset 64', decodeTokenAmount(tokenAccount(12345n)) === 12345n)
+  // A short buffer is not an empty account. Returning 0 would price a position on it.
+  check('a truncated account decodes to null, never 0', decodeTokenAmount(new Uint8Array(40)) === null)
+  // Token-2022 accounts carry extensions and exceed 165 bytes; rejecting them on an
+  // equality check would make every Token-2022 position unpriceable.
+  check('a Token-2022 account with extensions still decodes', decodeTokenAmount(new Uint8Array(300)) === 0n)
+
+  check('a price needs both legs', priceFromVaults(100n, null) === null && priceFromVaults(null, 100n) === null)
+  // An empty base vault makes the price infinite, and an infinite price arriving at
+  // evaluateExit reads as a take-profit.
+  check('an empty base vault yields no price, not an infinite one', priceFromVaults(100n, 0n) === null)
+  check('two legs yield a price', priceFromVaults(200n, 100n) === 2)
+
+  check('an unpriceable arrival produces NO event', vaultEvent('M', tokenAccount(100n), null, 1, 2) === null)
+  check('a priceable arrival produces one', vaultEvent('M', tokenAccount(200n), tokenAccount(100n), 1, 2)?.priceSol === 2)
+
+  check('a failed initialize2 is not a pool', !isNewPool({ signature: 's', err: { x: 1 }, logs: ['initialize2'] }))
+  check('a successful one is', isNewPool({ signature: 's', err: null, logs: ['Program log: initialize2'] }))
+  check('a swap is not', !isNewPool({ signature: 's', err: null, logs: ['Program log: ray_log'] }))
+}
+
+{
+  // THE boundary where "the feed did not say" would otherwise become "the value is zero".
+  const o = observePool({ mint: 'M', sizeSol: 40 }, 'test-feed')
+  check('a provided field is measured', o.sizeSol.measured && o.sizeSol.value === 40)
+  check('an omitted field is ABSENT, not zero', !o.ageSecs.measured)
+  check('...and names the source that did not provide it', o.ageSecs.note.includes('test-feed'))
+  // The two safest readings of the two strongest safety signals must never be assumed.
+  check('an unstated mint authority is not "renounced"', !o.mintRenounced.measured)
+  check('an unstated LP burn is not "burned"', !o.lpBurned.measured)
+  check('a NaN is absent rather than encoded', !observePool({ mint: 'M', sizeSol: NaN }, 'f').sizeSol.measured)
+}
+
+section('host: the RPC key never escapes')
+
+{
+  const rpcSrc = codeOf(join(HERE, '..', 'lib', 'zero', 'host', 'rpc.ts'))
+  // An endpoint URL with ?api-key= in it is the likeliest way for a secret to escape a
+  // page that is otherwise careful, so every message that can reach a log or a record
+  // goes through redact().
+  check('errors are redacted before they can reach a notice', /redact\(/.test(rpcSrc))
+  check('the key is never posted to our own origin', !/'\/api\//.test(rpcSrc))
+}
+
+
+section('host: raydium layout and base58')
+
+{
+  // A wrong offset yields a valid-looking pubkey belonging to a different account, and
+  // Zero would price every exit against a balance from another pool. It does not throw.
+  const wsol = base58ToBytes('So11111111111111111111111111111111111111112')
+  check('base58 round-trips a mint', bytesToBase58(wsol) === 'So11111111111111111111111111111111111111112')
+  check('base58 preserves leading zero bytes', bytesToBase58(base58ToBytes('1111111111111111111111111111111')).length === 31)
+
+  const pool = (baseMint, quoteMint) => {
+    const d = new Uint8Array(752)
+    d.set(new Uint8Array(32).fill(0xa1), AMM_V4.BASE_VAULT)
+    d.set(new Uint8Array(32).fill(0xb2), AMM_V4.QUOTE_VAULT)
+    d.set(baseMint, AMM_V4.BASE_MINT)
+    d.set(quoteMint, AMM_V4.QUOTE_MINT)
+    return d
+  }
+  const token = new Uint8Array(32).fill(0x0c)
+
+  const normal = vaultsFromPool(pool(token, wsol), wsol)
+  check('a SOL-quoted pool keeps its orientation', normal?.quoteVault[0] === 0xb2 && normal?.baseVault[0] === 0xa1)
+
+  // Raydium does not guarantee which leg is SOL. Assuming it inverts the price on half
+  // of all pools, and an inverted price makes every exit rule fire backwards.
+  const inverted = vaultsFromPool(pool(wsol, token), wsol)
+  check('a SOL-BASED pool has its legs swapped, not assumed', inverted?.quoteVault[0] === 0xa1 && inverted?.baseVault[0] === 0xb2)
+
+  check('a pool with no SOL leg is refused rather than priced in an unknown unit',
+    vaultsFromPool(pool(token, token), wsol) === null)
+  check('a short account is refused', vaultsFromPool(new Uint8Array(100), wsol) === null)
 }
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)

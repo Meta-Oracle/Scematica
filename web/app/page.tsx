@@ -16,6 +16,7 @@ import { NNStatus }         from '@/components/NNStatus'
 import { OpenPositions }    from '@/components/OpenPositions'
 import { PnlChart }         from '@/components/PnlChart'
 import { PoolRadar }        from '@/components/PoolRadar'
+import { ProductNav }       from '@/components/ProductNav'
 import { SimulationBanner } from '@/components/SimulationBanner'
 import { SniperControls }   from '@/components/SniperControls'
 import { Tournament }       from '@/components/Tournament'
@@ -45,6 +46,10 @@ export default function Home() {
     <div className="flex flex-col min-h-screen">
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* No `relative` here, deliberately. The mobile menu is `absolute … top-full`
+          against this element, and `position: sticky` is already a containing block for
+          absolutely positioned descendants — adding `relative` would set the same
+          property twice and leave which one wins to Tailwind's internal class order. */}
       <header className="sticky top-0 z-50 border-b border-scema-border bg-scema-black/95 backdrop-blur-sm">
         <div className="flex items-center justify-between px-4 py-3 max-w-[1600px] mx-auto gap-4">
           <div className="flex items-center gap-3 shrink-0">
@@ -72,74 +77,11 @@ export default function Home() {
               disappears — silently, and only at some widths. Wrapping costs a taller
               header on a narrow window, which is visible and therefore fixable. */}
           <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
-            {/* Sister tools on the same site — each its own product, hence its own palette. */}
-            <Link
-              href="/alchem-link"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-alchem-border
-                         text-alchem-blue hover:border-alchem-blue hover:text-alchem-blue-hi
-                         hover:shadow-blue-sm transition-all text-xs tracking-widest"
-            >
-              ◈ ALCHEM-LINK
-            </Link>
-            <Link
-              href="/botchain"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-botchain-border
-                         text-botchain-amber hover:border-botchain-amber hover:text-botchain-amber-hi
-                         transition-all text-xs tracking-widest"
-            >
-              ⬢ BOT CHAIN
-            </Link>
-            <Link
-              href="/scylar-terminal"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-scylar-border
-                         text-scylar-violet hover:border-scylar-violet hover:text-scylar-violet-hi
-                         transition-all text-xs tracking-widest"
-            >
-              ◈ SCYLAR
-            </Link>
-            <Link
-              href="/escrow"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-escrow-border
-                         text-escrow-teal hover:border-escrow-teal hover:text-escrow-teal-hi
-                         transition-all text-xs tracking-widest"
-            >
-              ⬡ ESCROW
-            </Link>
-            <Link
-              href="/mesh"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-mesh-border
-                         text-mesh-accent hover:border-mesh-accent hover:text-mesh-glow
-                         transition-all text-xs tracking-widest"
-            >
-              ◇ MESH
-            </Link>
-            <Link
-              href="/omni"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-omni-border
-                         text-omni-accent hover:border-omni-accent hover:text-omni-glow
-                         transition-all text-xs tracking-widest"
-            >
-              ◆ OMNI
-            </Link>
-            <Link
-              href="/scema-world"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-sw-border
-                         text-sw-accent hover:border-sw-accent hover:text-sw-glow
-                         transition-all text-xs tracking-widest"
-            >
-              ✦ SCEMA-WORLD
-            </Link>
-            {/* Zero is the only sister product that can spend money on its own, which is
-                why its palette is the coldest on the site — an operator with several tabs
-                open has to be able to tell which one is armed. */}
-            <Link
-              href="/zero"
-              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-zero-border
-                         text-zero-accent hover:border-zero-accent hover:text-zero-text
-                         transition-all text-xs tracking-widest"
-            >
-              ○ ZERO
-            </Link>
+            {/* Sister tools on the same site — each its own product, hence its own
+                palette. `ProductNav` renders the chip row above `md` and a disclosure
+                menu below it, both from one list, so a product cannot be added to one
+                and forgotten in the other. */}
+            <ProductNav />
             <HealthBadge />
             <TradeFee />
             <WalletStatus />

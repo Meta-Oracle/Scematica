@@ -1,28 +1,30 @@
 import type { MetadataRoute } from 'next'
 
+import { PRODUCTS } from '@/components/products'
+
 // Every product on scematica.org, in one place.
 //
-// There are nine now and the header nav is `hidden md:flex`, so on a phone none of them are
-// linked at all. A sitemap is not a substitute for navigation, but it is what makes the pages
-// findable rather than reachable only by somebody who already knows the URL.
+// Nine routes: the dashboard plus eight products. The nav no longer hides them on a phone
+// — see `components/ProductNav` — but a sitemap is what makes a page findable by somebody
+// who has never seen the nav at all.
 //
 // `NEXT_PUBLIC_SITE_URL` so a preview deployment does not advertise production URLs — a
 // sitemap that points somewhere else is worse than none, because a crawler believes it.
 const BASE = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://scematica.org').replace(/\/+$/, '')
 
-/** Route, and how often it is worth re-reading. */
+/**
+ * Route, and how often it is worth re-reading.
+ *
+ * The products come from `components/products.ts`, the same table the nav renders, so a
+ * page cannot exist and be unfindable — the quieter half of the failure a link that
+ * overflows off-screen produces loudly. Only `/` is listed here, because it is not a
+ * product.
+ */
 const ROUTES: [string, MetadataRoute.Sitemap[number]['changeFrequency'], number][] = [
   ['/', 'hourly', 1.0],
-  ['/scema-world', 'weekly', 0.9],
-  // Zero changes as often as the code does, not as often as a market: it is a tool, and
-  // nothing on the page is a live figure a crawler could re-read.
-  ['/zero', 'weekly', 0.9],
-  ['/omni', 'weekly', 0.9],
-  ['/alchem-link', 'daily', 0.8],
-  ['/escrow', 'daily', 0.8],
-  ['/mesh', 'hourly', 0.7],
-  ['/scylar-terminal', 'weekly', 0.7],
-  ['/botchain', 'weekly', 0.6],
+  ...PRODUCTS.map(
+    p => [p.href, p.changeFrequency, p.priority] as [string, MetadataRoute.Sitemap[number]['changeFrequency'], number],
+  ),
 ]
 
 export default function sitemap(): MetadataRoute.Sitemap {

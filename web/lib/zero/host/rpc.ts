@@ -27,21 +27,82 @@ export interface RpcConfig {
   ws?: string
 }
 
+/**
+ * Why the endpoint is validated rather than trusted.
+ *
+ * A field labelled "paste your key here" receives whatever is on the clipboard, and the
+ * failure mode of accepting it is worse than it looks. `wsUrl` only rewrites a leading
+ * `http`, so a bare string passes through unchanged — and `new WebSocket('npm_abc…')` is
+ * a RELATIVE url, which the browser resolves against the page origin. The result is an
+ * endless reconnect loop against `wss://your-own-site/npm_abc…`, with the pasted value
+ * printed into the console on every attempt.
+ *
+ * That is exactly what happened in the wild, with an npm access token. Nothing left the
+ * browser — that part of the design held — but the value ended up in `localStorage` and
+ * in the console, and the error gave no hint that the endpoint was the problem.
+ *
+ * Returns the reason it is unusable, or `null` when it is fine.
+ */
+export function endpointProblem(raw: string): string | null {
+  const value = raw.trim()
+  if (!value) return 'Paste your RPC endpoint.'
+
+  // Named before the URL check, because the generic "that is not a URL" is unhelpful next
+  // to the mistake people actually make. These are prefixes for credentials that are
+  // routinely one clipboard entry away from an RPC endpoint.
+  if (/^(npm_|ghp_|github_pat_|gh[pousr]_|sk-|xox[baprs]-|AKIA|glpat-)/.test(value)) {
+    return 'That looks like an access token, not an endpoint. Nothing was saved or sent — but rotate it, since it has been on your clipboard.'
+  }
+
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return 'That is not a URL. It needs the scheme too — https://your-provider/…'
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return `Endpoints are http or https, not ${url.protocol.replace(':', '')}.`
+  }
+  if (!url.host) return 'That URL has no host.'
+  return null
+}
+
+/**
+ * The stored endpoint, or nothing.
+ *
+ * Validated on the way OUT as well as in. A value saved before this check existed — or
+ * written by hand into storage — must not be able to resurrect the reconnect loop, and
+ * an unusable one is dropped rather than returned.
+ */
 export function loadRpc(): RpcConfig | null {
   try {
     const raw = localStorage.getItem(KEY_STORAGE)
-    return raw ? (JSON.parse(raw) as RpcConfig) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as RpcConfig
+    if (typeof parsed?.http !== 'string' || endpointProblem(parsed.http)) {
+      localStorage.removeItem(KEY_STORAGE)
+      return null
+    }
+    return parsed
   } catch {
     return null
   }
 }
 
-export function saveRpc(config: RpcConfig | null): void {
+/** Saves only a usable endpoint. Returns the reason it refused, or `null` on success. */
+export function saveRpc(config: RpcConfig | null): string | null {
   try {
-    if (config === null) localStorage.removeItem(KEY_STORAGE)
-    else localStorage.setItem(KEY_STORAGE, JSON.stringify(config))
+    if (config === null) {
+      localStorage.removeItem(KEY_STORAGE)
+      return null
+    }
+    const problem = endpointProblem(config.http)
+    if (problem) return problem
+    localStorage.setItem(KEY_STORAGE, JSON.stringify({ ...config, http: config.http.trim() }))
+    return null
   } catch {
     /* private mode, or storage disabled — Zero degrades to read-only rather than throwing */
+    return null
   }
 }
 
@@ -68,8 +129,16 @@ export function redact(text: string): string {
 /** Everything the page can ask the chain for. One place, so `redact` cannot be skipped. */
 export class ZeroRpc {
   private nextId = 1
+  private config: RpcConfig
 
-  constructor(private config: RpcConfig) {}
+  // Fields assigned explicitly rather than declared as constructor parameter properties.
+  // That syntax is a TYPE-DIRECTED emit, so Node's strip-only loader refuses the whole
+  // module — which would make everything in this file untestable, `endpointProblem`
+  // included. `lib/swap.ts` has the same construct and is why the Raydium layout had to
+  // move into parse.ts; one landmine of that kind in the codebase is enough.
+  constructor(config: RpcConfig) {
+    this.config = config
+  }
 
   get host(): string {
     try {
@@ -194,11 +263,19 @@ export class ZeroSocket {
   private closed = false
   private retry = 0
 
+  private url: string
+  private emit: (e: ZeroEvent) => void
+  private now: () => number
+
   constructor(
-    private url: string,
-    private emit: (e: ZeroEvent) => void,
-    private now: () => number = () => Date.now() / 1000,
-  ) {}
+    url: string,
+    emit: (e: ZeroEvent) => void,
+    now: () => number = () => Date.now() / 1000,
+  ) {
+    this.url = url
+    this.emit = emit
+    this.now = now
+  }
 
   connect(): void {
     if (this.closed) return

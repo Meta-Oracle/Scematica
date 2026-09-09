@@ -32,6 +32,7 @@ import {
   AMM_V4, vaultsFromPool, base58ToBytes, bytesToBase58,
 } from '../lib/zero/host/parse.ts'
 import { fillAmount } from '../lib/zero/host/fills.ts'
+import { endpointProblem } from '../lib/zero/host/rpc.ts'
 import { fundingPlan, sweepPlan, sweepBlockedBy, SWEEP_RESERVE_LAMPORTS } from '../lib/zero/funding.ts'
 
 
@@ -876,6 +877,51 @@ section('funding the session key')
   const treasury = codeOf(join(HERE, '..', 'lib', 'zero', 'host', 'treasury.ts'))
   check('funding refuses against an unread session balance',
     /sessionBalance === null/.test(treasury))
+}
+
+
+section('host: the endpoint is validated, not trusted')
+
+{
+  // Found in the wild. An npm token was pasted into the endpoint field; `wsUrl` only
+  // rewrites a leading `http`, so it passed through unchanged, and a bare string is a
+  // RELATIVE WebSocket url — the browser resolved it against the page origin and
+  // reconnected to `wss://www.scematica.org/npm_...` on a backoff forever, printing the
+  // token into the console every time. Nothing left the browser; everything else about
+  // it was wrong.
+  // A SYNTHETIC token, shaped like the real thing and belonging to nobody.
+  //
+  // The first version of this test pasted in the actual token from the report, which put
+  // a live credential in the repository and in git history — turning a value that had
+  // only ever been in one browser into one that is committed. A fixture never needs the
+  // real secret: `endpointProblem` matches on the prefix, so the shape is the whole test.
+  const TOKEN = 'npm_exampleTokenNotRealDoNotUse000000000'
+  check('a bare token is refused', endpointProblem(TOKEN) !== null)
+  // ...and named as a token, because "that is not a URL" does not tell somebody their
+  // credential is now on their clipboard and in their console.
+  check('...and identified as a token, with the advice to rotate it',
+    /token/i.test(endpointProblem(TOKEN)) && /rotate/i.test(endpointProblem(TOKEN)))
+  check('other common credential shapes are caught too',
+    ['ghp_abc', 'sk-abc', 'xoxb-abc', 'AKIAIOSFODNN7EXAMPLE', 'glpat-abc']
+      .every(t => endpointProblem(t) !== null))
+
+  check('a bare host with no scheme is refused', endpointProblem('mainnet.helius-rpc.com') !== null)
+  check('a ws:// endpoint is refused — the http one is what is stored',
+    endpointProblem('wss://x.example/y') !== null)
+  check('an empty endpoint is refused', endpointProblem('  ') !== null)
+  check('a real endpoint passes', endpointProblem('https://mainnet.helius-rpc.com/?api-key=abc') === null)
+  check('surrounding whitespace is tolerated — people paste with it',
+    endpointProblem('  https://x.example/  ') === null)
+
+  // The reconnect loop is only reachable through a value that got past the check, so the
+  // check has to run on the way OUT of storage too — a value saved before it existed, or
+  // written by hand, must not resurrect it.
+  const src = codeOf(join(HERE, '..', 'lib', 'zero', 'host', 'rpc.ts'))
+  const load = src.slice(src.indexOf('export function loadRpc'), src.indexOf('export function saveRpc'))
+  check('loadRpc validates what it reads back', /endpointProblem/.test(load))
+  check('...and drops an unusable one rather than returning it', /removeItem/.test(load))
+  const save = src.slice(src.indexOf('export function saveRpc'))
+  check('saveRpc refuses rather than storing', /endpointProblem/.test(save))
 }
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)

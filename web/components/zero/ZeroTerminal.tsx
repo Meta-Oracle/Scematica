@@ -18,7 +18,7 @@ import { defaultCaps, readout as sessionReadout } from '@/lib/zero/session'
 import { evaluateGate, GATE_NOTE } from '@/lib/zero/gatekeep'
 import { buildReadout, coverageMeter, type Role } from '@/lib/zero/readout'
 import { initialState, type ZeroState } from '@/lib/zero/engine'
-import { loadRpc, saveRpc, ZeroRpc, type RpcConfig } from '@/lib/zero/host/rpc'
+import { endpointProblem, loadRpc, saveRpc, ZeroRpc, type RpcConfig } from '@/lib/zero/host/rpc'
 import { SESSION_WARNING } from '@/lib/zero/session'
 import { ZeroRuntime } from '@/lib/zero/host/runtime'
 import { resolveVaults, submitSwap, bytesToBase58 } from '@/lib/zero/host/actions'
@@ -42,6 +42,7 @@ export function ZeroTerminal() {
   )
   const [rpc, setRpc] = useState<RpcConfig | null>(null)
   const [endpoint, setEndpoint] = useState('')
+  const [endpointError, setEndpointError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now() / 1000)
   const runtime = useRef<ZeroRuntime | null>(null)
   const signer = useRef<Signer | null>(null)
@@ -134,12 +135,22 @@ export function ZeroTerminal() {
   )
 
   const connect = useCallback(() => {
-    const trimmed = endpoint.trim()
-    if (!trimmed) return
-    const config = { http: trimmed }
-    saveRpc(config)
+    const config = { http: endpoint.trim() }
+    // Refused here rather than accepted and retried forever: a non-URL is a RELATIVE
+    // WebSocket url, which the browser resolves against this origin and then reconnects
+    // to on a backoff, printing the pasted value into the console each time.
+    const problem = saveRpc(config)
+    setEndpointError(problem)
+    if (problem) return
     setRpc(config)
   }, [endpoint])
+
+  const forget = useCallback(() => {
+    saveRpc(null)
+    setRpc(null)
+    setEndpoint('')
+    setEndpointError(null)
+  }, [])
 
   return (
     <main className="zero-root min-h-screen bg-zero-black text-zero-text px-4 py-6 md:px-8">
@@ -160,7 +171,27 @@ export function ZeroTerminal() {
           <div className="text-sm mt-1">{view.headline.text}</div>
         </section>
 
-        {!rpc && <RpcSetup endpoint={endpoint} onEndpoint={setEndpoint} onConnect={connect} />}
+        {!rpc && (
+          <RpcSetup
+            endpoint={endpoint}
+            onEndpoint={v => {
+              setEndpoint(v)
+              setEndpointError(null)
+            }}
+            onConnect={connect}
+            error={endpointError}
+          />
+        )}
+        {rpc && (
+          <div className="flex items-center gap-2 text-[11px] text-zero-dim">
+            <span className="truncate">endpoint · {new URL(rpc.http).host}</span>
+            {/* A stored endpoint must be removable without devtools. The value can be a
+                secret, and "clear your localStorage" is not an instruction. */}
+            <button onClick={forget} className="px-2 py-0.5 border border-zero-border hover:text-zero-text">
+              forget
+            </button>
+          </div>
+        )}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {view.gauges.map(g => (
@@ -242,11 +273,16 @@ function RpcSetup({
   endpoint,
   onEndpoint,
   onConnect,
+  error,
 }: {
   endpoint: string
   onEndpoint: (v: string) => void
   onConnect: () => void
+  error: string | null
 }) {
+  // Previewed with the same function that will enforce it, so the button does not promise
+  // what `saveRpc` then refuses.
+  const problem = endpoint.trim() ? endpointProblem(endpoint) : null
   return (
     <section className="border border-zero-warn bg-zero-surface px-4 py-3">
       <div className="text-xs text-zero-warn uppercase tracking-wider">bring your own endpoint</div>
@@ -264,11 +300,15 @@ function RpcSetup({
         />
         <button
           onClick={onConnect}
-          className="px-4 py-2 text-xs border border-zero-border text-zero-accent hover:bg-zero-hi"
+          disabled={!endpoint.trim() || problem !== null}
+          className="px-4 py-2 text-xs border border-zero-border text-zero-accent hover:bg-zero-hi disabled:opacity-30"
         >
           connect
         </button>
       </div>
+      {(error ?? problem) && (
+        <div className="text-xs text-zero-alarm mt-2">{error ?? problem}</div>
+      )}
     </section>
   )
 }

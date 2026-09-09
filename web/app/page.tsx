@@ -67,7 +67,11 @@ export default function Home() {
             <span className="text-scema-dim mx-1">·</span>
             <span className="text-scema-red-hi">DEEP Q*™ NEURAL ENGINE</span>
           </div>
-          <div className="flex items-center gap-3 ml-auto">
+          {/* `flex-wrap` because there are eight of these now. Without it the row simply
+              overflows the viewport at `md` and the last product added is the one that
+              disappears — silently, and only at some widths. Wrapping costs a taller
+              header on a narrow window, which is visible and therefore fixable. */}
+          <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
             {/* Sister tools on the same site — each its own product, hence its own palette. */}
             <Link
               href="/alchem-link"
@@ -124,6 +128,17 @@ export default function Home() {
                          transition-all text-xs tracking-widest"
             >
               ✦ SCEMA-WORLD
+            </Link>
+            {/* Zero is the only sister product that can spend money on its own, which is
+                why its palette is the coldest on the site — an operator with several tabs
+                open has to be able to tell which one is armed. */}
+            <Link
+              href="/zero"
+              className="hidden md:flex items-center gap-1.5 px-2 py-0.5 border border-zero-border
+                         text-zero-accent hover:border-zero-accent hover:text-zero-text
+                         transition-all text-xs tracking-widest"
+            >
+              ○ ZERO
             </Link>
             <HealthBadge />
             <TradeFee />

@@ -109,6 +109,42 @@ export class ZeroRpc {
     return r.value[0] ?? null
   }
 
+  /**
+   * The transaction, for reading what a landed swap actually produced.
+   *
+   * `maxSupportedTransactionVersion: 0` is not optional: Jupiter routes are versioned
+   * transactions, and omitting it makes the node refuse the very transactions Zero
+   * needs to read — with an error about the version rather than about the parameter.
+   */
+  async transaction(signature: string) {
+    return this.call<{
+      meta: {
+        fee: number
+        err: unknown | null
+        preBalances: number[]
+        postBalances: number[]
+        preTokenBalances?: unknown[]
+        postTokenBalances?: unknown[]
+      } | null
+      transaction: { message: { accountKeys: Array<string | { pubkey: string }> } }
+    } | null>('getTransaction', [
+      signature,
+      { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+    ])
+  }
+
+  async lamports(address: string): Promise<number | null> {
+    const r = await this.call<{ value: number }>('getBalance', [address, { commitment: 'confirmed' }])
+    return typeof r?.value === 'number' ? r.value : null
+  }
+
+  async blockhash(): Promise<string> {
+    const r = await this.call<{ value: { blockhash: string } }>('getLatestBlockhash', [
+      { commitment: 'confirmed' },
+    ])
+    return r.value.blockhash
+  }
+
   async sendRaw(base64Tx: string): Promise<string> {
     // Preflight ON. Skipping it lands failing transactions and charges for them.
     return this.call<string>('sendTransaction', [

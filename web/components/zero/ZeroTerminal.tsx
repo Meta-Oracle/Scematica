@@ -23,6 +23,9 @@ import { SESSION_WARNING } from '@/lib/zero/session'
 import { ZeroRuntime } from '@/lib/zero/host/runtime'
 import { resolveVaults, submitSwap, bytesToBase58 } from '@/lib/zero/host/actions'
 import { createSession, destroySession, loadSession, sessionSigner, type Signer } from '@/lib/zero/host/signer'
+import { clearFunder } from '@/lib/zero/host/treasury'
+import { SessionPanel } from './SessionPanel'
+import type { Keypair } from '@solana/web3.js'
 
 const ROLE_CLASS: Record<Role, string> = {
   ok: 'text-zero-ok',
@@ -42,6 +45,18 @@ export function ZeroTerminal() {
   const [now, setNow] = useState(() => Date.now() / 1000)
   const runtime = useRef<ZeroRuntime | null>(null)
   const signer = useRef<Signer | null>(null)
+  // Held in state as well as in the ref so the funding panel re-renders when the key
+  // appears. The ref is what the runtime signs with; this is what the UI displays.
+  const [sessionKey, setSessionKey] = useState<Keypair | null>(null)
+  const [caps] = useState(() => defaultCaps(Date.now() / 1000))
+
+  useEffect(() => {
+    const existing = loadSession()
+    if (existing && existing.stored.expiresAtUnix > Date.now() / 1000) {
+      setSessionKey(existing.keypair)
+      signer.current = sessionSigner(existing.keypair)
+    }
+  }, [])
 
   useEffect(() => {
     setRpc(loadRpc())
@@ -57,7 +72,7 @@ export function ZeroTerminal() {
   useEffect(() => {
     if (!rpc) return
     const client = new ZeroRpc(rpc)
-    const rt = new ZeroRuntime(DEFAULT_CONFIG, defaultCaps(Date.now() / 1000), {
+    const rt = new ZeroRuntime(DEFAULT_CONFIG, caps, {
       onState: setState,
       resolveVaults: mint => resolveVaults(client, mint, bytesToBase58),
       submitSwap: (effect, s) => submitSwap(client, effect, s),
@@ -69,23 +84,29 @@ export function ZeroTerminal() {
       rt.stop()
       runtime.current = null
     }
-  }, [rpc])
+  }, [rpc, caps])
 
+  // Creating the key and arming the loop are one button, but funding it is deliberately
+  // a separate, wallet-approved step: creating a key risks nothing, and the moment a
+  // human decides how much the bot may lose should not be buried inside "start".
   const arm = useCallback(() => {
     const nowUnix = Date.now() / 1000
     const existing = loadSession()
-    const session =
+    const s =
       existing && existing.stored.expiresAtUnix > nowUnix
         ? existing
-        : createSession(defaultCaps(nowUnix).expiresAtUnix, nowUnix)
-    signer.current = sessionSigner(session.keypair)
+        : createSession(caps.expiresAtUnix, nowUnix)
+    setSessionKey(s.keypair)
+    signer.current = sessionSigner(s.keypair)
     runtime.current?.dispatch({ kind: 'arm', atUnix: nowUnix })
-  }, [])
+  }, [caps])
 
   // The kill switch destroys the key material rather than clearing a flag, so "disarmed"
   // means the same thing to a reader of localStorage as it does to this UI.
   const kill = useCallback(() => {
     destroySession()
+    clearFunder()
+    setSessionKey(null)
     signer.current = null
     runtime.current?.dispatch({ kind: 'kill', atUnix: Date.now() / 1000 })
   }, [])
@@ -201,6 +222,14 @@ export function ZeroTerminal() {
             ))}
           </section>
         )}
+
+        <SessionPanel
+          rpc={rpc}
+          session={sessionKey}
+          caps={caps}
+          openPositions={open.length}
+          onFunded={() => setNow(Date.now() / 1000)}
+        />
 
         <Positions state={state} />
         <Decisions state={state} />

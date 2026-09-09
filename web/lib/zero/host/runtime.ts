@@ -22,6 +22,7 @@ import { acquireLease, type Lease } from '../lease.ts'
 import { ZeroRpc, ZeroSocket, type RpcConfig, type Subscription, redact, wsUrl } from './rpc.ts'
 import { interpret, pollPlan, BLOCKHASH_VALID_SECS, unknownNotice } from '../observe.ts'
 import { type Signer } from './signer.ts'
+import { fillAmount, type AccountKey, type TxMeta } from './fills.ts'
 
 const STATE_STORAGE = 'scematica-zero-state'
 /** Bump when the persisted shape changes. An old blob is DISCARDED, never coerced. */
@@ -164,7 +165,7 @@ export class ZeroRuntime {
       return
     }
 
-    await this.observe(effect.mint, signature)
+    await this.observe(effect.mint, signature, effect.side, signer.publicKey)
   }
 
   /**
@@ -175,7 +176,12 @@ export class ZeroRuntime {
    * already finalized. A successful trade presenting as a dead bot is the worst pair of
    * facts available, and the obvious retry pays twice.
    */
-  private async observe(mint: string, signature: string): Promise<void> {
+  private async observe(
+    mint: string,
+    signature: string,
+    side: 'buy' | 'sell',
+    owner: string,
+  ): Promise<void> {
     const started = this.now()
     for (let attempt = 0; ; attempt++) {
       const elapsed = this.now() - started
@@ -193,8 +199,8 @@ export class ZeroRuntime {
 
       const obs = interpret(signature, status as never, this.now() - started, BLOCKHASH_VALID_SECS)
       if (obs.outcome === 'landed') {
-        const outAmount = await this.readOutAmount(mint)
-        this.dispatch({ kind: 'fill.observed', mint, signature, outAmount, atUnix: this.now() })
+        const outAmount = await this.readFill(signature, mint, side, owner)
+        this.dispatch({ kind: 'fill.observed', mint, signature, outAmount, side, atUnix: this.now() })
         return
       }
       if (obs.outcome === 'failed') {
@@ -213,14 +219,43 @@ export class ZeroRuntime {
   }
 
   /**
-   * How many tokens actually arrived.
+   * What the landed swap actually produced.
    *
-   * Zero is deliberately unable to answer this without a token-account read, and returns
-   * 0 only when the account genuinely holds nothing. A guessed figure here would become
-   * the entry price and therefore every subsequent exit percentage.
+   * Read from the transaction rather than from the quote, and rather than from a balance
+   * delta: a delta taken around one signature absorbs anything else that landed in the
+   * meantime, and Zero can hold several positions at once. `preTokenBalances` /
+   * `postTokenBalances` attribute the movement to THIS signature.
+   *
+   * `null` on any failure and it stays `null` — the engine turns that into an unpriceable
+   * position rather than an entry price of zero. Retrying the read is safe (it moves
+   * nothing), so it is retried once: the transaction may not have propagated to this
+   * endpoint yet, and giving up early strands a position that was perfectly readable a
+   * second later.
    */
-  private async readOutAmount(_mint: string): Promise<number> {
-    return 0
+  private async readFill(
+    signature: string,
+    mint: string,
+    side: 'buy' | 'sell',
+    owner: string,
+  ): Promise<number | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await sleep(1200)
+      try {
+        const tx = await this.rpc?.transaction(signature)
+        if (!tx?.meta) continue
+        const amount = fillAmount(
+          tx.meta as unknown as TxMeta,
+          tx.transaction.message.accountKeys as AccountKey[],
+          owner,
+          mint,
+          side,
+        )
+        if (amount !== null) return amount
+      } catch {
+        // A failed READ is not a failed fill. Keep trying, then admit ignorance.
+      }
+    }
+    return null
   }
 }
 

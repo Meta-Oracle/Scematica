@@ -97,8 +97,15 @@ export type ZeroEvent =
   /** An RPC-bound read resolved, or did not. Feeds the coherence gate. */
   | { kind: 'read.resolved'; label: string }
   | { kind: 'read.failed'; label: string; reason: string }
-  /** A submitted swap was seen to land. */
-  | { kind: 'fill.observed'; mint: string; signature: string; outAmount: number; atUnix: number }
+  /**
+   * A submitted swap was seen to land.
+   *
+   * `outAmount` is `null` when the transaction landed but its effect could not be read —
+   * a distinct case from a fill of zero. It becomes an unmeasured `tokensOut`, and from
+   * there a position `exits.ts` refuses to price rather than selling on a percentage
+   * nobody computed. Base units for a buy, lamports for a sell.
+   */
+  | { kind: 'fill.observed'; mint: string; signature: string; outAmount: number | null; side: 'buy' | 'sell'; atUnix: number }
   /** A submitted swap could not be observed either way. Not a failure — see Z-8. */
   | { kind: 'fill.unknown'; mint: string; signature: string; atUnix: number }
   /** A submitted swap demonstrably never landed; nothing moved. */

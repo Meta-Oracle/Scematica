@@ -4,10 +4,10 @@
 decide, gate, execute, seal — running entirely inside a browser tab against real Solana
 mainnet, with no Rust process anywhere and no key on our servers.
 
-Status: **phase 0 and 1 built.** The pure core (`web/lib/zero/`), the browser host
-(`web/lib/zero/host/`) and the `/zero` page exist, with 166 checks in
-`npm run check:zero`. Phase 2 (arming against mainnet end to end) and phase 3 (the
-extension) are not.
+Status: **phases 0-2 built.** The pure core (`web/lib/zero/`), the browser host
+(`web/lib/zero/host/`), the `/zero` page, the fill read and the funding flow all exist,
+with 205 checks in `npm run check:zero`. What remains is an armed run against mainnet
+and phase 3, the extension.
 
 This document was written before any of it, so the load-bearing decisions were argued
 once rather than made accidentally by an implementation. Where building changed an
@@ -290,10 +290,25 @@ building it changed:
   code that must be tested — a wrong offset yields a valid-looking pubkey and does not
   throw — so they belong on the pure side.
 
-**Phase 2 — the session key. PARTLY BUILT.** The caps, ledger, expiry, arming and kill
-switch exist and are tested; what is *not* done is an end-to-end armed run against
-mainnet, a funding/sweep flow, and the balance read behind the token gate. Nothing here
-should be armed with real money until that pass happens.
+**Phase 2 — the session key. BUILT.** Caps, ledger, expiry, arming, kill switch, funding
+and sweep. Two rules the funding flow rests on:
+
+- **The cap is on the resulting balance, not on the transfer**, so repeated top-ups cannot
+  walk past it one increment at a time — the same shape as the spend ledger's `committed`.
+- **A sweep's destination is not an input.** It is read from the wallet that funded the
+  key. A sweep that took an address would be a one-click drain of the hot key to anywhere,
+  reachable by anything that can run in the page — the same threat model the key lives
+  under, so it would hand over the whole balance rather than the bounded slice the caps
+  exist to expose. A sweep is also refused while positions are open: taking the SOL out
+  leaves them owned by a key with nothing to pay a sell fee with.
+
+The preview refuses exactly where the payer refuses. `fundSession` will not fund against
+a balance it could not read, so the panel does not default that to zero either — the
+escrow path already paid for the other version, where `quote` swallowed a failed ledger
+read and priced a claim against an empty ledger while `settle` refused the same request.
+
+What is still **not** done is an armed end-to-end run against mainnet. Nothing here
+should be trusted with money until that pass happens.
 
 The kill switch deliberately does **not** liquidate. A control that dumps at market is a
 different and far more dangerous thing, and conflating the two means nobody can stop new
@@ -339,12 +354,29 @@ All six are answered and built. What they settled:
    the file says plainly that a client-side check with no server behind it is a **default,
    not a boundary**. An unreadable balance is `unknown`, never `insufficient`.
 
+**The fill read** (`host/fills.ts`) closed the gap that made Zero safe-but-useless armed.
+It reads `pre/postTokenBalances` from the transaction rather than taking a balance delta,
+because a delta taken around one signature absorbs anything else that landed meanwhile and
+Zero may hold several positions at once. Three outcomes stay distinguishable and each
+costs money if collapsed into another:
+
+| Reading | Meaning | What Zero does |
+|---|---|---|
+| `null` | landed, output unreadable | position is `unknown`; no entry price; **no exit rule can fire** |
+| `0` | landed, produced nothing | a measured, real, terrible fill |
+| `n > 0` | a fill | an entry price, and every exit percentage after it |
+
+A first buy has no PRE entry because the account did not exist — that is a genuine zero,
+not an unknown, and getting it backwards makes every first purchase unpriceable. An amount
+past `MAX_SAFE_INTEGER` is refused rather than rounded, because a wrong `tokensOut` is a
+wrong entry price. A sell is measured in lamports **net of the fee**: the fee is money that
+left on that trade, and adding it back reports proceeds nobody received.
+
 What is genuinely still open:
 
-- **Funding and sweeping the session key**, and the SCEMA balance read behind the gate.
+- **An armed end-to-end run against mainnet.** Everything below the money is tested; the
+  money is not.
+- **The SCEMA balance read** behind the token gate — `evaluateGate` is wired to `null`,
+  which correctly reports `unknown` and fails closed on arming.
 - **The extension** (phase 3), the only thing that lifts §3's limitation rather than
   reporting it.
-- **`readOutAmount`** in `runtime.ts` returns 0 pending a token-account read. Until it is
-  written, an observed buy records no entry price, and `exits.ts` correctly refuses to
-  price the position rather than inventing one — so Zero is safe armed, not yet useful
-  armed.

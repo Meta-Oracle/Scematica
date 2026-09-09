@@ -464,7 +464,23 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
       const holdId = state.holds[event.mint]
 
       if (position.state === 'opening') {
-        const entryPrice = event.outAmount > 0 ? position.spentLamports / event.outAmount : 0
+        // Three distinguishable outcomes, and collapsing any two of them loses money.
+        //
+        //   null  — it landed and we could not read what it produced. UNMEASURED, so
+        //           `exits.ts` refuses to price the position rather than inventing one.
+        //   0     — it landed and produced nothing. A measured, real, terrible fill.
+        //   n > 0 — a fill, and therefore an entry price.
+        const tokensOut =
+          event.outAmount === null
+            ? absent('the fill landed but its output could not be read')
+            : measured(event.outAmount)
+        const entryPriceSol =
+          event.outAmount === null
+            ? absent('no observed output, so no entry price')
+            : event.outAmount > 0
+              ? measured(position.spentLamports / event.outAmount)
+              : absent('the fill produced zero tokens')
+
         return {
           state: {
             ...state,
@@ -473,20 +489,34 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
               ...state.positions,
               [event.mint]: {
                 ...position,
-                state: 'open',
-                tokensOut: measured(event.outAmount),
-                entryPriceSol: entryPrice > 0 ? measured(entryPrice) : absent('fill had zero output'),
+                // A landed buy whose output is unreadable is not `open` — it is a position
+                // Zero holds and cannot price, which is exactly what `unknown` means.
+                state: event.outAmount === null ? 'unknown' : 'open',
+                tokensOut,
+                entryPriceSol,
                 openSignature: event.signature,
               },
             },
           },
-          effects: [{ kind: 'persist' }],
+          effects:
+            event.outAmount === null
+              ? [
+                  {
+                    kind: 'notify',
+                    level: 'alarm',
+                    text: `Bought ${position.symbol} and could not read the fill. The position is held but unpriceable — Zero will not sell it on a percentage it did not compute. Signature ${event.signature}`,
+                  },
+                  { kind: 'persist' },
+                ]
+              : [{ kind: 'persist' }],
         }
       }
 
-      // A close landed. Realised PnL comes from the OBSERVED output, never from a quote.
+      // A close landed. Realised PnL comes from the OBSERVED output, never from a quote —
+      // and an output nobody could read produces NO outcome rather than a zero one. A
+      // fabricated 0% would enter the edge estimate and size every subsequent trade.
       const realised =
-        position.entryPriceSol.measured && position.tokensOut.measured && position.tokensOut.value > 0
+        event.outAmount !== null && position.spentLamports > 0
           ? ((event.outAmount - position.spentLamports) / position.spentLamports) * 100
           : null
 

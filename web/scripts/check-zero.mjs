@@ -31,6 +31,8 @@ import {
   isNewPool, decodeTokenAmount, priceFromVaults, vaultEvent, observePool,
   AMM_V4, vaultsFromPool, base58ToBytes, bytesToBase58,
 } from '../lib/zero/host/parse.ts'
+import { fillAmount } from '../lib/zero/host/fills.ts'
+import { fundingPlan, sweepPlan, sweepBlockedBy, SWEEP_RESERVE_LAMPORTS } from '../lib/zero/funding.ts'
 
 
 let failed = 0
@@ -714,6 +716,166 @@ section('host: raydium layout and base58')
   check('a pool with no SOL leg is refused rather than priced in an unknown unit',
     vaultsFromPool(pool(token, token), wsol) === null)
   check('a short account is refused', vaultsFromPool(new Uint8Array(100), wsol) === null)
+}
+
+
+section('host: reading what actually filled')
+
+{
+  const OWNER = 'Owner11111111111111111111111111111111111111'
+  const MINT = 'Mint111111111111111111111111111111111111111'
+  const bal = (owner, mint, amount) => ({
+    accountIndex: 1, mint, owner, uiTokenAmount: { amount: String(amount), decimals: 6 },
+  })
+  const meta = over => ({
+    fee: 5000, err: null,
+    preBalances: [1_000_000_000, 0], postBalances: [900_000_000, 0],
+    preTokenBalances: [], postTokenBalances: [],
+    ...over,
+  })
+  const keys = [OWNER, 'Other11111111111111111111111111111111111111']
+
+  // A first buy has no PRE entry: the account did not exist. That is a genuine zero, not
+  // an unknown — getting it backwards makes every first purchase unpriceable.
+  check('a first buy with no pre-balance reads the full post amount',
+    fillAmount(meta({ postTokenBalances: [bal(OWNER, MINT, 5000)] }), keys, OWNER, MINT, 'buy') === 5000)
+  check('a top-up reads the delta, not the total',
+    fillAmount(meta({
+      preTokenBalances: [bal(OWNER, MINT, 2000)],
+      postTokenBalances: [bal(OWNER, MINT, 5000)],
+    }), keys, OWNER, MINT, 'buy') === 3000)
+
+  // The distinction the whole design rests on: unreadable is not zero.
+  check('a missing POST entry is UNREADABLE, never a zero fill',
+    fillAmount(meta({}), keys, OWNER, MINT, 'buy') === null)
+  check('a fill of zero tokens is a MEASURED zero',
+    fillAmount(meta({ postTokenBalances: [bal(OWNER, MINT, 0)] }), keys, OWNER, MINT, 'buy') === 0)
+  check('another wallet\'s balance is not our fill',
+    fillAmount(meta({ postTokenBalances: [bal('Someone', MINT, 5000)] }), keys, OWNER, MINT, 'buy') === null)
+  check('another mint\'s balance is not our fill',
+    fillAmount(meta({ postTokenBalances: [bal(OWNER, 'OtherMint', 5000)] }), keys, OWNER, MINT, 'buy') === null)
+
+  // A reverted transaction moved nothing; reading its balances reports the fee as a fill.
+  check('a reverted transaction has no fill',
+    fillAmount(meta({ err: { x: 1 }, postTokenBalances: [bal(OWNER, MINT, 5000)] }), keys, OWNER, MINT, 'buy') === null)
+
+  // Base units past 2^53 lose precision as a JS number, and a wrong tokensOut becomes a
+  // wrong entry price and every exit after it.
+  check('a token amount past MAX_SAFE_INTEGER is refused rather than rounded',
+    fillAmount(meta({ postTokenBalances: [bal(OWNER, MINT, '9007199254740993')] }), keys, OWNER, MINT, 'buy') === null)
+
+  // Sells are measured in lamports, net of the fee: the fee is money that left on this
+  // trade, and adding it back reports proceeds nobody received.
+  check('a sell reads the lamport delta',
+    fillAmount(meta({ preBalances: [100, 0], postBalances: [900, 0] }), keys, OWNER, MINT, 'sell') === 800)
+  check('an owner absent from the account keys has no readable fill',
+    fillAmount(meta({}), keys, 'NotInTx', MINT, 'sell') === null)
+  // jsonParsed returns objects where json returns strings; both must work.
+  check('jsonParsed account keys resolve',
+    fillAmount(meta({ preBalances: [100, 0], postBalances: [900, 0] }), [{ pubkey: OWNER }], OWNER, MINT, 'sell') === 800)
+}
+
+{
+  // End to end through the reducer: a landed buy whose output cannot be read must NOT
+  // become a priced position. It becomes one Zero holds and refuses to trade.
+  const opening = armed({
+    positions: { M: { ...held(), state: 'opening', tokensOut: absent('pending'), entryPriceSol: absent('pending') } },
+    holds: { M: 'h1' },
+    ledger: { ...newLedger(), reserved: [{ id: 'h1', lamports: 1e7, atUnix: 0 }] },
+  })
+
+  const unreadable = step(opening, {
+    kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: null, side: 'buy', atUnix: 1_800_000_005,
+  })
+  check('a landed buy with an unreadable fill becomes UNKNOWN, not open', unreadable.state.positions.M.state === 'unknown')
+  check('...with no invented entry price', !unreadable.state.positions.M.entryPriceSol.measured)
+  check('...and the operator is told', unreadable.effects.some(e => e.kind === 'notify' && e.level === 'alarm'))
+  // And exits refuse to price it, which is the payoff of the whole distinction.
+  check('...so no exit rule can fire on it',
+    !evaluateExit(unreadable.state.positions.M, 0.0001, 1_800_099_999, DEFAULT_CONFIG).exit)
+
+  const readable = step(opening, {
+    kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 5_000_000, side: 'buy', atUnix: 1_800_000_005,
+  })
+  check('a readable fill opens the position', readable.state.positions.M.state === 'open')
+  check('...with an entry price derived from what arrived',
+    Math.abs(readable.state.positions.M.entryPriceSol.value - 1e7 / 5_000_000) < 1e-12)
+
+  // A sell whose proceeds cannot be read produces NO outcome. A fabricated 0% would enter
+  // the edge estimate and size every subsequent trade.
+  const closing = armed({ positions: { M: held({ state: 'closing' }) } })
+  const blindSell = step(closing, {
+    kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: null, side: 'sell', atUnix: 1_800_000_009,
+  })
+  check('an unreadable sell records no outcome', blindSell.state.outcomes.length === 0)
+  const goodSell = step(closing, {
+    kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 2e7, side: 'sell', atUnix: 1_800_000_009,
+  })
+  check('a readable sell records a realised outcome', goodSell.state.outcomes.length === 1)
+  check('...computed from the observed proceeds', Math.abs(goodSell.state.outcomes[0].pnlPct - 100) < 1e-9)
+}
+
+section('funding the session key')
+
+{
+  const CAP = 500_000_000
+
+  const ok = fundingPlan(0, 100_000_000, CAP, 1_000_000_000)
+  check('a first funding within the cap is allowed', ok.ok && ok.lamports === 100_000_000)
+
+  // The cap is on the RESULTING balance, so repeated top-ups cannot walk past it one
+  // increment at a time — the same shape as the spend ledger's `committed`.
+  const walk = fundingPlan(450_000_000, 100_000_000, CAP, 1_000_000_000)
+  check('a top-up that would exceed the cap is refused', !walk.ok && walk.refusal === 'over-balance-cap')
+  check('...and says how much room is left', !walk.ok && walk.detail.includes('50000000'))
+  check('a top-up filling exactly the cap is allowed', fundingPlan(400_000_000, 100_000_000, CAP, 1e9).ok)
+
+  check('a dust top-up is refused', fundingPlan(0, 1000, CAP, 1e9).refusal === 'below-minimum')
+  // A funder who cannot cover the fee as well produces a transaction that fails after the
+  // wallet has already been asked to sign.
+  check('a funder who cannot cover amount plus fee is refused',
+    fundingPlan(0, 100_000_000, CAP, 100_000_000).refusal === 'insufficient-funder')
+  check('no connected wallet is its own refusal', fundingPlan(0, 100_000_000, CAP, null).refusal === 'no-funder')
+
+  const sweep = sweepPlan(100_000_000)
+  check('a sweep returns everything but the fee reserve', sweep.ok && sweep.lamports === 100_000_000 - SWEEP_RESERVE_LAMPORTS)
+  check('an empty key has nothing to sweep', sweepPlan(0).refusal === 'nothing-to-sweep')
+  // A sweep that under-reserves fails, and a failed sweep leaves the whole balance in a
+  // key the operator has already decided to stop trusting.
+  check('a balance below the reserve is refused rather than attempted',
+    sweepPlan(SWEEP_RESERVE_LAMPORTS - 1).refusal === 'nothing-to-sweep')
+  check('a balance exactly at the reserve is refused too', sweepPlan(SWEEP_RESERVE_LAMPORTS).refusal === 'nothing-to-sweep')
+
+  // Sweeping the SOL out from under an open position leaves it owned by a key that cannot
+  // pay a sell fee.
+  check('a sweep with open positions is blocked, with a reason', (sweepBlockedBy(2) ?? '').includes('sell fee'))
+  check('a sweep with none is not blocked', sweepBlockedBy(0) === null)
+}
+
+{
+  // The destination is read from storage, never taken as an argument — a sweep that took
+  // an address would be a one-click drain of the hot key to anywhere.
+  const src = codeOf(join(HERE, '..', 'lib', 'zero', 'host', 'treasury.ts'))
+  const body = src.slice(src.indexOf('export async function sweepSession'))
+  check('sweepSession takes no destination address', !/to:\s*\w+Address|destination/i.test(body))
+  check('...and refuses when no funder is on record', /no funding wallet on record/.test(body))
+}
+
+
+{
+  // The preview must refuse exactly where the payer refuses. The escrow path paid for
+  // this once: `quote` swallowed the ledger read's throw and priced a claim against an
+  // empty ledger, while `settle` refused the identical request.
+  const panel = codeOf(join(HERE, '..', 'components', 'zero', 'SessionPanel.tsx'))
+  check('the funding preview does not default an unread balance to zero',
+    !/fundingPlan\(balance \?\? 0/.test(panel))
+  check('...and refuses on an unread balance instead', /balance === null/.test(panel))
+  // Guessing the funder's balance would make the button promise what the transfer refuses.
+  check('the funder balance is read, not assumed', !/Number\.MAX_SAFE_INTEGER/.test(panel))
+
+  const treasury = codeOf(join(HERE, '..', 'lib', 'zero', 'host', 'treasury.ts'))
+  check('funding refuses against an unread session balance',
+    /sessionBalance === null/.test(treasury))
 }
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`)

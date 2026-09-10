@@ -8,16 +8,26 @@
 //
 //   node --experimental-strip-types scripts/check-zero.mjs
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-import { DEFAULT_CONFIG, configProblem, absent, measured, cell, coverage } from '../lib/zero/types.ts'
-import { newCoherence, record as recordRead, evaluate as evalCoherence, liveness } from '../lib/zero/gate.ts'
+import { DEFAULT_CONFIG, configProblem, absent, measured, cell, coverage, DUST_LAMPORTS } from '../lib/zero/types.ts'
+import { SNIPER_CONFIG, RATE_MODES, ACTIVE_MODE_NAME, withRateMode } from '../lib/zero/sniper/config.ts'
+import {
+  newCoherence, record as recordRead, recordPoolSeen, evaluate as evalCoherence, liveness,
+  WINDOW_SECS, MIN_SAMPLES, FEED_STALL_SECS,
+} from '../lib/zero/sniper/coherence.ts'
+import { masterEquation, gateOf, GO_THRESHOLD, CAUTION_THRESHOLD, PSI_MAX } from '../lib/zero/sniper/psi.ts'
+import {
+  newLadder, evaluate as evalLadder, valueOf, effectiveStopLossPct,
+  FAST_PHASE_CHECKS,
+} from '../lib/zero/sniper/exit-ladder.ts'
+import {
+  kellySizer, computeMultiplier, DEFAULT_FRACTION, DEFAULT_MIN_TRADES, CLAMP_MIN, CLAMP_MAX,
+} from '../lib/zero/sniper/kelly.ts'
+import { scorePool } from '../lib/feed/scorer.ts'
 import { FEATURES, NEUTRAL, encode, advise, POLICY_ID, MIN_ADVICE_COVERAGE } from '../lib/zero/policy.ts'
-import { pushPrice, pullback, continuation, scoredEntry, changePct } from '../lib/zero/strategy.ts'
-import { evaluateExit, applyPrice, pnlPct } from '../lib/zero/exits.ts'
-import { estimateEdge, sizeEntry } from '../lib/zero/size.ts'
 import {
   newLedger, authorise, settle, release, strand, committed, remaining, defaultCaps, LAMPORTS_PER_SOL,
 } from '../lib/zero/session.ts'
@@ -69,19 +79,42 @@ const pool = (over = {}) => ({
   mintRenounced: measured(1),
   freezeDisabled: measured(1),
   devHoldingPct: measured(3),
-  buyPressure: measured(1.4),
+  // quote_vault / base_vault, which for a real pump.fun graduation lands around 4e-5.
+  // The old fixture used 1.4, four orders of magnitude out — harmless against a scorer
+  // that ignored the field, and it would have hidden a broken buy-pressure ladder now
+  // that the real one reads it.
+  buyPressure: measured(0.00012),
   lpBurned: measured(1),
   ...over,
 })
 
-const caps = defaultCaps(1_800_000_000)
+const T0 = 1_800_000_000
+const caps = defaultCaps(T0)
 const armed = (over = {}) => ({
-  ...initialState(DEFAULT_CONFIG, caps),
+  ...initialState(DEFAULT_CONFIG, caps, T0),
   armed: true,
   lease: 'writer',
   socketOpen: true,
   ...over,
 })
+
+// A held position, with the sell monitor's loop-locals attached.
+//
+// 1000 tokens bought for 0.01 SOL is an entry price of 1e-5 SOL/token, so the position is
+// worth exactly `spentLamports` at that price and every percentage below reads directly.
+const ENTRY_LAMPORTS = 10_000_000
+const ENTRY_PRICE = 1e-5
+const held = (over = {}) => ({
+  mint: 'M', symbol: 'X', state: 'open', spentLamports: ENTRY_LAMPORTS,
+  tokensOut: measured(1000), entryPriceSol: measured(ENTRY_PRICE),
+  peakPriceSol: measured(ENTRY_PRICE), lastPriceSol: measured(ENTRY_PRICE),
+  openedAtUnix: T0, lastEvaluatedUnix: T0,
+  ladder: newLadder(ENTRY_LAMPORTS, T0, DEFAULT_CONFIG, null),
+  ...over,
+})
+/** Drive one arrival through the ladder at a price. */
+const arrive = (ladder, price, atUnix, config = DEFAULT_CONFIG, quote = null) =>
+  evalLadder(ladder, { valueLamports: valueOf(1000, price), atUnix, quoteVaultLamports: quote }, config)
 
 // ── Z-1: no timer may decide money ───────────────────────────────────────────
 
@@ -92,20 +125,11 @@ section('Z-1  no timer may decide money')
   // never produce a swap — because in a hidden tab a timer fires roughly once a minute
   // and a polled stop-loss silently stops checking a position it is still holding.
   const states = [
-    initialState(DEFAULT_CONFIG, caps),
+    initialState(DEFAULT_CONFIG, caps, T0),
     armed(),
     armed({ killed: true }),
     armed({ lease: 'follower' }),
-    armed({
-      positions: {
-        M: {
-          mint: 'M', symbol: 'X', state: 'open', spentLamports: 1e7,
-          tokensOut: measured(1000), entryPriceSol: measured(1),
-          peakPriceSol: measured(3), lastPriceSol: measured(0.1),
-          openedAtUnix: 1_800_000_000, lastEvaluatedUnix: 1_800_000_000,
-        },
-      },
-    }),
+    armed({ positions: { M: held({ peakPriceSol: measured(ENTRY_PRICE * 3), lastPriceSol: measured(ENTRY_PRICE * 0.1) }) } }),
   ]
   let sawSwap = false
   for (const s of states) {
@@ -119,18 +143,9 @@ section('Z-1  no timer may decide money')
   check('2000 ticks across every reachable state produce no swap', !sawSwap)
 
   // ...and the same position DOES exit the instant a real arrival carries the price.
-  const holding = armed({
-    positions: {
-      M: {
-        mint: 'M', symbol: 'X', state: 'open', spentLamports: 1e7,
-        tokensOut: measured(1000), entryPriceSol: measured(1),
-        peakPriceSol: measured(1), lastPriceSol: measured(1),
-        openedAtUnix: 1_800_000_000, lastEvaluatedUnix: 1_800_000_000,
-      },
-    },
-  })
+  const holding = armed({ positions: { M: held() } })
   const arrival = step(holding, {
-    kind: 'vault.changed', mint: 'M', priceSol: 0.5, slot: 1, atUnix: 1_800_000_001,
+    kind: 'vault.changed', mint: 'M', priceSol: ENTRY_PRICE * 0.5, slot: 1, atUnix: T0 + 1,
   })
   check('the same position exits on a chain ARRIVAL', arrival.effects.some(e => e.kind === 'swap' && e.side === 'sell'))
 }
@@ -139,69 +154,212 @@ section('Z-1  no timer may decide money')
 
 section('exit ladder')
 
-const held = (over = {}) => ({
-  mint: 'M', symbol: 'X', state: 'open', spentLamports: 1e7,
-  tokensOut: measured(1000), entryPriceSol: measured(1),
-  peakPriceSol: measured(1), lastPriceSol: measured(1),
-  openedAtUnix: 1_800_000_000, lastEvaluatedUnix: 1_800_000_000, ...over,
-})
+// Every threshold below comes from `sniper/config.ts`, which is pinned against Rust in
+// the parity section. What is asserted here is ORDER and CONDITION -- the half the fixture
+// cannot cover, because the Rust original is inline in an async loop.
 
-check('stop-loss fires at the threshold', evaluateExit(held(), 0.85, 1_800_000_001, DEFAULT_CONFIG).reason === 'stop-loss')
-check('take-profit fires at the threshold', evaluateExit(held(), 2.0, 1_800_000_001, DEFAULT_CONFIG).reason === 'take-profit')
-// Order matters: a position past BOTH must cut, never take profit on a number it is
-// below. Constructing that needs a peak, so it is the stop that must win.
-check('a holding inside both thresholds holds', !evaluateExit(held(), 1.05, 1_800_000_001, DEFAULT_CONFIG).exit)
 {
-  // Pullback's firing region is narrower than it looks, and finding it is the point of
-  // this fixture. Take-profit is evaluated FIRST, so a position still above +100% exits
-  // as take-profit however far it has fallen from its peak. Pullback is what catches the
-  // position that peaked high and has since dropped BACK THROUGH the take-profit line:
-  // peak +145% (over the 140 floor), now +95% (under the 100 target), gave back 50%.
-  const p = held({ peakPriceSol: measured(2.45) })
-  const d = evaluateExit(p, 1.95, 1_800_000_005, DEFAULT_CONFIG)
-  check('pullback fires once the peak clears the momentum floor', d.reason === 'pullback')
+  const L = () => newLadder(ENTRY_LAMPORTS, T0, DEFAULT_CONFIG, null)
+  const cfg = DEFAULT_CONFIG
 
-  // The same position while still above the target is a take-profit, not a pullback.
-  // Both exit — only the recorded reason differs, and take-profit is the truer label.
-  check(
-    'a position still above the target exits as take-profit, not pullback',
-    evaluateExit(p, 2.1, 1_800_000_005, DEFAULT_CONFIG).reason === 'take-profit',
-  )
-}
-{
-  // A peak BELOW the momentum floor must not arm the pullback rule.
-  const p = held({ peakPriceSol: measured(1.3) })
-  const d = evaluateExit(p, 1.02, 1_800_000_005, DEFAULT_CONFIG)
-  check('a peak below the momentum floor does not arm pullback', d.reason !== 'pullback')
-}
-check(
-  'no-pump exits a flat position, measured from the ARRIVAL time',
-  evaluateExit(held(), 1.0, 1_800_000_000 + DEFAULT_CONFIG.noPumpTimeoutSecs, DEFAULT_CONFIG).reason === 'no-pump',
-)
-check(
-  'the same flat position before the timeout holds',
-  !evaluateExit(held(), 1.0, 1_800_000_000 + 5, DEFAULT_CONFIG).exit,
-)
-// The config relationship that has been broken in Rust before.
-check('the shipped config satisfies the pullback arithmetic', configProblem(DEFAULT_CONFIG) === null)
-check(
-  'a config whose pullback can never fire is refused',
-  configProblem({ ...DEFAULT_CONFIG, momentumMinPeakPct: 100 }) !== null,
-)
-// An unpriceable position must not be sold on a percentage nobody computed.
-check(
-  'a position with no observed entry is never exited on a price rule',
-  !evaluateExit(held({ entryPriceSol: absent('never observed') }), 0.01, 1_800_009_999, DEFAULT_CONFIG).exit,
-)
-check(
-  'an unobserved fill is refused explicitly, not silently held',
-  evaluateExit(held({ state: 'unknown' }), 0.01, 1_800_009_999, DEFAULT_CONFIG).reason === 'unknown-position',
-)
-check('PnL against an unobserved entry is unmeasured, not 0', !pnlPct(held({ entryPriceSol: absent('x') }), 2).measured)
-{
-  const p = applyPrice(held(), 3, 1_800_000_002)
-  const q = applyPrice(p, 1.5, 1_800_000_003)
-  check('the peak only ever rises', q.peakPriceSol.value === 3)
+  // profit-first mode is ON in the shipped config, so a wallet Zero could not read takes
+  // the WIDER rug-only floor (25%), not the 10% stop. That is the whole rule.
+  check('an unreadable wallet takes the profit-first floor, not the tight stop',
+    effectiveStopLossPct(cfg, null) === cfg.profitFirstFloorPct)
+  check('a wallet above target takes the configured stop',
+    effectiveStopLossPct(cfg, cfg.walletTargetSol + 1) === cfg.stopLossPct)
+  check('a wallet below target takes the rug-only floor',
+    effectiveStopLossPct(cfg, cfg.walletTargetSol / 2) === cfg.profitFirstFloorPct)
+
+  const stopPrice = ENTRY_PRICE * (1 - cfg.profitFirstFloorPct / 100)
+  check('stop-loss fires at the profit-first floor',
+    arrive(L(), stopPrice * 0.99, T0 + 1).decision.reason === 'stop_loss')
+  check('...and a shallower dip holds',
+    !arrive(L(), ENTRY_PRICE * 0.9, T0 + 1).decision.exit)
+
+  const tpPrice = ENTRY_PRICE * (1 + cfg.takeProfitPct / 100)
+  {
+    // Reaching the target on a SLOW climb takes profit; reaching it in one jump escalates.
+    // The two paths differ only in how the position got there, which is the whole point of
+    // the escalator — and it is why a first-arrival test cannot show a plain take-profit:
+    // on arrival one, the delta from entry IS the entire gain, so velocity is always huge.
+    let slow = L()
+    let taken = null
+    for (let i = 1; i <= 200 && taken === null; i++) {
+      const r = arrive(slow, ENTRY_PRICE * (1 + i / 100), T0 + i)
+      slow = r.state
+      if (r.decision.exit) taken = r.decision.reason
+    }
+    check('take-profit fires at the target when momentum is not there', taken === 'take_profit')
+
+    const jump = arrive(L(), ENTRY_PRICE * (1 + (cfg.takeProfitPct + 60) / 100), T0 + 1)
+    check('a single jump past the target ESCALATES rather than selling',
+      !jump.decision.exit && jump.decision.escalations === 1)
+    check('...and the new target is the old one times the escalation factor',
+      Math.abs(jump.decision.dynamicTpPct - cfg.takeProfitPct * cfg.momentumEscalationFactor) < 1e-9)
+    // The bug the comment in `sniper.rs` exists for: escalating to 315% and then
+    // immediately selling at 175% because the target was stale.
+    check('...and the refreshed target is used on the SAME pass, never a stale one',
+      jump.decision.targetProfitLamports > valueOf(1000, tpPrice))
+  }
+
+  check('escalation is capped', (() => {
+    let l = L()
+    for (let i = 0; i < 40; i++) {
+      const px = ENTRY_PRICE * (1 + (l.dynamicTpPct + 60) / 100)
+      const r = arrive(l, px, T0 + i + 1)
+      if (r.decision.exit) break
+      l = r.state
+    }
+    return l.escalations === cfg.momentumMaxEscalations
+  })())
+
+  {
+    // The trailing stop only arms at or above the take-profit, and it RATCHETS. Both
+    // halves matter: arming below the target could pull an exit under entry, and a stop
+    // that un-ratchets on a dip is not a trailing stop at all.
+    let l = L()
+    l = arrive(l, ENTRY_PRICE * 4, T0 + 1).state
+    const raised = l.stopLossLamports
+    check('the trailing stop ratchets up above the take-profit', raised > ENTRY_LAMPORTS)
+    l = arrive(l, ENTRY_PRICE * 3.5, T0 + 2).state
+    check('...and never ratchets back down', l.stopLossLamports >= raised)
+
+    const below = arrive(L(), ENTRY_PRICE * 1.5, T0 + 1).state
+    check('...and does not arm below the take-profit gate',
+      below.stopLossLamports === L().stopLossLamports)
+  }
+
+  {
+    // The pullback exit needs THREE things: past the take-profit gate, a peak above
+    // momentumMinPeakPct, and a give-back past the limit. The shipped config puts the
+    // floor at 200% and the give-back at 15 points.
+    let l = L()
+    l = arrive(l, ENTRY_PRICE * 3.2, T0 + 1).state
+    const d = arrive(l, ENTRY_PRICE * 3.0, T0 + 2).decision
+    check('pullback fires once the peak clears the floor and the give-back exceeds the limit',
+      d.reason === 'trailing_stop')
+
+    let low = L()
+    low = arrive(low, ENTRY_PRICE * 2.5, T0 + 1).state
+    check('a peak below the momentum floor never arms pullback',
+      arrive(low, ENTRY_PRICE * 2.0, T0 + 2).decision.reason !== 'trailing_stop')
+  }
+
+  {
+    // The adaptive curve gives a bigger winner more room. Off in the shipped config and
+    // ported anyway -- a rule that is off in one config is still a rule.
+    const adaptive = { ...cfg, adaptivePullback: true }
+    let l = newLadder(ENTRY_LAMPORTS, T0, adaptive, null)
+    l = arrive(l, ENTRY_PRICE * 3.2, T0 + 1, adaptive).state
+    // theta_eff at peak 220% is 15 * sqrt(3.2) ~ 26.8, so a 20-point give-back no longer fires.
+    check('the adaptive curve widens the limit on a bigger peak',
+      !arrive(l, ENTRY_PRICE * 3.0, T0 + 2, adaptive).decision.exit)
+  }
+
+  {
+    // The no-pump timeout reads the PEAK against noPumpMinGainPct, not the current PnL
+    // against a band. "Never got above 8%" and "is flat right now" are different
+    // questions, and only the first identifies a position that went nowhere.
+    const flat = arrive(L(), ENTRY_PRICE, T0 + cfg.noPumpTimeoutSecs)
+    check('no-pump exits a position whose PEAK never cleared the gain floor',
+      flat.decision.reason === 'no_pump_timeout')
+    check('...and holds before the timeout',
+      !arrive(L(), ENTRY_PRICE, T0 + cfg.noPumpTimeoutSecs - 1).decision.exit)
+
+    let pumped = L()
+    pumped = arrive(pumped, ENTRY_PRICE * 1.5, T0 + 1).state
+    check('a position that pumped and returned is not a no-pump',
+      arrive(pumped, ENTRY_PRICE, T0 + cfg.noPumpTimeoutSecs).decision.reason !== 'no_pump_timeout')
+  }
+
+  // Evaluated ON ARRIVAL, never fired by a clock: the elapsed time is read off the event.
+  // Deliberately inside the hold cap, which is checked first and would otherwise be the
+  // rule that fired.
+  check('the timeout is measured from the arrival, not from a timer',
+    arrive(L(), ENTRY_PRICE, T0 + 1000).decision.reason === 'no_pump_timeout')
+
+  {
+    // The hard hold cap is checked FIRST in Rust, before any price rule -- it exists to
+    // override profit-first mode's window extension, and a rule that overrides the others
+    // cannot be evaluated after them.
+    let l = L()
+    l = arrive(l, ENTRY_PRICE * 1.5, T0 + 1).state
+    const d = arrive(l, ENTRY_PRICE * 1.5, T0 + cfg.maxPositionHoldMins * 60).decision
+    check('the position time cap fires and outranks the price rules', d.reason === 'max_hold')
+  }
+
+  {
+    // An unreadable quote vault must not read as a drain. Both vault rules are off in the
+    // shipped config, so this is checked with one on.
+    const whale = { ...cfg, whaleExitVaultDropPct: 30 }
+    let l = newLadder(ENTRY_LAMPORTS, T0, whale, null)
+    l = arrive(l, ENTRY_PRICE * 0.9, T0 + 1, whale, 100000000).state
+    check('a vault drop past the threshold exits',
+      arrive(l, ENTRY_PRICE * 0.9, T0 + 2, whale, 50000000).decision.reason === 'dump_detected')
+    check('an UNREADABLE vault is not a drop to zero',
+      !arrive(l, ENTRY_PRICE * 0.9, T0 + 2, whale, null).decision.exit)
+  }
+
+  {
+    // The dump detector needs three consecutive declines AND the fast phase to be over.
+    const noProfitFirst = { ...cfg, profitFirstMode: false }
+    let l = newLadder(ENTRY_LAMPORTS, T0, noProfitFirst, null)
+    let px = ENTRY_PRICE
+    let fired = null
+    for (let i = 0; i < FAST_PHASE_CHECKS + 5; i++) {
+      px *= 0.995
+      const r = arrive(l, px, T0 + i + 1, noProfitFirst)
+      l = r.state
+      if (r.decision.exit) { fired = r.decision.reason; break }
+    }
+    check('a sustained decline exits after the fast phase', fired !== null)
+
+    let early = newLadder(ENTRY_LAMPORTS, T0, noProfitFirst, null)
+    let epx = ENTRY_PRICE
+    let earlyDump = false
+    for (let i = 0; i < 5; i++) {
+      epx *= 0.99
+      const r = arrive(early, epx, T0 + i + 1, noProfitFirst)
+      early = r.state
+      if (r.decision.reason === 'dump_detected') earlyDump = true
+    }
+    check('...but not inside the fast phase', !earlyDump)
+  }
+
+  {
+    // Tiered partials sell part and KEEP the position open. Marking it closing would make
+    // the next arrival skip it, and the remainder would never be sold.
+    const tiered = { ...cfg, tieredPartialTp: true, takeProfitPct: 100000 }
+    const l = newLadder(ENTRY_LAMPORTS, T0, tiered, null)
+    const d = arrive(l, ENTRY_PRICE * 2.5, T0 + 1, tiered).decision
+    check('a tiered partial fires as a PARTIAL, not an exit',
+      !d.exit && d.partial !== undefined && d.partial.level === 1)
+    check('...selling a fraction of the remainder', d.partial.fraction === 0.15)
+  }
+
+  // The config relationship that has been broken in Rust before.
+  check('the shipped config satisfies the pullback arithmetic', configProblem(DEFAULT_CONFIG) === null)
+  check('a config whose pullback can never fire is reported',
+    configProblem({ ...DEFAULT_CONFIG, momentumMinPeakPct: 100 }) !== null)
+
+  // An unpriceable position has no ladder at all, and the engine refuses to act on it.
+  check('a position with no ladder produces no swap',
+    !step(armed({ positions: { M: held({ ladder: undefined }) } }),
+      { kind: 'vault.changed', mint: 'M', priceSol: 1e-9, slot: 1, atUnix: T0 + 9999 },
+    ).effects.some(e => e.kind === 'swap'))
+  check('an unobserved fill produces no swap either',
+    !step(armed({ positions: { M: held({ state: 'unknown' }) } }),
+      { kind: 'vault.changed', mint: 'M', priceSol: 1e-9, slot: 1, atUnix: T0 + 9999 },
+    ).effects.some(e => e.kind === 'swap'))
+
+  {
+    let l = L()
+    l = arrive(l, ENTRY_PRICE * 3, T0 + 2).state
+    const peak = l.peakValue
+    l = arrive(l, ENTRY_PRICE * 1.5, T0 + 3).state
+    check('the peak only ever rises', l.peakValue === peak)
+  }
 }
 
 // ── the measured / unmeasured rule ───────────────────────────────────────────
@@ -212,38 +370,110 @@ check('an unmeasured term renders as an em dash', cell(absent('x')) === '—')
 check('a MEASURED zero renders as 0.00', cell(measured(0)) === '0.00')
 check('coverage is a count, not a ratio', coverageMeter({ measuredCount: 2, total: 5 }) !== coverageMeter({ measuredCount: 4, total: 10 }))
 check('an empty coverage is ∅, never an empty meter', coverageMeter({ measuredCount: 0, total: 0 }) === '∅')
-check('an unscored pool is not a low-scoring one', !scoredEntry(absent('not read'), DEFAULT_CONFIG).fires)
-check('...and it says WHY rather than reporting a score', scoredEntry(absent('depth not read'), DEFAULT_CONFIG).reason.includes('unmeasured'))
-check('two prints have no velocity', !changePct({ mint: 'M', points: [[0, 1]] }, 60, 60).measured)
-check('an unmeasured edge is not a zero edge', !estimateEdge([{ pnlPct: 5 }]).winRate.measured)
-check('a measured edge with no wins reports a MEASURED zero win rate', estimateEdge(Array(8).fill({ pnlPct: -5 })).winRate.value === 0)
-check('...and its average win is absent, since there is no average of nothing', !estimateEdge(Array(8).fill({ pnlPct: -5 })).avgWinPct.measured)
+{
+  // An unscored pool is not a low-scoring one. The engine declines on absent depth with a
+  // reason rather than handing the scorer a zero, which would be a real, terrible pool.
+  const v = decideEntry(armed(), pool({ sizeSol: absent('depth not read') }), T0 + 100)
+  check('an unscored pool is not a low-scoring one', !v.act)
+  check('...and it says WHY rather than reporting a score',
+    !v.score.measured && v.reason.includes('not scoreable'))
+}
+{
+  // A pool age of `null` is a real arm of the Rust ladder -- almost every pump.fun
+  // migration has open_time 0 -- and gets its own likelihood ratio rather than an error.
+  // It must NOT score the same as a pool measured at zero seconds old.
+  const unknownAge = scorePool({ sizeSol: 30, ageSecs: null })
+  const zeroAge = scorePool({ sizeSol: 30, ageSecs: 0 })
+  check('an unknown pool age is not an age of zero', unknownAge !== zeroAge)
+}
+{
+  // Kelly's degenerate arms return a bare 1.0 rather than a computed number. A window with
+  // no losses has no payoff ratio, and inventing one manufactures an edge from a missing
+  // denominator.
+  const k = kellySizer()
+  const allWins = Array(10).fill({ profitable: true, pnlSol: 0.1 })
+  check('a window with no losses has no payoff ratio and stays at base',
+    computeMultiplier(k, allWins).multiplier === 1.0)
+  check('...and says so rather than reporting an edge',
+    computeMultiplier(k, allWins).reason.includes('no payoff ratio'))
+  check('an empty history is base, not zero', computeMultiplier(k, []).multiplier === 1.0)
+  check('a short history is the warm-up half, not a fitted number',
+    computeMultiplier(k, Array(DEFAULT_MIN_TRADES - 1).fill({ profitable: true, pnlSol: 1 })).multiplier === 0.5)
+}
 
 // ── Ψ / coherence ────────────────────────────────────────────────────────────
 
 section('coherence gate')
 
+// The port that changed the most. Zero used to report the resolution rate AS psi; the real
+// psi is the sentience master equation with the rate threaded through four of its terms,
+// and it maxes out at ~0.2055 rather than 1.0. Every value below is pinned against Rust in
+// the parity section; what is asserted here is the BEHAVIOUR around those values.
+
 {
-  let c = newCoherence()
-  const v0 = evalCoherence(c, 12, 0.55)
-  check('Ψ is UNMEASURED before the minimum samples', !v0.psi.measured)
+  let c = newCoherence(T0)
+  const v0 = evalCoherence(c, T0)
+  check('psi is UNMEASURED before the minimum samples', !v0.psi.measured)
   // The trap this repo has hit three times: an unmeasured gate that pins itself shut.
+  // A gate that blocks the reads that would open it never opens.
   check('...and entries are ALLOWED while it is unmeasured', v0.entriesAllowed)
+  check('...and the verdict is explicitly not decisive', !v0.decisive)
 
-  for (let i = 0; i < 12; i++) c = recordRead(c, i % 4 !== 0) // 9/12 = 0.75
-  const v1 = evalCoherence(c, 12, 0.55)
-  check('Ψ is measured once there are samples', v1.psi.measured && Math.abs(v1.psi.value - 0.75) < 1e-9)
-  check('a healthy Ψ allows entries', v1.entriesAllowed)
+  // A healthy window: 90% of reads resolved, feed fresh.
+  let good = newCoherence(T0)
+  good = recordPoolSeen(good, T0)
+  for (let i = 0; i < MIN_SAMPLES; i++) good = recordRead(good, i % 10 !== 0, T0)
+  const vg = evalCoherence(good, T0)
+  check('psi is measured once there are enough samples', vg.psi.measured)
+  check('a healthy psi allows entries', vg.entriesAllowed && !vg.shouldHalt)
+  check('...and psi is NOT the resolution rate',
+    Math.abs(vg.psi.value - vg.resolutionRate.value) > 0.1)
 
-  let bad = newCoherence()
-  for (let i = 0; i < 20; i++) bad = recordRead(bad, i % 5 === 0) // 0.2
-  check('a degraded Ψ halts entries', !evalCoherence(bad, 12, 0.55).entriesAllowed)
+  // A degraded window: 20% resolved.
+  let bad = newCoherence(T0)
+  bad = recordPoolSeen(bad, T0)
+  for (let i = 0; i < MIN_SAMPLES; i++) bad = recordRead(bad, i % 5 === 0, T0)
+  const vb = evalCoherence(bad, T0)
+  check('a degraded psi halts entries', !vb.entriesAllowed && vb.gate === 'HOLD')
+  check('...and says the pipeline is passing pools it could not verify',
+    vb.reason.includes('could not verify'))
 
-  // The rule that matters most: degraded ENTRIES, never degraded exits.
+  // Only a HOLD halts. CAUTION is reported and not enforced -- a breaker that fired on
+  // every yellow reading is one the operator turns off.
+  check('a CAUTION gate does not halt', gateOf((GO_THRESHOLD + CAUTION_THRESHOLD) / 2) === 'CAUTION')
+  check('psi cannot exceed the equation maximum', PSI_MAX < 1 && PSI_MAX > 0.2)
+
+  // The breaker is a config flag, and it defaults ON in Rust for a stated reason.
+  check('the breaker respects its config flag', evalCoherence(bad, T0, false).entriesAllowed)
+  check('...and the shipped config has it on', DEFAULT_CONFIG.coherenceBreaker === true)
+
+  // A 120-SECOND rolling window, not a sample count: a read arriving after a long silence
+  // opens a new window rather than landing in a stale one.
+  const rolled = recordRead(bad, true, T0 + WINDOW_SECS + 1)
+  check('the window rolls on time, not on count', rolled.resolved + rolled.unresolved === 1)
+  check('...and a rolled window is no longer decisive', !evalCoherence(rolled, T0 + WINDOW_SECS + 1).decisive)
+
+  // A stalled feed degrades psi even when every read resolves, because a pipeline with no
+  // pools to filter is not a healthy pipeline.
+  let stalled = newCoherence(T0)
+  stalled = recordPoolSeen(stalled, T0)
+  for (let i = 0; i < MIN_SAMPLES; i++) stalled = recordRead(stalled, true, T0 + FEED_STALL_SECS + 1)
+  const vs = evalCoherence(stalled, T0 + FEED_STALL_SECS + 1)
+  check('a stalled feed halts even with perfect reads', vs.shouldHalt)
+  check('...and names the stall rather than the read rate', vs.reason.includes('stalled'))
+
+  // THE rule: degraded ENTRIES, never degraded exits.
   const s = armed({ coherence: bad, positions: { M: held() } })
-  const out = step(s, { kind: 'vault.changed', mint: 'M', priceSol: 0.5, slot: 1, atUnix: 1_800_000_002 })
+  const out = step(s, {
+    kind: 'vault.changed', mint: 'M',
+    priceSol: ENTRY_PRICE * 0.5, slot: 1, atUnix: T0 + 2,
+  })
   check('a degraded feed never stops an EXIT', out.effects.some(e => e.kind === 'swap' && e.side === 'sell'))
-  check('...but does stop an ENTRY', decideEntry(s, pool(), 1_800_000_100).decline === 'coherence-degraded')
+  // Checked WITHOUT the open position: `max_concurrent_positions` is 1 in the shipped
+  // config, so a state holding one declines on that first and would pass this test for
+  // entirely the wrong reason.
+  check('...but does stop an ENTRY',
+    decideEntry(armed({ coherence: bad }), pool(), T0 + 100).decline === 'coherence-degraded')
 }
 
 {
@@ -324,11 +554,13 @@ check('only the writer may trade', mayTrade('writer') && !mayTrade('follower'))
 check('an unsupported platform is NOT treated as the writer', !mayTrade('unsupported'))
 check('a follower is told why, not left looking broken', leaseNote('follower').length > 40)
 {
-  const s = armed({ lease: 'follower' })
-  check('a follower tab declines entries', decideEntry(s, pool(), 1_800_000_100).decline === 'no-lease')
-  // A follower must still track positions — the writer is the one acting on them.
-  const out = step(s, { kind: 'vault.changed', mint: 'M', priceSol: 2, slot: 1, atUnix: 1_800_000_002 })
-  check('...but still ingests prices, so its display is live', out.state.history.M.points.length === 1)
+  const s = armed({ lease: 'follower', positions: { M: held() } })
+  check('a follower tab declines entries', decideEntry(armed({ lease: 'follower' }), pool(), T0 + 100).decline === 'no-lease')
+  // A follower must still track positions — the writer is the one acting on them — so the
+  // arrival still updates the ladder and the displayed price.
+  const out = step(s, { kind: 'vault.changed', mint: 'M', priceSol: ENTRY_PRICE * 1.5, slot: 1, atUnix: T0 + 2 })
+  check('...but still ingests prices, so its display is live',
+    out.state.positions.M.lastPriceSol.measured && out.state.positions.M.ladder.checks === 1)
 }
 
 // ── fills ────────────────────────────────────────────────────────────────────
@@ -411,37 +643,182 @@ section('policy: pinned, never trained')
 
 // ── strategies ───────────────────────────────────────────────────────────────
 
-section('entry strategies')
+section('sniper parity: the numbers come from the bot')
+
+// The heart of the whole rewrite.
+//
+// `fixtures/sniper-parity.json` is emitted by `cargo test -p scematica-sniper zero_parity`
+// -- by the sniper itself, not typed out beside it. Every number Zero branches on is
+// compared against it here. A threshold edited in `config.toml` fails the Rust test until
+// the fixture is regenerated, and then fails this until the port follows.
+//
+// Before this existed, Zero's take-profit was 100 against the bot's 175, its stop 15
+// against 10, its Kelly half against quarter, and its psi a different quantity entirely.
+// Nothing failed, because there was nothing to fail.
+
+const FIXTURE = JSON.parse(
+  readFileSync(join(HERE, '..', 'lib', 'zero', 'fixtures', 'sniper-parity.json'), 'utf8'),
+)
 
 {
-  let h = { mint: 'M', points: [] }
-  const t0 = 1_800_000_000
-  // A run-up then a give-back: 1 -> 2 (+100%), back to 1.6 (-20% from peak).
-  ;[1, 1.3, 1.7, 2.0, 1.8, 1.5].forEach((p, i) => { h = pushPrice(h, t0 + i * 10, p) })
-  check('pullback fires on a real run-up and give-back', pullback(h, t0 + 60).fires)
+  // ── config, field for field ──────────────────────────────────────────────
+  const camel = s => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+  const rust = FIXTURE.config_toml
+  const missing = []
+  const differs = []
+  for (const [k, v] of Object.entries(rust)) {
+    const key = camel(k)
+    if (!(key in SNIPER_CONFIG)) { missing.push(k); continue }
+    const mine = SNIPER_CONFIG[key]
+    const same = Array.isArray(v) ? JSON.stringify(v) === JSON.stringify(mine) : v === mine
+    if (!same) differs.push(`${k}: rust=${JSON.stringify(v)} ts=${JSON.stringify(mine)}`)
+  }
+  check(`every sniper config field is present (${Object.keys(rust).length} fields)`,
+    missing.length === 0 || (console.log('    missing:', missing.join(', ')), false))
+  check('...and every one matches config.toml',
+    differs.length === 0 || (differs.forEach(d => console.log('   ', d)), false))
 
-  let crash = { mint: 'M', points: [] }
-  ;[1, 1.5, 2.0, 0.6, 0.5, 0.45].forEach((p, i) => { crash = pushPrice(crash, t0 + i * 10, p) })
-  check('pullback refuses a decline that is not a pullback', !pullback(crash, t0 + 60).fires)
+  // The relationships that decide whether a rule can fire at all.
+  check('the take-profit is the sniper’s 175, not a round 100',
+    SNIPER_CONFIG.takeProfitPct === rust.take_profit_pct)
+  check('the no-pump rule reads a PEAK threshold, which Zero used not to have at all',
+    typeof SNIPER_CONFIG.noPumpMinGainPct === 'number' && SNIPER_CONFIG.noPumpMinGainPct > 0)
+}
 
-  let flat = { mint: 'M', points: [] }
-  ;[1, 1.01, 1.0, 0.99, 1.0].forEach((p, i) => { flat = pushPrice(flat, t0 + i * 10, p) })
-  check('pullback refuses without a prior run-up', !pullback(flat, t0 + 60).fires)
+{
+  // ── rate modes ───────────────────────────────────────────────────────────
+  const rust = FIXTURE.rate_modes
+  check(`all ${rust.length} rate modes are present`, RATE_MODES.length === rust.length)
+  const bad = []
+  rust.forEach((m, i) => {
+    const mine = RATE_MODES[i]
+    if (!mine) return bad.push(`${m.name}: absent`)
+    for (const [rk, tk] of [
+      ['name', 'name'], ['order', 'order'], ['quote_amount', 'quoteAmount'],
+      ['wallet_pct', 'walletPct'], ['take_profit_pct', 'takeProfitPct'],
+      ['stop_loss_pct', 'stopLossPct'], ['momentum_max_escalations', 'momentumMaxEscalations'],
+      ['enabled', 'enabled'],
+    ]) if (m[rk] !== mine[tk]) bad.push(`${m.name}.${rk}: rust=${m[rk]} ts=${mine[tk]}`)
+  })
+  check('...and every field of every mode matches',
+    bad.length === 0 || (bad.forEach(b => console.log('   ', b)), false))
+  check('the active mode is the bot’s', ACTIVE_MODE_NAME === FIXTURE.active_mode_name)
 
-  let trend = { mint: 'M', points: [] }
-  ;[1, 1.1, 1.2, 1.3, 1.4, 1.5].forEach((p, i) => { trend = pushPrice(trend, t0 + i * 30, p) })
-  check('continuation fires on a monotone rise', continuation(trend, t0 + 180).fires)
+  // Applying a mode overrides four fields and no others. Notably NOT the momentum floor,
+  // which is why the pullback rule is unsatisfiable in five of the seven shipped modes --
+  // a real property of the bot, reported rather than corrected.
+  const micro = withRateMode(SNIPER_CONFIG, 'Micro')
+  check('a rate mode overrides the take-profit', micro.takeProfitPct === 50)
+  check('...and leaves the momentum floor alone', micro.momentumMinPeakPct === SNIPER_CONFIG.momentumMinPeakPct)
 
-  // Net-positive but not a trend: the whole reason the step test exists.
-  let chop = { mint: 'M', points: [] }
-  ;[1.0, 0.9, 0.85, 0.8, 0.75, 1.4].forEach((p, i) => { chop = pushPrice(chop, t0 + i * 30, p) })
-  const chopSignal = continuation(chop, t0 + 180)
-  check('continuation refuses a net rise that is not a trend', !chopSignal.fires)
+  // Which means the high-take-profit modes carry an unsatisfiable pullback rule: the peak
+  // floor stays at 200% while the take-profit gate climbs past it, so nothing can be both
+  // past the gate and below the peak requirement. Aggressive, Degen and Moon are all in
+  // that state in the shipped config. It is the bot's own behaviour and it is REPORTED
+  // rather than corrected — silently rewriting a threshold to make a rule fire would be
+  // Zero deciding to trade differently from the sniper, which is the whole thing this
+  // rewrite removes.
+  const unreachable = RATE_MODES
+    .filter(m => configProblem(withRateMode(SNIPER_CONFIG, m.name)) !== null)
+    .map(m => m.name)
+  check(`the modes whose pullback can never fire are reported: ${unreachable.join(', ') || 'none'}`,
+    unreachable.includes('Moon') && unreachable.includes('Degen') && unreachable.includes('Aggressive'))
+  check('...and the shipped active mode is not one of them',
+    !unreachable.includes(ACTIVE_MODE_NAME))
+}
 
-  // History is bounded — a tab may run for hours across dozens of mints.
-  let long = { mint: 'M', points: [] }
-  for (let i = 0; i < 500; i++) long = pushPrice(long, t0 + i, 1)
-  check('price history is bounded', long.points.length <= 64)
+{
+  // ── psi, the master equation, 72 cases ───────────────────────────────────
+  const c = FIXTURE.coherence
+  check('the coherence window matches Rust', WINDOW_SECS === c.window_secs)
+  check('the minimum sample count matches Rust', MIN_SAMPLES === c.min_samples)
+  check('the feed-stall threshold matches Rust', FEED_STALL_SECS === c.feed_stall_secs)
+  check('the gate thresholds match Rust',
+    GO_THRESHOLD === c.go_threshold && CAUTION_THRESHOLD === c.caution_threshold)
+
+  let worst = 0
+  let wrongGate = 0
+  for (const k of c.cases) {
+    const feedHealth = Math.min(1, Math.max(0, 1 - k.feed_age_secs / FEED_STALL_SECS))
+    const { psi } = masterEquation(feedHealth, k.resolution_rate)
+    worst = Math.max(worst, Math.abs(psi - k.psi))
+    if (gateOf(psi) !== k.gate) wrongGate++
+  }
+  // Exact, not approximate. The multiplication order is Rust's, so the last bits agree --
+  // and a tolerance here would hide exactly the reordering that a tolerance cannot detect.
+  check(`psi is bit-exact across all ${c.cases.length} cases (max delta ${worst})`, worst === 0)
+  check('...and every gate verdict matches', wrongGate === 0)
+}
+
+{
+  // ── Kelly, around every discontinuity ────────────────────────────────────
+  const k = FIXTURE.kelly
+  check('the default Kelly fraction is Rust’s quarter, not a half', DEFAULT_FRACTION === k.default_fraction)
+  check('the warm-up threshold is Rust’s ten, not eight', DEFAULT_MIN_TRADES === k.default_min_trades)
+  check('the clamp rails match Rust', CLAMP_MIN === k.clamp_min && CLAMP_MAX === k.clamp_max)
+
+  const bad = []
+  for (const c of k.cases) {
+    const history = c.history.map(([profitable, pnlSol]) => ({ profitable, pnlSol }))
+    const got = computeMultiplier(kellySizer(c.fraction, c.min_trades), history).multiplier
+    if (got !== c.multiplier) bad.push(`${c.name}: rust=${c.multiplier} ts=${got}`)
+  }
+  check(`every Kelly case reproduces Rust exactly (${k.cases.length} cases)`,
+    bad.length === 0 || (bad.forEach(b => console.log('   ', b)), false))
+}
+
+{
+  // ── the adaptive pullback curve ──────────────────────────────────────────
+  const a = FIXTURE.adaptive_pullback
+  const base = a.base_default
+  const bad = []
+  for (const c of a.cases) {
+    const theta = base * Math.sqrt(1 + Math.max(c.peak_pnl_pct, 0) / 100)
+    if (theta !== c.theta_eff) bad.push(`peak ${c.peak_pnl_pct}: rust=${c.theta_eff} ts=${theta}`)
+  }
+  check('the adaptive pullback curve is bit-exact',
+    bad.length === 0 || (bad.forEach(b => console.log('   ', b)), false))
+  check('the shipped base matches config.toml', SNIPER_CONFIG.momentumPullbackExitPct === a.base_toml)
+}
+
+{
+  // ── the pool scorer ──────────────────────────────────────────────────────
+  //
+  // Zero used to carry its own heuristic here (`50 + mid*30`, plus eight points for a
+  // renounced mint) and compare it against the sniper's 65 floor. It is now the same
+  // parity-pinned port `/` uses, so this asserts the port rather than a second brain.
+  const bad = []
+  for (const c of FIXTURE.pool_score.cases) {
+    const ratio = c.base_vault_raw > 0 ? (c.size_sol * 1e9) / c.base_vault_raw : undefined
+    const got = scorePool({
+      sizeSol: c.size_sol,
+      ageSecs: c.age_secs,
+      buyPressureRatio: ratio,
+      pumpfunScore: c.pumpfun_score,
+    })
+    if (got !== c.score) bad.push(`${c.name}: rust=${c.score} ts=${got}`)
+  }
+  check(`the pool scorer reproduces Rust exactly (${FIXTURE.pool_score.cases.length} cases)`,
+    bad.length === 0 || (bad.forEach(b => console.log('   ', b)), false))
+}
+
+{
+  // ── no second implementation ─────────────────────────────────────────────
+  //
+  // The point of the whole exercise: the modules that used to hold Zero's own versions of
+  // these rules are gone, and nothing may quietly grow a replacement. A scan, because a
+  // convention is not a check.
+  const zeroDir = join(HERE, '..', 'lib', 'zero')
+  for (const gone of ['gate.ts', 'size.ts', 'strategy.ts', 'exits.ts']) {
+    check(`lib/zero/${gone} is gone, not shadowing the port`, !existsSync(join(zeroDir, gone)))
+  }
+  const engine = codeOf(join(zeroDir, 'engine.ts'))
+  check('the engine does not compute a pool score of its own',
+    !/function\s+scorePool|50\s*\+\s*mid/.test(engine))
+  check('the engine scores through the parity-pinned port',
+    engine.includes("from '../feed/scorer.ts'"))
+  check('the engine sizes through the ported Kelly',
+    engine.includes("from './sniper/kelly.ts'"))
 }
 
 // ── sizing ───────────────────────────────────────────────────────────────────
@@ -449,23 +826,46 @@ section('entry strategies')
 section('sizing')
 
 {
-  const noEdge = estimateEdge([])
-  const s1 = sizeEntry(1e8, noEdge, 1, 1, 1e9, 1e9, 2e6)
-  check('an unmeasured edge sizes DEFENSIVELY rather than fully', s1.lamports === 5e7)
-  check('...and names the reason', s1.applied[0].includes('unmeasured'))
+  // Sizing is the sniper's: `quote_amount` as the base, scaled by the Kelly multiplier and
+  // the policy's, then clamped by the session caps. Two gates, different questions -- the
+  // sizer says what the edge is worth, the ledger says what may be afforded.
+  const base = Math.floor(DEFAULT_CONFIG.quoteAmount * 1e9)
 
-  const losing = estimateEdge([...Array(6).fill({ pnlPct: -10 }), ...Array(2).fill({ pnlPct: 5 })])
-  const s2 = sizeEntry(1e8, losing, 1, 1, 1e9, 1e9, 2e6)
-  check('a measured negative edge sizes to zero', s2.lamports === 0)
+  const v = decideEntry(armed(), pool(), T0 + 100)
+  check('a passing pool sizes from the sniper’s quote_amount', v.act && v.sizeLamports === base)
+  check('...and kelly_sizing is off in the shipped config, so the multiplier is 1',
+    DEFAULT_CONFIG.kellySizing === false && v.reason.includes('kelly_sizing is off'))
 
-  const s3 = sizeEntry(1e8, noEdge, 1, 1, 1e7, 1e9, 2e6)
-  check('the per-trade cap clamps', s3.lamports === 1e7)
-  const s4 = sizeEntry(1e8, noEdge, 1, 1, 1e9, 3e6, 2e6)
-  check('the remaining budget clamps', s4.lamports === 3e6)
-  const s5 = sizeEntry(1e8, noEdge, 1, 1, 1e9, 1e6, 2e6)
-  check('a size below dust is refused rather than sent', s5.lamports === 0)
-  const s6 = sizeEntry(1e8, noEdge, 1, 0, 1e9, 1e9, 2e6)
-  check('a policy veto multiplier sizes to zero', s6.lamports === 0)
+  {
+    // With Kelly on, a measured edge sizes UP -- which the old implementation could never
+    // do, because it only ever scaled a base downward.
+    const cfg = { ...DEFAULT_CONFIG, kellySizing: true }
+    const outcomes = [
+      ...Array(14).fill({ profitable: true, pnlSol: 0.30 }),
+      ...Array(6).fill({ profitable: false, pnlSol: -0.05 }),
+    ]
+    const s = { ...armed({ outcomes }), config: cfg }
+    const up = decideEntry(s, pool(), T0 + 100)
+    check('a measured positive edge sizes ABOVE base', up.act && up.sizeLamports > base)
+
+    const warm = { ...armed({ outcomes: outcomes.slice(0, 5) }), config: cfg }
+    const half = decideEntry(warm, pool(), T0 + 100)
+    check('a warm-up history sizes at half base', half.act && half.sizeLamports === Math.floor(base * 0.5))
+  }
+
+  {
+    const tiny = { ...caps, maxPerTradeLamports: 3_000_000 }
+    const s = { ...armed(), caps: tiny }
+    check('the per-trade cap clamps', decideEntry(s, pool(), T0 + 100).sizeLamports === 3_000_000)
+  }
+  {
+    const broke = { ...caps, budgetLamports: 1_000_000 }
+    const s = { ...armed(), caps: broke }
+    const d = decideEntry(s, pool(), T0 + 100)
+    check('an exhausted budget declines rather than sending dust', !d.act && d.decline === 'budget-exhausted')
+  }
+  check('the dust floor is a host limit, not a sniper setting',
+    DUST_LAMPORTS > 0 && !('dustLamports' in SNIPER_CONFIG))
 }
 
 // ── sealing ──────────────────────────────────────────────────────────────────
@@ -559,7 +959,7 @@ section('engine')
   check('...and moves no money', !declined.effects.some(e => e.kind === 'swap'))
   check('...naming which decline it was', declined.state.records[0].decline !== undefined)
 
-  const unarmed = step(initialState(DEFAULT_CONFIG, caps), { kind: 'pool.observed', pool: pool(), atUnix: 1_800_000_100 })
+  const unarmed = step(initialState(DEFAULT_CONFIG, caps, T0), { kind: 'pool.observed', pool: pool(), atUnix: 1_800_000_100 })
   check('an unarmed Zero signs nothing', !unarmed.effects.some(e => e.kind === 'swap'))
 
   const killed = step(armed({ killed: true }), { kind: 'pool.observed', pool: pool(), atUnix: 1_800_000_100 })
@@ -592,13 +992,12 @@ section('readout')
 
 {
   const r = buildReadout(
-    evalCoherence(newCoherence(), 12, 0.55),
+    evalCoherence(newCoherence(T0), T0),
     liveness(false, null, 100),
     { armed: false, balanceLamports: absent('x'), committedLamports: 0, remainingLamports: 0, budgetLamports: 1e8, secsUntilExpiry: absent('not armed'), strandedCount: 0, warning: 'w' },
     'follower',
     evaluateGate(null),
     2,
-    0.55,
   )
   check('open positions with a dead feed produce an ALARM headline', r.headline.role === 'alarm')
   check('...naming the count', r.headline.text.includes('2 position'))
@@ -613,7 +1012,15 @@ section('readout')
 section('core purity')
 
 {
-  const files = ['types', 'gate', 'policy', 'strategy', 'exits', 'size', 'session', 'observe', 'seal', 'gatekeep', 'engine', 'readout']
+  // Every module of the pure core, including the ported sniper. The ports are held to the
+  // same rule as the rest: they must run in a page and in an extension's offscreen
+  // document without change, which is the only reason phase 3 is a new shell rather than a
+  // rewrite.
+  const files = [
+    'types', 'policy', 'session', 'observe', 'seal', 'gatekeep', 'engine', 'readout',
+    'lease', 'funding',
+    'sniper/psi', 'sniper/coherence', 'sniper/kelly', 'sniper/config', 'sniper/exit-ladder',
+  ]
   const src = Object.fromEntries(files.map(f => [f, codeOf(join(HERE, '..', 'lib', 'zero', `${f}.ts`))]))
 
   // The core must be hostable by a page AND an extension offscreen document without
@@ -791,9 +1198,14 @@ section('host: reading what actually filled')
   check('a landed buy with an unreadable fill becomes UNKNOWN, not open', unreadable.state.positions.M.state === 'unknown')
   check('...with no invented entry price', !unreadable.state.positions.M.entryPriceSol.measured)
   check('...and the operator is told', unreadable.effects.some(e => e.kind === 'notify' && e.level === 'alarm'))
-  // And exits refuse to price it, which is the payoff of the whole distinction.
+  // And it gets no ladder at all, which is the payoff of the whole distinction: a ladder
+  // needs an entry VALUE, and a position whose fill nobody could read has none. Every
+  // percentage rule would otherwise fire against a number nobody measured.
+  check('...and is given no exit ladder', unreadable.state.positions.M.ladder === undefined)
   check('...so no exit rule can fire on it',
-    !evaluateExit(unreadable.state.positions.M, 0.0001, 1_800_099_999, DEFAULT_CONFIG).exit)
+    !step(unreadable.state, {
+      kind: 'vault.changed', mint: 'M', priceSol: 1e-9, slot: 1, atUnix: T0 + 99999,
+    }).effects.some(e => e.kind === 'swap'))
 
   const readable = step(opening, {
     kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 5_000_000, side: 'buy', atUnix: 1_800_000_005,
@@ -801,6 +1213,9 @@ section('host: reading what actually filled')
   check('a readable fill opens the position', readable.state.positions.M.state === 'open')
   check('...with an entry price derived from what arrived',
     Math.abs(readable.state.positions.M.entryPriceSol.value - 1e7 / 5_000_000) < 1e-12)
+  // The ladder anchors to what was ACTUALLY spent, not to what was requested.
+  check('...and a ladder anchored to the lamports actually spent',
+    readable.state.positions.M.ladder.entryLamports === readable.state.positions.M.spentLamports)
 
   // A sell whose proceeds cannot be read produces NO outcome. A fabricated 0% would enter
   // the edge estimate and size every subsequent trade.
@@ -813,7 +1228,31 @@ section('host: reading what actually filled')
     kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 2e7, side: 'sell', atUnix: 1_800_000_009,
   })
   check('a readable sell records a realised outcome', goodSell.state.outcomes.length === 1)
-  check('...computed from the observed proceeds', Math.abs(goodSell.state.outcomes[0].pnlPct - 100) < 1e-9)
+  // In SOL and with a separate win/loss verdict, because that is what `KellySizer` reads.
+  // A percentage agrees with SOL only while every position is the same size, which is
+  // exactly what Kelly sizing stops being true.
+  check('...computed from the observed proceeds, in SOL',
+    Math.abs(goodSell.state.outcomes[0].pnlSol - (2e7 - ENTRY_LAMPORTS) / 1e9) < 1e-12)
+  check('...carrying the win/loss verdict separately', goodSell.state.outcomes[0].profitable === true)
+  {
+    const lossSell = step(closing, {
+      kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 5e6, side: 'sell', atUnix: T0 + 9,
+    })
+    check('...and a loss is marked as one', lossSell.state.outcomes[0].profitable === false)
+  }
+  {
+    // Bounded to the sniper's own lookback: an unbounded history makes the multiplier a
+    // claim about the whole session rather than about recent trades. The same mistake the
+    // NN tournament made with a lifetime reward sum.
+    let s = closing
+    for (let i = 0; i < DEFAULT_CONFIG.kellyLookback + 20; i++) {
+      s = step({ ...s, positions: { M: held({ state: 'closing' }) } }, {
+        kind: 'fill.observed', mint: 'M', signature: 'S', outAmount: 2e7, side: 'sell', atUnix: T0 + 9 + i,
+      }).state
+    }
+    check('settled outcomes are bounded to the sniper’s kelly_lookback',
+      s.outcomes.length === DEFAULT_CONFIG.kellyLookback)
+  }
 }
 
 section('funding the session key')

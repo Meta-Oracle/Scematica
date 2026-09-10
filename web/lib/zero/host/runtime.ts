@@ -18,6 +18,16 @@
 import { type Effect, type ZeroConfig, type ZeroEvent } from '../types.ts'
 import { type SessionCaps } from '../session.ts'
 import { type ZeroState, initialState, step } from '../engine.ts'
+
+/**
+ * The host's clock, in one place.
+ *
+ * The pure core never reads a clock — every time value arrives on an event — so this is
+ * the seam where a real one enters. Seconds, not millis: every `atUnix` in `ZeroEvent` is
+ * unix seconds, and a millisecond value in one of them makes the coherence window roll a
+ * thousand times too eagerly and the no-pump timeout unreachable.
+ */
+const nowUnix = () => Math.floor(Date.now() / 1000)
 import { acquireLease, type Lease } from '../lease.ts'
 import { ZeroRpc, ZeroSocket, type RpcConfig, type Subscription, redact, wsUrl } from './rpc.ts'
 import { interpret, pollPlan, BLOCKHASH_VALID_SECS, unknownNotice } from '../observe.ts'
@@ -127,17 +137,18 @@ export class ZeroRuntime {
       const sub = await this.hooks.resolveVaults(mint)
       if (sub) {
         this.socket.subscribe(sub)
-        this.dispatch({ kind: 'read.resolved', label: `vaults:${mint}` })
+        this.dispatch({ kind: 'read.resolved', label: `vaults:${mint}`, atUnix: nowUnix() })
       } else {
         // Zero cannot price a position it cannot watch. That is a coherence failure, and
         // saying so is what stops it being counted as a healthy read.
-        this.dispatch({ kind: 'read.failed', label: `vaults:${mint}`, reason: 'vaults not found' })
+        this.dispatch({ kind: 'read.failed', label: `vaults:${mint}`, reason: 'vaults not found', atUnix: nowUnix() })
       }
     } catch (e) {
       this.dispatch({
         kind: 'read.failed',
         label: `vaults:${mint}`,
         reason: redact(e instanceof Error ? e.message : String(e)),
+        atUnix: nowUnix(),
       })
     }
   }
@@ -300,7 +311,7 @@ function persist(state: ZeroState): void {
  * a decision made an hour ago in a tab that has since been closed is not consent now.
  */
 function restore(config: ZeroConfig, caps: SessionCaps): ZeroState {
-  const fresh = initialState(config, caps)
+  const fresh = initialState(config, caps, Math.floor(Date.now() / 1000))
   try {
     const raw = localStorage.getItem(STATE_STORAGE)
     if (!raw) return fresh

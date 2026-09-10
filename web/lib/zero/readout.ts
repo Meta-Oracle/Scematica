@@ -14,7 +14,9 @@
 // renderer names a ROLE, never a colour.
 
 import { type Term, type Coverage, cell } from './types.ts'
-import { type CoherenceVerdict, type LivenessVerdict } from './gate.ts'
+import { type Coherence, type LivenessVerdict } from './sniper/coherence.ts'
+import { MIN_SAMPLES, FEED_STALL_SECS } from './sniper/coherence.ts'
+import { PSI_MAX } from './sniper/psi.ts'
 import { type SessionReadout } from './session.ts'
 import { type LeaseState, leaseNote } from './lease.ts'
 import { type GateState } from './gatekeep.ts'
@@ -74,17 +76,27 @@ export interface ZeroReadout {
  * is context for it.
  */
 export function buildReadout(
-  coherence: CoherenceVerdict,
+  coherence: Coherence,
   liveness: LivenessVerdict,
   session: SessionReadout,
   lease: LeaseState,
   gate: GateState,
   openPositions: number,
-  minPsi: number,
 ): ZeroReadout {
   const gauges: Gauge[] = [
-    gauge('Ψ coherence', coherence.psi, coherence.reason, coherence.entriesAllowed ? 'ok' : 'alarm'),
-    gauge('feed age (s)', liveness.secsSinceArrival, liveness.reason, liveness.exitsEvaluable ? 'ok' : 'alarm', 120),
+    // Ψ is scaled against `PSI_MAX`, not against 1.0, and that is not cosmetic.
+    // `masterEquation` tops out at ~0.2055 because four of its six terms are uninstrumented
+    // defaults below one — so a bar drawn against a ceiling of 1.0 shows a perfectly
+    // healthy pipeline as three-quarters empty, permanently. The gauge's `text` still
+    // prints the real Ψ; only the fill is normalised, and the note says so.
+    gauge(
+      'Ψ coherence',
+      coherence.psi,
+      `${coherence.reason} (Ψ scale: 0 – ${PSI_MAX.toFixed(4)}, the equation's own maximum)`,
+      coherence.entriesAllowed ? 'ok' : 'alarm',
+      PSI_MAX,
+    ),
+    gauge('feed age (s)', liveness.secsSinceArrival, liveness.reason, liveness.exitsEvaluable ? 'ok' : 'alarm', FEED_STALL_SECS),
     gauge('session left (s)', session.secsUntilExpiry, session.armed ? 'time before the key stops signing' : 'not armed', 'ok', 3600),
     gauge(
       'budget left',
@@ -107,7 +119,7 @@ export function buildReadout(
       : coherence.entriesAllowed
         ? { text: `watching ${openPositions} position(s); entries open`, role: 'ok' as Role }
         : {
-            text: `watching ${openPositions} position(s); entries HALTED — Ψ ${cell(coherence.psi)} below ${minPsi}`,
+            text: `watching ${openPositions} position(s); entries HALTED — ${coherence.reason}`,
             role: 'warn' as Role,
           }
 
@@ -118,12 +130,21 @@ export function buildReadout(
     )
   }
   if (!coherence.psi.measured) {
-    notes.push(`Ψ is unmeasured (${coherence.psi.note}). That is not a Ψ of zero — entries are allowed until it can be measured.`)
+    notes.push(
+      `Ψ is unmeasured (${coherence.psi.note}). That is not a Ψ of zero — entries are allowed ` +
+      'until it can be measured, because a gate that blocks the reads that would open it never opens.',
+    )
   }
 
   return {
     gauges,
-    coherenceCoverage: coverageMeter({ measuredCount: coherence.samples, total: Math.max(coherence.samples, 1) }),
+    // One cell per sample toward the decisive threshold, never a percentage: what the
+    // operator needs is "how far off is a verdict", and 4/20 and 40/200 are different
+    // answers a proportion renders identically.
+    coherenceCoverage: coverageMeter({
+      measuredCount: Math.min(coherence.resolved + coherence.unresolved, MIN_SAMPLES),
+      total: MIN_SAMPLES,
+    }),
     headline,
     lease: {
       text: leaseNote(lease),

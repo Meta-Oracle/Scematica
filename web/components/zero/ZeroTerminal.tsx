@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { DEFAULT_CONFIG, cell, type Position } from '@/lib/zero/types'
-import { evaluate as evaluateCoherence, liveness } from '@/lib/zero/gate'
+import { evaluate as evaluateCoherence, liveness } from '@/lib/zero/sniper/coherence'
 import { defaultCaps, readout as sessionReadout } from '@/lib/zero/session'
 import { evaluateGate, GATE_NOTE } from '@/lib/zero/gatekeep'
 import { buildReadout, coverageMeter, type Role } from '@/lib/zero/readout'
@@ -38,7 +38,7 @@ const ROLE_CLASS: Record<Role, string> = {
 
 export function ZeroTerminal() {
   const [state, setState] = useState<ZeroState>(() =>
-    initialState(DEFAULT_CONFIG, defaultCaps(Date.now() / 1000)),
+    initialState(DEFAULT_CONFIG, defaultCaps(Date.now() / 1000), Math.floor(Date.now() / 1000)),
   )
   const [rpc, setRpc] = useState<RpcConfig | null>(null)
   const [endpoint, setEndpoint] = useState('')
@@ -113,8 +113,8 @@ export function ZeroTerminal() {
   }, [])
 
   const coherence = useMemo(
-    () => evaluateCoherence(state.coherence, state.config.minCoherenceSamples, state.config.minPsi),
-    [state.coherence, state.config],
+    () => evaluateCoherence(state.coherence, now, state.config.coherenceBreaker),
+    [state.coherence, state.config, now],
   )
   const live = useMemo(
     () => liveness(state.socketOpen, state.lastArrivalUnix, now),
@@ -130,8 +130,8 @@ export function ZeroTerminal() {
     p => p.state === 'open' || p.state === 'opening',
   )
   const view = useMemo(
-    () => buildReadout(coherence, live, session, state.lease, gate, open.length, state.config.minPsi),
-    [coherence, live, session, state.lease, gate, open.length, state.config.minPsi],
+    () => buildReadout(coherence, live, session, state.lease, gate, open.length),
+    [coherence, live, session, state.lease, gate, open.length],
   )
 
   const connect = useCallback(() => {

@@ -23,4 +23,7 @@ pub mod pumpfun;
 pub mod pumpfun_trending;
 pub mod reputation;
 pub mod whale_copy;
+/// Parity fixture for `web/lib/zero/` — test-only, so it never ships in the binary.
+#[cfg(test)]
+mod zero_parity;
 pub mod sniper;

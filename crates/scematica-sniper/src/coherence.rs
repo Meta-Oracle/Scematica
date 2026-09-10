@@ -34,17 +34,20 @@ use scematica_sentience::{
 };
 
 /// Sliding window over which resolution is measured.
-const WINDOW: Duration = Duration::from_secs(120);
+/// Seconds the window spans. Public so `zero_parity` can hand it to the TypeScript port —
+/// Zero measures the same window over arrivals rather than over a `Duration`.
+pub const WINDOW_SECS: u64 = 120;
+const WINDOW: Duration = Duration::from_secs(WINDOW_SECS);
 
 /// No verdict below this many observations.
 ///
 /// A cold start has resolved 0 of 0 checks, which is not evidence of a problem. Tripping
 /// on an empty sample would halt the bot the moment it launched — the breaker would fire
 /// hardest exactly when it knows least.
-const MIN_SAMPLES: u64 = 20;
+pub const MIN_SAMPLES: u64 = 20;
 
 /// A feed with no events for this long is stalled, whatever the RPC health looks like.
-const FEED_STALL_SECS: f64 = 180.0;
+pub const FEED_STALL_SECS: f64 = 180.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Coherence {
@@ -178,7 +181,7 @@ impl CoherenceBreaker {
 /// anything below 1.0 on a dimension with no instrument behind it is a standing tax that
 /// drags a healthy pipeline toward the threshold. Only measured degradation may move the
 /// verdict. (The same mistake, made and corrected once already in the API's gate.)
-fn assess(resolution_rate: f64, feed_age_secs: f64) -> (f64, Gate) {
+pub(crate) fn assess(resolution_rate: f64, feed_age_secs: f64) -> (f64, Gate) {
     let feed_health = (1.0 - (feed_age_secs / FEED_STALL_SECS)).clamp(0.0, 1.0);
 
     let mut state = CognitiveState::initial();

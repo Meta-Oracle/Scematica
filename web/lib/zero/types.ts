@@ -8,6 +8,9 @@
 // that would otherwise need real money on mainnet to exercise — a stop-loss firing, a
 // spend cap refusing, a fill nobody could observe.
 
+import type { LadderState } from './sniper/exit-ladder.ts'
+export type { LadderState } from './sniper/exit-ladder.ts'
+
 // ── the measured / unmeasured distinction ────────────────────────────────────
 
 /**
@@ -93,10 +96,29 @@ export type ZeroEvent =
    * here, because a WebSocket notification is delivered to a hidden tab where a timer
    * is throttled to roughly once a minute.
    */
-  | { kind: 'vault.changed'; mint: string; priceSol: number; slot: number; atUnix: number }
-  /** An RPC-bound read resolved, or did not. Feeds the coherence gate. */
-  | { kind: 'read.resolved'; label: string }
-  | { kind: 'read.failed'; label: string; reason: string }
+  | {
+      kind: 'vault.changed'
+      mint: string
+      priceSol: number
+      slot: number
+      atUnix: number
+      /**
+       * Quote-vault balance in lamports, when the read resolved.
+       *
+       * `null` — never 0 — when it did not. The whale-exit and volume-exhaustion rules
+       * both read a vault DROP, so a failed read presented as zero is a 100% drain and
+       * sells the position. The measured/unmeasured rule at its most expensive.
+       */
+      quoteVaultLamports?: number | null
+    }
+  /**
+   * An RPC-bound read resolved, or did not. Feeds the coherence breaker.
+   *
+   * `atUnix` is load-bearing: the breaker rolls a 120-second window, so a sample has to
+   * say when it happened or a read arriving after a long silence lands in a stale window.
+   */
+  | { kind: 'read.resolved'; label: string; atUnix: number }
+  | { kind: 'read.failed'; label: string; reason: string; atUnix: number }
   /**
    * A submitted swap was seen to land.
    *
@@ -215,6 +237,16 @@ export interface Position {
   /** Set once a close is submitted, so a second one cannot be. */
   closeSignature?: string
   openSignature?: string
+  /**
+   * The sell monitor's loop-locals, carried between arrivals.
+   *
+   * Absent while `opening` — there is no entry amount to anchor a stop to until a fill is
+   * observed — and absent on an `unknown` position, which is the point: a ladder needs an
+   * entry value, and a position whose fill nobody could read has none. Building one from a
+   * guessed entry would let every percentage rule in `exit-ladder.ts` fire on a number
+   * nobody measured.
+   */
+  ladder?: LadderState
 }
 
 // ── records ──────────────────────────────────────────────────────────────────
@@ -244,56 +276,52 @@ export interface DecisionRecord {
 }
 
 // ── configuration ────────────────────────────────────────────────────────────
+//
+// There is no Zero configuration any more, and that is the point of this section.
+//
+// `ZeroConfig` used to be a hand-written struct of round numbers — a 100% take-profit, a
+// 15% stop, three concurrent positions — none of which the sniper has ever used. It read
+// like a sensible default set and it made Zero a different bot wearing the same name.
+//
+// The type is now an alias for the sniper's own config, loaded from `config.toml` and
+// pinned against it by `check:zero`. Anything that wants to change a threshold changes
+// `config.toml`, regenerates the fixture, and both bots move together. See
+// `sniper/config.ts`.
 
-export interface ZeroConfig {
-  /** Below this, Zero declines. Mirrors config.toml `min_pool_score`. */
-  minPoolScore: number
-  /** Fraction of the session budget a single entry may use, before Kelly. */
-  maxEntryFraction: number
-  /** Hard floor; a trade too small to matter is not worth its fee. */
-  dustLamports: number
-  maxOpenPositions: number
-  takeProfitPct: number
-  stopLossPct: number
-  /** Give back this much of the peak and Zero exits. */
-  pullbackExitPct: number
-  /** A peak must exceed this before the pullback rule arms. See the invariant below. */
-  momentumMinPeakPct: number
-  /** No movement for this long (evaluated on arrival) and Zero exits. */
-  noPumpTimeoutSecs: number
-  /** Ψ below this halts entries. Never exits. */
-  minPsi: number
-  /** Reads that must have resolved before the gate has an opinion at all. */
-  minCoherenceSamples: number
-}
+export type { SniperConfig, RateMode } from './sniper/config.ts'
+export {
+  SNIPER_CONFIG,
+  RATE_MODES,
+  ACTIVE_MODE_NAME,
+  withRateMode,
+  configProblem,
+} from './sniper/config.ts'
+
+import type { SniperConfig } from './sniper/config.ts'
+import { SNIPER_CONFIG } from './sniper/config.ts'
 
 /**
- * `momentumMinPeakPct` must exceed `takeProfitPct + pullbackExitPct`, or the pullback
- * exit is unsatisfiable: the peak arms only above the momentum floor, but any position
- * that high has already taken profit and closed. This exact relationship has been
- * broken in the Rust config before — it is an arithmetic property, not a preference,
- * so it is asserted rather than documented.
+ * The name Zero's own modules use. An alias, not a second type.
+ *
+ * Kept as a name rather than replaced everywhere because the alias is a seam: one line
+ * says "Zero's configuration IS the sniper's configuration", where thirty import
+ * rewrites would say nothing at all.
  */
-export function configProblem(c: ZeroConfig): string | null {
-  if (c.momentumMinPeakPct <= c.takeProfitPct + c.pullbackExitPct) {
-    return `momentumMinPeakPct (${c.momentumMinPeakPct}) must exceed takeProfitPct + pullbackExitPct (${c.takeProfitPct + c.pullbackExitPct}), or the pullback exit can never fire`
-  }
-  if (c.stopLossPct <= 0 || c.stopLossPct >= 100) return 'stopLossPct must be within (0, 100)'
-  if (c.maxOpenPositions < 1) return 'maxOpenPositions must be at least 1'
-  if (c.dustLamports <= 0) return 'dustLamports must be positive'
-  return null
-}
+export type ZeroConfig = SniperConfig
 
-export const DEFAULT_CONFIG: ZeroConfig = {
-  minPoolScore: 65,
-  maxEntryFraction: 0.25,
-  dustLamports: 2_000_000, // 0.002 SOL — below this the fee dominates
-  maxOpenPositions: 3,
-  takeProfitPct: 100,
-  stopLossPct: 15,
-  pullbackExitPct: 25,
-  momentumMinPeakPct: 140, // > 100 + 25, per configProblem
-  noPumpTimeoutSecs: 30,
-  minPsi: 0.55,
-  minCoherenceSamples: 12,
-}
+export const DEFAULT_CONFIG: ZeroConfig = SNIPER_CONFIG
+
+// ── the host's own limits ────────────────────────────────────────────────────
+//
+// These have no counterpart in the sniper and must not be smuggled into the config above,
+// where they would look like bot settings somebody had changed. They are facts about
+// running in a browser against a capped session key.
+
+/**
+ * A trade too small to matter is not worth its fee.
+ *
+ * The only sizing number Zero owns. The base size, the Kelly multiplier and the lookback
+ * all come from `config.toml` now; this one has no counterpart there because the sniper
+ * never sizes below its own `quote_amount` and so never needed a floor.
+ */
+export const DUST_LAMPORTS = 2_000_000 // 0.002 SOL

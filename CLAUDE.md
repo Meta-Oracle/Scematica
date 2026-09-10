@@ -779,12 +779,17 @@ cold-cyan palette (`zero-*` tokens + `.zero-root`), deliberately the coldest on 
 because Zero is the only surface that can spend money unattended. No local API, no custody,
 no install: the user's own RPC key, their own wallet, and a capped session key for autonomy.
 
-- **It is NOT the sniper and must never be sold as one.** A browser event loop plus an
-  internet RPC plus Jupiter's router loses the first-block race every time; shipping it as
-  a sniper is simulated performance wearing a live badge, which is the failure
-  `X-Scematica-Source` exists to prevent. `lib/swap.ts` already wrote this down. Zero's edge
-  is selectivity and provable discipline — it is the sixth `scema.world/1` producer and the
-  first that can *act*, so the decision record and the money are the same event.
+- **The DECISIONS are the sniper's; the EXECUTION is not, and the second half must never be
+  sold as the first.** Since the parity work below, every threshold, ladder and formula
+  Zero branches on is the bot's own, checked mechanically against a fixture the bot emits —
+  so "what would the sniper do here" has one answer. What a browser cannot copy is the
+  race: a browser event loop plus an internet RPC plus Jupiter's router loses the first
+  block every time, and shipping that as a sniper is simulated performance wearing a live
+  badge, the failure `X-Scematica-Source` exists to prevent. `lib/swap.ts` already wrote
+  this down. Keep the two claims apart in anything user-facing — identical judgement,
+  different starting line. Zero's edge is selectivity and provable discipline: it is the
+  sixth `scema.world/1` producer and the first that can *act*, so the decision record and
+  the money are the same event.
 - **Z-1: no timer may decide money.** Chrome throttles `setInterval` in a hidden tab to
   ~1/min and does not announce it, so a polled stop-loss keeps holding a position and stops
   checking it. Every money-touching evaluation is driven by a WebSocket arrival
@@ -808,6 +813,36 @@ no install: the user's own RPC key, their own wallet, and a capped session key f
 - **Multi-tab is a Web Locks election** (`lease.ts`). A `localStorage` flag is not a lock and
   a crashed leader wedges it forever. A **missing** API is not treated as leadership, since
   that lets every tab trade against one budget.
+- **Zero decides what the SNIPER decides — every threshold comes from `config.toml`**
+  (`lib/zero/sniper/`). Not "something similar": the same numbers, checked mechanically.
+  `crates/scematica-sniper/src/zero_parity.rs` emits `lib/zero/fixtures/sniper-parity.json`
+  by *calling* the bot's own code (`KellySizer::compute_multiplier`, `coherence::assess`,
+  `PoolScorer::score`, `SniperConfig` loaded from `config.toml`), and `check:zero` asserts
+  the TypeScript reproduces it. A threshold edited in `config.toml` fails
+  `cargo test -p scematica-sniper zero_parity` until the fixture is regenerated
+  (`ZERO_PARITY_WRITE=1`), and then fails `check:zero` until the port follows. **There is
+  no third place to put a number.** This replaced a set of plausible-looking local
+  implementations, none of which failed anything: take-profit 100 against the bot's 175,
+  stop 15 against 10, momentum floor 140 against 200, one concurrent position against
+  three, half-Kelly-min-8 against quarter-Kelly-min-10, three invented entry strategies
+  against a bot that has none, and a Ψ that was the resolution rate rather than the
+  sentience master equation — **a different quantity on a different scale**, so the
+  threshold copied across meant nothing and the two gates opened in different places.
+  `psi.ts` maxes out at **≈0.2055**, not 1.0, because four of its six terms are
+  uninstrumented defaults below one; the readout scales the gauge against `PSI_MAX` or a
+  healthy pipeline renders as three-quarters empty forever. Two things make the comparison
+  bit-exact and each is where the obvious code diverges silently: the multiplication order
+  is Rust's (float multiplication is not associative) and `Bounded`'s clamp is applied at
+  every intermediate, which agrees on healthy inputs and differs exactly in the degraded
+  case the gate exists for. The Rust side compares the fixture's **text**, never parsed
+  `Value`s — `serde_json`'s parser is not correctly rounded at 17 significant digits, so a
+  value it wrote itself comes back one ULP off and a byte-identical file fails; third time
+  this repo has hit that wall (`scema-omni`'s canonical encoding answered it with
+  fixed-point at 1e-9). What is **not** pinned is the exit ladder's control flow: the Rust
+  original is four hundred lines inline in an async loop in `sniper.rs` and extracting it
+  would be a large diff in a live buy-and-sell path, so `exit-ladder.ts` is a hand port
+  whose *thresholds* are all checked — a rule can be wrong about order, never about where
+  it fires — and the order is asserted separately, which is weaker and is labelled so.
 - **The policy is pinned and never trains** (`policy.ts`). A per-tab net is one nobody can
   reproduce, and a record citing weights that exist nowhere destroys the point of the record.
   `NEUTRAL` and the feature order are read out of `crates/scematica-nn/src/state.rs` at check
@@ -824,7 +859,8 @@ no install: the user's own RPC key, their own wallet, and a capped session key f
   enforce any of it. An unreadable balance is `unknown`, never `insufficient` — the vault
   service's 503-not-403 rule.
 
-`npm run check:zero` pins all of the above (166 checks).
+`npm run check:zero` pins all of the above (276 checks, including 72 Ψ cases, 12 Kelly
+cases and 32 pool-score cases reproduced from Rust bit for bit).
 
 `lib/omni/view.ts::cell` is the TS copy of the one render rule — an unmeasured term prints
 `—`, never `0.00`. Three implementations exist (Rust `scema_policy::render`, the extension

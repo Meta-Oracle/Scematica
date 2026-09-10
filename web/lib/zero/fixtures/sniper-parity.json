@@ -1,0 +1,1674 @@
+{
+  "active_mode_name": "Balanced",
+  "adaptive_pullback": {
+    "base_default": 8.0,
+    "base_toml": 15.0,
+    "cases": [
+      {
+        "peak_pnl_pct": -10.0,
+        "theta_eff": 8.0
+      },
+      {
+        "peak_pnl_pct": 0.0,
+        "theta_eff": 8.0
+      },
+      {
+        "peak_pnl_pct": 20.0,
+        "theta_eff": 8.763560920082657
+      },
+      {
+        "peak_pnl_pct": 60.0,
+        "theta_eff": 10.119288512538814
+      },
+      {
+        "peak_pnl_pct": 100.0,
+        "theta_eff": 11.313708498984761
+      },
+      {
+        "peak_pnl_pct": 175.0,
+        "theta_eff": 13.2664991614216
+      },
+      {
+        "peak_pnl_pct": 200.0,
+        "theta_eff": 13.856406460551018
+      },
+      {
+        "peak_pnl_pct": 500.0,
+        "theta_eff": 19.595917942265423
+      },
+      {
+        "peak_pnl_pct": 1000.0,
+        "theta_eff": 26.5329983228432
+      }
+    ]
+  },
+  "coherence": {
+    "cases": [
+      {
+        "feed_age_secs": 0.0,
+        "gate": "GO",
+        "psi": 0.205492980375,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "GO",
+        "psi": 0.14270345859375003,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "CAUTION",
+        "psi": 0.05137324509375,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 6.342375937499955e-6,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 1.0
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "GO",
+        "psi": 0.16737531684656481,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "GO",
+        "psi": 0.11623285892122556,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "CAUTION",
+        "psi": 0.041843829211641204,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 5.165904840943322e-6,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.95
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "GO",
+        "psi": 0.13482394442403753,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "CAUTION",
+        "psi": 0.0936277391833594,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "CAUTION",
+        "psi": 0.03370598610600938,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 4.161232852593722e-6,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.9
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "CAUTION",
+        "psi": 0.08416992476160004,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "CAUTION",
+        "psi": 0.05845133664000003,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "CAUTION",
+        "psi": 0.02104248119040001,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 2.597837183999982e-6,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.8
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "CAUTION",
+        "psi": 0.04933886458803748,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "CAUTION",
+        "psi": 0.03426310040835938,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.01233471614700937,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 1.522804462593739e-6,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.7
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "CAUTION",
+        "psi": 0.0266318902566,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.01849436823375,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.00665797256415,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 8.219719214999942e-7,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.6
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.0128433112734375,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.008918966162109377,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.003210827818359375,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 3.963984960937472e-7,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.5
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.0052606202976000025,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.003653208540000002,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.0013151550744000006,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 1.6236482399999887e-7,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.4
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.0016644931410375,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.001155898014609375,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.000416123285259375,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 5.1373245093749635e-8,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.3
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.00032878876860000016,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.00022832553375000012,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.00008219719215000004,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 1.014780149999993e-8,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.2
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.00002054929803750001,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.000014270345859375008,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 5.1373245093750024e-6,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 6.342375937499956e-10,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.1
+      },
+      {
+        "feed_age_secs": 0.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      },
+      {
+        "feed_age_secs": 30.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      },
+      {
+        "feed_age_secs": 90.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      },
+      {
+        "feed_age_secs": 179.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      },
+      {
+        "feed_age_secs": 180.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      },
+      {
+        "feed_age_secs": 400.0,
+        "gate": "HOLD",
+        "psi": 0.0,
+        "resolution_rate": 0.0
+      }
+    ],
+    "caution_threshold": 0.02,
+    "feed_stall_secs": 180.0,
+    "go_threshold": 0.1,
+    "min_samples": 20,
+    "window_secs": 120
+  },
+  "config_defaults": {
+    "adaptive_pullback": true,
+    "buy_slippage_pct": 3.0,
+    "coherence_breaker": true,
+    "flash_crash_pct": 22.0,
+    "kelly_fraction": 0.25,
+    "kelly_lookback": 20,
+    "kelly_sizing": false,
+    "max_concurrent_positions": 0,
+    "max_pool_size": 0.0,
+    "max_position_hold_mins": 60,
+    "min_pool_score": 35.0,
+    "min_pool_size": 2.0,
+    "mint_cooldown_secs": 1800,
+    "momentum_escalation_factor": 1.8,
+    "momentum_escalation_threshold_pct": 3.0,
+    "momentum_hold": true,
+    "momentum_max_escalations": 7,
+    "momentum_min_peak_pct": 60.0,
+    "momentum_pullback_exit_pct": 8.0,
+    "momentum_window_checks": 5,
+    "no_pump_min_gain_pct": 3.0,
+    "no_pump_timeout_secs": 45,
+    "price_check_duration_ms": 900000,
+    "price_check_interval_ms": 250,
+    "profit_first_floor_pct": 25.0,
+    "profit_first_mode": true,
+    "profit_lock_checks": 6,
+    "quote_amount": 0.1,
+    "sell_slippage_pct": 2.5,
+    "stop_loss_pct": 18.0,
+    "take_profit_pct": 175.0,
+    "tiered_partial_tp": true,
+    "tiered_partial_tp_levels": [
+      [
+        100.0,
+        15.0
+      ],
+      [
+        300.0,
+        20.0
+      ],
+      [
+        600.0,
+        25.0
+      ]
+    ],
+    "trailing_stop_loss_pct": 12.0,
+    "velocity_decay_drop_threshold": 1.5,
+    "velocity_decay_exit": true,
+    "velocity_decay_min_pnl_pct": 25.0,
+    "velocity_decay_window": 3,
+    "volume_exhaustion_pct": 65.0,
+    "wallet_target_sol": 0.15,
+    "whale_exit_vault_drop_pct": 22.0
+  },
+  "config_toml": {
+    "adaptive_pullback": false,
+    "buy_slippage_pct": 3.0,
+    "coherence_breaker": true,
+    "flash_crash_pct": 0.0,
+    "kelly_fraction": 0.25,
+    "kelly_lookback": 20,
+    "kelly_sizing": false,
+    "max_concurrent_positions": 1,
+    "max_pool_size": 150.0,
+    "max_position_hold_mins": 60,
+    "min_pool_score": 65.0,
+    "min_pool_size": 10.0,
+    "mint_cooldown_secs": 1800,
+    "momentum_escalation_factor": 1.8,
+    "momentum_escalation_threshold_pct": 8.0,
+    "momentum_hold": true,
+    "momentum_max_escalations": 6,
+    "momentum_min_peak_pct": 200.0,
+    "momentum_pullback_exit_pct": 15.0,
+    "momentum_window_checks": 5,
+    "no_pump_min_gain_pct": 8.0,
+    "no_pump_timeout_secs": 15,
+    "price_check_duration_ms": 1800000,
+    "price_check_interval_ms": 250,
+    "profit_first_floor_pct": 25.0,
+    "profit_first_mode": true,
+    "profit_lock_checks": 0,
+    "quote_amount": 0.01,
+    "sell_slippage_pct": 5.0,
+    "stop_loss_pct": 10.0,
+    "take_profit_pct": 175.0,
+    "tiered_partial_tp": false,
+    "tiered_partial_tp_levels": [
+      [
+        100.0,
+        15.0
+      ],
+      [
+        300.0,
+        20.0
+      ],
+      [
+        600.0,
+        25.0
+      ]
+    ],
+    "trailing_stop_loss_pct": 20.0,
+    "velocity_decay_drop_threshold": 1.5,
+    "velocity_decay_exit": true,
+    "velocity_decay_min_pnl_pct": 100.0,
+    "velocity_decay_window": 3,
+    "volume_exhaustion_pct": 0.0,
+    "wallet_target_sol": 0.15,
+    "whale_exit_vault_drop_pct": 0.0
+  },
+  "kelly": {
+    "cases": [
+      {
+        "fraction": 0.25,
+        "history": [],
+        "min_trades": 10,
+        "multiplier": 1.0,
+        "name": "empty_history_is_base"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 0.5,
+        "name": "below_min_trades_is_half"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.1,
+        "name": "exactly_min_trades_computes"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.0,
+        "name": "all_wins_no_ratio_is_base"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.0,
+        "name": "all_losses_no_ratio_is_base"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            true,
+            0.1
+          ],
+          [
+            false,
+            0.0
+          ],
+          [
+            false,
+            0.0
+          ],
+          [
+            false,
+            0.0
+          ],
+          [
+            false,
+            0.0
+          ],
+          [
+            false,
+            0.0
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.0,
+        "name": "zero_magnitude_losses_ignored"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.1625,
+        "name": "strong_edge"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.05
+          ],
+          [
+            true,
+            0.05
+          ],
+          [
+            true,
+            0.05
+          ],
+          [
+            true,
+            0.05
+          ],
+          [
+            true,
+            0.05
+          ],
+          [
+            true,
+            0.05
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ],
+          [
+            false,
+            0.1
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 0.7249999999999999,
+        "name": "weak_edge"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.01
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ],
+          [
+            false,
+            0.9
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 0.25,
+        "name": "clamps_low"
+      },
+      {
+        "fraction": 1.0,
+        "history": [
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            true,
+            5.0
+          ],
+          [
+            false,
+            0.01
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.9499,
+        "name": "clamps_high"
+      },
+      {
+        "fraction": 0.5,
+        "history": [
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            true,
+            0.3
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ]
+        ],
+        "min_trades": 10,
+        "multiplier": 1.325,
+        "name": "half_kelly_fraction"
+      },
+      {
+        "fraction": 0.25,
+        "history": [
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            true,
+            0.2
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ],
+          [
+            false,
+            0.05
+          ]
+        ],
+        "min_trades": 20,
+        "multiplier": 0.5,
+        "name": "min_trades_20"
+      }
+    ],
+    "clamp_max": 3.0,
+    "clamp_min": 0.25,
+    "default_fraction": 0.25,
+    "default_min_trades": 10
+  },
+  "note": "Generated by `cargo test -p scematica-sniper zero_parity`. Rust is authoritative; see crates/scematica-sniper/src/zero_parity.rs. Do not hand-edit.",
+  "pool_score": {
+    "cases": [
+      {
+        "age_secs": null,
+        "base_vault_raw": 0,
+        "name": "ghost_pool",
+        "pumpfun_score": 0.0,
+        "score": 0.0,
+        "size_sol": 0.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "sub_1_sol",
+        "pumpfun_score": 0.0,
+        "score": 1.0,
+        "size_sol": 0.5
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "one_to_three_sol",
+        "pumpfun_score": 0.0,
+        "score": 8.0,
+        "size_sol": 2.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "thin_micro_cap",
+        "pumpfun_score": 0.0,
+        "score": 99.93631885953327,
+        "size_sol": 7.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_ultra_fresh",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 15,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_fresh",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 35,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_marginal",
+        "pumpfun_score": 0.0,
+        "score": 99.99999999993636,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 75,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_late",
+        "pumpfun_score": 0.0,
+        "score": 99.61355501019915,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 150,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_very_late",
+        "pumpfun_score": 0.0,
+        "score": 51.914263891186394,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 400,
+        "base_vault_raw": 0,
+        "name": "sweet_spot_dead",
+        "pumpfun_score": 0.0,
+        "score": 10.00165231735254,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": null,
+        "base_vault_raw": 0,
+        "name": "unknown_age_fresh_detection",
+        "pumpfun_score": 0.0,
+        "score": 99.95197099690579,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 10,
+        "base_vault_raw": 0,
+        "name": "migration_band",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 60.0
+      },
+      {
+        "age_secs": 10,
+        "base_vault_raw": 0,
+        "name": "viable_band",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 100.0
+      },
+      {
+        "age_secs": 10,
+        "base_vault_raw": 0,
+        "name": "established",
+        "pumpfun_score": 0.0,
+        "score": 99.99999999406757,
+        "size_sol": 140.0
+      },
+      {
+        "age_secs": 10,
+        "base_vault_raw": 0,
+        "name": "whale_pool",
+        "pumpfun_score": 0.0,
+        "score": 99.98252535971606,
+        "size_sol": 300.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 100000000000000,
+        "name": "buy_pressure_very_heavy",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 250000000000000,
+        "name": "buy_pressure_clear",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 500000000000000,
+        "name": "buy_pressure_mild",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 1000000000000000,
+        "name": "buy_pressure_neutral",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 5000000000000000,
+        "name": "buy_pressure_sell_skew",
+        "pumpfun_score": 0.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "pumpfun_exceptional",
+        "pumpfun_score": 95.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 5,
+        "base_vault_raw": 0,
+        "name": "pumpfun_strong",
+        "pumpfun_score": 75.0,
+        "score": 100.0,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 100,
+        "base_vault_raw": 0,
+        "name": "mid_band_thin_late",
+        "pumpfun_score": 0.0,
+        "score": 9.82530184534146,
+        "size_sol": 12.0
+      },
+      {
+        "age_secs": 200,
+        "base_vault_raw": 0,
+        "name": "mid_band_thin_very_late",
+        "pumpfun_score": 0.0,
+        "score": 9.581333113410611,
+        "size_sol": 12.0
+      },
+      {
+        "age_secs": 60,
+        "base_vault_raw": 0,
+        "name": "mid_band_micro_late",
+        "pumpfun_score": 0.0,
+        "score": 10.577766971463229,
+        "size_sol": 5.0
+      },
+      {
+        "age_secs": 100,
+        "base_vault_raw": 0,
+        "name": "mid_band_whale_late",
+        "pumpfun_score": 0.0,
+        "score": 11.314533259742545,
+        "size_sol": 200.0
+      },
+      {
+        "age_secs": 130,
+        "base_vault_raw": 0,
+        "name": "mid_band_sweet_spot_stale",
+        "pumpfun_score": 0.0,
+        "score": 53.21341092871977,
+        "size_sol": 30.0
+      },
+      {
+        "age_secs": 40,
+        "base_vault_raw": 0,
+        "name": "mid_band_small_marginal",
+        "pumpfun_score": 0.0,
+        "score": 28.843438681969772,
+        "size_sol": 8.0
+      },
+      {
+        "age_secs": 20,
+        "base_vault_raw": 0,
+        "name": "mid_band_risky_fresh",
+        "pumpfun_score": 0.0,
+        "score": 29.068077502494273,
+        "size_sol": 4.0
+      },
+      {
+        "age_secs": 200,
+        "base_vault_raw": 0,
+        "name": "mid_band_established_dead",
+        "pumpfun_score": 0.0,
+        "score": 9.527496408657539,
+        "size_sol": 160.0
+      },
+      {
+        "age_secs": 100,
+        "base_vault_raw": 400000000000000,
+        "name": "mid_band_pressure_swing",
+        "pumpfun_score": 0.0,
+        "score": 10.517665065879843,
+        "size_sol": 12.0
+      },
+      {
+        "age_secs": 200,
+        "base_vault_raw": 0,
+        "name": "mid_band_pumpfun_rescue",
+        "pumpfun_score": 85.0,
+        "score": 14.817650188781844,
+        "size_sol": 12.0
+      }
+    ]
+  },
+  "rate_modes": [
+    {
+      "enabled": true,
+      "momentum_max_escalations": 3,
+      "name": "Micro",
+      "order": 1,
+      "quote_amount": 0.005,
+      "stop_loss_pct": 8.0,
+      "take_profit_pct": 50.0,
+      "wallet_pct": 0.3
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 6,
+      "name": "Bearish",
+      "order": 2,
+      "quote_amount": 0.003,
+      "stop_loss_pct": 10.0,
+      "take_profit_pct": 75.0,
+      "wallet_pct": 0.5
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 8,
+      "name": "Safe",
+      "order": 3,
+      "quote_amount": 0.005,
+      "stop_loss_pct": 12.0,
+      "take_profit_pct": 100.0,
+      "wallet_pct": 0.8
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 6,
+      "name": "Balanced",
+      "order": 4,
+      "quote_amount": 0.01,
+      "stop_loss_pct": 12.0,
+      "take_profit_pct": 175.0,
+      "wallet_pct": 1.5
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 12,
+      "name": "Aggressive",
+      "order": 5,
+      "quote_amount": 0.02,
+      "stop_loss_pct": 15.0,
+      "take_profit_pct": 300.0,
+      "wallet_pct": 3.0
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 12,
+      "name": "Degen",
+      "order": 6,
+      "quote_amount": 0.04,
+      "stop_loss_pct": 25.0,
+      "take_profit_pct": 450.0,
+      "wallet_pct": 6.0
+    },
+    {
+      "enabled": true,
+      "momentum_max_escalations": 12,
+      "name": "Moon",
+      "order": 7,
+      "quote_amount": 0.1,
+      "stop_loss_pct": 60.0,
+      "take_profit_pct": 100000.0,
+      "wallet_pct": 12.0
+    }
+  ]
+}

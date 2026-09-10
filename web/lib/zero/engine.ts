@@ -31,12 +31,24 @@ import {
   absent,
   measured,
 } from './types.ts'
-import { type CoherenceState, evaluate as evaluateCoherence, newCoherence, record as recordRead } from './gate.ts'
-import { type PriceHistory, pushPrice, selectStrategies, type StrategyName } from './strategy.ts'
-import { applyPrice, evaluateExit } from './exits.ts'
+import { DUST_LAMPORTS } from './types.ts'
+import {
+  type CoherenceState,
+  evaluate as evaluateCoherence,
+  newCoherence,
+  record as recordRead,
+  recordPoolSeen,
+} from './sniper/coherence.ts'
+import {
+  type LadderState,
+  evaluate as evaluateLadder,
+  newLadder,
+  valueOf,
+} from './sniper/exit-ladder.ts'
+import { type KellyTrade, computeMultiplier, kellySizer } from './sniper/kelly.ts'
+import { scorePool } from '../feed/scorer.ts'
 import { advise } from './policy.ts'
 import { POLICY_ID } from './policy.ts'
-import { estimateEdge, sizeEntry, type TradeOutcome } from './size.ts'
 import {
   type SessionCaps,
   type SessionLedger,
@@ -51,7 +63,6 @@ import { type LeaseState, mayTrade } from './lease.ts'
 
 export interface ZeroState {
   config: ZeroConfig
-  strategies: StrategyName[]
   armed: boolean
   killed: boolean
   lease: LeaseState
@@ -59,11 +70,24 @@ export interface ZeroState {
   lastArrivalUnix: number | null
   coherence: CoherenceState
   positions: Record<string, Position>
-  history: Record<string, PriceHistory>
   ledger: SessionLedger
   caps: SessionCaps
-  /** Settled trades, for the edge estimate. */
-  outcomes: TradeOutcome[]
+  /**
+   * Settled trades, newest last, for the Kelly estimate.
+   *
+   * Bounded to `kellyLookback`, which is the sniper's own window — an unbounded history
+   * would make the multiplier a claim about the whole session rather than about recent
+   * behaviour, and the tournament promotion bug in `scematica-nn` is the same mistake:
+   * a comparison over a lifetime sum cannot change its mind.
+   */
+  outcomes: KellyTrade[]
+  /**
+   * Wallet balance in SOL, when the host has read one.
+   *
+   * `null` selects profit-first mode's wider rug-only stop. See
+   * `exit-ladder.ts::effectiveStopLossPct` for why the wider one is the safe default.
+   */
+  walletSol: number | null
   /** Reservation id per mint, so a resolution can find its hold. */
   holds: Record<string, string>
   /** Sealed decisions, newest last. Bounded — see `RECORD_CAP`. */
@@ -75,21 +99,32 @@ export interface ZeroState {
 export const RECORD_CAP = 500
 export const NOTICE_CAP = 50
 
-export function initialState(config: ZeroConfig, caps: SessionCaps): ZeroState {
+/**
+ * `startedUnix` is when Zero began watching, and it is required rather than defaulted.
+ *
+ * The coherence breaker ages its feed from this point until the first pool arrives, so a
+ * listener that never connects eventually reads as stalled instead of as permanently
+ * fresh (`coherence.rs::feed_age_secs`). A default of 0 would make every fresh session
+ * look decades stale; a default of "now" would need a clock, and this module has none.
+ */
+export function initialState(
+  config: ZeroConfig,
+  caps: SessionCaps,
+  startedUnix: number,
+): ZeroState {
   return {
     config,
-    strategies: ['scored-entry', 'pullback', 'continuation'],
     armed: false,
     killed: false,
     lease: 'follower',
     socketOpen: false,
     lastArrivalUnix: null,
-    coherence: newCoherence(),
+    coherence: newCoherence(startedUnix),
     positions: {},
-    history: {},
     ledger: newLedger(),
     caps,
     outcomes: [],
+    walletSol: null,
     holds: {},
     records: [],
     notices: [],
@@ -150,22 +185,50 @@ export function decideEntry(state: ZeroState, pool: ObservedPool, atUnix: number
     return decline('position-open', `already holding ${pool.symbol}`)
   }
   const open = Object.values(state.positions).filter(p => p.state === 'open' || p.state === 'opening')
-  if (open.length >= state.config.maxOpenPositions) {
-    return decline('max-positions', `${open.length} positions open (max ${state.config.maxOpenPositions})`)
+  // `max_concurrent_positions = 0` means unlimited in Rust, and 0 is what `config.rs`
+  // defaults to. Treating it as "no positions allowed" would make the default config a
+  // bot that never trades.
+  const maxOpen = state.config.maxConcurrentPositions
+  if (maxOpen > 0 && open.length >= maxOpen) {
+    return decline('max-positions', `${open.length} positions open (max ${maxOpen})`)
   }
 
   // Coherence. Entries only — `vault.changed` never consults this.
-  const coh = evaluateCoherence(state.coherence, state.config.minCoherenceSamples, state.config.minPsi)
+  const coh = evaluateCoherence(state.coherence, atUnix, state.config.coherenceBreaker)
   if (!coh.entriesAllowed) {
     return decline('coherence-degraded', coh.reason, { psi: coh.psi })
   }
 
-  // Strategy.
+  // ── the pool score, from the sniper's own ladder ──────────────────────────
+  //
+  // `lib/feed/scorer.ts` is a verbatim port of `PoolScorer::score` and is pinned against
+  // Rust by both `check:parity` and `check:zero`. Zero used to carry its own
+  // depth-weighted heuristic here — `50 + mid*30`, plus eight points for a renounced mint
+  // — which was a different function with a different range that happened to return a
+  // number between 0 and 100 and be compared against the sniper's 65 floor.
   const score = poolScore(pool)
-  const history = state.history[pool.mint] ?? { mint: pool.mint, points: [] }
-  const choice = selectStrategies(state.strategies, score, history, atUnix, state.config)
-  if (choice.fired.length === 0) {
-    return decline('filters-rejected', choice.reason, { score, psi: coh.psi })
+  if (!score.measured) {
+    return decline('filters-rejected', `pool not scoreable: ${score.note}`, { score, psi: coh.psi })
+  }
+  if (score.value < state.config.minPoolScore) {
+    return decline(
+      'score-below-floor',
+      `score ${score.value.toFixed(1)} below the floor ${state.config.minPoolScore}`,
+      { score, psi: coh.psi },
+    )
+  }
+
+  // The depth band, `[filters] min_pool_size` / `max_pool_size`. A separate refusal from
+  // the score even though the scorer also penalises depth, because the sniper enforces
+  // both and they answer different questions: the ladder RANKS a thin pool, the band
+  // REFUSES one.
+  if (pool.sizeSol.measured) {
+    if (pool.sizeSol.value < state.config.minPoolSize) {
+      return decline('filters-rejected', `${pool.sizeSol.value.toFixed(1)} SOL is below min_pool_size ${state.config.minPoolSize}`, { score, psi: coh.psi })
+    }
+    if (state.config.maxPoolSize > 0 && pool.sizeSol.value > state.config.maxPoolSize) {
+      return decline('filters-rejected', `${pool.sizeSol.value.toFixed(1)} SOL is above max_pool_size ${state.config.maxPoolSize}`, { score, psi: coh.psi })
+    }
   }
 
   // Policy. Attached, never averaged into the decision — a utility and a Q are not the
@@ -188,33 +251,58 @@ export function decideEntry(state: ZeroState, pool: ObservedPool, atUnix: number
     })
   }
 
-  // Size.
-  const edge = estimateEdge(state.outcomes)
-  const base = Math.floor(state.caps.maxPerTradeLamports * state.config.maxEntryFraction * 4)
-  const sized = sizeEntry(
-    base,
-    edge,
-    choice.conviction,
-    advice.sizeMultiplier,
-    state.caps.maxPerTradeLamports,
-    remaining(state.ledger, state.caps),
-    state.config.dustLamports,
-  )
+  // ── size ─────────────────────────────────────────────────────────────────
+  //
+  // The sniper's own sizer: `quote_amount` SOL as the base, times `KellySizer`'s
+  // multiplier over the last `kelly_lookback` settled trades, times the policy's own
+  // multiplier. Kelly returns a MULTIPLIER in [0.25, 3.0], so a strong measured edge can
+  // size up — the previous implementation could only ever scale the base down, which made
+  // every good run size like a bad one.
+  //
+  // `kelly_sizing` is a config flag and it is `false` in the shipped config. Honouring it
+  // rather than always applying Kelly is the difference between porting the bot and
+  // porting the parts of it somebody liked.
+  const kelly = state.config.kellySizing
+    ? computeMultiplier(
+        kellySizer(state.config.kellyFraction),
+        state.outcomes.slice(-state.config.kellyLookback),
+      )
+    : { multiplier: 1.0, reason: 'kelly_sizing is off — base size' }
 
-  if (sized.lamports === 0) {
-    const reason: DeclineReason =
-      remaining(state.ledger, state.caps) < state.config.dustLamports
-        ? 'budget-exhausted'
-        : 'size-below-dust'
-    return decline(reason, sized.reason, {
-      score, psi: coh.psi, coverage: advice.coverage, q: advice.q,
-    })
+  const baseLamports = Math.floor(state.config.quoteAmount * 1e9)
+  let lamports = Math.floor(baseLamports * kelly.multiplier * advice.sizeMultiplier)
+
+  // The session caps clamp afterwards. Two gates, different questions: the sizer says what
+  // the edge is worth, the ledger says what may be afforded. Merging them lets a strong
+  // edge argue its way past a cap.
+  const budget = remaining(state.ledger, state.caps)
+  const clamps: string[] = []
+  if (lamports > state.caps.maxPerTradeLamports) {
+    lamports = state.caps.maxPerTradeLamports
+    clamps.push('clamped to the per-trade cap')
   }
+  if (lamports > budget) {
+    lamports = budget
+    clamps.push('clamped to the remaining session budget')
+  }
+
+  if (lamports < DUST_LAMPORTS) {
+    const reason: DeclineReason = budget < DUST_LAMPORTS ? 'budget-exhausted' : 'size-below-dust'
+    return decline(
+      reason,
+      `${lamports} lamports is below the dust floor ${DUST_LAMPORTS} — the fee would dominate`,
+      { score, psi: coh.psi, coverage: advice.coverage, q: advice.q },
+    )
+  }
+
+  const sizeReason = [`base ${state.config.quoteAmount} SOL`, kelly.reason, advice.reason, ...clamps]
+    .filter(Boolean)
+    .join('; ')
 
   return {
     act: true,
-    sizeLamports: sized.lamports,
-    reason: `${choice.reason} | ${advice.reason} | ${sized.reason}`,
+    sizeLamports: lamports,
+    reason: `score ${score.value.toFixed(1)} | ${sizeReason}`,
     coverage: advice.coverage,
     score,
     psi: coh.psi,
@@ -223,25 +311,33 @@ export function decideEntry(state: ZeroState, pool: ObservedPool, atUnix: number
 }
 
 /**
- * The pool's score.
+ * The pool's score, from the sniper's ladder.
  *
- * Absent when the inputs the scorer needs were not measured — an unscored pool is not a
- * low-scoring one, and `scoredEntry` refuses on absence rather than treating it as a
- * failing grade.
+ * `scorePool` in `lib/feed/scorer.ts` is a verbatim port of `PoolScorer::score` — the
+ * empirical-Bayes product of likelihood ratios through a logistic — and `check:zero`
+ * asserts it reproduces Rust on every case in the parity fixture. Nothing is computed
+ * here; this function only decides what may be handed to it.
+ *
+ * Depth is the one input with no honest substitute: unmeasured depth is an UNSCORED pool,
+ * never a low-scoring one, and the caller declines on absence rather than treating it as
+ * a failing grade. Age is different — `null` is a real arm of the Rust ladder (the
+ * pump.fun migration whose `open_time` is 0, which is almost every pool it sees) and gets
+ * its own likelihood ratio rather than being an error.
  */
 function poolScore(pool: ObservedPool): Term {
   if (!pool.sizeSol.measured) return absent('pool depth was not read')
-  // The full ladder lives in lib/feed/scorer.ts; this is the depth-only fallback used
-  // when a pool arrives from a subscription rather than the scored feed. It is
-  // deliberately conservative: it can decline an entry, never inflate one.
-  const size = pool.sizeSol.value
-  if (size < 10 || size > 150) return measured(0)
-  const mid = 1 - Math.abs(size - 45) / 105
-  let s = 50 + mid * 30
-  if (pool.mintRenounced.measured && pool.mintRenounced.value) s += 8
-  if (pool.freezeDisabled.measured && pool.freezeDisabled.value) s += 6
-  if (pool.lpBurned.measured && pool.lpBurned.value) s += 6
-  return measured(Math.max(0, Math.min(100, s)))
+  return measured(
+    scorePool({
+      sizeSol: pool.sizeSol.value,
+      ageSecs: pool.ageSecs.measured ? pool.ageSecs.value : null,
+      // The buy-pressure ratio is quote_vault / base_vault. Zero reads both vaults to
+      // price the position anyway, so unlike the public feed it can supply this — and
+      // when it cannot, `undefined` takes Rust's own 0.80 "no confirmation" penalty
+      // rather than a neutral 1.0.
+      buyPressureRatio: pool.buyPressure.measured ? pool.buyPressure.value : undefined,
+      pumpfunScore: 0,
+    }),
+  )
 }
 
 function recordOf(verdict: Verdict, pool: ObservedPool, atUnix: number): DecisionRecord {
@@ -292,11 +388,14 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
       return { state: next, effects: [{ kind: 'notify', level: 'alarm', text: 'feed closed — exits are not being evaluated' }] }
     }
 
+    // The coherence window is 120 SECONDS in Rust, not a fixed sample count, so a read
+    // has to say when it happened. A sample arriving after a long silence opens a new
+    // window rather than landing in a stale one.
     case 'read.resolved':
-      return { state: { ...state, coherence: recordRead(state.coherence, true) }, effects: [] }
+      return { state: { ...state, coherence: recordRead(state.coherence, true, event.atUnix) }, effects: [] }
 
     case 'read.failed':
-      return { state: { ...state, coherence: recordRead(state.coherence, false) }, effects: [] }
+      return { state: { ...state, coherence: recordRead(state.coherence, false, event.atUnix) }, effects: [] }
 
     case 'lease.acquired':
       return { state: { ...state, lease: 'writer' }, effects: [] }
@@ -340,6 +439,10 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
       let next: ZeroState = {
         ...state,
         lastArrivalUnix: event.atUnix,
+        // `CoherenceBreaker::record_pool_seen`. Recorded on arrival, before any decision,
+        // so a pool the filters reject still counts as the feed being alive — a breaker
+        // that only saw the pools it liked would read a strict config as a dead feed.
+        coherence: recordPoolSeen(state.coherence, event.atUnix),
         records: cap([...state.records, record], RECORD_CAP),
       }
 
@@ -411,32 +514,68 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
     // THE load-bearing case. Every exit rule is evaluated here, on arrival, because a
     // WebSocket handler runs in a hidden tab where a timer does not.
     case 'vault.changed': {
-      const history = pushPrice(
-        state.history[event.mint] ?? { mint: event.mint, points: [] },
-        event.atUnix,
-        event.priceSol,
-      )
-      let next: ZeroState = {
-        ...state,
-        lastArrivalUnix: event.atUnix,
-        history: { ...state.history, [event.mint]: history },
-      }
+      let next: ZeroState = { ...state, lastArrivalUnix: event.atUnix }
 
       const position = state.positions[event.mint]
       if (!position) return { state: next, effects: [] }
 
-      const updated = applyPrice(position, event.priceSol, event.atUnix)
-      next = { ...next, positions: { ...next.positions, [event.mint]: updated } }
-
-      // A close already in flight must not be issued twice.
-      if (updated.state !== 'open' || updated.closeSignature) {
+      // A close already in flight must not be issued twice, and a position whose fill was
+      // never observed has no entry value — so the ladder has nothing to anchor to and
+      // `newLadder` was never built for it. Both are surfaced to the operator elsewhere;
+      // neither may produce a swap.
+      if (position.state !== 'open' || position.closeSignature || !position.ladder) {
         return { state: next, effects: [] }
       }
+      if (!position.tokensOut.measured) return { state: next, effects: [] }
 
-      const decision = evaluateExit(updated, event.priceSol, event.atUnix, state.config)
+      // The ladder works in lamports of position value, exactly as the Rust monitor does.
+      const value = valueOf(position.tokensOut.value, event.priceSol)
+      const { state: ladder, decision } = evaluateLadder(
+        position.ladder,
+        { valueLamports: value, atUnix: event.atUnix, quoteVaultLamports: event.quoteVaultLamports ?? null },
+        state.config,
+      )
+
+      const updated: Position = {
+        ...position,
+        ladder,
+        lastPriceSol: measured(event.priceSol),
+        peakPriceSol:
+          position.peakPriceSol.measured && position.peakPriceSol.value >= event.priceSol
+            ? position.peakPriceSol
+            : measured(event.priceSol),
+        lastEvaluatedUnix: event.atUnix,
+      }
+      next = { ...next, positions: { ...next.positions, [event.mint]: updated } }
+
+      // NOTE: no coherence check on this path, ever. A degraded feed is a reason to stop
+      // opening new risk and never a reason to stop closing existing risk.
+
+      // A tiered partial sells part of the position and leaves it open. It is a different
+      // effect from an exit and must not set `closing`, or the next arrival finds a
+      // position it refuses to evaluate and the remaining tokens are never sold.
+      if (decision.partial) {
+        const amount = Math.floor(position.tokensOut.value * decision.partial.fraction)
+        if (amount <= 0) return { state: next, effects: [] }
+        return {
+          state: next,
+          effects: [
+            {
+              kind: 'swap',
+              mint: event.mint,
+              side: 'sell',
+              amount,
+              signer: 'session',
+              reason: decision.partial.detail,
+            },
+            { kind: 'notify', level: 'info', text: `${updated.symbol}: ${decision.partial.detail}` },
+            { kind: 'persist' },
+          ],
+        }
+      }
+
       if (!decision.exit) return { state: next, effects: [] }
 
-      // NOTE: no coherence check. A degraded feed must never stop you closing risk.
       return {
         state: {
           ...next,
@@ -447,7 +586,7 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
             kind: 'swap',
             mint: event.mint,
             side: 'sell',
-            amount: updated.tokensOut.measured ? updated.tokensOut.value : 0,
+            amount: position.tokensOut.value,
             signer: 'session',
             reason: `${decision.reason}: ${decision.detail}`,
           },
@@ -495,6 +634,13 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
                 tokensOut,
                 entryPriceSol,
                 openSignature: event.signature,
+                // The sell monitor's loop-locals, anchored to what was ACTUALLY spent
+                // rather than to what was requested. An unreadable fill gets no ladder at
+                // all — see `Position.ladder`.
+                ladder:
+                  event.outAmount === null
+                    ? undefined
+                    : newLadder(position.spentLamports, event.atUnix, state.config, state.walletSol),
               },
             },
           },
@@ -515,9 +661,15 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
       // A close landed. Realised PnL comes from the OBSERVED output, never from a quote —
       // and an output nobody could read produces NO outcome rather than a zero one. A
       // fabricated 0% would enter the edge estimate and size every subsequent trade.
-      const realised =
+      // `KellySizer` averages the MAGNITUDE of realised PnL in SOL, and takes the
+      // win/loss verdict separately. Percentages agree with SOL only while every position
+      // is the same size, which is exactly what Kelly sizing stops being true.
+      const realised: KellyTrade | null =
         event.outAmount !== null && position.spentLamports > 0
-          ? ((event.outAmount - position.spentLamports) / position.spentLamports) * 100
+          ? {
+              profitable: event.outAmount >= position.spentLamports,
+              pnlSol: (event.outAmount - position.spentLamports) / 1e9,
+            }
           : null
 
       const { [event.mint]: _dropped, ...rest } = state.positions
@@ -527,7 +679,12 @@ export function step(state: ZeroState, event: ZeroEvent): Step {
           ...state,
           positions: rest,
           holds,
-          outcomes: realised === null ? state.outcomes : [...state.outcomes, { pnlPct: realised }],
+          // Bounded to the sniper's own lookback. An unbounded history makes the
+          // multiplier a claim about the whole session rather than about recent trades.
+          outcomes:
+            realised === null
+              ? state.outcomes
+              : cap([...state.outcomes, realised], state.config.kellyLookback),
         },
         effects: [{ kind: 'unsubscribe', mint: event.mint }, { kind: 'persist' }],
       }

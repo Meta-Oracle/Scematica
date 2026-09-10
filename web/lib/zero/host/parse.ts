@@ -83,12 +83,20 @@ export function vaultEvent(
   slot: number,
   atUnix: number,
 ): ZeroEvent | null {
-  const price = priceFromVaults(
-    quoteData ? decodeTokenAmount(quoteData) : null,
-    baseData ? decodeTokenAmount(baseData) : null,
-  )
+  const quote = quoteData ? decodeTokenAmount(quoteData) : null
+  const price = priceFromVaults(quote, baseData ? decodeTokenAmount(baseData) : null)
   if (price === null) return null
-  return { kind: 'vault.changed', mint, priceSol: price, slot, atUnix }
+  return {
+    kind: 'vault.changed',
+    mint,
+    priceSol: price,
+    slot,
+    atUnix,
+    // The quote balance rides along so the exit ladder's vault rules (whale exit, volume
+    // exhaustion) have their input. `null` when the read did not resolve — never 0, which
+    // both rules would read as a total drain and sell on.
+    quoteVaultLamports: quote === null ? null : Number(quote),
+  }
 }
 
 /** What a discovery source can tell Zero about a pool, before any chain read. */

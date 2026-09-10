@@ -237,24 +237,92 @@ the failure it prevents, because a rule without its reason gets optimised away.
 
 ```
 web/lib/zero/                 pure core — no DOM, no React, no chrome.*, no window
-  types.ts        ZeroConfig, Position, ZeroEvent, Verdict, Degradation
-  source.ts       chain ingress: logsSubscribe + accountSubscribe -> ZeroEvent
-  perceive.ts     a market moment as a scema.world/1 WorldState
-  gate.ts         Ψ coherence over resolved/unresolved reads (port of coherence.rs)
-  decide.ts       scorer + DQ* + risk breakers -> Verdict, with Coverage attached
-  size.ts         fractional Kelly + session-key cap clamp (kelly.rs)
-  execute.ts      Jupiter route -> attended signer | session signer
-  signer.ts       Signer interface; WalletSigner and SessionSigner
+  types.ts        Position, ZeroEvent, Verdict, Term; ZeroConfig aliases SniperConfig
   session.ts      keypair, caps, expiry, spend ledger, sweep
   observe.ts      fill confirmation by getSignatureStatuses; Unknown is an arm
   seal.ts         DecisionRecord via lib/omni/canonical.ts
-  ledger.ts       positions + spend, persisted, versioned
+  policy.ts       the pinned DQ* checkpoint. Never trains.
+  lease.ts        Web Locks single-writer election
+  gatekeep.ts     the $SCEMA default (not a boundary)
+  readout.ts      what Zero shows about itself
+  funding.ts      moving SOL into and out of the session key
   engine.ts       the loop: pure reducer over ZeroEvent, effects injected
 
+web/lib/zero/sniper/          THE BOT'S OWN LOGIC — ports, pinned against Rust
+  config.ts       config.toml's [sniper] section + the 7 rate modes
+  psi.ts          the scematica-sentience master equation slice coherence.rs uses
+  coherence.ts    the epistemic breaker (coherence.rs)
+  kelly.ts        KellySizer (kelly.rs)
+  exit-ladder.ts  the sell monitor's ladder (the loop in sniper.rs)
+  fixtures/sniper-parity.json   emitted by the sniper; see §5.1
+
+web/lib/zero/host/            browser effects: WebSocket, RPC, wallet, signing
+
 web/app/zero/                 the page shell (phase 1)
-web/lib/zero/host/page.ts     browser effects: WebSocket, storage, wallet
 plugins/scema-zero/           the extension shell (phase 2, offscreen document)
 ```
+
+### 5.1 There is no Zero strategy, and that is the point
+
+Zero decides what the sniper decides. Not "something similar" — the same thresholds, the
+same ladders, the same arithmetic. Anything else makes it a second bot wearing the first
+one's name, and the first thing such a bot produces is a decision record nobody can check
+against the system it claims to mirror.
+
+That was not true for the first pass, and none of it failed:
+
+| | Zero was | the sniper is |
+|---|---|---|
+| take profit | 100% | **175%** |
+| stop loss | 15% | **10%** (25% under profit-first mode) |
+| pullback give-back | 25 pts | **15 pts** |
+| momentum peak floor | 140% | **200%** |
+| concurrent positions | 3 | **1** |
+| no-pump rule | ±5% after 30s | **peak under 8% after 15s** |
+| Kelly | half, min 8 trades, a fraction of base | **quarter, min 10, a multiplier in [0.25, 3.0]** |
+| Ψ | the resolution rate | **the master equation, max ≈ 0.2055** |
+| pool score | a local depth heuristic | **the Bayesian LR ladder** |
+| entry strategies | three invented ones | **there are none** — filters plus the score |
+| exit rules | four | **eleven**, with a ratcheting stop and an escalating target |
+
+Every row is a different bot. The Ψ row is the sharpest: Zero's Ψ was a *different
+quantity* on a different scale, so a threshold copied across meant nothing, and the two
+gates opened in different places for reasons no reader could see.
+
+So the numbers now come from the bot, mechanically:
+
+```
+config.toml  ──▶  cargo test -p scematica-sniper zero_parity
+                        │  emits
+                        ▼
+              lib/zero/fixtures/sniper-parity.json
+                        │  checked against
+                        ▼
+              lib/zero/sniper/*.ts   ──▶  npm run check:zero
+```
+
+`crates/scematica-sniper/src/zero_parity.rs` builds the fixture by *calling* the sniper's
+own code — `KellySizer::compute_multiplier`, `coherence::assess`, `PoolScorer::score`, the
+`SniperConfig` loaded from `config.toml` — rather than restating it. Editing a threshold in
+`config.toml` fails `cargo test` until the fixture is regenerated
+(`ZERO_PARITY_WRITE=1 cargo test -p scematica-sniper zero_parity`), and then fails
+`check:zero` until the port follows. **There is no third place to put a number.**
+
+The comparison is exact: 72 Ψ cases, 12 Kelly cases and 32 pool-score cases all reproduce
+Rust bit for bit. Two things make that possible and both are places the obvious code
+diverges silently — the multiplication order in `psi.ts` is Rust's left-to-right order
+(float multiplication is not associative), and `Bounded::new`'s clamp is applied at every
+intermediate rather than once at the end (which agrees on healthy inputs and differs
+exactly where a term overflows, i.e. in the degraded case the gate exists for).
+
+**What is *not* pinned, stated rather than glossed:** the exit ladder's control flow. The
+Rust original is four hundred lines inline in an async loop in `sniper.rs`, and extracting
+it into a callable function would be a large diff in a live buy-and-sell path — which is
+how a trading bug gets introduced by a diagnostic. So `exit-ladder.ts` is a hand port, and
+what the fixture buys is that every threshold it branches on is checked: a rule can be
+wrong about *order*, never about *where it fires*. `check:zero` asserts the order
+separately, which is a weaker guarantee than a fixture and is labelled as one. Same posture
+as `scema-lean`'s README on the gap between a model and the code it models.
 
 **`engine.ts` is a reducer.** `(state, ZeroEvent) -> (state, Effect[])`. It performs no I/O,
 so the entire decision path is testable with no network, no wallet and no browser — which is
@@ -331,14 +399,23 @@ Deliberately unanswered, for the next pass:
 
 All six are answered and built. What they settled:
 
-1. **Strategy set** — `scored-entry`, `pullback`, `continuation` (`strategy.ts`), each
-   chosen for latency tolerance rather than for coverage. Continuation demands a majority
-   of up-steps and not merely a net rise: a mint that doubled and halved and doubled has
-   the same two-minute change as one that climbed steadily, and only the second is a trend.
-2. **Exit ladder** — the whole thing as arrival-driven predicates (`exits.ts`). Writing
-   the test found the pullback rule's real firing region: take-profit is evaluated first,
-   so pullback only ever catches a position that has fallen back *through* the target. The
-   `configProblem` assertion is what keeps that region non-empty.
+1. **Strategy set** — *withdrawn*. The first pass invented three (`scored-entry`,
+   `pullback`, `continuation`), each with its own thresholds, on the reasoning that Zero's
+   latency tolerance called for entries the sniper does not have. It was the wrong call and
+   §5.1 is why: the sniper's entry is the filter pipeline plus the pool score, and adding a
+   parallel one made Zero a different bot at exactly the point where a decision record is
+   supposed to be checkable. The entry gate is now the score floor, the depth band and the
+   breakers, from `config.toml`.
+2. **Exit ladder** — the sniper's, ported whole (`sniper/exit-ladder.ts`): the exit gate,
+   the profit floor, the ratcheting trailing stop, take-profit escalation, the adaptive
+   pullback, velocity decay, tiered partials, flash crash, the vault rules, the no-pump
+   timeout, the dump detector and the hold cap. Eleven rules where the first pass had four,
+   and the four it had used different numbers. Order is load-bearing in three places, each
+   asserted in `check:zero`: the peak updates before the trailing stop reads it; the exit
+   gate is computed once from the raw PnL at the top; and take-profit/stop-loss is
+   evaluated **last**, against the stop as every rule above has left it — putting the
+   protective rule first reads as obviously correct and gives back exactly the gain the
+   ratchet exists to keep.
 3. **Does Zero train?** No. Pinned checkpoint, transitions logged, training nowhere
    (`policy.ts`). A per-tab policy is one nobody can reproduce, and a record citing
    weights that exist nowhere destroys the only thing Zero is for. `NEUTRAL` and the

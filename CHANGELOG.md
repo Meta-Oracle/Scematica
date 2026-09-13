@@ -2,6 +2,48 @@
 
 Version history for Scematica. For install, running, and architecture, see the [README](README.md).
 
+## Unreleased
+
+### Scematica Omni-Agent (`omni-agent/`) and the Telegram surface
+
+The field agent, ported in from `Meta-Oracle/omni-agent` and rebranded. TypeScript on
+ElizaOS plus a Python/PyTorch cortex: it reads live X discourse through Grok server-side
+search, ranks every candidate with a network trained on the operator's own approve and
+reject decisions, and asks over Telegram before it posts. The operator's decisions *are*
+the training set, and an **edit teaches two labels with opposite signs** — which is what
+lets the net learn the difference rather than only the direction.
+
+**It is not Scematica Omni.** Omni seals proof-carrying decision records; the agent drafts
+prose. It seals nothing and verifies nothing, and says so in its own system prompt, in a
+table on `/omni-agent`, and in Scylar's codex — because a reader who conflates the two
+gives an unsealed opinion the authority of a sealed record.
+
+**One bot, one poller.** Telegram's `getUpdates` hands each update to exactly one caller,
+so two processes on one token split the operator's commands between them at random, with
+no error anywhere — and one of the two is `scema-tgbot`, which can sell positions. Three
+variables now: the cockpit's own bot, the sniper's (read but never polled without an
+explicit opt-in), and a third for conversation. An overlapping poll returns HTTP 409, which
+stops the cockpit rather than being retried.
+
+**It reads the live bot and never commands it.** A fifth reader of the File-Based IPC
+surface, keeping absent / stale / fresh distinct: no file is not a bot that broke even, and
+a metrics file an hour old is a stopped sniper rather than a quiet one.
+
+`/omni-agent` is the ninth product — chartreuse, no server side at all, and a replay of the
+agent's own proposal log in the reader's own browser. `npm run check:agent` pins it.
+
+### `scematica-tgbot` — the sniper's controls on Telegram
+
+Deny by default (the `/claim` code prints to the operator's own console, never over
+Telegram), the `getUpdates` offset advances before the work (twice is worse than never for
+a process that can sell positions), and it reads state rather than computing it.
+
+Three tests were failing, and one of them was wrong about the code: `truncate` reserved one
+byte for an ellipsis that is three bytes in UTF-8, so every truncated message came out over
+Telegram's cap; and a test reproduced the config-rewrite loop inline instead of calling it,
+asserting a comment gap the real code never produces. The rewrite is now a pure function
+both the edit path and the tests call.
+
 ## What's New in v1.28.0
 
 Bot workspace **1.28.0**. Scematica Omni reaches **1.0.0** and `alchem-link` reaches

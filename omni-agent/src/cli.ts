@@ -20,7 +20,7 @@ import { finalText, getQueue } from './lib/queue.js';
 import { applyDecision, discoverOperatorChatId } from './plugins/control-plane/notify.js';
 import { getCortexClient } from './plugins/cortex/client.js';
 import { getGrokClient, type GrokError, type GrokMessage } from './plugins/grok/client.js';
-import { dryRunLogPath } from './plugins/twitter/post.js';
+import { dryRunLogPath, wrongAccount } from './plugins/twitter/post.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -69,10 +69,25 @@ async function checkXWriteCredentials(
       accessSecret: creds.accessTokenSecret,
     }).v1.verifyCredentials();
 
-    report('x post', {
-      verdict: 'ok',
-      detail: `@${me.screen_name} authenticated${config.twitter.dryRun ? ' (SCEMA_DRY_RUN is on)' : ' -- LIVE'}`,
-    });
+    // A working credential for the WRONG account is not an `ok`. It is the most
+    // dangerous state this check can find: everything downstream looks healthy, and the
+    // posts land somewhere the operator is not watching. `postProposal` refuses on it, so
+    // reporting it green here would contradict the thing that actually happens.
+    if (wrongAccount(config.twitter.handle, me.screen_name)) {
+      report('x post', {
+        verdict: 'wrong-account',
+        detail: `credentials are @${me.screen_name}, but TWITTER_USERNAME is @${config.twitter.handle} -- posting is REFUSED`,
+        remedy:
+          'sign in to X as the account you want, then run `npm run x-auth` (OAuth 2.0 ' +
+          'follows whoever approves it). Note plugin-twitter ignores that token and uses the ' +
+          'OAuth 1.0a pair, so its autonomous replies need a pair for the right account.',
+      });
+    } else {
+      report('x post', {
+        verdict: 'ok',
+        detail: `@${me.screen_name} authenticated${config.twitter.dryRun ? ' (SCEMA_DRY_RUN is on)' : ' -- LIVE'}`,
+      });
+    }
   } catch (error) {
     const err = error as { code?: number; data?: unknown; message?: string };
     const body = typeof err.data === 'string' ? err.data : JSON.stringify(err.data ?? {});
@@ -114,7 +129,15 @@ async function doctor(): Promise<number> {
       return;
     }
     failures += 1;
-    const mark = result.verdict === 'out-of-credit' ? `${YELLOW}BILL${RESET}` : `${RED}FAIL${RESET}`;
+    // Three markers, because three of these send the operator somewhere different.
+    // BILL: the credential is right, the account is not funded. WRNG: the credential is
+    // right and belongs to somebody else — regenerating it would waste an afternoon.
+    const mark =
+      result.verdict === 'out-of-credit'
+        ? `${YELLOW}BILL${RESET}`
+        : result.verdict === 'wrong-account'
+          ? `${RED}WRNG${RESET}`
+          : `${RED}FAIL${RESET}`;
     console.log(`  ${mark} ${label.padEnd(14)} ${DIM}${result.detail}${RESET}`);
     if (result.remedy) console.log(`       ${' '.repeat(14)} ${DIM}-> ${result.remedy}${RESET}`);
   };

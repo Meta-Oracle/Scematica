@@ -23,6 +23,7 @@ import { cortexPlugin } from './plugins/cortex/index.js';
 import { getCortexClient } from './plugins/cortex/client.js';
 import { grokPlugin } from './plugins/grok/index.js';
 import { senseLoopPlugin } from './plugins/sense-loop/plugin.js';
+import { oauth1Handle, wrongAccount } from './plugins/twitter/post.js';
 
 const BANNER = String.raw`
    ___  __  __ _  _ ___     SCEMATICA OMNI-AGENT
@@ -55,8 +56,32 @@ async function buildPlugins(): Promise<(Plugin | string)[]> {
         'Create a second bot with @BotFather for chat, or leave it unset.',
     );
   }
+  // `@elizaos/plugin-twitter` acts on its own — it answers mentions, and can post and
+  // take timeline actions — and **none of that passes through the approval queue**. So
+  // the account it will act as is worth confirming before it is loaded, not after
+  // somebody notices replies from the wrong handle.
+  //
+  // It reads only the OAuth 1.0a pair. The OAuth 2.0 token this project mints with
+  // `x-auth` is invisible to it, so running that flow does not redirect these behaviours
+  // and cannot be the answer here. The only fix is an access-token pair for the intended
+  // account.
+  //
+  // A refusal rather than a warning, for the same reason `postProposal` refuses: an
+  // unattended reply from the wrong account is not recoverable by deleting it.
   if (config.twitter.configured && !config.twitter.dryRun) {
-    plugins.push('@elizaos/plugin-twitter');
+    const actual = await oauth1Handle();
+    if (wrongAccount(config.twitter.handle, actual)) {
+      logger.error(
+        `NOT loading plugin-twitter: its OAuth 1.0a credentials are @${actual}, but this ` +
+          `project posts as @${config.twitter.handle}. That plugin replies and posts ` +
+          'unattended, so it would act as the wrong account. `x-auth` will not fix this — ' +
+          'the plugin never reads the OAuth 2.0 token. Supply an access-token pair for ' +
+          `@${config.twitter.handle}, or set TWITTER_USERNAME to @${actual} if that is ` +
+          'genuinely the account you want.',
+      );
+    } else {
+      plugins.push('@elizaos/plugin-twitter');
+    }
   }
 
   plugins.push('@elizaos/plugin-bootstrap');

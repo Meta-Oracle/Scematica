@@ -57,6 +57,89 @@ function getClient(): TwitterApi | null {
 }
 
 /**
+ * The handle a write client will actually post as, asked of X rather than of config.
+ *
+ * Cached for the process: it cannot change without new credentials, and this sits in
+ * front of every post, so re-asking would spend a rate-limited call on a fact that does
+ * not move.
+ *
+ * `null` means the question could not be answered — a network failure, a rate limit, a
+ * scope that does not permit the lookup. That is deliberately distinct from a mismatch:
+ * the caller treats it as "no evidence" and proceeds, because turning an X outage into a
+ * posting ban would be a worse failure than the one being guarded against.
+ */
+let cachedHandle: string | null | undefined;
+export async function authenticatedHandle(api: TwitterApi): Promise<string | null> {
+  if (cachedHandle !== undefined) return cachedHandle;
+  try {
+    const me = await api.v2.me();
+    cachedHandle = me.data.username;
+  } catch (error) {
+    logger.warn(
+      { error: (error as Error).message },
+      'could not confirm which account these credentials belong to',
+    );
+    cachedHandle = null;
+  }
+  return cachedHandle;
+}
+
+/** Forget the cached identity. Tests, and a credential swap within one process. */
+export function resetAuthenticatedHandle(): void {
+  cachedHandle = undefined;
+}
+
+/**
+ * Which account the OAuth 1.0a pair belongs to, asked of X.
+ *
+ * Separate from `authenticatedHandle` because it answers a different question about a
+ * different credential. `@elizaos/plugin-twitter` reads **only** these four variables — it
+ * has no knowledge of the OAuth 2.0 token this project mints — so its autonomous replies
+ * and posts go to whichever account the access-token pair identifies, and running
+ * `x-auth` does not move them.
+ *
+ * `null` when there is no pair, or when X could not be asked.
+ */
+export async function oauth1Handle(): Promise<string | null> {
+  const creds = config.twitter.credentials;
+  if (!creds) return null;
+  try {
+    const me = await new TwitterApi({
+      appKey: creds.apiKey,
+      appSecret: creds.apiSecretKey,
+      accessToken: creds.accessToken,
+      accessSecret: creds.accessTokenSecret,
+    }).v1.verifyCredentials();
+    return me.screen_name;
+  } catch (error) {
+    logger.warn(
+      { error: (error as Error).message },
+      'could not confirm which account the OAuth 1.0a pair belongs to',
+    );
+    return null;
+  }
+}
+
+/**
+ * Should a post be refused because the credential belongs to someone else?
+ *
+ * Pure, so the rule can be tested without a credential and without a network. Three
+ * states rather than two, and the third is the one that matters:
+ *
+ * - no configured handle  → nothing to compare against, so nothing to refuse on.
+ * - `actual` is `null`    → the check could not run. Not evidence of a match, but not
+ *                           evidence of a mismatch either; an X outage must not become a
+ *                           posting ban.
+ * - both known, differing → refuse. Case and a leading `@` are noise, not identity.
+ */
+export function wrongAccount(intended: string, actual: string | null): boolean {
+  const want = intended.trim().replace(/^@/, '').toLowerCase();
+  if (!want) return false;
+  if (actual === null) return false;
+  return actual.trim().replace(/^@/, '').toLowerCase() !== want;
+}
+
+/**
  * Read-only client, preferring app-only bearer auth.
  *
  * Reading public metrics does not need user context, so the reflection loop
@@ -153,6 +236,31 @@ export async function postProposal(
       'live posting requested but no usable X write credentials: run `npx tsx src/cli.ts x-auth`';
     await queue.markFailed(proposal.id, error);
     return { posted: false, dryRun: false, error };
+  }
+
+  // Which account is about to receive this.
+  //
+  // `TWITTER_USERNAME` is a label somebody typed; the credential decides where the bytes
+  // land, and the two can disagree. They did here: the configured handle said one account
+  // while the OAuth 1.0a pair authenticated as another, and nothing stopped a post.
+  //
+  // Posting to the wrong account is not recoverable in the way a failed post is — a
+  // deletion does not unsend it to whoever already saw it, and the audit trail then
+  // records a post the queue believes went somewhere else. So this refuses rather than
+  // warning, and it refuses *before* the call rather than reporting afterwards.
+  const intended = config.twitter.handle.trim();
+  if (intended) {
+    const actual = await authenticatedHandle(api);
+    if (wrongAccount(intended, actual)) {
+      const error =
+        `refusing to post: these credentials are @${actual}, but TWITTER_USERNAME is ` +
+        `@${intended}. Authorise the right account with \`npm run x-auth\` (OAuth 2.0 ` +
+        `follows whoever is signed in when you approve), or correct TWITTER_USERNAME. ` +
+        `This project reads TWITTER_USERNAME from .env, not from your shell.`;
+      logger.error(error);
+      await queue.markFailed(proposal.id, error);
+      return { posted: false, dryRun: false, error };
+    }
   }
 
   try {

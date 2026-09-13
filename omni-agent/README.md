@@ -84,7 +84,29 @@ missing; drafts land in `data/queue/dry-run-posts.md` for review. The dry-run
 path runs the same queue transitions and the same training, so the whole loop is
 exercisable before you have a single credential.
 
-**But `@elizaos/plugin-twitter` acts on its own, and the queue does not gate it.**
+## Which account it posts as
+
+`TWITTER_USERNAME` names the account this project is *for*. It is the one variable where
+`.env` beats the shell — it is not a credential, it is a statement of intent, and a
+variable exported in a profile years ago cannot be one. It is also a safety input now:
+
+- **`postProposal` refuses** when the credential's real account disagrees with it. Posting
+  to the wrong account is not recoverable the way a failed post is; deleting does not
+  unsend it to whoever already saw it.
+- **`plugin-twitter` is not loaded at all** on a mismatch, because its behaviours are
+  unattended and never reach the queue.
+
+The two paths use different credentials, and this catches people out:
+
+| Path | Credential | Redirect it with |
+|---|---|---|
+| the draft queue | OAuth 2.0 token, else the 1.0a pair | `npm run x-auth`, signed in as the account you want |
+| `plugin-twitter`'s replies/posts | **only** the OAuth 1.0a pair | an access-token pair for that account — `x-auth` does nothing here |
+
+A check that could not run (`null`) is not a mismatch: an X outage must not become a
+posting ban.
+
+**`@elizaos/plugin-twitter` acts on its own, and the queue does not gate it.**
 Once `SCEMA_DRY_RUN=false` and four real credentials exist, that plugin loads and
 its interaction client answers mentions unattended, in the agent's voice —
 `TWITTER_ENABLE_REPLIES` defaults to **on**. The approve/reject loop stays empty

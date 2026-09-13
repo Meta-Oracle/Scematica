@@ -12,7 +12,23 @@
  * problem.
  */
 
-export type CredentialVerdict = 'ok' | 'unset' | 'rejected' | 'out-of-credit' | 'unknown';
+/**
+ * What a credential check concluded.
+ *
+ * Each arm is a different instruction to the operator, which is the whole reason this is
+ * not a boolean. `rejected` sends somebody to regenerate a credential; `out-of-credit`
+ * tells them not to, because the credential is fine and the bill is not; `wrong-account`
+ * tells them the credential works perfectly and is signing in as somebody else — the one
+ * failure where everything downstream looks healthy and the posts land where nobody is
+ * watching.
+ */
+export type CredentialVerdict =
+  | 'ok'
+  | 'unset'
+  | 'rejected'
+  | 'out-of-credit'
+  | 'wrong-account'
+  | 'unknown';
 
 export interface CredentialCheck {
   verdict: CredentialVerdict;

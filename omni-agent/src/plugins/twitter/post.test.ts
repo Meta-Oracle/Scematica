@@ -12,7 +12,7 @@ import { describe, it } from 'node:test';
 
 import { config } from '../../config.js';
 import { getQueue, type ProposalScores } from '../../lib/queue.js';
-import { dryRunLogPath, postProposal } from './post.js';
+import { dryRunLogPath, postProposal, wrongAccount } from './post.js';
 
 const scores: ProposalScores = {
   salience: 0.6,
@@ -86,5 +86,32 @@ describe('postProposal', () => {
     const stored = await queue.get(proposal.id);
     assert.equal(stored?.status, 'posted');
     assert.equal(stored?.postedId, result.id);
+  });
+});
+
+describe('wrongAccount', () => {
+  it('refuses when the credential belongs to a different account', () => {
+    // The case that prompted it: the OAuth 1.0a pair authenticated as @TheOmniAgent while
+    // the configured handle said @scematica, and nothing stopped a post.
+    assert.equal(wrongAccount('scematica', 'TheOmniAgent'), true);
+  });
+
+  it('allows the same account whatever the case or the @', () => {
+    assert.equal(wrongAccount('scematica', 'Scematica'), false);
+    assert.equal(wrongAccount('@Scematica', 'scematica'), false);
+    assert.equal(wrongAccount('  Scematica ', 'Scematica'), false);
+  });
+
+  it('does not refuse when the check could not run', () => {
+    // `null` is "I could not ask", not "it is someone else". Turning an X outage or a
+    // rate limit into a posting ban would be a worse failure than the one being guarded.
+    assert.equal(wrongAccount('scematica', null), false);
+  });
+
+  it('does not refuse when no handle is configured', () => {
+    // Nothing to compare against. Refusing here would mean TWITTER_USERNAME became
+    // mandatory, which it never was.
+    assert.equal(wrongAccount('', 'TheOmniAgent'), false);
+    assert.equal(wrongAccount('   ', 'TheOmniAgent'), false);
   });
 });

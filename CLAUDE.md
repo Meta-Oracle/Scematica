@@ -166,6 +166,28 @@ cd web ; npm run dev                         # dev server on :3000
 cd web ; npx tsc --noEmit                    # typecheck
 cd web ; npm run check:parity                # TS pool scorer vs pool_scorer.rs fixtures
 
+# Telegram — the sniper's controls from a phone. Token in the gitignored .env as
+# SCEMA_TG_TOKEN; owners in SCEMA_TG_OWNERS. With no owners it prints a one-time
+# /claim code TO THIS TERMINAL and refuses everyone until somebody uses it.
+cargo run --release --bin scema-tgbot
+
+# Scematica Omni-Agent (omni-agent/ — TypeScript + Python, no cargo involvement).
+# The field agent: perceives X through Grok, judges with a learned cortex, asks
+# before it posts. NOT scematica-omni, and not scema-tgbot — see the layout note.
+cd omni-agent ; npm install ; cp .env.example .env
+cd omni-agent ; npm run cortex                 # the PyTorch sidecar, :7077
+cd omni-agent ; npx tsx src/cli.ts doctor      # what works, what doesn't, and why
+cd omni-agent ; npx tsx src/cli.ts bot         # exactly what it can see of the sniper
+cd omni-agent ; npm run sense                  # one perception cycle now
+cd omni-agent ; npm run queue                  # approve / reject / edit drafts
+cd omni-agent ; npm start                      # Telegram cockpit + scheduled sense loop
+cd omni-agent ; npm test ; npm run cortex:test # 61 + 24
+# ONE BOT, ONE POLLER. `getUpdates` hands each update to exactly one caller, so
+# two processes on one token split the operator's commands between them at random
+# — and one of them can sell positions. The cockpit refuses a token it can see
+# belongs to scema-tgbot (SCEMA_AGENT_TG_TOKEN is its own bot), and stops rather
+# than retrying if Telegram answers 409 anyway.
+
 # alchem-link (Python, outside the cargo workspace)
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m unittest discover -s tests
 cd alchem-link ; $env:PYTHONPATH="src" ; python -m alchem_link.cli doctor
@@ -266,6 +288,21 @@ crates/
                         graph. Separate crate so `scematica-mesh` stays a lean read-only
                         library (same split as `scemadex-sdk` vs `sdk-dashboard`).
                         Bin: `mesh-dashboard`; `scematica mesh` via the launcher.
+  scematica-tgbot/      The sniper's controls on Telegram — a fourth face over the
+                        File-Based IPC surface, beside the ratatui dashboard, the HTTP API
+                        and the web dashboard. Starts nothing, owns nothing, holds no lock.
+                        Three things make it safe against a live bot: **deny by default**
+                        (a bot token is a public endpoint, so an empty owner list authorises
+                        nobody — and the `/claim` code prints to the operator's own console,
+                        never over Telegram); **the `getUpdates` offset advances before the
+                        work** (for a process that can sell positions, twice is worse than
+                        never — the treasury path's 202 reasoning); and **it reads state
+                        rather than computing it**, so no threshold, score or PnL has a
+                        second implementation here to drift. Hand-rolls the Bot API on the
+                        pinned `reqwest` 0.11 — teloxide pulls 0.12 → rustls 0.23 → zeroize
+                        ≥ 1.7, exactly the conflict the root pin comments forbid. Bin:
+                        `scema-tgbot`. Token in `SCEMA_TG_TOKEN`, owners in
+                        `SCEMA_TG_OWNERS`, both from the gitignored `.env`.
   scematica-suite/      Umbrella meta-crate: re-exports all components + `scematica`
                         launcher dispatching to the component binaries. Bin: `scematica`
   agent-playground/     ScemaDEX agent playground / experimentation
@@ -382,6 +419,24 @@ scematica-omni/         Scematica Omni: the agent runtime. **Own cargo workspace
                         Tests: `cargo test --workspace` (309), plus 54 in plugins/scema-web
                         (9 of them wire tests that skip without a live daemon) and
                         `npm run check:omni` in web/ (30). See scematica-omni/README.md.
+omni-agent/             **Scematica Omni-Agent** — the field agent. TypeScript (ElizaOS) +
+                        Python (PyTorch), **not a cargo crate and not part of any cargo
+                        workspace**. Perceives live X discourse through Grok server-side
+                        `x_search`, ranks every candidate with a learned cortex, drafts, and
+                        asks a human over Telegram before it posts. Each decision is one
+                        labelled training example, so the operator's approvals *are* the
+                        training set. Ported in from `Meta-Oracle/omni-agent` and rebranded;
+                        `OMNI_*` became `SCEMA_*`, `omni_cortex` became `scema_cortex`.
+                        **It is NOT `scematica-omni/`** and the distinction is load-bearing
+                        rather than pedantic: Omni *seals proof-carrying decision records*
+                        and this agent *drafts prose*. It seals nothing and verifies nothing,
+                        its own character file says so, and `/omni-agent` renders the
+                        difference as a table — because a reader who conflates the two gives
+                        an unsealed opinion the authority of a sealed record, which is what
+                        `/omni` exists to prevent. It is also not `scematica-tgbot`, which
+                        holds the authority to pause, dump and re-arm; this one can only read
+                        the bot. Tests: `npm test` (61) + `npm run cortex:test` (24, CUDA).
+                        See omni-agent/README.md and the section below.
 tools/
   key-converter/        Keypair format conversion
   pool-seeder/          Seeds the arb pool graph (pools/) from the Raydium/Orca/Meteora APIs. REQUIRED before running `arb` (empty pools/ = empty graph = no trades). Raydium: list endpoint for ids/mints + key/ids endpoint for vaults.
@@ -1827,6 +1882,67 @@ rather than a home directory — a name-based refusal is a backstop, not a bound
 
 State lives in `.scema/` under the working directory (`decisions/<id>.json`,
 `memory/*.jsonl`), gitignored — machine-local and full of absolute paths.
+
+## Architecture: Scematica Omni-Agent (`omni-agent/`)
+
+The field agent, ported in from `Meta-Oracle/omni-agent` and rebranded. TypeScript on
+ElizaOS plus a Python/PyTorch sidecar; **no cargo involvement at all**, which is why it
+sits beside `alchem-link/` rather than in a workspace. Loop: **perceive → judge → compose
+→ dispatch → reflect**, and the loop closes — the operator's Telegram decisions *are* the
+training set, and measured engagement *is* the resonance label.
+
+**The word `omni` is shared and the claims are not.** `scematica-omni/` seals
+proof-carrying decision records; this agent drafts prose and asks a human. It seals
+nothing, verifies nothing, and says so in its own system prompt — the one place the
+misstatement would actually be made is a sentence it writes. `/omni-agent` renders the
+distinction as a table for the same reason. It is also **not** `scematica-tgbot`, which
+holds the authority to pause, dump and re-arm; this one can only read the bot.
+
+**The rebrand is mechanical and total**: `OMNI_*` → `SCEMA_*`, `omni_cortex` →
+`scema_cortex`, `TELEGRAM_*` → `SCEMA_TG_*`, default sense topics moved from generic AI
+discourse to Solana/trading subject matter. The persona keeps the name *Omni* because the
+product is the Omni-Agent; nothing else kept it.
+
+Four things worth not breaking:
+
+- **One bot, one poller.** Telegram's `getUpdates` hands each update to exactly **one**
+  caller. Two processes on one token do not both receive the operator's commands — they
+  split them between them, at random, with no error anywhere, and one of the two is
+  `scema-tgbot`, which can sell positions. So there are three variables, not one:
+  `SCEMA_AGENT_TG_TOKEN` (the cockpit's own bot, preferred), `SCEMA_TG_TOKEN` (the
+  sniper's — read but **not polled** unless `SCEMA_AGENT_TG_POLL=1`), and
+  `TELEGRAM_BOT_TOKEN` (a third, conversational bot, which `index.ts` refuses to load if
+  it equals the cockpit's). If two pollers overlap anyway Telegram answers **409**, which
+  becomes a named `TelegramConflictError` that **stops** the poller rather than retrying —
+  retrying would mean the two processes take turns stealing each other's commands. The
+  original repo's comment claimed the two surfaces could share a token; they cannot, and
+  that comment is now a correction rather than a claim.
+- **`src/lib/bot-state.ts` reads the sniper and never commands it.** A fifth reader of the
+  File-Based IPC surface below: no lock, no write. It exists because an agent that speaks
+  in public about a trading system has two bad options when asked how the bot is doing —
+  decline every such question, or produce a plausible number. **Three states, never two**:
+  `absent` (no file — not a bot that broke even; `0.00 SOL` would be a claim), `stale` (a
+  file with an age attached — metrics are rewritten every 5s, so an hour old is a *stopped*
+  sniper), `fresh` (a measurement, and the only case where a bare number may be spoken).
+  Nine tests assert what does *not* come out. It is injected as a **provider**, not an
+  action, because the failure being designed against is the model not realising it needs
+  to look — a provider runs every turn, so the refusal to guess is in context before the
+  question is.
+- **Nothing reaches X until it is explicitly enabled**, and autonomy is *earned*:
+  `SCEMA_SENSE_AUTOPOST_TASTE` defaults above 1.0 ("never") and is honoured only after a
+  minimum number of real operator decisions.
+- **An edit teaches two labels, not one.** The original was not good enough (taste 0), the
+  rewrite was (taste 1) — which is what lets the net learn the *difference* rather than
+  only the direction, and why an operator who edits is worth more than one who only
+  approves. `/omni-agent` surfaces exactly this, because it is invisible in the raw log.
+
+`/omni-agent` in `web/` is the ninth product: chartreuse, **no server side at all** (same
+rule as `/omni`, and for a sharper reason — the proposal log is the operator's own decision
+history, which is precisely the kind of file that must not be uploaded in order to be
+read). `lib/agent/replay.ts` is a port of the agent's queue state machine; an unscored
+draft prints `—` and never `0.00`, an unknown event is **counted** rather than dropped so a
+log from a newer agent renders as incomplete rather than as confidently wrong, and there is
+no approval percentage anywhere. `npm run check:agent` pins all of it (26 checks).
 
 ## Architecture: File-Based IPC
 

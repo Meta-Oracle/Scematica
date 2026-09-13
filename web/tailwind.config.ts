@@ -161,6 +161,36 @@ const config: Config = {
         'omni-warn':        '#ffb86b',
         'omni-unmeasured':  '#463a26',
 
+        // ── omni-agent ──────────────────────────────────────────────────────
+        // Ninth product, ninth identity: chartreuse on graphite. The last hue on
+        // the site nobody had taken — the sniper's red, alchem's blue, scylar's
+        // and scema-world's violets, botchain's and omni's ambers, escrow's teal,
+        // the mesh's indigo and zero's cyan are all spoken for.
+        //
+        // Yellow-green rather than the mint `#3ddc97` every other page uses for
+        // "ok", and the distance is deliberate: this page is about what an agent
+        // *proposed*, not about money, and a profit-green accent would read as a
+        // PnL surface on a site where eight other pages do talk about money.
+        //
+        // `agent-unscored` is the colour of a proposal the cortex never scored —
+        // close to the surface for the same reason `omni-unmeasured` and
+        // `mesh-absent` are. A draft that predates the net is not a draft the net
+        // rated zero, and the two must not look alike.
+        'agent-black':      '#07090a',
+        'agent-surface':    '#0d1211',
+        'agent-hi':         '#151d19',
+        'agent-border':     '#26331f',
+        'agent-border-hi':  '#435734',
+        'agent-text':       '#e4efd8',
+        'agent-muted':      '#9aae86',
+        'agent-dim':        '#5f7150',
+        'agent-accent':     '#b8e62e',
+        'agent-glow':       '#d6f770',
+        'agent-posted':     '#5ddc9a',
+        'agent-rejected':   '#ff6b6b',
+        'agent-pending':    '#f5b544',
+        'agent-unscored':   '#2c3826',
+
         // ── scema-world ─────────────────────────────────────────────────────
         // Eighth product, eighth identity: cold violet-white on true black, the
         // colour of a cockpit at night. Distinct from scylar's warm violet, which

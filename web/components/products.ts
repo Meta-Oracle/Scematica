@@ -87,6 +87,18 @@ export const PRODUCTS: Product[] = [
     priority: 0.9,
   },
   {
+    // Distinct from /omni on purpose, and the page says so in a table. Omni seals
+    // verifiable decision records; the Omni-Agent perceives live discourse and drafts
+    // prose it asks you to approve. Sharing a word is not sharing a claim.
+    href: '/omni-agent',
+    label: 'OMNI-AGENT',
+    glyph: '◉',
+    blurb: 'The field agent — perceives X through Grok, judges with a net that learned your taste',
+    chip: 'border-agent-border text-agent-accent hover:border-agent-accent hover:text-agent-glow',
+    changeFrequency: 'weekly',
+    priority: 0.8,
+  },
+  {
     href: '/scema-world',
     label: 'SCEMA-WORLD',
     glyph: '✦',

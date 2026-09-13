@@ -8,12 +8,18 @@
  * and routing that through a conversational pipeline would mean an LLM sits
  * between the operator pressing "reject" and the rejection being recorded.
  *
- * Both run against the same bot token, which Telegram permits: this module
- * uses the callback-query side, the plugin uses the message side.
+ * The two cannot share a bot, and an earlier version of this comment claimed
+ * they could. They cannot: `getUpdates` is exclusive per token and delivers
+ * each update to exactly one caller, so a conversational plugin and this poller
+ * on one token split the operator's messages between them at random. Give the
+ * conversational side its own bot via TELEGRAM_BOT_TOKEN — `index.ts` refuses
+ * to load it otherwise — and see `TelegramConflictError` below for what
+ * Telegram says when two pollers do overlap.
  */
 import { logger } from '@elizaos/core';
 
 import { config } from '../../config.js';
+import { readBotState, renderBotState } from '../../lib/bot-state.js';
 import { finalText, getQueue, type Proposal } from '../../lib/queue.js';
 import { getCortexClient } from '../cortex/client.js';
 import { postProposal } from '../twitter/post.js';
@@ -36,6 +42,28 @@ interface TelegramUpdate {
   };
 }
 
+/**
+ * Thrown when Telegram reports that something else is already long-polling this
+ * bot — almost always `scema-tgbot`, the Rust sniper control bot, on a shared
+ * token.
+ *
+ * It gets its own class because it is the one `getUpdates` failure that must
+ * not be swallowed by the retry loop. Every other failure is transient and
+ * retrying is correct; this one is a configuration fact, and retrying turns it
+ * into a coin flip over who receives the operator's next command.
+ */
+export class TelegramConflictError extends Error {
+  constructor(description: string) {
+    super(
+      `another process is already polling this bot token (${description}). ` +
+        'Telegram delivers each update exactly once, so the two would split your ' +
+        'commands between them at random. Give the cockpit its own bot with ' +
+        'SCEMA_AGENT_TG_TOKEN, or stop scema-tgbot first.',
+    );
+    this.name = 'TelegramConflictError';
+  }
+}
+
 async function telegram(method: string, body: unknown): Promise<unknown> {
   if (!config.telegram.configured) return null;
   const response = await fetch(`${API}/bot${config.telegram.token}/${method}`, {
@@ -44,8 +72,16 @@ async function telegram(method: string, body: unknown): Promise<unknown> {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
-  const json = (await response.json()) as { ok: boolean; description?: string; result?: unknown };
-  if (!json.ok) throw new Error(`telegram ${method}: ${json.description ?? 'unknown error'}`);
+  const json = (await response.json()) as {
+    ok: boolean;
+    error_code?: number;
+    description?: string;
+    result?: unknown;
+  };
+  if (!json.ok) {
+    if (json.error_code === 409) throw new TelegramConflictError(json.description ?? '409');
+    throw new Error(`telegram ${method}: ${json.description ?? 'unknown error'}`);
+  }
   return json.result;
 }
 
@@ -179,7 +215,19 @@ export class ControlPlanePoller {
 
   async start(): Promise<void> {
     if (!config.telegram.configured) {
-      logger.info('control plane inactive: no SCEMA_TG_TOKEN');
+      logger.info('control plane inactive: no SCEMA_AGENT_TG_TOKEN or SCEMA_TG_TOKEN');
+      return;
+    }
+    // Refuse *before* the first poll rather than discovering it as a 409 later,
+    // because a 409 only arrives once both pollers are live and by then some
+    // updates have already gone to the wrong process.
+    if (config.telegram.sharedWithSniper && !config.telegram.pollShared) {
+      logger.warn(
+        'control plane not polling: this token is scema-tgbot\'s. Telegram delivers each ' +
+          'update once, so polling it here would take commands away from the sniper bot at ' +
+          'random. Set SCEMA_AGENT_TG_TOKEN to a second bot, or SCEMA_AGENT_TG_POLL=1 while ' +
+          'scema-tgbot is stopped. Drafts still queue; review them with `npm run queue`.',
+      );
       return;
     }
     if (!config.telegram.operatorChatId) {
@@ -213,6 +261,14 @@ export class ControlPlanePoller {
           );
         }
       } catch (error) {
+        // A conflict is not transient: something else owns this token. Retrying
+        // would mean the two processes take turns stealing each other's
+        // commands, which is worse than this cockpit being off.
+        if (error instanceof TelegramConflictError) {
+          logger.error({ error: error.message }, 'control plane stopping');
+          this.stopped = true;
+          return;
+        }
         // Telegram long-polling drops connections routinely; back off and
         // continue rather than tearing down the cockpit.
         logger.debug({ error: (error as Error).message }, 'getUpdates failed; retrying');
@@ -313,13 +369,27 @@ export class ControlPlanePoller {
       return;
     }
 
+    if (text === '/bot') {
+      // Deliberately the raw provider block rather than a prettier summary: it
+      // is the same text the model is given, so what the operator reads here
+      // and what the agent is working from cannot drift apart.
+      await telegram('sendMessage', {
+        chat_id: chatId,
+        text: renderBotState(await readBotState()),
+      });
+      return;
+    }
+
     if (text === '/help') {
       await telegram('sendMessage', {
         chat_id: chatId,
         text: [
           '/pending  resend drafts awaiting a decision',
           '/status   queue and cortex state',
+          '/bot      what this agent can see of the live sniper',
+          '',
           'Anything else is a normal conversation with the agent.',
+          'Controlling the sniper — pause, dump, re-arm — is scema-tgbot, not this bot.',
         ].join('\n'),
       });
     }

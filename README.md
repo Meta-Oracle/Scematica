@@ -191,9 +191,40 @@ Scematica is a Rust workspace. The published crates and the binaries they instal
 | `scemadex-sdk` | `scemadex` | Agentic-liquidity SDK + live viewer (intents, bonds, mesh) |
 | `scema-agent-playground` | `playground` | Multi-LLM agent-to-agent arena |
 
+Unpublished crates in the same workspace:
+
+| Crate | Binary | Purpose |
+|---|---|---|
+| `scematica-tgbot` | `scema-tgbot` | The sniper's controls on Telegram — read state, retune, pause, dump |
+
 Tools:
 - `tools/key-converter` — Convert keypair formats
 - `tools/pool-seeder` — Pre-seed pool cache from on-chain data
+
+### Scematica Omni-Agent (`omni-agent/`)
+
+Not a cargo crate — TypeScript on ElizaOS plus a Python/PyTorch sidecar, alongside
+`alchem-link/`. The field agent: it reads live X discourse through Grok server-side
+search, ranks every candidate with a network trained on your own approve and reject
+decisions, drafts, and asks you over Telegram before it posts. Your decisions *are* the
+training set.
+
+It is **not** Scematica Omni. Omni (`scematica-omni/`) seals proof-carrying decision
+records that anybody can verify offline; the agent drafts prose and asks a human. It seals
+nothing and verifies nothing. `/omni-agent` on the site renders the difference as a table,
+because the two share a word and share none of their claims.
+
+```bash
+cd omni-agent
+npm install && cp .env.example .env    # XAI_API_KEY at minimum
+npm run cortex                          # the PyTorch sidecar
+npx tsx src/cli.ts doctor               # what works, what doesn't, and why
+```
+
+**One bot, one poller.** Telegram hands each update to exactly one caller, so the agent's
+cockpit refuses to poll a token it can see belongs to `scema-tgbot` — two processes sharing
+one bot would split your commands between them at random, and one of them can sell
+positions. See `omni-agent/README.md`.
 
 The `programs/scematica-swap` Anchor program must be built and deployed separately with `anchor build`.
 
@@ -265,9 +296,19 @@ GROQ_API_KEY=gsk_...
 # or
 XAI_API_KEY=xai-...
 
+# Telegram (optional) — the sniper's controls from a phone, via `scema-tgbot`.
+# With no owners the bot authorises NOBODY and prints a one-time /claim code to the
+# terminal it was started from. That is the whole security argument: the channel
+# proving you are the operator is the machine the bot runs on.
+SCEMA_TG_TOKEN=123456:AA...
+SCEMA_TG_OWNERS=
+
 # Emergency gate bypass (use only during RPC outages)
 # SCEMATICA_SKIP_GATE=1
 ```
+
+`omni-agent/` has its own `.env`; neither reads the other. `SCEMA_TG_TOKEN` is the one
+variable that means the same thing in both, and the agent deliberately will not poll it.
 
 ### `config.toml` reference
 

@@ -4,7 +4,7 @@ import { PRODUCTS } from '@/components/products'
 
 // Every product on scematica.org, in one place.
 //
-// Nine routes: the dashboard plus eight products. The nav no longer hides them on a phone
+// Ten routes: the dashboard plus nine products. The nav no longer hides them on a phone
 // — see `components/ProductNav` — but a sitemap is what makes a page findable by somebody
 // who has never seen the nav at all.
 //

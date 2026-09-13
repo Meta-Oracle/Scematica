@@ -833,6 +833,75 @@ export const CODEX: CodexEntry[] = [
     keywords: ['verifier', 'offline', 'webcrypto', 'canonical', 'record', 'amber'],
   },
   {
+    id: 'scematica-tgbot',
+    name: 'scematica-tgbot (scema-tgbot)',
+    kind: 'crate',
+    path: 'crates/scematica-tgbot',
+    summary:
+      "The sniper's controls on Telegram: a fourth face over the File-Based IPC surface, " +
+      'beside the ratatui dashboard, the HTTP API and the web dashboard. It starts nothing, ' +
+      'owns nothing and holds no lock — the sniper runs independently and this watches and ' +
+      'steers it.',
+    invariants: [
+      'Deny by default. A bot token is a public endpoint — anyone who learns the @username can message it — so an empty owner list authorises nobody, not everybody and not "the first person to say hello". The /claim code is printed to the operator\'s own terminal, never sent over Telegram.',
+      'The getUpdates offset advances BEFORE the work. For a process that can sell positions, running a command twice on restart is worse than losing one to a crash — the same reasoning that made the treasury path answer 202 rather than retry.',
+      'It reads state, it does not compute it. Every number comes from a file the sniper wrote or from config.toml, so there is no second implementation to drift — the lesson /zero cost.',
+      'It hand-rolls the Bot API on the workspace\'s pinned reqwest 0.11. teloxide pulls reqwest 0.12 → rustls 0.23 → zeroize ≥ 1.7, exactly the conflict the root Cargo.toml pin comments say cannot coexist with solana-sdk.',
+    ],
+    commands: [
+      'cargo run --release --bin scema-tgbot',
+      'cargo test -p scematica-tgbot',
+    ],
+    related: ['omni-agent', 'file-ipc', 'scematica-ai', 'scematica-core'],
+    keywords: ['telegram', 'tgbot', 'cockpit', 'operator', 'claim', 'owners', 'phone'],
+  },
+  {
+    id: 'omni-agent',
+    name: 'Scematica Omni-Agent (omni-agent/)',
+    kind: 'workspace',
+    path: 'omni-agent',
+    summary:
+      "Scematica's field agent: a TypeScript + Python runtime that reads live X discourse " +
+      'through Grok, ranks every candidate with a PyTorch net trained on the operator\'s own ' +
+      'approve/reject decisions, and drafts posts it asks a human to approve over Telegram. ' +
+      'NOT Scematica Omni — it seals nothing and verifies nothing.',
+    invariants: [
+      'It is not the Omni runtime and must never imply that it is. Omni seals proof-carrying decision records; this agent drafts prose. Confusing them lends an unsealed opinion a sealed record\'s authority, which is what /omni exists to prevent.',
+      'One bot, one poller. Telegram getUpdates delivers each update to exactly one caller, so two processes on one token split the operator\'s commands between them at random — and one of them is scema-tgbot, which can sell positions. The cockpit refuses a token it can see belongs to the sniper, and stops rather than retrying on HTTP 409.',
+      'It may read the live bot and never command it. absent / stale / fresh are three states, never two: an unread PnL is an em dash, never 0.00 SOL, and a metrics file an hour old is a stopped sniper rather than a quiet one.',
+      'Nothing reaches X until SCEMA_DRY_RUN is explicitly false AND four real credentials exist. Dry run stays forced on otherwise.',
+      'Autonomy is earned, not configured: SCEMA_SENSE_AUTOPOST_TASTE defaults above 1.0 (never) and is honoured only after a minimum number of real operator decisions.',
+    ],
+    commands: [
+      'cd omni-agent ; npm install ; npm run cortex',
+      'cd omni-agent ; npx tsx src/cli.ts doctor',
+      'cd omni-agent ; npx tsx src/cli.ts bot',
+      'cd omni-agent ; npm run sense ; npm run queue',
+      'cd omni-agent ; npm test',
+    ],
+    related: ['omni-agent-console', 'scematica-tgbot', 'scematica-omni', 'file-ipc'],
+    keywords: ['grok', 'x', 'twitter', 'telegram', 'cortex', 'tastenet', 'elizaos', 'sense loop'],
+  },
+  {
+    id: 'omni-agent-console',
+    name: '/omni-agent (the field agent console)',
+    kind: 'product',
+    path: 'web/lib/agent',
+    summary:
+      "The ninth product, chartreuse. Explains the field agent and replays its proposal log " +
+      'in the reader\'s own browser — every draft, every decision, and the labelled training ' +
+      'examples each decision handed the cortex.',
+    invariants: [
+      'No server side, exactly as /omni: no route, no fetch. The queue is the operator\'s own decision history, which is precisely the kind of file that must not be uploaded in order to be read.',
+      'An unscored draft is not a draft scored zero. A proposal written while the cortex was unreachable prints an em dash; a measured zero still prints 0.00.',
+      'Counts, never an invented rate. There is no approval percentage — over the handful of decisions a real log holds, a percentage is a number of the right shape with nothing behind it.',
+      'An unknown event type is counted, not dropped. A log written by a newer agent renders as incomplete rather than as confidently wrong.',
+    ],
+    commands: ['cd web ; npm run check:agent'],
+    related: ['omni-agent', 'omni-record-console', 'web'],
+    keywords: ['queue', 'proposals', 'taste', 'labels', 'chartreuse', 'audit trail'],
+  },
+  {
     id: 'mesh',
     name: '/mesh',
     kind: 'product',

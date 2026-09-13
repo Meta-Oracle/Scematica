@@ -20,6 +20,7 @@ import {
 } from '@elizaos/core';
 
 import { config } from '../../config.js';
+import { readBotState, renderBotState } from '../../lib/bot-state.js';
 import { getQueue } from '../../lib/queue.js';
 import { getCortexClient } from '../cortex/client.js';
 import { ControlPlanePoller } from './notify.js';
@@ -116,6 +117,36 @@ export const operationalStateProvider: Provider = {
   },
 };
 
+/**
+ * Puts the live bot's own numbers in front of the model, or says plainly that
+ * there are none.
+ *
+ * This is deliberately a *provider* rather than an action. An action fires when
+ * the model decides to call it, and the failure being designed against is the
+ * model not realising it needs to look — it answers "how's the bot doing?" from
+ * the conversation, confidently, with a figure nobody measured. A provider runs
+ * on every turn, so the refusal to guess is in context before the question is.
+ */
+export const botStateProvider: Provider = {
+  name: 'SCEMA_BOT_STATE',
+  description:
+    "The live sniper's measured state, with the age of every figure — or an explicit " +
+    'statement that it cannot be read.',
+  position: 5,
+
+  get: async (): Promise<ProviderResult> => {
+    const state = await readBotState();
+    return {
+      text: renderBotState(state),
+      values: {
+        botWired: state.dir !== null,
+        botMetricsFreshness: state.metrics.freshness,
+      },
+      data: { state },
+    };
+  },
+};
+
 export const controlPlanePlugin: Plugin = {
   name: 'control-plane',
   description:
@@ -124,7 +155,7 @@ export const controlPlanePlugin: Plugin = {
 
   services: [ControlPlaneService],
   actions: [queueStatusAction],
-  providers: [operationalStateProvider],
+  providers: [operationalStateProvider, botStateProvider],
 
   async init(): Promise<void> {
     if (!config.telegram.configured) {

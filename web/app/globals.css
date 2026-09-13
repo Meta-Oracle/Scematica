@@ -930,6 +930,44 @@ body:has(.escrow-root)::after {
   min-height: 100vh;
 }
 
+/* Scematica Omni-Agent — chartreuse on graphite, the last free hue on the site.
+   Deliberately NOT the mint green every other page uses for "ok": this page is about
+   what an agent proposed, not about money. `--a-unscored` sits close to the surface,
+   like `--o-unmeasured` and `--m-absent`, because a draft the cortex never scored is
+   not a draft it rated zero. Mirrors the `agent-*` tokens in tailwind.config.ts. */
+.agent-root {
+  --a-black:     #07090a;
+  --a-surface:   #0d1211;
+  --a-hi:        #151d19;
+  --a-border:    #26331f;
+  --a-border-hi: #435734;
+  --a-text:      #e4efd8;
+  --a-muted:     #9aae86;
+  --a-dim:       #5f7150;
+  --a-accent:    #b8e62e;
+  --a-glow:      #d6f770;
+  --a-posted:    #5ddc9a;
+  --a-rejected:  #ff6b6b;
+  --a-pending:   #f5b544;
+  --a-unscored:  #2c3826;
+  background: var(--a-black);
+  color: var(--a-text);
+  min-height: 100vh;
+}
+
+/* Retint the site-wide scan bar, which is red for the sniper. */
+body:has(.agent-root)::after {
+  background: linear-gradient(
+    transparent 0%,
+    rgba(184, 230, 46, 0.02) 50%,
+    transparent 100%
+  );
+}
+
+.agent-root ::-webkit-scrollbar-track { background: var(--a-black); }
+.agent-root ::-webkit-scrollbar-thumb { background: var(--a-border); }
+.agent-root ::-webkit-scrollbar-thumb:hover { background: var(--a-border-hi); }
+
 /* Scematica Zero — the coldest palette on the site, deliberately. Zero is the only
    surface that can spend money unattended, so an operator with several consoles open
    must be able to tell at a glance which tab is armed. Mirrors the `zero-*` tokens in

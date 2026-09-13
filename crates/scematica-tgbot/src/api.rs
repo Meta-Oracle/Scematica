@@ -274,13 +274,18 @@ fn truncate(s: &str) -> String {
     if s.len() <= MAX_MESSAGE {
         return s.to_string();
     }
+    // The ellipsis is part of the message, so it comes out of the budget rather than
+    // being added on top of it. `…` is THREE bytes in UTF-8, not one: reserving a single
+    // byte for it — which this did — produces a message two bytes over the cap, and
+    // Telegram answers 400 on the one path that exists to stop it doing that.
+    const ELLIPSIS: char = '…';
+    let mut end = MAX_MESSAGE - ELLIPSIS.len_utf8();
     // Cut on a char boundary, not a byte one — a status report can carry a multi-byte
     // symbol and a byte slice through one panics.
-    let mut end = MAX_MESSAGE - 1;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &s[..end])
+    format!("{}{ELLIPSIS}", &s[..end])
 }
 
 /// Split on line boundaries, never mid-line.

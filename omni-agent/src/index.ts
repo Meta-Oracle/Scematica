@@ -18,10 +18,10 @@ import { grokPlugin } from './plugins/grok/index.js';
 import { senseLoopPlugin } from './plugins/sense-loop/plugin.js';
 
 const BANNER = String.raw`
-   ___  __  __ _  _ ___
-  / _ \|  \/  | \| |_ _|   live-sense agent
- | (_) | |\/| | .. || |    grok · cortex · x · telegram
-  \___/|_|  |_|_|\_|___|
+   ___  __  __ _  _ ___     SCEMATICA OMNI-AGENT
+  / _ \|  \/  | \| |_ _|    grok · cortex · x · telegram
+ | (_) | |\/| | .. || |     perceives and drafts; it does not seal records
+  \___/|_|  |_|_|\_|___|    and it does not command the sniper
 `;
 
 async function buildPlugins(): Promise<(Plugin | string)[]> {
@@ -34,8 +34,19 @@ async function buildPlugins(): Promise<(Plugin | string)[]> {
   // Conversational surfaces are opt-in by credential. Loading a platform
   // plugin without its token produces a noisy, confusing failure at runtime,
   // so they are only added when they can actually connect.
-  if (config.telegram.configured) {
+  // The conversational Telegram plugin needs its OWN bot, not the cockpit's.
+  // Both long-poll `getUpdates`, which Telegram answers for exactly one caller
+  // per token, so sharing would mean the operator's messages arriving at
+  // whichever of the two won the race that second. A different token is the
+  // only configuration where both can run, so it is the only one accepted.
+  const conversational = config.telegram.conversationalToken;
+  if (conversational && conversational !== config.telegram.token) {
     plugins.push('@elizaos/plugin-telegram');
+  } else if (conversational) {
+    logger.warn(
+      'TELEGRAM_BOT_TOKEN is the same bot as the cockpit; conversational Telegram not loaded. ' +
+        'Create a second bot with @BotFather for chat, or leave it unset.',
+    );
   }
   if (config.twitter.configured && !config.twitter.dryRun) {
     plugins.push('@elizaos/plugin-twitter');

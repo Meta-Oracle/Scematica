@@ -221,6 +221,49 @@ pub struct ParamChange {
 /// 3. **Comments survive.** This is a line rewrite, not a serialise round-trip. Every
 ///    threshold in that file carries a comment recording what it cost to learn, and a
 ///    `toml::to_string` would erase all of them.
+/// The line rewrite itself, as a pure function of the file's text.
+///
+/// Separated from `set_param` so the tests can exercise **this** rather than a copy of it.
+/// They used to reproduce the loop inline, which is the `verify-vault.mjs` hazard in
+/// miniature: a test carrying its own implementation of the thing it checks does not merely
+/// miss bugs, it can invent them — and it did, asserting a comment gap this code never
+/// produced and sending somebody to look for a fault in a correct rewrite.
+///
+/// `None` means the key was not found in the `[sniper]` table, which is a different outcome
+/// from "found and unchanged" and must not be collapsed into it.
+fn rewrite_sniper_key(original: &str, key: &str, value: f64) -> Option<String> {
+    let mut out = String::with_capacity(original.len() + 16);
+    let mut in_sniper = false;
+    let mut replaced = false;
+
+    for line in original.lines() {
+        let trimmed = line.trim_start();
+        // A new table header ends the `[sniper]` section — including `[sniper.filters]`
+        // and `[[sniper.rate_modes]]`, which are different tables that happen to share
+        // the prefix and contain the same key names.
+        if trimmed.starts_with('[') {
+            in_sniper = trimmed.starts_with("[sniper]");
+        } else if in_sniper && !replaced {
+            let is_key = trimmed.split('=').next().map(|k| k.trim() == key).unwrap_or(false);
+            if is_key {
+                // Keep whatever trailing comment the line carried: it is the record of why
+                // the old value was what it was, and it stays true about the old value.
+                // The gap before it is normalised to two spaces — the original alignment
+                // was chosen for the old number's width and is wrong for the new one.
+                let comment =
+                    line.find('#').map(|i| format!("  {}", &line[i..])).unwrap_or_default();
+                out.push_str(&format!("{} = {}{}\n", key, fmt(value), comment));
+                replaced = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    replaced.then_some(out)
+}
+
 pub fn set_param(config_path: &str, param: Param, value: f64) -> Result<ParamChange> {
     let (lo, hi) = param.bounds();
     if !value.is_finite() || value < lo || value > hi {
@@ -237,42 +280,12 @@ pub fn set_param(config_path: &str, param: Param, value: f64) -> Result<ParamCha
         Param::StopLoss => before.sniper.stop_loss_pct,
     };
 
-    let mut out = String::with_capacity(original.len() + 16);
-    let mut in_sniper = false;
-    let mut replaced = false;
-
-    for line in original.lines() {
-        let trimmed = line.trim_start();
-        // A new table header ends the `[sniper]` section — including `[sniper.filters]`
-        // and `[[sniper.rate_modes]]`, which are different tables that happen to share
-        // the prefix and contain the same key names.
-        if trimmed.starts_with('[') {
-            in_sniper = trimmed.starts_with("[sniper]");
-        } else if in_sniper && !replaced {
-            let is_key = trimmed
-                .split('=')
-                .next()
-                .map(|k| k.trim() == param.key())
-                .unwrap_or(false);
-            if is_key {
-                // Keep whatever trailing comment the line carried: it is the record of why
-                // the old value was what it was, and it stays true about the old value.
-                let comment = line.find('#').map(|i| format!("  {}", &line[i..])).unwrap_or_default();
-                out.push_str(&format!("{} = {}{}\n", param.key(), fmt(value), comment));
-                replaced = true;
-                continue;
-            }
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    if !replaced {
+    let Some(out) = rewrite_sniper_key(&original, param.key(), value) else {
         bail!(
             "could not find `{}` in the [sniper] table of {config_path}",
             param.key()
         );
-    }
+    };
 
     // Write, verify, then commit. The verification reads the TEMP file, so a bad edit is
     // never visible to the sniper even momentarily.
@@ -351,35 +364,33 @@ stop_loss_pct = 10.0
 name = \"Micro\"
 take_profit_pct = 50.0
 ";
-        // Reproduce the scoping loop over the fixture. A naive first-match replace would
-        // be correct here too (the [sniper] key comes first), so the case that matters is
+        // The real rewrite, not a copy of it. A naive first-match replace would be correct
+        // on this fixture too (the [sniper] key comes first), so the case that matters is
         // the second occurrence staying untouched.
-        let mut out = String::new();
-        let mut in_sniper = false;
-        let mut replaced = false;
-        for line in src.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with('[') {
-                in_sniper = trimmed.starts_with("[sniper]");
-            } else if in_sniper && !replaced {
-                if trimmed.split('=').next().map(|k| k.trim() == "take_profit_pct").unwrap_or(false)
-                {
-                    let comment =
-                        line.find('#').map(|i| format!("  {}", &line[i..])).unwrap_or_default();
-                    out.push_str(&format!("take_profit_pct = {}{}\n", fmt(220.0), comment));
-                    replaced = true;
-                    continue;
-                }
-            }
-            out.push_str(line);
-            out.push('\n');
-        }
-        assert!(replaced);
-        assert!(out.contains("take_profit_pct = 220.0   # baseline"));
+        let out = rewrite_sniper_key(src, "take_profit_pct", 220.0).expect("key not found");
+        assert!(out.contains("take_profit_pct = 220.0  # baseline"));
         // The rate mode's own value is a different table and must not have moved.
         assert!(out.contains("take_profit_pct = 50.0"));
         // And the comment recording why the old value was chosen survived.
         assert!(out.contains("# baseline"));
+        // The [sniper] line is rewritten exactly once, even though the key appears twice.
+        assert_eq!(out.matches("take_profit_pct").count(), 2);
+    }
+
+    #[test]
+    fn a_missing_key_is_none_rather_than_an_unchanged_file() {
+        // "found and unchanged" and "not there at all" send the operator to different
+        // places, so the rewrite refuses rather than handing back the original.
+        let src = "[sniper]\nstop_loss_pct = 10.0\n";
+        assert!(rewrite_sniper_key(src, "take_profit_pct", 220.0).is_none());
+    }
+
+    #[test]
+    fn a_key_outside_the_sniper_table_is_not_the_one_asked_for() {
+        // The defect in full: the key exists, but only in a rate mode. Rewriting it would
+        // retune a mode nobody selected and surface the next time somebody did.
+        let src = "[sniper]\nstop_loss_pct = 10.0\n\n[[sniper.rate_modes]]\ntake_profit_pct = 50.0\n";
+        assert!(rewrite_sniper_key(src, "take_profit_pct", 220.0).is_none());
     }
 
     #[test]

@@ -14,6 +14,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
 import { config, describeConfig, resolveActingAccount } from './config.js';
+import { readBotState, renderBotState } from './lib/bot-state.js';
 import { classifyFailure, classifyXFailure, type CredentialCheck } from './lib/credentials.js';
 import { finalText, getQueue } from './lib/queue.js';
 import { applyDecision, discoverOperatorChatId } from './plugins/control-plane/notify.js';
@@ -160,7 +161,39 @@ async function doctor(): Promise<number> {
       );
     }
   } else {
-    check(false, 'telegram', 'SCEMA_TG_TOKEN is not set (cockpit disabled)');
+    check(false, 'telegram', 'no SCEMA_AGENT_TG_TOKEN or SCEMA_TG_TOKEN (cockpit disabled)');
+  }
+
+  // A shared token is reported as its own line rather than folded into the one
+  // above, because the token is *valid* — the problem is that two processes
+  // want it, and a FAIL on "telegram" would send somebody to check the token.
+  if (config.telegram.sharedWithSniper && !config.telegram.pollShared) {
+    check(
+      false,
+      'tg cockpit',
+      'off: this is scema-tgbot\'s bot. Set SCEMA_AGENT_TG_TOKEN to a second bot, ' +
+        'or SCEMA_AGENT_TG_POLL=1 while scema-tgbot is stopped',
+    );
+  }
+
+  // The bot is optional, so an unwired one is not a failure — it is a fact the
+  // operator should see, since it decides whether the agent can answer "how is
+  // the bot doing?" at all.
+  const bot = await readBotState();
+  if (!bot.dir) {
+    console.log(
+      `  ${DIM}--${RESET} ${'bot state'.padEnd(14)} ${DIM}not wired (SCEMA_BOT_DIR unset)${RESET}`,
+    );
+  } else {
+    check(
+      bot.metrics.freshness === 'fresh',
+      'bot state',
+      bot.metrics.freshness === 'fresh'
+        ? `live, metrics ${bot.metrics.ageSecs}s old`
+        : bot.metrics.freshness === 'stale'
+          ? `metrics ${bot.metrics.ageSecs}s old -- sniper looks stopped`
+          : `no metrics file in ${bot.dir} -- the sniper has not run there`,
+    );
   }
 
   // Actually call X rather than just checking which variables are non-empty.
@@ -508,10 +541,26 @@ async function xAuth(): Promise<number> {
 
 /** ----------------------------------------------------------------- main */
 
+/**
+ * Print exactly the block the model is given about the live bot.
+ *
+ * Not a prettier summary of it: the value of this command is that what the
+ * operator reads and what the agent is reasoning from are the same characters.
+ * A second renderer would drift, and the drift would be invisible until the
+ * agent said something about the bot that the terminal disagreed with.
+ */
+async function botState(): Promise<number> {
+  heading('Omni :: what I can see of the sniper');
+  console.log(renderBotState(await readBotState()));
+  console.log();
+  return 0;
+}
+
 const COMMANDS: Record<string, () => Promise<number>> = {
   chat,
   sense,
   queue: reviewQueue,
+  bot: botState,
   doctor,
   status: doctor,
   'x-auth': xAuth,

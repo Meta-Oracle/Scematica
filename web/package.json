@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run check:parity && npm run check:scylar && npm run check:escrow && npm run check:mesh && npm run check:omni && npm run check:scemaworld && npm run check:zero && npm run check:nav",
+    "check": "npm run typecheck && npm run check:parity && npm run check:scylar && npm run check:escrow && npm run check:mesh && npm run check:omni && npm run check:scemaworld && npm run check:zero && npm run check:agent && npm run check:nav",
     "check:parity": "node --experimental-strip-types scripts/check-parity.mjs",
     "check:scylar": "node --experimental-strip-types scripts/check-scylar.mjs",
     "check:escrow": "node --experimental-strip-types scripts/check-escrow.mjs",
@@ -21,7 +21,8 @@
     "check:omni": "node --experimental-strip-types scripts/check-omni.mjs",
     "check:scemaworld": "node --experimental-strip-types scripts/check-scemaworld.mjs",
     "check:zero": "node --experimental-strip-types scripts/check-zero.mjs",
-    "check:nav": "node --experimental-strip-types scripts/check-nav.mjs"
+    "check:nav": "node --experimental-strip-types scripts/check-nav.mjs",
+    "check:agent": "node --experimental-strip-types scripts/check-agent.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^6.1.2",

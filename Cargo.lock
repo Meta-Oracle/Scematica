@@ -4643,6 +4643,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scematica-tgbot"
+version = "1.28.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dotenv",
+ "parking_lot",
+ "rand 0.8.6",
+ "reqwest",
+ "scematica-ai",
+ "scematica-core",
+ "serde",
+ "serde_json",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

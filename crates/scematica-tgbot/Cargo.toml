@@ -1,0 +1,47 @@
+[package]
+name = "scematica-tgbot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scematica Telegram operator bot — the sniper's full control surface and its Grok chat agent, over Telegram."
+repository = "https://github.com/Meta-Oracle/Scematica"
+homepage = "https://github.com/Meta-Oracle/Scematica"
+readme = "README.md"
+keywords = ["telegram", "trading", "solana", "bot", "operations"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "scema-tgbot"
+path = "src/main.rs"
+
+[dependencies]
+# The IPC file names, `artifact_path`, the atomic-write convention and `SniperConfig`
+# (which is where the rate-mode table lives). This is also what makes the token gate the
+# same check the sniper and dashboard run rather than a third one.
+scematica-core = { version = "1.28.0", path = "../scematica-core" }
+# The Grok chat agent, its tool definitions and — the part that matters over Telegram —
+# its risk classification and confirmation gate. Wired, never re-implemented: a second
+# LLM client would be a second place for the tool allow-list to drift.
+scematica-ai = { version = "1.28.0", path = "../scematica-ai" }
+
+# Telegram Bot API by hand, on the workspace's pinned reqwest 0.11.
+#
+# NOT teloxide, and not by preference: teloxide pulls reqwest 0.12 → rustls 0.23 →
+# zeroize ≥ 1.7, which is exactly the conflict the root Cargo.toml's pin comments say
+# cannot coexist with solana-sdk's curve25519-dalek 3. The Bot API is JSON over HTTPS with
+# four endpoints in use here; hand-rolling it costs less than a second lockfile would.
+# Same reasoning as `scema-omnid` hand-rolling HTTP/1.1 rather than carrying hyper.
+reqwest.workspace = true
+
+solana-sdk.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+dotenv.workspace = true
+parking_lot.workspace = true
+rand = "0.8"

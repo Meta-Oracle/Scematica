@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.env
+.env.local
+
+# Learned state and operational logs: machine-specific, often large,
+# and the queue log contains the operator's own decisions.
+data/
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Compiled Mojo artifacts (built per-platform under WSL)
+*.so
+*.dll
+*.dylib
+cortex/scema_cortex/kernels/.pixi/
+cortex/scema_cortex/kernels/pixi.lock
+cortex/scema_cortex/kernels/pixi.toml
+
+.DS_Store
+
+# X OAuth 2.0 tokens (also covered by data/, listed for clarity)
+data/x-oauth2.json

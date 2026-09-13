@@ -1,0 +1,112 @@
+/**
+ * Scematica Omni-Agent entry point.
+ *
+ * Boot order is deliberate: report the configuration first, check the cortex
+ * second, and only then start the runtime. A misconfigured agent should be
+ * obvious in the first ten lines of output, not discovered twenty minutes
+ * later when nothing has posted.
+ */
+import { ElizaOS, logger, type IAgentRuntime, type Plugin } from '@elizaos/core';
+
+import { character } from './character.js';
+import { config, describeConfig } from './config.js';
+import { getQueue } from './lib/queue.js';
+import { controlPlanePlugin } from './plugins/control-plane/index.js';
+import { cortexPlugin } from './plugins/cortex/index.js';
+import { getCortexClient } from './plugins/cortex/client.js';
+import { grokPlugin } from './plugins/grok/index.js';
+import { senseLoopPlugin } from './plugins/sense-loop/plugin.js';
+
+const BANNER = String.raw`
+   ___  __  __ _  _ ___
+  / _ \|  \/  | \| |_ _|   live-sense agent
+ | (_) | |\/| | .. || |    grok · cortex · x · telegram
+  \___/|_|  |_|_|\_|___|
+`;
+
+async function buildPlugins(): Promise<(Plugin | string)[]> {
+  // Order matters: sql provides the database adapter, bootstrap provides the
+  // default message pipeline, and our plugins layer on top of both.
+  const plugins: (Plugin | string)[] = ['@elizaos/plugin-sql'];
+
+  plugins.push(grokPlugin, cortexPlugin, controlPlanePlugin, senseLoopPlugin);
+
+  // Conversational surfaces are opt-in by credential. Loading a platform
+  // plugin without its token produces a noisy, confusing failure at runtime,
+  // so they are only added when they can actually connect.
+  if (config.telegram.configured) {
+    plugins.push('@elizaos/plugin-telegram');
+  }
+  if (config.twitter.configured && !config.twitter.dryRun) {
+    plugins.push('@elizaos/plugin-twitter');
+  }
+
+  plugins.push('@elizaos/plugin-bootstrap');
+  return plugins;
+}
+
+async function main(): Promise<void> {
+  console.log(BANNER);
+  console.log('configuration:');
+  for (const line of describeConfig()) console.log(line);
+  console.log();
+
+  // Surface cortex state before the runtime starts, because "the agent has no
+  // judgement and no memory" is something you want to know immediately.
+  const cortex = getCortexClient();
+  const health = await cortex.health();
+  if (health) {
+    console.log(
+      `  cortex online: ${health.memories} memories, ${health.train_steps} training steps\n`,
+    );
+  } else if (config.cortex.required) {
+    console.error(
+      `  cortex REQUIRED but unreachable at ${config.cortex.url}.\n` +
+        `  Start it first:  npm run cortex\n`,
+    );
+    process.exit(1);
+  } else {
+    console.warn(
+      `  cortex offline -- running with neutral judgement and no memory.\n` +
+        `  Start it in another terminal:  npm run cortex\n`,
+    );
+  }
+
+  const queue = getQueue();
+  const summary = await queue.summary();
+  if (summary.pending > 0) {
+    console.log(`  ${summary.pending} draft(s) already waiting for your decision\n`);
+  }
+
+  const elizaOS = new ElizaOS();
+  const runtimes = await elizaOS.addAgents(
+    [{ character, plugins: await buildPlugins() }],
+    { autoStart: true, returnRuntimes: true },
+  );
+
+  const runtime: IAgentRuntime | undefined = runtimes[0];
+  if (!runtime) throw new Error('runtime failed to start');
+
+  logger.info(`${character.name} is running`);
+
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`\n${signal} received, shutting down...`);
+    try {
+      // Persist learned state before exiting; an unsaved training session is
+      // operator decisions thrown away.
+      await cortex.save();
+      await elizaOS.stopAgents();
+    } catch (error) {
+      logger.error({ error: (error as Error).message }, 'error during shutdown');
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+main().catch((error) => {
+  console.error('failed to start:', error);
+  process.exit(1);
+});

@@ -22,6 +22,7 @@ members = [
     "crates/scematica-sentience",
     "crates/scematica-mesh",
     "crates/mesh-dashboard",
+    "crates/scematica-tgbot",
 ]
 # The on-chain programs use Anchor and must be built separately with `anchor build`
 exclude = [

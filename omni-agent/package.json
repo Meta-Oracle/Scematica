@@ -1,0 +1,38 @@
+{
+  "name": "scematica-omni-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Scematica's field agent: perceives live X discourse through Grok, judges it with a learned neural cortex, and acts across X, Telegram and the terminal from one memory.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "cortex": "cd cortex && python -m scema_cortex.server",
+    "cortex:test": "python cortex/tests/test_model.py && python cortex/tests/test_store_train.py",
+    "cortex:bench": "cd cortex && python -m scema_cortex.bench",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "chat": "tsx src/cli.ts",
+    "sense": "tsx src/cli.ts sense",
+    "queue": "tsx src/cli.ts queue",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx --import ./src/test-setup.ts \"src/**/*.test.ts\"",
+    "x-auth": "tsx src/cli.ts x-auth"
+  },
+  "dependencies": {
+    "@elizaos/core": "1.7.2",
+    "@elizaos/plugin-bootstrap": "1.7.2",
+    "@elizaos/plugin-sql": "1.7.2",
+    "@elizaos/plugin-telegram": "1.6.4",
+    "@elizaos/plugin-twitter": "1.2.22",
+    "dotenv": "^17.0.0",
+    "twitter-api-v2": "^1.23.2",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

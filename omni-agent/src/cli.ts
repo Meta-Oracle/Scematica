@@ -14,7 +14,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
 import { config, describeConfig, resolveActingAccount } from './config.js';
-import { readBotState, renderBotState } from './lib/bot-state.js';
+import { pollingConflict, readBotState, renderBotState } from './lib/bot-state.js';
 import { classifyFailure, classifyXFailure, type CredentialCheck } from './lib/credentials.js';
 import { finalText, getQueue } from './lib/queue.js';
 import { applyDecision, discoverOperatorChatId } from './plugins/control-plane/notify.js';
@@ -164,14 +164,28 @@ async function doctor(): Promise<number> {
     check(false, 'telegram', 'no SCEMA_AGENT_TG_TOKEN or SCEMA_TG_TOKEN (cockpit disabled)');
   }
 
-  // A shared token is reported as its own line rather than folded into the one
-  // above, because the token is *valid* — the problem is that two processes
-  // want it, and a FAIL on "telegram" would send somebody to check the token.
-  if (config.telegram.sharedWithSniper && !config.telegram.pollShared) {
+  // A shared bot is reported as its own line rather than folded into the one above,
+  // because the token is *valid* — the problem is that two processes want it, and a FAIL
+  // on "telegram" would send somebody to check the token.
+  //
+  // Asked of the running bot rather than of the environment. The two tokens live in
+  // separate `.env` files, so `sharedWithSniper` compares a variable against one that is
+  // not defined in this process and reports no conflict while two pollers fight.
+  const conflict = await pollingConflict(config.telegram.token);
+  if (conflict) {
+    check(
+      config.telegram.pollShared,
+      'tg cockpit',
+      config.telegram.pollShared
+        ? `polling @${conflict.username} anyway — scema-tgbot (pid ${conflict.pid}) is on it too`
+        : `off: scema-tgbot (pid ${conflict.pid}) is polling @${conflict.username}. ` +
+          'Set SCEMA_AGENT_TG_TOKEN to a second bot from @BotFather',
+    );
+  } else if (config.telegram.sharedWithSniper && !config.telegram.pollShared) {
     check(
       false,
       'tg cockpit',
-      'off: this is scema-tgbot\'s bot. Set SCEMA_AGENT_TG_TOKEN to a second bot, ' +
+      "off: this is scema-tgbot's bot. Set SCEMA_AGENT_TG_TOKEN to a second bot, " +
         'or SCEMA_AGENT_TG_POLL=1 while scema-tgbot is stopped',
     );
   }

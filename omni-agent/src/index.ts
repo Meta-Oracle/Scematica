@@ -6,10 +6,17 @@
  * obvious in the first ten lines of output, not discovered twenty minutes
  * later when nothing has posted.
  */
-import { ElizaOS, logger, type IAgentRuntime, type Plugin } from '@elizaos/core';
+import {
+  ElizaOS,
+  logger,
+  stringToUuid,
+  type IAgentRuntime,
+  type Plugin,
+} from '@elizaos/core';
 
 import { character } from './character.js';
 import { config, describeConfig } from './config.js';
+import { ensureSchema } from './lib/migrate.js';
 import { getQueue } from './lib/queue.js';
 import { controlPlanePlugin } from './plugins/control-plane/index.js';
 import { cortexPlugin } from './plugins/cortex/index.js';
@@ -88,6 +95,11 @@ async function main(): Promise<void> {
   if (summary.pending > 0) {
     console.log(`  ${summary.pending} draft(s) already waiting for your decision\n`);
   }
+
+  // Create the tables before the runtime queries them. `AgentRuntime.initialize` runs its
+  // migrations AFTER its first SELECT against `agents`, so a fresh database cannot boot
+  // without this — see `lib/migrate.ts` for the full trace.
+  await ensureSchema(stringToUuid(character.name));
 
   const elizaOS = new ElizaOS();
   const runtimes = await elizaOS.addAgents(

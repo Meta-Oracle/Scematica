@@ -117,6 +117,82 @@ export async function readBotState(dir = config.paths.botState): Promise<BotStat
   return { dir, metrics, nn };
 }
 
+/**
+ * What `scema-tgbot` announces about the bot it is polling.
+ *
+ * Mirrors `Presence` in `crates/scematica-tgbot/src/presence.rs`. The `bot_id` is the
+ * numeric part of a Telegram token, never the secret.
+ */
+export interface TgPresence {
+  bot_id: number;
+  username: string;
+  pid: number;
+  started_at: string;
+}
+
+/** The bot id carried by a token. `null` for anything not shaped `<digits>:<secret>`. */
+export function botIdOf(token: string): number | null {
+  const colon = token.indexOf(':');
+  if (colon <= 0) return null;
+  const head = token.slice(0, colon).trim();
+  if (!/^\d+$/.test(head)) return null;
+  return Number.parseInt(head, 10);
+}
+
+/** Is that process still running? */
+function alive(pid: number): boolean {
+  try {
+    // Signal 0 performs the permission and existence checks without delivering anything.
+    // It works on Windows too, where it is the documented way to ask this question.
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists and belongs to somebody else — still a conflict.
+    // ESRCH means it is gone, and a leftover file from a crash must not look like one.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Is the sniper's Telegram bot currently polling the bot this token names?
+ *
+ * This is the guard that the environment-variable comparison in `config.ts` **cannot**
+ * make. That one asks whether `SCEMA_AGENT_TG_TOKEN` equals `SCEMA_TG_TOKEN` in this
+ * process — and the two live in separate `.env` files that are never loaded together, so
+ * it is structurally unable to fire in the deployment it was written for. It did not fire,
+ * against two processes pointed at the same bot.
+ *
+ * The processes share no language and no config, but they share a directory. So the Rust
+ * side publishes which bot it holds, and this reads it — the File-Based IPC convention the
+ * rest of the system already runs on, rather than a new mechanism.
+ *
+ * `null` means "nothing to go on", which is different from "no conflict": no bot directory
+ * configured, no announcement, or an announcement from a process that has since exited.
+ */
+export async function pollingConflict(
+  token: string,
+  dir = config.paths.botState,
+): Promise<TgPresence | null> {
+  if (!dir || !token) return null;
+  const mine = botIdOf(token);
+  if (mine === null) return null;
+
+  let presence: TgPresence;
+  try {
+    presence = JSON.parse(
+      await readFile(join(dir, 'scematica-tgbot-presence.json'), 'utf8'),
+    ) as TgPresence;
+  } catch {
+    return null;
+  }
+
+  if (typeof presence.bot_id !== 'number' || presence.bot_id !== mine) return null;
+  // A stale file left by a crash names a pid nobody is running. Refusing to poll on the
+  // strength of that would disable this cockpit permanently after one hard kill.
+  if (typeof presence.pid !== 'number' || !alive(presence.pid)) return null;
+  return presence;
+}
+
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
 function age(reading: Reading<unknown>): string {

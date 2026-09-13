@@ -78,11 +78,19 @@ npx tsx src/cli.ts bot   # exactly what it can see of the live sniper
 npm start         # full runtime: Telegram cockpit + scheduled sense loop
 ```
 
-**Nothing reaches X until you explicitly enable it.** `SCEMA_DRY_RUN` defaults
-to true and stays forced true while X credentials are missing; drafts land in
-`data/queue/dry-run-posts.md` for review. The dry-run path runs the same queue
-transitions and the same training, so the whole loop is exercisable before you
-have a single credential.
+**Nothing the sense loop produces reaches X until you explicitly enable it.**
+`SCEMA_DRY_RUN` defaults to true and stays forced true while X credentials are
+missing; drafts land in `data/queue/dry-run-posts.md` for review. The dry-run
+path runs the same queue transitions and the same training, so the whole loop is
+exercisable before you have a single credential.
+
+**But `@elizaos/plugin-twitter` acts on its own, and the queue does not gate it.**
+Once `SCEMA_DRY_RUN=false` and four real credentials exist, that plugin loads and
+its interaction client answers mentions unattended, in the agent's voice —
+`TWITTER_ENABLE_REPLIES` defaults to **on**. The approve/reject loop stays empty
+while that happens, which is exactly why it is easy to miss. `doctor` and the boot
+report now name every autonomous behaviour that is armed; turn one off with
+`TWITTER_ENABLE_REPLIES=false` (one variable per behaviour).
 
 ## One bot, one poller
 
@@ -169,6 +177,18 @@ The GPU loses because each call copies the whole memory matrix host→device.
 The GPU earns its place on batched TasteNet inference and training instead,
 where data is already resident. Re-measure on your hardware with
 `npm run cortex:bench`.
+
+## A fresh database will not boot without `lib/migrate.ts`
+
+`@elizaos/core` 1.7.2 runs its plugin migrations **after** its first query against the
+tables those migrations create, so `AgentRuntime.initialize` on an empty database fails
+with `relation "agents" does not exist`. Two things would normally save it and neither
+does: `PGliteDatabaseAdapter.init()` is a no-op that only logs, and `isReady()` is
+`!manager.isShuttingDown()` — true the instant the manager exists, so `init()` is never
+called anyway. Deleting the data directory does not help; a fresh boot fails identically.
+
+`ensureSchema` applies `plugin-sql`'s schema before the runtime starts, through the same
+singleton PGlite manager the runtime will use. Remove it when upstream fixes the ordering.
 
 ## Testing
 

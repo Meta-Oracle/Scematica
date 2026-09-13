@@ -30,6 +30,7 @@ mod auth;
 mod chat;
 mod commands;
 mod control;
+mod presence;
 mod render;
 mod state;
 
@@ -95,6 +96,13 @@ async fn main() -> Result<()> {
         warn!("no owner configured — the bot will refuse every command until claimed");
     }
 
+    // Say which bot this process is polling, so a second poller can refuse before it
+    // takes a command that was meant for this one. Best-effort: a read-only directory
+    // must not stop the control surface starting.
+    if let Err(e) = presence::announce(&token, &me) {
+        warn!("could not publish {}: {e}", presence::PRESENCE_FILE);
+    }
+
     if let Err(e) = tg.set_commands(commands::MENU).await {
         // Cosmetic: the menu is a convenience and its absence does not stop a command
         // working, so this must not be fatal.
@@ -119,12 +127,39 @@ async fn main() -> Result<()> {
 
     info!("polling");
     loop {
-        let updates = match tg.updates(offset).await {
+        // Ctrl-C withdraws the presence announcement on the way out. A crash cannot, which
+        // is why the reader checks the pid rather than trusting the file to be absent.
+        let updates = tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("shutting down");
+                presence::withdraw();
+                return Ok(());
+            }
+            updates = tg.updates(offset) => updates,
+        };
+        let updates = match updates {
             Ok(u) => u,
             Err(e) => {
-                // Telegram rate-limits and drops connections routinely. Back off rather
-                // than spinning; the offset is untouched, so nothing is lost.
-                warn!("getUpdates failed: {e}");
+                // A 409 is not a transient network failure: something else is polling this
+                // same bot, and every update it takes is a command that never reaches here.
+                //
+                // This process keeps polling anyway, and the asymmetry is deliberate. The
+                // other poller is the Omni-Agent's cockpit, which yields — losing a draft
+                // approval costs a round trip. This bot holds `/dump` and `/pause`, and an
+                // operator reaching for an emergency stop must not find it switched off
+                // because a drafting agent turned up. So: say it loudly, once per
+                // occurrence, and stay.
+                if e.to_string().contains("409") {
+                    error!(
+                        "another process is polling @{me} — it is taking commands meant for \
+                         this bot. Stop it, or give it its own bot (SCEMA_AGENT_TG_TOKEN). \
+                         Still polling: this is the surface that can pause and dump."
+                    );
+                } else {
+                    // Telegram rate-limits and drops connections routinely. Back off rather
+                    // than spinning; the offset is untouched, so nothing is lost.
+                    warn!("getUpdates failed: {e}");
+                }
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }

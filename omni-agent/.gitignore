@@ -27,3 +27,13 @@ cortex/scema_cortex/kernels/pixi.toml
 
 # X OAuth 2.0 tokens (also covered by data/, listed for clarity)
 data/x-oauth2.json
+
+# ElizaOS's own PGlite store. 27 MB of database, machine-local, and regenerated on boot.
+#
+# It is also a TRAP worth naming: plugin-sql's `isReady()` is `!isShuttingDown()`, i.e.
+# true for any live connection whether or not the schema exists. `AgentRuntime.initialize`
+# only calls `adapter.init()` — which creates the core tables — when `isReady()` is false.
+# So a first boot that dies after PGlite writes its cluster but before the schema lands
+# leaves a database that is permanently "ready" and permanently empty, and every later run
+# fails with `relation "agents" does not exist`. Deleting this directory is the fix.
+.eliza/

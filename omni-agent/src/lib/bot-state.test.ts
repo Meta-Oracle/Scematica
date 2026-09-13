@@ -13,7 +13,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { readBotState, renderBotState, type BotState, type Metrics } from './bot-state.js';
+import {
+  botIdOf,
+  pollingConflict,
+  readBotState,
+  renderBotState,
+  type BotState,
+  type Metrics,
+} from './bot-state.js';
 
 const METRICS: Metrics = {
   trades_attempted: 40,
@@ -124,4 +131,58 @@ test('a corrupt metrics file is absent, never a partial reading', async () => {
   writeFileSync(join(dir, 'scematica-metrics.json'), '{"trades_attempted": 4');
   const state = await readBotState(dir);
   assert.equal(state.metrics.freshness, 'absent');
+});
+
+/* ── one bot, one poller ──────────────────────────────────────────────────── */
+
+test('a bot id is the part of a token before the colon, never the secret', () => {
+  assert.equal(botIdOf('8849814959:AAEg4WurVrJwvq9C'), 8849814959);
+  // Not zero and not a guess: two malformed tokens must not collide on a default and be
+  // reported as the same bot.
+  assert.equal(botIdOf('nonsense'), null);
+  assert.equal(botIdOf('abc:def'), null);
+  assert.equal(botIdOf(''), null);
+});
+
+test('no bot directory means nothing to go on, not "no conflict"', async () => {
+  assert.equal(await pollingConflict('8849814959:x', ''), null);
+});
+
+test('a live announcement for the same bot is a conflict', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'scema-bot-'));
+  // `process.pid` is by definition alive, which is what makes this testable at all.
+  writeFileSync(
+    join(dir, 'scematica-tgbot-presence.json'),
+    JSON.stringify({ bot_id: 8849814959, username: 'Scematicabot', pid: process.pid, started_at: '' }),
+  );
+  const conflict = await pollingConflict('8849814959:secret', dir);
+  assert.equal(conflict?.username, 'Scematicabot');
+});
+
+test('an announcement for a DIFFERENT bot is not a conflict', async () => {
+  // The whole point of giving the cockpit its own bot. Two pollers, two tokens, no clash.
+  const dir = mkdtempSync(join(tmpdir(), 'scema-bot-'));
+  writeFileSync(
+    join(dir, 'scematica-tgbot-presence.json'),
+    JSON.stringify({ bot_id: 111, username: 'Scematicabot', pid: process.pid, started_at: '' }),
+  );
+  assert.equal(await pollingConflict('222:secret', dir), null);
+});
+
+test('a stale announcement from a dead process is not a conflict', async () => {
+  // A crash leaves the file behind. Refusing to poll on the strength of it would disable
+  // the cockpit permanently after one hard kill, which is why the pid is checked.
+  const dir = mkdtempSync(join(tmpdir(), 'scema-bot-'));
+  writeFileSync(
+    join(dir, 'scematica-tgbot-presence.json'),
+    // Above the 32-bit pid ceiling, so it cannot belong to a live process on any platform.
+    JSON.stringify({ bot_id: 8849814959, username: 'Scematicabot', pid: 4294967294, started_at: '' }),
+  );
+  assert.equal(await pollingConflict('8849814959:secret', dir), null);
+});
+
+test('a corrupt announcement is not a conflict', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'scema-bot-'));
+  writeFileSync(join(dir, 'scematica-tgbot-presence.json'), '{"bot_id":');
+  assert.equal(await pollingConflict('8849814959:secret', dir), null);
 });

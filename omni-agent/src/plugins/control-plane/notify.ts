@@ -19,7 +19,7 @@
 import { logger } from '@elizaos/core';
 
 import { config } from '../../config.js';
-import { readBotState, renderBotState } from '../../lib/bot-state.js';
+import { pollingConflict, readBotState, renderBotState } from '../../lib/bot-state.js';
 import { finalText, getQueue, type Proposal } from '../../lib/queue.js';
 import { getCortexClient } from '../cortex/client.js';
 import { postProposal } from '../twitter/post.js';
@@ -218,6 +218,21 @@ export class ControlPlanePoller {
       logger.info('control plane inactive: no SCEMA_AGENT_TG_TOKEN or SCEMA_TG_TOKEN');
       return;
     }
+    // Ask the sniper's bot what it is holding, which is the only check that works in the
+    // real deployment: the two tokens live in separate `.env` files, so comparing the
+    // environment variables (below) cannot see a conflict that is nonetheless happening.
+    const conflict = await pollingConflict(config.telegram.token);
+    if (conflict && !config.telegram.pollShared) {
+      logger.warn(
+        `control plane not polling: scema-tgbot (pid ${conflict.pid}) is already polling ` +
+          `@${conflict.username}, and Telegram delivers each update to exactly one caller — ` +
+          'polling here would take commands away from the bot that can pause and dump, at ' +
+          'random. Create a second bot with @BotFather and set SCEMA_AGENT_TG_TOKEN to it. ' +
+          'Drafts still queue; review them with `npm run queue`.',
+      );
+      return;
+    }
+
     // Refuse *before* the first poll rather than discovering it as a 409 later,
     // because a 409 only arrives once both pollers are live and by then some
     // updates have already gone to the wrong process.

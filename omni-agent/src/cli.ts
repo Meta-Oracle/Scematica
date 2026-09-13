@@ -280,13 +280,16 @@ async function doctor(): Promise<number> {
   // Which account will actually receive a post, from the token not the config.
   const acting = await resolveActingAccount();
   if (acting.handle && acting.source === 'oauth2-token') {
-    check(true, 'posting as', `@${acting.handle} (from the authorised token)`);
-    if (acting.mismatch) {
-      console.log(
-        `       ${' '.repeat(14)} ${YELLOW}TWITTER_USERNAME says @${config.twitter.handle}, ` +
-          `but posts go to @${acting.handle}${RESET}`,
-      );
-    }
+    // Green here while `x post` above says REFUSED would be two lines of one report
+    // disagreeing, and the reassuring one is the lie: the token is authorised, and
+    // authorised for somebody else.
+    check(
+      !acting.mismatch,
+      'posting as',
+      acting.mismatch
+        ? `@${acting.handle} — NOT @${config.twitter.handle}. Nothing will post until they match.`
+        : `@${acting.handle} (from the authorised token)`,
+    );
   }
 
   const { loadTokens } = await import('./plugins/twitter/oauth2.js');
